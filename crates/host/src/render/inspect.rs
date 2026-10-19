@@ -1,4 +1,4 @@
-//! The inspector's half in the renderer (J-094): the frame a view's tree is
+//! The inspector's half in the renderer: the frame a view's tree is
 //! drawing, walked by view-wire's identity rule, and a press or typing that
 //! goes in on the channel a real one takes.
 
@@ -14,7 +14,8 @@ pub struct Inspected {
     /// Its place in the view: the authored path the host keys its native
     /// state by, ids joined by `/`. A node with no id of its own is
     /// `@<n>` after its nearest identified ancestor's path: its place
-    /// among that scope's nodes, in document order.
+    /// among that scope's nodes, in document order. A native element's
+    /// is its gpui path, ids joined by `.`.
     pub path: String,
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]

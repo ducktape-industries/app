@@ -404,9 +404,9 @@ const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--comp
        ducktape-app ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]
        ducktape-app ax perf [--by instance | --reset]   (docs/perf.md; the app launched with DUCKTAPE_PERF=1; --reset zeroes the counters)
        ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)
-       ducktape-app ax inspect tree [--in W[:V]]   (the views' own trees, by authored path; no accessibility tree)
+       ducktape-app ax inspect tree [--in W[:V]]   (the views' own trees by authored path, and the shell's own controls by id; no accessibility tree)
        ducktape-app ax inspect find [--id ID] [--role R] [--label L] [--text T] [--in W[:V]]
-       ducktape-app ax inspect press <id> [click|aux_click|submit|dismiss]   (sends the node's own handler event)
+       ducktape-app ax inspect press <id> [click|aux_click|submit|dismiss]   (a view's node: its own handler event; a native control: a pointer's click, refused when covered)
        ducktape-app ax inspect type <id> <text>
        ducktape-app ax inspect wait [--id ID] [--role R] [--label L] [--text T] [--in W[:V]] [--gone] --deadline-ms MS
        ducktape-app ax inspect screenshot [--window W]   (a PNG in base64, in a build with test-support; else 501 in its own words)";

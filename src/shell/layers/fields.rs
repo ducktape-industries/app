@@ -128,7 +128,21 @@ impl NativeInput {
             size,
         } = field;
         let masked = self.masked;
-        let element = bare(key, &self.state, size, masked, cx).aria_label(label);
+        let role = match masked {
+            true => gpui_kit::Role::PasswordInput,
+            false => gpui_kit::Role::TextInput,
+        };
+        let native = || {
+            inspected(
+                &self.state,
+                Some(role),
+                Some(label.clone()),
+                masked || private,
+                cx,
+            )
+        };
+        let element = crate::a11y::inspected(bare(key, &self.state, size, masked, cx), native)
+            .aria_label(label);
         let element = match masked {
             true => element,
             false => element.aria_value(self.state.read(cx).value().to_string()),
@@ -195,4 +209,27 @@ pub(in crate::shell) fn bare(
         },
         input.role(gpui_kit::component::RoleOverride::Presentational),
     )
+}
+
+/// What the inspector reads of a field over `state` ([`crate::a11y::Native`]):
+/// its role and name, its text unless `hidden` (masked or private), and
+/// typing that replaces the text, as SetValue does.
+pub(in crate::shell) fn inspected(
+    state: &Entity<InputState>,
+    role: Option<gpui_kit::Role>,
+    label: Option<gpui_kit::SharedString>,
+    hidden: bool,
+    cx: &gpui_kit::App,
+) -> crate::a11y::Native {
+    let set = state.clone();
+    crate::a11y::Native {
+        role,
+        label,
+        value: (!hidden).then(|| state.read(cx).value().to_string()),
+        set_value: Some(std::rc::Rc::new(
+            move |value: String, window: &mut Window, cx: &mut gpui_kit::App| {
+                set.update(cx, |state, cx| state.replace_all(value, window, cx))
+            },
+        )),
+    }
 }

@@ -648,7 +648,7 @@ fn command_field(field: &Entity<InputState>, cx: &mut App) -> AnyElement {
         .px_0();
     // no node of its own: the combo box around it and its rows speaks
     // for it
-    crate::a11y::text_field(
+    let element = crate::a11y::text_field(
         "empty-window/field",
         &field.read(cx).focus_handle(cx),
         {
@@ -658,8 +658,9 @@ fn command_field(field: &Entity<InputState>, cx: &mut App) -> AnyElement {
             }
         },
         input.role(component::RoleOverride::Presentational),
-    )
-    .into_any_element()
+    );
+    let native = || super::fields::inspected(field, None, None, false, cx);
+    crate::a11y::inspected(element, native).into_any_element()
 }
 
 /// Program | Chat, Tab between them. Chat is blocked until agent chat is

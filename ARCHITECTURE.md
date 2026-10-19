@@ -1040,8 +1040,13 @@ House words, and where one word means several things.
   `wait … --deadline-ms MS [--gone]` and `screenshot [--window W]` read
   each view's own tree as the host holds it (`ax/inspect.rs`,
   `render/inspect.rs`), never the accessibility tree. Ids are
-  `<window>:<view>/<authored path>`; a press sends the node's own handler
-  event, with no pointer and no position.
+  `<window>:<view>/<authored path>` for a view's node and `<window>:<element
+  id>` for the shell's own controls and fields (`ax/natives.rs`). An id two
+  nodes share is read as neither, and asking for it answers 409 naming
+  both. A press sends a view node's own handler event, with no pointer and
+  no position; a native control is pressed by a pointer at the middle of
+  what the window shows of it, and one something covers answers 409.
+  `type` sets a native field's text as assistive technology's SetValue does.
   `screenshot` is gpui's `Window::render_to_image`, which gpui builds only
   with `test-support`; any other build answers 501 and the OS's own
   screenshot stands in.

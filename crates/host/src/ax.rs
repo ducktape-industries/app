@@ -33,7 +33,9 @@
 //! Every read draws the window it reads, and every answer carries
 //! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
 //! `/inspect/*` ([`inspect`]) reads each view's own tree as the host holds
-//! it instead, and presses a node by sending its own handler event (J-094).
+//! it instead, and the shell's own controls as they were drawn
+//! ([`natives`]): a view's node is pressed by sending its own handler
+//! event, a native one by a pointer at it.
 //!
 //! Compiled with the `ax-door` feature (the kit and qa builds) and nowhere
 //! else: a release build has no door to open and no client for one. The
@@ -56,6 +58,7 @@ mod actions;
 pub mod audit;
 mod http;
 pub mod inspect;
+pub mod natives;
 mod tree;
 
 use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
@@ -362,6 +365,7 @@ pub async fn serve(
     door: Door<'_>,
     cx: &mut AsyncApp,
 ) {
+    cx.update(natives::serve);
     let mut seen = Seen::default();
     while let Some((request, reply)) = calls.next().await {
         let answer = answer(request, &door, &mut seen, cx).await;

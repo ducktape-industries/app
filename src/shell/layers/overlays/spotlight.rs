@@ -127,6 +127,16 @@ impl OverlayLayer {
         .flex()
         .flex_col()
         .min_h_0();
+        let native = || {
+            fields::inspected(
+                &input,
+                Some(Role::EditableComboBox),
+                Some("Search".into()),
+                false,
+                cx,
+            )
+        };
+        let combo = crate::a11y::inspected(combo, native);
         // the field's box, which wears its ring
         let header = div()
             .h(px(tall(56.)))

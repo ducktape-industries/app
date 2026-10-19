@@ -10,19 +10,52 @@
 use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live, Orientation};
 use gpui_kit::{
     AccessibleAction, App, Div, ElementId, FocusHandle, Hsla, InteractiveElement, Interactivity,
-    IntoElement, MouseButton, ParentElement as _, Role, SharedString, Stateful,
+    IntoElement, MouseButton, ParentElement, Role, SharedString, Stateful,
     StatefulInteractiveElement, Styled, Window, div,
 };
 
 /// A clickable element as assistive technology meets it: in the tree as
-/// `role`, called `name`.
-pub trait Control: StatefulInteractiveElement {
+/// `role`, called `name`; the inspector reads it so too ([`inspected`]).
+pub trait Control: StatefulInteractiveElement + ParentElement {
     fn control(self, role: Role, name: impl Into<SharedString>) -> Self {
-        self.role(role).aria_label(name)
+        let name = name.into();
+        let native = || Native {
+            role: Some(role),
+            label: Some(name.clone()),
+            ..Default::default()
+        };
+        inspected(self, native).role(role).aria_label(name)
     }
 }
 
-impl<E: StatefulInteractiveElement> Control for E {}
+impl<E: StatefulInteractiveElement + ParentElement> Control for E {}
+
+/// What typing into a native field calls: the text, as SetValue gives it.
+pub type SetValue = std::rc::Rc<dyn Fn(String, &mut Window, &mut App)>;
+
+/// What the inspector reads of one of the host's own elements: its role,
+/// its name, its text (none for a masked or private field), and for a
+/// field what typing calls.
+#[derive(Clone, Default)]
+pub struct Native {
+    pub role: Option<Role>,
+    pub label: Option<SharedString>,
+    pub value: Option<String>,
+    pub set_value: Option<SetValue>,
+}
+
+/// `element` as the inspector reads it: each draw while the door serves
+/// records what `native` says of it (`ax::natives`), under its own id.
+#[cfg(feature = "ax-door")]
+pub fn inspected<E: ParentElement>(element: E, native: impl FnOnce() -> Native) -> E {
+    element.child(crate::ax::natives::mark(native()))
+}
+
+/// `element` as it is: a build with no door has no inspector to read it.
+#[cfg(not(feature = "ax-door"))]
+pub fn inspected<E: ParentElement>(element: E, _: impl FnOnce() -> Native) -> E {
+    element
+}
 
 /// A control a keyboard reaches with Tab and presses with Enter or Space, as
 /// a pointer presses it. A pointer's press does not move focus to it, so

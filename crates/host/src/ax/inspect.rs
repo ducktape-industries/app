@@ -1,13 +1,16 @@
-//! The inspector's door (J-094): every view's tree as the host holds it,
-//! found, read and pressed by the path the host files a node under, and a
-//! window drawn to a picture. It reads no accessibility tree.
+//! The inspector's door: every view's tree as the host holds it and the
+//! shell's own controls as they were drawn, found, read and pressed by id,
+//! and a window drawn to a picture. It reads no accessibility tree.
 
+use super::natives::{self, Drawn};
 use super::{Door, Reply, deadline, passed, settled};
 use crate::render::{Inspected, ViewTree};
 use gpui_kit::{AnyWindowHandle, App, AsyncApp, Entity};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Instant;
 
 /// One seated view: the window it is drawn in, its program and its tree.
@@ -92,7 +95,8 @@ pub struct Wait {
     deadline_ms: u64,
 }
 
-/// A node as the door answers it: its id, `<window>:<view>/<path>`, and
+/// A node as the door answers it: its id, `<window>:<view>/<path>` for a
+/// view's node or `<window>:<element id>` for one of the shell's own, and
 /// what the renderer says of it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Node {
@@ -134,10 +138,7 @@ fn views(door: &Door<'_>, cx: &App) -> Vec<(String, AnyWindowHandle, Entity<View
     let mut seen: HashMap<(String, &'static str), usize> = HashMap::new();
     let mut named = Vec::new();
     for (handle, program, tree) in (door.views)(cx) {
-        let Some(window) = windows
-            .iter()
-            .find_map(|(name, _, other)| (*other == handle).then(|| name.clone()))
-        else {
+        let Some(window) = window_name(&windows, handle) else {
             continue;
         };
         let count = seen.entry((window.clone(), program)).or_default();
@@ -151,46 +152,134 @@ fn views(door: &Door<'_>, cx: &App) -> Vec<(String, AnyWindowHandle, Entity<View
     named
 }
 
-/// Every node of every view, once the seats have settled (or the client's
-/// deadline for its call passed).
+/// The door's name for the window `handle`, when it serves it.
+fn window_name(windows: &[super::Served], handle: AnyWindowHandle) -> Option<String> {
+    windows
+        .iter()
+        .find_map(|(name, _, other)| (*other == handle).then(|| name.clone()))
+}
+
+/// Where a node is: in a view's tree at a path, or a native element.
+enum Place {
+    View(AnyWindowHandle, Entity<ViewTree>, String),
+    Native(AnyWindowHandle, Rc<RefCell<Drawn>>),
+}
+
+/// What the inspector says of a native element.
+fn native(drawn: &Drawn) -> Inspected {
+    Inspected {
+        path: drawn.at.clone(),
+        kind: "native",
+        role: drawn.native.role.map(|role| format!("{role:?}")),
+        label: drawn.native.label.as_ref().map(ToString::to_string),
+        value: drawn.native.value.clone(),
+        presses: drawn.presses(),
+        ..Default::default()
+    }
+}
+
+/// Every node of every view, then every native element, each with its
+/// place; an id two of them share is in it twice.
+fn every(door: &Door<'_>, cx: &mut App) -> Vec<(Node, Place)> {
+    let mut nodes = Vec::new();
+    for (view, handle, tree) in views(door, cx) {
+        let read = handle.update(cx, |_, window, cx| tree.read(cx).inspect(window, cx));
+        for node in read.unwrap_or_default() {
+            let id = match node.path.is_empty() {
+                true => view.clone(),
+                false => format!("{view}/{}", node.path),
+            };
+            let place = Place::View(handle, tree.clone(), node.path.clone());
+            nodes.push((Node { id, node }, place));
+        }
+    }
+    let windows = (door.windows)(cx);
+    for drawn in natives::drawn(cx) {
+        let (handle, node) = {
+            let seen = drawn.borrow();
+            let Some(window) = window_name(&windows, seen.window) else {
+                continue;
+            };
+            let id = format!("{window}:{}", seen.id);
+            (
+                seen.window,
+                Node {
+                    id,
+                    node: native(&seen),
+                },
+            )
+        };
+        nodes.push((node, Place::Native(handle, drawn)));
+    }
+    nodes
+}
+
+/// Every node whose id no other node has, once the seats have settled (or
+/// the client's deadline for its call passed). A shared id names no one
+/// node, so neither is read; pressing it says which they are.
 async fn read(door: &Door<'_>, until: Option<Instant>, cx: &mut AsyncApp) -> Vec<Node> {
     settled(door, until, cx).await;
     cx.update(|cx| {
-        let mut nodes = Vec::new();
-        for (view, handle, tree) in views(door, cx) {
-            let read = handle.update(cx, |_, window, cx| tree.read(cx).inspect(window, cx));
-            for node in read.unwrap_or_default() {
-                let id = match node.path.is_empty() {
-                    true => view.clone(),
-                    false => format!("{view}/{}", node.path),
-                };
-                nodes.push(Node { id, node });
-            }
-        }
-        nodes
+        unshared(every(door, cx))
+            .into_iter()
+            .map(|(node, _)| node)
+            .collect()
     })
 }
 
-/// The view `id` is in and the node's path in it.
-fn target(
-    door: &Door<'_>,
-    id: &str,
-    cx: &App,
-) -> Option<(AnyWindowHandle, Entity<ViewTree>, String)> {
-    views(door, cx)
+/// The nodes whose id no other node has.
+fn unshared<T>(nodes: Vec<(Node, T)>) -> Vec<(Node, T)> {
+    let mut count: HashMap<String, usize> = HashMap::new();
+    for (node, _) in &nodes {
+        *count.entry(node.id.clone()).or_default() += 1;
+    }
+    nodes
         .into_iter()
-        .find_map(|(view, handle, tree)| {
-            let rest = id.strip_prefix(&view)?;
-            let path = match rest {
-                "" => "",
-                rest => rest.strip_prefix('/')?,
-            };
-            Some((handle, tree, path.to_owned()))
-        })
+        .filter(|(node, _)| count[&node.id] == 1)
+        .collect()
+}
+
+/// Where the one node `id` names is.
+fn target(door: &Door<'_>, id: &str, cx: &mut App) -> Result<Place, Reply> {
+    the_one(id, every(door, cx))
+}
+
+/// The one node of `nodes` that has `id`: 404 when none has it, 409
+/// naming each one when more than one does.
+fn the_one<T>(id: &str, nodes: Vec<(Node, T)>) -> Result<T, Reply> {
+    let mut named: Vec<_> = nodes
+        .into_iter()
+        .filter(|(node, _)| node.id == id)
+        .collect();
+    match named.len() {
+        0 => Err(missing(id)),
+        1 => Ok(named.remove(0).1),
+        _ => {
+            let nodes: Vec<_> = named
+                .iter()
+                .map(|(node, _)| {
+                    json!({
+                        "kind": node.node.kind,
+                        "path": node.node.path,
+                        "role": node.node.role,
+                        "label": node.node.label,
+                    })
+                })
+                .collect();
+            Err(Reply::new(
+                409,
+                json!({ "error": "more than one node has this id", "id": id, "nodes": nodes }),
+            ))
+        }
+    }
 }
 
 fn missing(id: &str) -> Reply {
     Reply::new(404, json!({ "error": "no such node", "id": id }))
+}
+
+fn refused((status, error): natives::Refused) -> Reply {
+    Reply::new(status, json!({ "error": error }))
 }
 
 /// Every node `find` names, in document order.
@@ -205,14 +294,19 @@ async fn found(door: &Door<'_>, find: Find, cx: &mut AsyncApp) -> Reply {
 
 async fn press(door: &Door<'_>, press: Press, cx: &mut AsyncApp) -> Reply {
     settled(door, None, cx).await;
-    let sent = cx.update(|cx| {
-        let (handle, tree, path) = target(door, &press.id, cx).ok_or_else(|| missing(&press.id))?;
-        handle
+    let sent = cx.update(|cx| match target(door, &press.id, cx)? {
+        Place::View(handle, tree, path) => handle
             .update(cx, |_, _, cx| {
                 tree.update(cx, |tree, cx| tree.inspect_press(&path, &press.press, cx))
             })
             .map_err(|_| missing(&press.id))?
-            .map_err(|error| Reply::new(400, json!({ "error": error })))
+            .map_err(|error| Reply::new(400, json!({ "error": error }))),
+        Place::Native(handle, drawn) => handle
+            .update(cx, |_, window, cx| {
+                natives::press(&drawn, &press.press, window, cx)
+            })
+            .map_err(|_| missing(&press.id))?
+            .map_err(refused),
     });
     if let Err(reply) = sent {
         return reply;
@@ -223,16 +317,21 @@ async fn press(door: &Door<'_>, press: Press, cx: &mut AsyncApp) -> Reply {
 
 async fn typed(door: &Door<'_>, typed: Type, cx: &mut AsyncApp) -> Reply {
     settled(door, None, cx).await;
-    let sent = cx.update(|cx| {
-        let (handle, tree, path) = target(door, &typed.id, cx).ok_or_else(|| missing(&typed.id))?;
-        handle
+    let sent = cx.update(|cx| match target(door, &typed.id, cx)? {
+        Place::View(handle, tree, path) => handle
             .update(cx, |_, window, cx| {
                 tree.update(cx, |tree, cx| {
                     tree.inspect_type(&path, &typed.text, window, cx)
                 })
             })
             .map_err(|_| missing(&typed.id))?
-            .map_err(|error| Reply::new(400, json!({ "error": error })))
+            .map_err(|error| Reply::new(400, json!({ "error": error }))),
+        Place::Native(handle, drawn) => handle
+            .update(cx, |_, window, cx| {
+                natives::type_into(&drawn, &typed.text, window, cx)
+            })
+            .map_err(|_| missing(&typed.id))?
+            .map_err(refused),
     });
     if let Err(reply) = sent {
         return reply;
@@ -366,5 +465,28 @@ mod tests {
         assert!(!find(r#"{"role": "Link"}"#));
         assert!(!find(r#"{"label": "send", "text": "send"}"#));
         assert!(!find(r#"{"id": "console:chat/composer"}"#));
+    }
+
+    /// An id two nodes share is read as neither, and asking for it names
+    /// both; an id one node has finds it.
+    #[test]
+    fn a_shared_id_names_no_one_node() {
+        let mut chat = node("console:send", "Button", "Send");
+        chat.node.path = "chat.send".into();
+        let mut shell = node("console:send", "Button", "Send it");
+        shell.node.path = "desk.send".into();
+        let close = node("console:close", "Button", "Close");
+        let nodes = || vec![(chat.clone(), 1), (close.clone(), 2), (shell.clone(), 3)];
+        let read: Vec<_> = unshared(nodes()).into_iter().map(|(_, at)| at).collect();
+        assert_eq!(read, [2]);
+        assert_eq!(the_one("console:close", nodes()).ok(), Some(2));
+        assert_eq!(the_one("console:gone", nodes()).err().unwrap().status, 404);
+        let shared = the_one("console:send", nodes()).err().unwrap();
+        assert_eq!(shared.status, 409);
+        assert!(
+            shared.body.contains("chat.send") && shared.body.contains("desk.send"),
+            "{}",
+            shared.body
+        );
     }
 }
