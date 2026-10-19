@@ -1129,10 +1129,19 @@ impl Windows {
         self.open_link_into(link, opens, cx);
     }
 
-    pub(crate) fn launched(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+    pub(crate) fn launched(&mut self, launch: crate::profile::Launch, cx: &mut Context<Self>) {
         cx.activate(true);
         self.raise_console(cx);
-        for link in args {
+        if let Some(handle) = self.console.and_then(|key| self.handles.get(&key).copied()) {
+            let token = launch.activation.clone();
+            cx.defer(move |cx| {
+                let told = handle.update(cx, |_, window, _| windows::activate(window, token.as_deref()));
+                if let Ok(Err(error)) = told {
+                    tracing::warn!(target: "ducktape::app", reason = "activate_failed", %error, "the console was not brought to the front");
+                }
+            });
+        }
+        for link in launch.args {
             self.open_link(&link, None, cx);
         }
     }

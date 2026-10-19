@@ -1579,20 +1579,31 @@ fn a_link_a_later_launch_hands_over_reaches_its_pane_whole(cx: &mut TestAppConte
     listed(&app, &[PROGRAM], cx);
     let desk = desk_of(&app, console, cx);
     let dir = tempfile::tempdir().unwrap();
-    let crate::profile::Claim::Held(profile) = crate::profile::claim_at(dir.path(), &[]).unwrap()
+    let first = crate::profile::Launch::default();
+    let crate::profile::Claim::Held(profile) =
+        crate::profile::claim_at(dir.path(), &first).unwrap()
     else {
         panic!("the first launch holds the profile");
     };
     let (handed, launches) = std::sync::mpsc::channel();
-    profile.serve(move |args| handed.send(args).is_ok());
-    let link = format!("duck://{PROGRAM}/channel-7/thread/42");
-    let later = crate::profile::claim_at(dir.path(), std::slice::from_ref(&link)).unwrap();
-    assert!(matches!(later, crate::profile::Claim::HandedOver));
-    let args = launches.recv().unwrap();
-    assert_eq!(args, [link]);
+    profile.serve(move |launch| handed.send(launch).is_ok());
+    let token = "launcher-7_TIME4242";
+    let later = crate::profile::Launch {
+        args: vec![format!("duck://{PROGRAM}/channel-7/thread/42")],
+        activation: Some(token.into()),
+    };
+    let claim = crate::profile::claim_at(dir.path(), &later).unwrap();
+    assert!(matches!(claim, crate::profile::Claim::HandedOver));
+    let launch = launches.recv().unwrap();
+    assert_eq!(launch, later);
     app.windows
-        .update(cx, |windows, cx| windows.launched(args, cx));
+        .update(cx, |windows, cx| windows.launched(launch, cx));
     cx.run_until_parked();
+    let activated = crate::shell::windows::ACTIVATED.with_borrow(|told| told.clone());
+    assert_eq!(
+        activated.last().map(|(_, told)| told.as_deref()),
+        Some(Some(token))
+    );
     let layout = desk.read_with(cx, |desk, _| desk.get().clone());
     let pane = &layout.panes[layout.focused];
     assert_eq!(pane.program, PROGRAM);

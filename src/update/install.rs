@@ -165,7 +165,7 @@ fn install_linux(layout: &Layout, own: &Path, sha: Sha) -> Result<(), Refusal> {
     super::replace_symlink(&layout.current_link(), &Layout::link_target(sha))?;
     super::remove_leftover(&layout.previous_link())?;
     keep_only(&layout.releases_dir(), Some(sha))?;
-    let entry = DESKTOP_TEMPLATE.replace("@EXEC@", &exec_argument(&layout.app_exe()));
+    let entry = desktop_entry(&layout.app_exe());
     super::persist(&layout.desktop_entry(), entry.as_bytes())?;
     super::persist(&layout.icon(), ICON)
 }
@@ -258,6 +258,10 @@ fn keep_only(releases_dir: &Path, keep: Option<Sha>) -> Result<(), Refusal> {
 // ponytail: GLib checks the program exists before it expands `%%`, so a data
 // home holding `%` stays hidden on GLib desktops however it is spelled; the
 // spec's `%%` is kept for the launchers that follow it.
+fn desktop_entry(exe: &Path) -> String {
+    DESKTOP_TEMPLATE.replace("Exec=@EXEC@", &format!("Exec={}", exec_argument(exe)))
+}
+
 fn exec_argument(path: &Path) -> String {
     let mut argument = String::from("\"");
     for c in path.to_string_lossy().chars() {
@@ -284,8 +288,15 @@ mod tests {
     fn the_desktop_template_carries_the_exec_placeholder_and_the_app_id() {
         assert!(DESKTOP_TEMPLATE.contains("Exec=@EXEC@ %u"));
         assert!(DESKTOP_TEMPLATE.contains("StartupWMClass=dev.ducktape.app"));
+        assert!(DESKTOP_TEMPLATE.contains("StartupNotify=true"));
         assert!(DESKTOP_TEMPLATE.contains("MimeType=x-scheme-handler/duck;"));
         assert!(DESKTOP_TEMPLATE.contains("Icon=ducktape"));
+        let entry = desktop_entry(Path::new("/opt/ducktape-app"));
+        assert!(entry.contains("Exec=\"/opt/ducktape-app\" %u"), "{entry}");
+        assert!(
+            entry.contains("substitutes @EXEC@ with"),
+            "the comment was rewritten"
+        );
     }
 
     #[test]

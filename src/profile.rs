@@ -16,6 +16,7 @@ const LOCK: &str = "lock";
 const RUN: &str = "run";
 const SOCKET: &str = "app.sock";
 const TAKEN: &[u8] = b"taken";
+const TAKEN_WHOLE: &[u8] = b"taken whole";
 
 static HELD: Mutex<Vec<File>> = Mutex::new(Vec::new());
 
@@ -29,16 +30,29 @@ pub(crate) struct Profile {
     listener: Option<UnixListener>,
 }
 
-pub(crate) fn claim() -> Result<Claim, String> {
-    let dir = crate::backend::config_dir()?;
-    let args: Vec<String> = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
-    claim_at(&dir, &args).map_err(|error| format!("{}: {error}", dir.display()))
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Launch {
+    pub(crate) args: Vec<String>,
+    pub(crate) activation: Option<String>,
 }
 
-pub(crate) fn claim_at(dir: &Path, args: &[String]) -> std::io::Result<Claim> {
+const ACTIVATION: [&str; 2] = ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"];
+
+pub(crate) fn claim() -> Result<Claim, String> {
+    let dir = crate::backend::config_dir()?;
+    let launch = Launch {
+        args: std::env::args_os()
+            .skip(1)
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect(),
+        activation: ACTIVATION
+            .into_iter()
+            .find_map(|name| std::env::var(name).ok().filter(|token| !token.is_empty())),
+    };
+    claim_at(&dir, &launch).map_err(|error| format!("{}: {error}", dir.display()))
+}
+
+pub(crate) fn claim_at(dir: &Path, launch: &Launch) -> std::io::Result<Claim> {
     std::fs::create_dir_all(dir)?;
     let lock = File::options()
         .create(true)
@@ -50,7 +64,7 @@ pub(crate) fn claim_at(dir: &Path, args: &[String]) -> std::io::Result<Claim> {
         Err(TryLockError::WouldBlock) => {}
         Err(TryLockError::Error(error)) => return Err(error),
     }
-    if hand_over(&dir.join(RUN).join(SOCKET), args) {
+    if hand_over(&dir.join(RUN).join(SOCKET), launch) {
         info!(target: TARGET, event = "profile_handed_over", "the copy running this profile took this launch");
         return Ok(Claim::HandedOver);
     }
@@ -59,18 +73,36 @@ pub(crate) fn claim_at(dir: &Path, args: &[String]) -> std::io::Result<Claim> {
     Ok(Claim::Held(Profile::bind(dir, lock)))
 }
 
-fn hand_over(socket: &Path, args: &[String]) -> bool {
-    let Ok(mut stream) = UnixStream::connect(socket) else {
-        return false;
-    };
-    let Ok(asked) = serde_json::to_vec(args) else {
-        return false;
-    };
+fn hand_over(socket: &Path, launch: &Launch) -> bool {
+    match ask(socket, launch) {
+        Some(said) if said == TAKEN_WHOLE => true,
+        Some(said) if said == TAKEN => ask(socket, &launch.args).is_some_and(|said| said == TAKEN),
+        _ => false,
+    }
+}
+
+fn ask(socket: &Path, asked: &impl serde::Serialize) -> Option<Vec<u8>> {
+    let mut stream = UnixStream::connect(socket).ok()?;
+    let asked = serde_json::to_vec(asked).ok()?;
     let mut said = Vec::new();
-    stream.write_all(&asked).is_ok()
-        && stream.shutdown(Shutdown::Write).is_ok()
-        && stream.read_to_end(&mut said).is_ok()
-        && said == TAKEN
+    stream.write_all(&asked).ok()?;
+    stream.shutdown(Shutdown::Write).ok()?;
+    stream.read_to_end(&mut said).ok()?;
+    Some(said)
+}
+
+fn read_launch(asked: &[u8]) -> Option<(Launch, &'static [u8])> {
+    if let Ok(launch) = serde_json::from_slice::<Launch>(asked) {
+        return Some((launch, TAKEN_WHOLE));
+    }
+    let args = serde_json::from_slice::<Vec<String>>(asked).ok()?;
+    Some((
+        Launch {
+            args,
+            activation: None,
+        },
+        TAKEN,
+    ))
 }
 
 impl Profile {
@@ -91,7 +123,7 @@ impl Profile {
         Self { lock, listener }
     }
 
-    pub(crate) fn serve(self, deliver: impl Fn(Vec<String>) -> bool + Send + 'static) {
+    pub(crate) fn serve(self, deliver: impl Fn(Launch) -> bool + Send + 'static) {
         let Self { lock, listener } = self;
         HELD.lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -108,7 +140,7 @@ impl Profile {
     }
 }
 
-fn serve_on(listener: &UnixListener, deliver: &dyn Fn(Vec<String>) -> bool) {
+fn serve_on(listener: &UnixListener, deliver: &dyn Fn(Launch) -> bool) {
     for stream in listener.incoming() {
         let mut stream = match stream {
             Ok(stream) => stream,
@@ -121,9 +153,13 @@ fn serve_on(listener: &UnixListener, deliver: &dyn Fn(Vec<String>) -> bool) {
         if stream.read_to_end(&mut asked).is_err() {
             continue;
         }
-        let args = serde_json::from_slice(&asked).unwrap_or_default();
-        if deliver(args) {
-            let _ = stream.write_all(TAKEN);
+        let Some((launch, answer)) = read_launch(&asked) else {
+            warn!(target: TARGET, event = "profile_unread", bytes = asked.len(), "a later launch said what this copy can't read: the console comes forward, and the launch is not taken");
+            deliver(Launch::default());
+            continue;
+        };
+        if deliver(launch) {
+            let _ = stream.write_all(answer);
         }
     }
 }
@@ -144,14 +180,17 @@ mod tests {
     #[test]
     fn a_second_launch_hands_its_arguments_to_the_copy_holding_the_profile() {
         let dir = tempfile::tempdir().unwrap();
-        let first = held(claim_at(dir.path(), &[]).unwrap());
+        let first = held(claim_at(dir.path(), &Launch::default()).unwrap());
         let (arrived, arrivals) = std::sync::mpsc::channel();
         let listener = first.listener.as_ref().unwrap().try_clone().unwrap();
-        std::thread::spawn(move || serve_on(&listener, &|args| arrived.send(args).is_ok()));
-        let link = "duck://garage/chat/dm 1".to_string();
-        let second = claim_at(dir.path(), std::slice::from_ref(&link)).unwrap();
+        std::thread::spawn(move || serve_on(&listener, &|launch| arrived.send(launch).is_ok()));
+        let launch = Launch {
+            args: vec!["duck://garage/chat/dm 1".into()],
+            activation: Some("ducktape-1_TIME42".into()),
+        };
+        let second = claim_at(dir.path(), &launch).unwrap();
         assert!(matches!(second, Claim::HandedOver));
-        assert_eq!(arrivals.recv().unwrap(), vec![link]);
+        assert_eq!(arrivals.recv().unwrap(), launch);
         let lock = File::open(dir.path().join(LOCK)).unwrap();
         assert!(
             matches!(lock.try_lock(), Err(TryLockError::WouldBlock)),
@@ -161,12 +200,79 @@ mod tests {
         lock.try_lock().unwrap();
     }
 
+    fn served(first: &Profile) -> std::sync::mpsc::Receiver<Launch> {
+        let (arrived, arrivals) = std::sync::mpsc::channel();
+        let listener = first.listener.as_ref().unwrap().try_clone().unwrap();
+        std::thread::spawn(move || serve_on(&listener, &|launch| arrived.send(launch).is_ok()));
+        arrivals
+    }
+
+    fn said(socket: &Path, asked: &[u8]) -> Vec<u8> {
+        let mut stream = UnixStream::connect(socket).unwrap();
+        stream.write_all(asked).unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+        let mut said = Vec::new();
+        stream.read_to_end(&mut said).unwrap();
+        said
+    }
+
+    #[test]
+    fn an_earlier_releases_launch_hands_its_link_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = held(claim_at(dir.path(), &Launch::default()).unwrap());
+        let arrivals = served(&first);
+        let socket = dir.path().join(RUN).join(SOCKET);
+        assert_eq!(said(&socket, br#"["duck://garage/chat"]"#), TAKEN);
+        let launch = arrivals.recv().unwrap();
+        assert_eq!(launch.args, ["duck://garage/chat"]);
+        assert_eq!(launch.activation, None);
+    }
+
+    #[test]
+    fn a_launch_hands_its_link_to_an_earlier_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = held(claim_at(dir.path(), &Launch::default()).unwrap());
+        let (arrived, arrivals) = std::sync::mpsc::channel();
+        let listener = first.listener.as_ref().unwrap().try_clone().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut asked = Vec::new();
+                stream.read_to_end(&mut asked).unwrap();
+                let args: Vec<String> = serde_json::from_slice(&asked).unwrap_or_default();
+                arrived.send(args).unwrap();
+                stream.write_all(TAKEN).unwrap();
+            }
+        });
+        let launch = Launch {
+            args: vec!["duck://garage/chat".into()],
+            activation: Some("x_TIME1".into()),
+        };
+        assert!(matches!(
+            claim_at(dir.path(), &launch).unwrap(),
+            Claim::HandedOver
+        ));
+        assert_eq!(arrivals.recv().unwrap(), Vec::<String>::new());
+        assert_eq!(arrivals.recv().unwrap(), launch.args);
+    }
+
+    #[test]
+    fn a_launch_this_copy_cannot_read_raises_it_and_is_not_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = held(claim_at(dir.path(), &Launch::default()).unwrap());
+        let arrivals = served(&first);
+        let socket = dir.path().join(RUN).join(SOCKET);
+        assert_ne!(said(&socket, b"{\"args\": 7}"), TAKEN_WHOLE);
+        assert_eq!(arrivals.recv().unwrap(), Launch::default());
+    }
+
     #[test]
     fn a_launch_nothing_takes_waits_for_the_holder_and_then_holds_the_profile() {
         let dir = tempfile::tempdir().unwrap();
-        let first = held(claim_at(dir.path(), &[]).unwrap());
+        let first = held(claim_at(dir.path(), &Launch::default()).unwrap());
         let path = dir.path().to_owned();
-        let waiting = std::thread::spawn(move || held(claim_at(&path, &[]).unwrap()));
+        let waiting =
+            std::thread::spawn(move || held(claim_at(&path, &Launch::default()).unwrap()));
         drop(first);
         let second = waiting.join().unwrap();
         assert!(second.listener.is_some(), "it serves the launches after it");
@@ -177,11 +283,12 @@ mod tests {
     #[test]
     fn a_copy_that_stops_taking_launches_lets_the_launch_wait_for_the_profile() {
         let dir = tempfile::tempdir().unwrap();
-        let first = held(claim_at(dir.path(), &[]).unwrap());
+        let first = held(claim_at(dir.path(), &Launch::default()).unwrap());
         let listener = first.listener.as_ref().unwrap().try_clone().unwrap();
         std::thread::spawn(move || serve_on(&listener, &|_| false));
         let path = dir.path().to_owned();
-        let waiting = std::thread::spawn(move || held(claim_at(&path, &[]).unwrap()));
+        let waiting =
+            std::thread::spawn(move || held(claim_at(&path, &Launch::default()).unwrap()));
         drop(first);
         waiting.join().unwrap();
     }
@@ -189,10 +296,10 @@ mod tests {
     #[test]
     fn a_socket_left_by_a_copy_that_is_gone_is_replaced() {
         let dir = tempfile::tempdir().unwrap();
-        let first = held(claim_at(dir.path(), &[]).unwrap());
+        let first = held(claim_at(dir.path(), &Launch::default()).unwrap());
         drop(first);
         assert!(dir.path().join(RUN).join(SOCKET).exists());
-        let second = held(claim_at(dir.path(), &[]).unwrap());
+        let second = held(claim_at(dir.path(), &Launch::default()).unwrap());
         assert!(second.listener.is_some());
         let mode = std::fs::metadata(dir.path().join(RUN))
             .unwrap()

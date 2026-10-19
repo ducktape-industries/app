@@ -97,15 +97,15 @@ fn start(boot: Boot, os: Arc<dyn OsServices>, profile: Option<crate::profile::Pr
             }
         })
         .detach();
-        let (handed, mut launches) = futures::channel::mpsc::unbounded::<Vec<String>>();
+        let (handed, mut launches) = futures::channel::mpsc::unbounded::<crate::profile::Launch>();
         if let Some(profile) = profile {
-            profile.serve(move |args| handed.unbounded_send(args).is_ok());
+            profile.serve(move |launch| handed.unbounded_send(launch).is_ok());
         }
         let launch_windows = windows.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
-            while let Some(args) = launches.next().await {
+            while let Some(launch) = launches.next().await {
                 if launch_windows
-                    .update(cx, |windows, cx| windows.launched(args, cx))
+                    .update(cx, |windows, cx| windows.launched(launch, cx))
                     .is_err()
                 {
                     break;

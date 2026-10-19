@@ -158,6 +158,29 @@ pub(in crate::shell) fn keep_above(window: &gpui_kit::Window, above: bool) -> Re
 /// macOS: `window` on every Space and over another app's full screen, as
 /// a floating call window is (a view's float). Elsewhere a window manager
 /// keeps a window above on every workspace already, or not at all.
+pub(in crate::shell) fn activate(
+    window: &gpui_kit::Window,
+    token: Option<&str>,
+) -> Result<(), String> {
+    use raw_window_handle::HasWindowHandle;
+    let raw = match HasWindowHandle::window_handle(window) {
+        Ok(handle) => handle.as_raw(),
+        #[cfg(test)]
+        Err(raw_window_handle::HandleError::NotSupported) => {
+            let id = window.window_handle().window_id();
+            ACTIVATED.with_borrow_mut(|told| told.push((id, token.map(str::to_owned))));
+            return Ok(());
+        }
+        Err(error) => return Err(format!("no native window: {error}")),
+    };
+    #[cfg(target_os = "linux")]
+    if let raw_window_handle::RawWindowHandle::Xcb(handle) = raw {
+        return x11_activate(window, handle.window.get(), token);
+    }
+    let _ = (raw, token);
+    Ok(())
+}
+
 pub(in crate::shell) fn join_all_spaces(window: &gpui_kit::Window) {
     #[cfg(target_os = "macos")]
     {
@@ -191,6 +214,12 @@ pub(in crate::shell) fn join_all_spaces(window: &gpui_kit::Window) {
     }
     #[cfg(not(target_os = "macos"))]
     let _ = window;
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(in crate::shell) static ACTIVATED: std::cell::RefCell<Vec<(gpui_kit::WindowId, Option<String>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
@@ -236,9 +265,102 @@ x11rb::atom_manager! {
 /// map included). The window manager carries it out.
 #[cfg(target_os = "linux")]
 fn x11_keep_above(window: &gpui_kit::Window, id: u32, above: bool) -> Result<(), String> {
+    use x11rb::protocol::xproto::EventMask;
+    x11_send(window, |xcb| {
+        let said = |error: &dyn std::fmt::Display| error.to_string();
+        let atoms = AboveAtoms::new(xcb)
+            .map_err(|error| said(&error))?
+            .reply()
+            .map_err(|error| said(&error))?;
+        let request = above_request(id, atoms._NET_WM_STATE, atoms._NET_WM_STATE_ABOVE, above);
+        let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+        Ok(vec![(mask, request)])
+    })
+}
+
+#[cfg(target_os = "linux")]
+x11rb::atom_manager! {
+    ActiveAtoms: ActiveAtomsCookie {
+        _NET_ACTIVE_WINDOW,
+        _NET_STARTUP_INFO_BEGIN,
+        _NET_STARTUP_INFO,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn x11_activate(window: &gpui_kit::Window, id: u32, token: Option<&str>) -> Result<(), String> {
+    use x11rb::protocol::xproto::EventMask;
+    x11_send(window, |xcb| {
+        let said = |error: &dyn std::fmt::Display| error.to_string();
+        let atoms = ActiveAtoms::new(xcb)
+            .map_err(|error| said(&error))?
+            .reply()
+            .map_err(|error| said(&error))?;
+        let time = token.and_then(startup_time).unwrap_or(x11rb::CURRENT_TIME);
+        let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+        let mut sent = vec![(mask, active_request(id, atoms._NET_ACTIVE_WINDOW, time))];
+        let ended = token.into_iter().flat_map(startup_removed).enumerate();
+        sent.extend(ended.map(|(at, chunk)| {
+            let kind = match at {
+                0 => atoms._NET_STARTUP_INFO_BEGIN,
+                _ => atoms._NET_STARTUP_INFO,
+            };
+            let message = x11rb::protocol::xproto::ClientMessageEvent::new(8, id, kind, chunk);
+            (EventMask::PROPERTY_CHANGE, message)
+        }));
+        Ok(sent)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn startup_time(id: &str) -> Option<u32> {
+    id.rsplit_once("_TIME")?.1.parse().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn startup_removed(id: &str) -> Vec<[u8; 20]> {
+    let quoted = id.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut message = format!("remove: ID=\"{quoted}\"").into_bytes();
+    message.push(0);
+    message
+        .chunks(20)
+        .map(|chunk| {
+            let mut padded = [0; 20];
+            padded[..chunk.len()].copy_from_slice(chunk);
+            padded
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn active_request(
+    id: u32,
+    net_active_window: u32,
+    time: u32,
+) -> x11rb::protocol::xproto::ClientMessageEvent {
+    const APPLICATION: u32 = 1;
+    x11rb::protocol::xproto::ClientMessageEvent::new(
+        32,
+        id,
+        net_active_window,
+        [APPLICATION, time, 0, 0, 0],
+    )
+}
+
+#[cfg(target_os = "linux")]
+type Requests = Vec<(
+    x11rb::protocol::xproto::EventMask,
+    x11rb::protocol::xproto::ClientMessageEvent,
+)>;
+
+#[cfg(target_os = "linux")]
+fn x11_send(
+    window: &gpui_kit::Window,
+    requests: impl FnOnce(&x11rb::xcb_ffi::XCBConnection) -> Result<Requests, String>,
+) -> Result<(), String> {
     use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
     use x11rb::connection::Connection as _;
-    use x11rb::protocol::xproto::{ConnectionExt as _, EventMask};
+    use x11rb::protocol::xproto::ConnectionExt as _;
     let said = |error: &dyn std::fmt::Display| error.to_string();
     let display = HasDisplayHandle::display_handle(window).map_err(|error| said(&error))?;
     let RawDisplayHandle::Xcb(display) = display.as_raw() else {
@@ -256,17 +378,14 @@ fn x11_keep_above(window: &gpui_kit::Window, id: u32, above: bool) -> Result<(),
         .and_then(|screen| xcb.setup().roots.get(screen))
         .ok_or("no such screen")?
         .root;
-    let atoms = AboveAtoms::new(&xcb)
-        .map_err(|error| said(&error))?
-        .reply()
-        .map_err(|error| said(&error))?;
-    let request = above_request(id, atoms._NET_WM_STATE, atoms._NET_WM_STATE_ABOVE, above);
-    let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
-    // checked: a round trip, which also sends it
-    xcb.send_event(false, root, mask, request)
-        .map_err(|error| said(&error))?
-        .check()
-        .map_err(|error| said(&error))
+    for (mask, request) in requests(&xcb)? {
+        // checked: a round trip, which also sends it
+        xcb.send_event(false, root, mask, request)
+            .map_err(|error| said(&error))?
+            .check()
+            .map_err(|error| said(&error))?;
+    }
+    Ok(())
 }
 
 /// EWMH's request that window `id` gain (`above`) or lose
@@ -390,6 +509,29 @@ mod tests {
         assert_eq!(on.data.as_data32(), [1, above, 0, 1, 0]);
         let off = above_request(window, state, above, false);
         assert_eq!(off.data.as_data32(), [0, above, 0, 1, 0]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_handed_over_launch_activates_at_its_startup_time_and_ends_its_startup() {
+        let active = active_request(
+            0x0420_0007,
+            303,
+            startup_time("gnome-7-x_TIME4242").unwrap(),
+        );
+        assert_eq!(active.data.as_data32(), [1, 4242, 0, 0, 0]);
+        assert_eq!(startup_time("no-time-here"), None);
+        let chunks = startup_removed("a\"b");
+        let joined: Vec<u8> = chunks.concat();
+        let said = joined.split(|byte| *byte == 0).next().unwrap();
+        assert_eq!(said, br#"remove: ID="a\"b""#);
+        assert_eq!(chunks.len(), 1);
+        let long = startup_removed(&"x".repeat(30));
+        assert_eq!(long.len(), 3);
+        assert_eq!(
+            long.concat().iter().filter(|byte| **byte == 0).count(),
+            60 - 43
+        );
     }
 
     /// A view's first float sits in its display's bottom-right corner, 24
