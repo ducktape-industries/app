@@ -1572,9 +1572,6 @@ fn a_switch_takes_the_followed_chains_log_in_memory(cx: &mut TestAppContext) {
     );
 }
 
-/// A later launch of this profile hands its link over (a notice's, naming a
-/// room and a thread in it): the console comes forward, and the pane the
-/// link opens is handed the whole route, the thread with its room.
 #[gpui_kit::test]
 fn a_link_a_later_launch_hands_over_reaches_its_pane_whole(cx: &mut TestAppContext) {
     const PROGRAM: &str = "handed-over-link";

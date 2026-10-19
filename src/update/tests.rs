@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ducktape_updater::layout::Channel;
 use ducktape_updater::release::signing_key_from_hex;
@@ -220,8 +220,25 @@ fn publish(bucket: &Bucket, channel: Channel, sequence: u64, release: &[Item]) -
     sha
 }
 
+static STARTS: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    static STARTING: std::cell::RefCell<Option<MutexGuard<'static, ()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn one_at_a_time() {
+    STARTING.with(|starting| {
+        let mut starting = starting.borrow_mut();
+        if starting.is_none() {
+            *starting = Some(STARTS.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+    });
+}
+
 /// A scratch install: every root under one temp dir.
 fn rig() -> (tempfile::TempDir, Layout) {
+    one_at_a_time();
     let root = tempfile::tempdir().unwrap();
     let layout = Layout {
         updates: root.path().join("cfg/ducktape/updates"),
@@ -455,6 +472,7 @@ fn a_self_check_is_never_waited_on_past_its_time() {
     use std::time::{Duration, Instant};
 
     use super::boot::answers_version;
+    one_at_a_time();
     let root = tempfile::tempdir().unwrap();
     let release = |name: &str, body: &str| {
         let exe = root.path().join(name);

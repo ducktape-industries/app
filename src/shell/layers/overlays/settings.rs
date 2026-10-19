@@ -1003,7 +1003,7 @@ impl OverlayLayer {
         let log = crate::backend::app_log_path()
             .map(|path| path.display().to_string())
             .unwrap_or_default();
-        let mut rows = vec![
+        let rows = vec![
             heading("About", ink),
             sans(400, 22.)
                 .pb(px(12.))
@@ -1017,8 +1017,9 @@ impl OverlayLayer {
             line("Log", log, ink),
         ];
         #[cfg(all(feature = "call", target_os = "linux"))]
-        {
+        let rows = {
             use crate::backend::openh264;
+            let mut rows = rows;
             let on = openh264::enabled();
             let switch = self.switch(
                 "about/openh264",
@@ -1046,7 +1047,8 @@ impl OverlayLayer {
                     )),
             );
             rows.push(line("H.264 licence", openh264::license_path(), ink));
-        }
+            rows
+        };
         rows
     }
 }

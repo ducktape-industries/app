@@ -18,11 +18,17 @@ const APP: &str = env!("CARGO_BIN_EXE_ducktape-app");
 /// A scratch home: the app's config, data, state and cache under one dir.
 struct Rig {
     root: tempfile::TempDir,
+    _alone: std::sync::MutexGuard<'static, ()>,
 }
+
+static STARTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Rig {
     fn new() -> Rig {
         Rig {
+            _alone: STARTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             root: tempfile::TempDir::new_in(env!("CARGO_TARGET_TMPDIR")).unwrap(),
         }
     }

@@ -46,7 +46,7 @@ pub(super) enum Boot {
     /// Not an installed app: no update state was read or written.
     Off,
     /// An installed app whose updater another of its processes runs: this
-    /// one goes on with it off until that one lets it go, and touched nothing.
+    /// one goes on with it off, and touched nothing.
     Elsewhere,
     /// This image is the release that should run: the app goes on, its
     /// updater armed with this phase.

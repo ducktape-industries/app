@@ -1128,9 +1128,6 @@ impl Windows {
         self.open_link_into(link, opens, cx);
     }
 
-    /// A later launch of this profile, handed over (`profile`): the console
-    /// forward, and each of its arguments opened as a link from outside is,
-    /// its whole route handed to the pane it opens.
     pub(crate) fn launched(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
         self.raise_console(cx);
         for link in args {
