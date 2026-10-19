@@ -19,6 +19,8 @@ pub(crate) struct KeptWindow {
     pub(crate) state: State,
     pub(crate) frame: Frame,
     pub(crate) desk: KeptDesk,
+    #[serde(default)]
+    pub(crate) on_top: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +51,7 @@ pub(crate) struct KeptPane {
 pub(crate) struct Open<'a> {
     pub(crate) console: bool,
     pub(crate) floated: bool,
+    pub(crate) on_top: bool,
     pub(crate) bounds: WindowBounds,
     pub(crate) layout: &'a Layout,
 }
@@ -69,6 +72,7 @@ impl Arrangement {
                         state,
                         frame,
                         desk,
+                        on_top: open.on_top,
                     });
                 }
             }

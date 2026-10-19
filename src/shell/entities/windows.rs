@@ -66,14 +66,14 @@ pub(crate) struct Windows {
     /// The OS window in front, when it is one of ours.
     front: Option<WindowKey>,
     /// The windows kept above other apps' windows, once the platform took
-    /// it (`set_on_top`). Not saved: every window opens among the others.
+    /// it (`set_on_top`).
     on_top: BTreeSet<WindowKey>,
     /// Keep on Top asked of a window still opening: told once it has.
     pending_on_top: BTreeMap<WindowKey, bool>,
     /// The windows a view floated its pane into (`float`).
     floats: BTreeMap<WindowKey, Floated>,
     /// Where each program's float was last, for its next float in this
-    /// run. Not saved, as Keep on Top is not.
+    /// run. Not saved.
     left: BTreeMap<&'static str, Bounds<Pixels>>,
     linked: BTreeMap<u64, (&'static str, Option<String>)>,
     /// The macOS Window menu's Keep on Top check, as last set: the front
@@ -687,6 +687,7 @@ impl Windows {
             false => self.on_top.remove(&key),
         };
         self.sync_menu(cx);
+        self.keep(cx);
         // `DeskSeats` hears it: a floated view's pin follows
         cx.notify();
     }
@@ -1539,6 +1540,7 @@ impl Windows {
         for window in arrangement.windows {
             let bounds = Some(window.bounds())
                 .filter(|bounds| arrangement::on_a_display(bounds.get_bounds(), &displays));
+            let on_top = window.on_top && windows::can_keep_above(cx);
             let layout = window.desk.layout();
             let routes: Vec<(&'static str, u64, String)> = layout
                 .panes
@@ -1553,6 +1555,9 @@ impl Windows {
                             self.placed.insert(console, bounds);
                         }
                     }
+                    if let Some(console) = self.console.filter(|_| on_top) {
+                        self.set_on_top(console, true, cx);
+                    }
                     self.console_own().map(|own| own.desk.clone())
                 }
                 false => {
@@ -1560,6 +1565,9 @@ impl Windows {
                         continue;
                     };
                     let key = self.open_at(WindowKind::View { program }, bounds, None, cx);
+                    if on_top {
+                        self.set_on_top(key, true, cx);
+                    }
                     self.by_window.get(&key).map(|own| own.desk.clone())
                 }
             };
@@ -1580,6 +1588,7 @@ impl Windows {
             Some(arrangement::Open {
                 console: self.console == Some(*key),
                 floated: self.floats.contains_key(key),
+                on_top: self.on_top.contains(key),
                 bounds: *self.placed.get(key)?,
                 layout: own.desk.read(cx).get(),
             })

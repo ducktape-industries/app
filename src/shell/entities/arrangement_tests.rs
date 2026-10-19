@@ -148,6 +148,17 @@ fn a_restart_opens_the_windows_it_quit_with(cx_a: &mut TestAppContext, cx_b: &mu
     let (console_at, popped_at) = (at(60., 40., 1200., 780.), at(980., 200., 600., 500.));
     place(&before, console, console_at, cx_a);
     place(&before, popped, popped_at, cx_a);
+    before
+        .windows
+        .update(cx_a, |windows, cx| windows.set_on_top(popped, true, cx));
+    cx_a.run_until_parked();
+    let on_top = |app: &Entities, key, cx: &TestAppContext| {
+        app.windows.read_with(cx, |windows, _| windows.on_top(key))
+    };
+    assert!(
+        on_top(&before, popped, cx_a),
+        "the platform took Keep on Top"
+    );
     let kept = (shape(&before, console, cx_a), shape(&before, popped, cx_a));
     assert_eq!(kept.0.0.len(), 2, "two panes on the desk");
     before.windows.update(cx_a, |windows, cx| windows.quit(cx));
@@ -170,6 +181,11 @@ fn a_restart_opens_the_windows_it_quit_with(cx_a: &mut TestAppContext, cx_b: &mu
         "each pane's view is handed the room it showed"
     );
     assert_eq!(routed(&after, popped, cx_b), [Some("home/tech".to_owned())]);
+    assert!(
+        on_top(&after, popped, cx_b),
+        "the pop-out is kept on top again"
+    );
+    assert!(!on_top(&after, console, cx_b), "the console was not");
 }
 
 #[gpui_kit::test]
@@ -206,6 +222,7 @@ fn full_size_and_a_float_read_back_as_they_were_kept() {
     let open = |console, floated, bounds, layout| Open {
         console,
         floated,
+        on_top: console,
         bounds,
         layout,
     };
@@ -233,6 +250,12 @@ fn full_size_and_a_float_read_back_as_they_were_kept() {
     };
     assert_eq!(programs(0), ["chat", "call"], "a float lands on the desk");
     assert_eq!(programs(1), ["files"]);
+    let on_top: Vec<bool> = read.windows.iter().map(|window| window.on_top).collect();
+    assert_eq!(on_top, [true, false], "Keep on Top reads back as kept");
+    let mut older = serde_json::to_value(&read.windows[0]).unwrap();
+    older.as_object_mut().unwrap().remove("on_top");
+    let older: super::arrangement::KeptWindow = serde_json::from_value(older).unwrap();
+    assert!(!older.on_top, "a record kept before it is among the others");
     let display = at(0., 0., 1920., 1080.);
     assert!(on_a_display(frame, &[display]));
     assert!(!on_a_display(at(4000., 0., 800., 600.), &[display]));
