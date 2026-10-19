@@ -249,7 +249,7 @@ impl View {
             }
             (Capability::Host, "log") => match wire::methods::decode::<String>(&payload) {
                 Ok(line) => {
-                    tracing::debug!(
+                    tracing::info!(
                         target: "ducktape::app",
                         program = self.program,
                         line,
