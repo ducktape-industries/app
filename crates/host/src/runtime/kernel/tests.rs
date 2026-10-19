@@ -1165,6 +1165,45 @@ fn file_pick_needs_an_activation_and_takes_it() {
 }
 
 #[test]
+fn file_read_answers_a_range_of_a_held_file_off_the_window_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("face.jpg");
+    std::fs::write(&path, b"portrait").unwrap();
+    let mut view = view();
+    let file = view.picker.pick(vec![path])[0].file;
+    let read = |id, file, offset, len| wire::Request {
+        id,
+        kind: "file.read".into(),
+        payload: methods::encode(&methods::ReadFile { file, offset, len }),
+    };
+    let refused = [(1, file + 1, 0, 1), (2, file, 4, 5), (3, file, u64::MAX, 2)];
+    for (id, file, offset, len) in refused {
+        view.answer(read(id, file, offset, len), &None);
+        let code = refusal_code(&mut view);
+        assert_eq!(code.as_deref(), Some("malformed_request"), "{id}");
+    }
+    let mut changed = view.replies.changes();
+    view.answer(read(4, file, 2, 4), &None);
+    assert!(view.pending.is_empty(), "answered on the window thread");
+    let mut answered = Vec::new();
+    while answered.is_empty() {
+        handle().block_on(changed.changed()).unwrap();
+        view.replies.drain_into(&mut answered);
+    }
+    let [
+        wire::Event::Response {
+            id: 4,
+            result: Ok(bytes),
+            done: true,
+        },
+    ] = &answered[..]
+    else {
+        panic!("{answered:?}");
+    };
+    assert_eq!(methods::decode::<Vec<u8>>(bytes).unwrap(), b"rtra");
+}
+
+#[test]
 fn host_session_is_program_independent_and_tracks_updates() {
     let mut view = view();
     let props = Some(super::super::props(

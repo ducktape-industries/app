@@ -8,9 +8,9 @@
 //! or dropped on the view (`Event::FileDrop`) are held the same way, a
 //! pasted picture in an unnamed file of its own, so the host's memory
 //! never holds what a view keeps. `op.put` reads each slice it names a
-//! part at a time ([`read`]), and the bytes go to the node, never through
-//! the view. A view gets each file's own name, never its
-//! path.
+//! part at a time ([`read`]) and sends it to the node; `file.read` hands
+//! the view the range it asks of one. A view gets each file's own name,
+//! never its path.
 //!
 //! `file.save`: blobs kept on this device as one file. Only the person's
 //! press or key opens the system's save dialog; the blobs go from the
@@ -23,7 +23,6 @@
 //! folder once it answers (`kernel::spawn_keep`).
 #[cfg(feature = "ui")]
 use super::Seat;
-#[cfg(feature = "ui")]
 use super::kernel;
 use super::wire::methods::{self, Capability, refusal};
 use super::{View, wire};
@@ -155,6 +154,7 @@ pub(super) fn answer(
 ) -> bool {
     match (capability, operation) {
         (Capability::File, "pick") => pick(view, id, payload),
+        (Capability::File, "read") => read_file(view, id, payload),
         (Capability::File, "release") => release(view, id, payload),
         (Capability::File, "save") => save(view, id, payload),
         _ => return false,
@@ -174,6 +174,41 @@ fn pick(view: &mut View, id: u64, payload: &[u8]) {
         Ok(pick) => view.picker.pending.push((id, pick)),
         Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
     }
+}
+
+fn read_file(view: &mut View, id: u64, payload: &[u8]) {
+    let ask = match methods::decode::<methods::ReadFile>(payload) {
+        Ok(ask) => ask,
+        Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
+    };
+    let Some(picked) = view.picker.picked(ask.file) else {
+        let unheld = format!("file {} is not one the view holds", ask.file);
+        return view.refuse(id, refusal::MALFORMED_REQUEST, unheld);
+    };
+    let end = ask.offset.checked_add(ask.len);
+    if end.is_none_or(|end| end > picked.size) {
+        let past = format!(
+            "{} bytes from {} are past the end of file {}, {} bytes",
+            ask.len, ask.offset, ask.file, picked.size
+        );
+        return view.refuse(id, refusal::MALFORMED_REQUEST, past);
+    }
+    kernel::spawn_reply(view, id, async move {
+        let read = tokio::task::spawn_blocking(move || read_whole(&picked, ask.offset, ask.len));
+        let bytes = read
+            .await
+            .unwrap_or_else(|error| Err(fault(error.to_string())))?;
+        Ok(methods::encode(&bytes))
+    });
+}
+
+fn read_whole(picked: &Picked, offset: u64, len: u64) -> Result<Vec<u8>, wire::Error> {
+    let mut bytes = Vec::new();
+    read(picked, offset, len, |part| {
+        bytes.extend_from_slice(part);
+        true
+    })?;
+    Ok(bytes)
 }
 
 /// The view lets go of files it holds: no press needed, it only closes
@@ -455,13 +490,7 @@ mod tests {
     use super::*;
 
     fn read(held: &Held, file: u64, offset: u64, len: u64) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        super::read(&held.get(file).expect("held"), offset, len, |part| {
-            bytes.extend_from_slice(part);
-            true
-        })
-        .expect("read");
-        bytes
+        read_whole(&held.get(file).expect("held"), offset, len).expect("read")
     }
 
     #[test]

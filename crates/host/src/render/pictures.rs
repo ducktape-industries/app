@@ -399,12 +399,12 @@ impl ViewTree {
                         element = element.child(self.node(child, window, cx));
                     }
                 } else if let Some(image) = self.image_frame(*hash, data) {
-                    element = element.child(
-                        img(image)
-                            .size_full()
-                            .grayscale(image_style.grayscale)
-                            .object_fit(primitive_object_fit(image_style.object_fit)),
-                    );
+                    let mut picture = img(image)
+                        .size_full()
+                        .grayscale(image_style.grayscale)
+                        .object_fit(primitive_object_fit(image_style.object_fit));
+                    picture.style().corner_radii = element.style().corner_radii.clone();
+                    element = element.child(picture);
                 } else if let Some(child) =
                     Self::image_state(*loading, *fallback, state_children, false)
                 {

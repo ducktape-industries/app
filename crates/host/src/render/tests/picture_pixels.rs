@@ -49,6 +49,15 @@ fn glyph(style: gpui_kit::Div) -> wire::Node {
 /// renderer drew it: the pixel at the middle of the glyph's box, and one
 /// outside it.
 fn painted(page: gpui_kit::Div, child: wire::Node) -> ([u8; 4], [u8; 4]) {
+    let [glyph, outside] = painted_at(page, child, [(15, 15), (45, 45)]);
+    (glyph, outside)
+}
+
+fn painted_at<const N: usize>(
+    page: gpui_kit::Div,
+    child: wire::Node,
+    at: [(u32, u32); N],
+) -> [[u8; 4]; N] {
     let mut cx = rendering_app();
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("page")),
@@ -66,8 +75,7 @@ fn painted(page: gpui_kit::Div, child: wire::Node) -> ([u8; 4], [u8; 4]) {
         .unwrap();
     let image = cx.capture_screenshot(window.into()).unwrap();
     let scale = image.width() / 60;
-    let at = |x: u32, y: u32| image.get_pixel(x * scale, y * scale).0;
-    (at(15, 15), at(45, 45))
+    at.map(|(x, y)| image.get_pixel(x * scale, y * scale).0)
 }
 
 fn assert_near(actual: [u8; 4], expected: [u8; 4], what: &str) {
@@ -78,6 +86,32 @@ fn assert_near(actual: [u8; 4], expected: [u8; 4], what: &str) {
             .all(|(actual, expected)| actual.abs_diff(expected) <= 3),
         "{what}: {actual:?}, expected {expected:?}"
     );
+}
+
+#[test]
+fn a_round_picture_paints_round() {
+    let picture = wire::Node::Image {
+        id: Some(named_id("face")),
+        hash: 7,
+        data: Some(wire::ImageData::Rgba {
+            width: 1,
+            height: 1,
+            pixels: RED.to_vec(),
+        }),
+        label: None,
+        image_style: wire::ImageStyle {
+            grayscale: false,
+            object_fit: wire::ImageObjectFit::Fill,
+        },
+        loading: false,
+        fallback: false,
+        state_children: Vec::new(),
+        style: crate::render::test_style(div().size(px(60.)).rounded_full().style().clone()),
+        interactivity: Default::default(),
+    };
+    let [middle, corner] = painted_at(div(), picture, [(30, 30), (3, 3)]);
+    assert_near(middle, RED, "the picture's middle");
+    assert_near(corner, WHITE, "the page past the picture's round edge");
 }
 
 /// A view Svg with its own colour draws in it.

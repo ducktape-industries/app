@@ -104,11 +104,11 @@
 //! In a sibling module [`answer`] asks first:
 //! - `clipboard.read`, `clipboard.write`, `clipboard.files` — `clipboard`,
 //!   run on the window thread after the tick.
-//! - `file.pick`, `file.release`, `file.save` — `picker`: the system's
-//!   picker opened on the window thread after the tick, the files picked
-//!   held open for `op.put` until the view lets go of them, which reads
-//!   them a slice at a time on a blocking thread; the save dialog, the
-//!   blobs written from the node to the file chosen.
+//! - `file.pick`, `file.read`, `file.release`, `file.save` — `picker`: the
+//!   system's picker opened on the window thread after the tick, the files
+//!   picked held open for `op.put` and `file.read` until the view lets go
+//!   of them, each reading them a slice at a time on a blocking thread; the
+//!   save dialog, the blobs written from the node to the file chosen.
 //! - `notify.post`, `notify.seen` — `notify`, the notification centre.
 //! - `store.get`, `store.set`, `store.list` — `store`, the view's file on
 //!   this device for the key seated in its props; `store.changes` — a
