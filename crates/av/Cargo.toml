@@ -70,7 +70,7 @@ test-support = []
 gpui-kit = { version = "=0.7.3", optional = true }
 # microphones and speakers: ALSA on Linux, Core Audio on macOS and iOS,
 # AAudio on Android
-cpal = { version = "=0.18.2", optional = true }
+cpal = { version = "=0.18.2", optional = true, features = ["pulseaudio"] }
 # the pictures gpui draws; on Linux also a MJPEG camera's frames, by its
 # pure-Rust JPEG decoder
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }

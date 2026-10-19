@@ -81,6 +81,9 @@ fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
     devices
         .into_iter()
         .filter_map(|(mut device, found)| {
+            if let Some(node) = device.id.strip_prefix("pulseaudio:") {
+                return (!node.ends_with(".monitor")).then_some((device, found));
+            }
             let pcm = device.id.strip_prefix("alsa:").unwrap_or(&device.id);
             if pcm == "default" {
                 device.name = "System default".into();
@@ -219,6 +222,37 @@ mod tests {
                     false
                 ),
             ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sound_servers_nodes_are_listed_by_name_and_its_monitors_are_not() {
+        let node = |id: &str, name: &str| Device {
+            id: format!("pulseaudio:{id}"),
+            name: name.into(),
+            default: false,
+        };
+        let listed = vec![
+            node(
+                "alsa_input.pci-0000_00_1f.3.analog-stereo",
+                "Built-in Audio Analog Stereo",
+            ),
+            node("bluez_input.AA_BB_CC_DD_EE_FF.0", "WH-1000XM4"),
+            node("bluez_output.AA_BB_CC_DD_EE_FF.1", "WH-1000XM4"),
+            node(
+                "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
+                "Monitor of Built-in Audio Analog Stereo",
+            ),
+        ];
+        let listed = listed.into_iter().map(|device| (device, ())).collect();
+        let kept: Vec<String> = recognizable(listed)
+            .into_iter()
+            .map(|(device, ())| device.name)
+            .collect();
+        assert_eq!(
+            kept,
+            ["Built-in Audio Analog Stereo", "WH-1000XM4", "WH-1000XM4"]
         );
     }
 
