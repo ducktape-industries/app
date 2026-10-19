@@ -532,13 +532,14 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
     );
 }
 
-/// `blob.manifest` reads any blob, as `blob.get` does: an id no listed
-/// program, view-only entry or scheduled change names is read as a seat
-/// reads it, the node asked for the blob alone, and kept under its id, so
-/// the next ask reads the disk, not the node.
+/// `blob.manifest` reads any blob, as `blob.get` does, and keeps only code
+/// a listed program runs: such code is kept under its id, so the next ask
+/// reads the disk, not the node; any other blob (an upload, a scheduled
+/// change's code) is read off the node each time and kept nowhere.
 #[tokio::test]
-async fn blob_manifest_reads_any_blob() {
+async fn blob_manifest_keeps_only_code_the_network_runs() {
     use sha2::Digest as _;
+    use std::sync::atomic::Ordering::SeqCst;
     let program = module(&[("ducktape.describe", b"named by nothing")]);
     let mut framed = format!("program {}\0", program.len()).into_bytes();
     framed.extend_from_slice(&program);
@@ -558,24 +559,41 @@ async fn blob_manifest_reads_any_blob() {
         noded_client::wire::route::BLOB_GET,
         Mode::Answer(abi::encode(&Some(framed.clone()))),
     )]);
-    let answer = blob_manifest(held.node.clone(), ask.clone()).await.unwrap();
+    for _ in 0..2 {
+        let answer = blob_manifest(held.node.clone(), ask.clone()).await.unwrap();
+        assert_eq!(size(answer), Some(program.len() as u64));
+        assert!(!kept.exists(), "a blob no program runs was kept");
+    }
+    assert_eq!(held.accepted.load(SeqCst), 2, "each ask read the node");
+
+    let apart = crate::runtime::roster::Apart::default();
+    apart.roster.lock().push(crate::backend::views::Program {
+        name: "listed".into(),
+        code: id,
+        bare: false,
+    });
+    let apart = Some(std::sync::Arc::new(apart));
+    let listed = node::Node {
+        apart: apart.clone(),
+        ..held.node.clone()
+    };
+    let answer = blob_manifest(listed, ask.clone()).await.unwrap();
     assert_eq!(size(answer), Some(program.len() as u64));
-    assert_eq!(
-        held.accepted.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "the node was asked for the blob alone"
-    );
-    assert!(kept.exists(), "the read was not kept");
+    assert!(kept.exists(), "code a program runs was not kept");
     // the next ask reads the disk: a node with no route answers it
     let empty = fake_node(Vec::new());
-    let answer = blob_manifest(empty.node.clone(), ask).await;
+    let from_disk = node::Node {
+        apart,
+        ..empty.node.clone()
+    };
+    let answer = blob_manifest(from_disk, ask).await;
     let _ = std::fs::remove_file(&kept);
     assert_eq!(
         answer.map(size),
         Ok(Some(program.len() as u64)),
         "answered off the disk"
     );
-    assert_eq!(empty.accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(empty.accepted.load(SeqCst), 0);
 }
 
 /// A blob id is hex digits only: `+f` (which `from_str_radix` reads as 15)

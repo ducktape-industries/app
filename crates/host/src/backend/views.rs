@@ -194,6 +194,8 @@ pub struct Blob {
 enum Held {
     /// The cache's file at the path, mapped whole.
     Mapped(memmap2::Mmap, PathBuf),
+    /// A file no path names, mapped whole ([`unkept_bytes`]).
+    Unnamed(memmap2::Mmap),
     /// Bytes in memory.
     Read(Vec<u8>),
 }
@@ -211,6 +213,17 @@ impl Blob {
         Ok(Self {
             range: 0..map.len(),
             held: Held::Mapped(map, path.to_owned()),
+        })
+    }
+
+    /// `file`, which no path names, mapped whole.
+    fn unnamed(file: &std::fs::File) -> std::io::Result<Self> {
+        // SAFETY: no path names the file, and [`unkept_bytes`], which made
+        // it, wrote it whole before the map and holds it nowhere after.
+        let map = unsafe { memmap2::Mmap::map(file) }?;
+        Ok(Self {
+            range: 0..map.len(),
+            held: Held::Unnamed(map),
         })
     }
 
@@ -238,7 +251,7 @@ impl Blob {
             bytes: self,
             file: match &self.held {
                 Held::Mapped(_, path) => Some((path, self.range.start as u64)),
-                Held::Read(_) => None,
+                Held::Unnamed(_) | Held::Read(_) => None,
             },
         }
     }
@@ -258,7 +271,7 @@ impl std::ops::Deref for Blob {
 
     fn deref(&self) -> &[u8] {
         match &self.held {
-            Held::Mapped(map, _) => &map[self.range.clone()],
+            Held::Mapped(map, _) | Held::Unnamed(map) => &map[self.range.clone()],
             Held::Read(bytes) => &bytes[self.range.clone()],
         }
     }
@@ -339,6 +352,24 @@ async fn cached(
         .map(|body| (body, "node")))
 }
 
+/// A blob no listed program runs (an upload, a scheduled change's code),
+/// its body what derefs, read as [`program_bytes`] reads code but kept
+/// nowhere: streamed into a file no path names, which the system removes
+/// once the map of it goes, so neither the cache nor the heap holds it.
+pub async fn unkept_bytes(client: &RpcClient, code: &BlobId) -> Result<Blob, Fetch> {
+    let unkept =
+        |error: std::io::Error| Fetch::Unreadable(format!("the blob was not read: {error}"));
+    let file = blocking(move || tempfile::tempfile().map_err(unkept)).await?;
+    let file = std::sync::Arc::new(file);
+    streamed(client, code, file.clone())
+        .await
+        .map_err(unkept)??;
+    blocking(move || Blob::unnamed(&file).map_err(unkept))
+        .await?
+        .part(unframe)
+        .ok_or_else(headless)
+}
+
 /// `work` on tokio's blocking pool: a map's pages are read from the disk
 /// as they are first touched.
 async fn blocking<T: Send + 'static>(
@@ -368,12 +399,6 @@ async fn fetched(
     code: &BlobId,
     path: &Path,
 ) -> std::io::Result<Result<(), Fetch>> {
-    use std::io::Write as _;
-    let mut blob = match client.blob_stream(*code).await {
-        Ok(Some(blob)) => blob,
-        Ok(None) => return Ok(Err(Fetch::NotHeld)),
-        Err(error) => return Ok(Err(fetch_error(error))),
-    };
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let landing = path.with_extension(format!("{}-{n}.partial", std::process::id()));
@@ -382,31 +407,52 @@ async fn fetched(
             tokio::fs::create_dir_all(parent).await?;
         }
         let file = tokio::fs::File::create(&landing).await?.into_std().await;
-        let file = std::sync::Arc::new(file);
-        let mut hasher = blob::Hasher::new(code.kind());
-        loop {
-            let piece = match blob.next().await {
-                Ok(Some(piece)) => piece,
-                Ok(None) => break,
-                Err(error) => return Ok(Err(fetch_error(error))),
-            };
-            hasher.update(&piece);
-            let file = file.clone();
-            tokio::task::spawn_blocking(move || (&*file).write_all(&piece))
-                .await
-                .map_err(std::io::Error::other)??;
-        }
-        Ok(match hasher.finish() {
-            Ok(landed) if landed == *code => Ok(tokio::fs::rename(&landing, path).await?),
-            Ok(_) => Err(Fetch::Corrupt),
-            Err(_) => Err(Fetch::Collision(*code)),
-        })
+        Ok(
+            match streamed(client, code, std::sync::Arc::new(file)).await? {
+                Ok(()) => Ok(tokio::fs::rename(&landing, path).await?),
+                Err(error) => Err(error),
+            },
+        )
     }
     .await;
     if !matches!(landed, Ok(Ok(()))) {
         let _ = tokio::fs::remove_file(&landing).await;
     }
     landed
+}
+
+/// `code`'s blob streamed off the node into `file`, hashed as it lands,
+/// never held whole: `Ok` once all of it came and it hashes to `code`. The
+/// outer error is the file's, the inner one the node's or the blob's.
+async fn streamed(
+    client: &RpcClient,
+    code: &BlobId,
+    file: std::sync::Arc<std::fs::File>,
+) -> std::io::Result<Result<(), Fetch>> {
+    use std::io::Write as _;
+    let mut blob = match client.blob_stream(*code).await {
+        Ok(Some(blob)) => blob,
+        Ok(None) => return Ok(Err(Fetch::NotHeld)),
+        Err(error) => return Ok(Err(fetch_error(error))),
+    };
+    let mut hasher = blob::Hasher::new(code.kind());
+    loop {
+        let piece = match blob.next().await {
+            Ok(Some(piece)) => piece,
+            Ok(None) => break,
+            Err(error) => return Ok(Err(fetch_error(error))),
+        };
+        hasher.update(&piece);
+        let file = file.clone();
+        tokio::task::spawn_blocking(move || (&*file).write_all(&piece))
+            .await
+            .map_err(std::io::Error::other)??;
+    }
+    Ok(match hasher.finish() {
+        Ok(landed) if landed == *code => Ok(()),
+        Ok(_) => Err(Fetch::Corrupt),
+        Err(_) => Err(Fetch::Collision(*code)),
+    })
 }
 
 /// Where the cache keeps `code`'s framed bytes.

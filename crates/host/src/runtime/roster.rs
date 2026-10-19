@@ -158,6 +158,11 @@ impl Roster {
             .map(|entry| (entry.code, entry.bare))
     }
 
+    /// Whether a listed program or view-only entry runs `code`.
+    pub(super) fn runs(&self, code: &abi::BlobId) -> bool {
+        self.lock().iter().any(|entry| entry.code == *code)
+    }
+
     /// Whether it lists `program`: a link to anything else names nothing.
     pub fn lists(&self, program: &str) -> bool {
         self.code(program).is_some()
