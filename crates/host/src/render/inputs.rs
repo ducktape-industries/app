@@ -79,8 +79,6 @@ pub(super) struct Field {
     /// What a software keyboard is told about the field (`InputOptions::
     /// text_input`); with `secure`, the engine's `TextInputConfiguration`.
     text_input: wire::TextInput,
-    /// The placeholder's colour, set on a touch device (`placeholder_tone`).
-    tone: Option<Hsla>,
     /// Whether a growing field fills its box or grows to `cap` rows.
     fills: bool,
     cap: Option<usize>,
@@ -205,7 +203,6 @@ impl ViewTree {
                 placeholder: placeholder.clone(),
                 secure: *secure,
                 text_input: options.text_input,
-                tone: None,
                 fills: true,
                 cap: None,
                 _observation: observation,
@@ -270,7 +267,6 @@ impl ViewTree {
                 state.set_text_input(configuration, cx)
             }));
         }
-        field.placeholder_tone(cx);
         if let Engine::Area(state) = field.engine.clone() {
             // A height the view gave is a box to fill; none (a composer's
             // `min_h`..`max_h`) is a field as tall as its lines, which the
@@ -506,25 +502,6 @@ impl Field {
     /// and `secure` when the field is masked.
     fn configuration(&self) -> gpui_kit::TextInputConfiguration {
         self.text_input.configuration(self.secure)
-    }
-
-    /// On a touch device a placeholder is the design's faint text, as the
-    /// phone's fields have always drawn it, not the kit theme's muted text
-    /// every desktop field shares. Set again when the theme's mode moves it.
-    /// The state's own placeholder colour, not its editor style: the kit's
-    /// `Input` sets that from its theme on every render (fork #38).
-    fn placeholder_tone(&mut self, cx: &mut App) {
-        if !crate::contract::os().facts().touch_first {
-            return;
-        }
-        let faint = crate::theme::hsla(crate::theme::palette(cx).faint);
-        if self.tone == Some(faint) {
-            return;
-        }
-        self.tone = Some(faint);
-        engine!(&self.engine, |state| state.update(cx, |state, cx| {
-            state.set_placeholder_color(Some(faint), cx)
-        }));
     }
 
     pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {

@@ -1539,23 +1539,3 @@ fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
     );
     assert_eq!(text(&tree, &mut native), "hello");
 }
-
-/// Under touch a field's placeholder is the design's faint text, a one-line
-/// field's too, after the kit's `Input` has drawn it: that component sets
-/// its editor style from the theme on every render, which the
-/// placeholder's own colour outlives (fork #38).
-#[gpui_kit::test]
-fn under_touch_a_one_line_placeholder_is_faint(cx: &mut gpui_kit::TestAppContext) {
-    crate::contract::testing::touch_first_for_test(true);
-    let (tree, mut native) = mounted(input("Name", false, false), cx);
-    native.update(|window, cx| {
-        window.render_frame(cx);
-        window.render_frame(cx);
-    });
-    let state = line(&tree, &native);
-    native.update(|_, cx| {
-        let faint = crate::theme::hsla(crate::theme::palette(cx).faint);
-        assert_eq!(state.read(cx).placeholder_color(), faint);
-    });
-    crate::contract::testing::touch_first_for_test(false);
-}
