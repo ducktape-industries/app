@@ -108,9 +108,10 @@
 //!   them a slice at a time on a blocking thread; the save dialog, the
 //!   blobs written from the node to the file chosen.
 //! - `notify.post`, `notify.seen` — `notify`, the notification centre.
-//! - `store.get`, `store.set` — `store`, the view's file on this device;
-//!   `store.changes` — a subscription to the keys another instance of the
-//!   program (a pane, its notifier) set in that file.
+//! - `store.get`, `store.set`, `store.list` — `store`, the view's file on
+//!   this device for the key seated in its props; `store.changes` — a
+//!   subscription to the keys another instance of the program (a pane, its
+//!   notifier) set in that file.
 //!
 //! Not the kernel's — `View::answer` (`view/requests.rs`) takes them once
 //! [`answer`] says `false`, since they read the view's own state:
@@ -272,7 +273,7 @@ pub(super) fn answer(
     if super::clipboard::answer(view, capability, operation, id, payload)
         || super::picker::answer(view, capability, operation, id, payload)
         || super::notify::answer(view, capability, operation, id, payload)
-        || super::store::answer(view, capability, operation, id, payload)
+        || super::store::answer(view, capability, operation, id, payload, props)
     {
         return true;
     }

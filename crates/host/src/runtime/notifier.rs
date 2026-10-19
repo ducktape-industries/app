@@ -87,7 +87,8 @@ pub struct Recipient {
     /// [`props`](super::props) encodes it; the app's is the one `Seats`
     /// hands every pane.
     pub session: tokio::sync::watch::Sender<Option<Vec<u8>>>,
-    /// Where its notifiers' store files go, `<store>/<chain>/<program>.borsh`;
+    /// Where its notifiers' store files go, `<store>/<chain>/<key>/<program>.borsh`
+    /// for the key its session seats (`<store>/<chain>/<program>.borsh` for none);
     /// the app's are under `<config>/store`.
     pub store: PathBuf,
     /// Its notification centre: the fold by tag, the burst limit.

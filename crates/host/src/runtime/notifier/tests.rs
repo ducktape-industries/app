@@ -366,8 +366,10 @@ fn each_recipient_has_its_own_notices_and_store() {
         })
         .collect();
     for (raised, store, _) in &sets {
+        // its session seats the key `ab`
         let file = store
             .join("fake-network_230")
+            .join("ab")
             .join(format!("{program}.borsh"));
         eventually("each account's notifier posted and kept", || {
             !raised.0.lock().unwrap().is_empty() && file.exists()

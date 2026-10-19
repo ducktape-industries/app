@@ -1027,6 +1027,8 @@ impl View {
     /// Hands the view the props the app holds, if they moved since the
     /// view last saw them. Before the view has subscribed they wait here.
     pub fn sync_props(&mut self, props: &Option<Vec<u8>>) {
+        // its `store.changes` follow the key the props seat
+        crate::runtime::store::follow(self, props);
         let Some(id) = self.props_subscription else {
             return;
         };
