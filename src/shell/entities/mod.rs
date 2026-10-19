@@ -6,6 +6,7 @@
 //! written by its own methods and by nothing else. `DeskSeats` tells the
 //! shared `Seats` which panes the windows' desks hold.
 
+mod arrangement;
 mod desk;
 mod dot;
 mod front;
@@ -32,6 +33,8 @@ pub(crate) use spotlight::Spotlight;
 pub(crate) use windows::{Windows, open_banner, posted};
 #[cfg(test)]
 mod account_tests;
+#[cfg(test)]
+mod arrangement_tests;
 #[cfg(test)]
 mod desk_tests;
 #[cfg(test)]

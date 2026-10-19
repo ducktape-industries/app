@@ -5,13 +5,13 @@
 //! not, kept on top or not), and answers what a seat asks of the
 //! windows (`SeatsEvent`): a title to the desk holding its pane, a view
 //! seated to the desks holding it, a link or a float to `Windows`.
-use super::{Seats, Windows};
+use super::{Desk, Seats, Windows};
 use crate::runtime::{Placed, WindowKey};
 use crate::shell::WindowKind;
 use crate::shell::layers::view_body;
 use crate::ui::layout::Layout;
 use ducktape_host::session::{Place, SeatsEvent};
-use gpui_kit::{Context, Entity, Subscription, WeakEntity, px, size};
+use gpui_kit::{App, Context, Entity, Subscription, WeakEntity, px, size};
 use std::collections::BTreeMap;
 
 pub(crate) struct DeskSeats {
@@ -127,20 +127,15 @@ impl DeskSeats {
             // its own window's name, wherever that pane is now (a pane
             // gone from every desk names nothing)
             SeatsEvent::Title(instance, title) => {
-                let desk = windows
-                    .read(cx)
-                    .by_window()
-                    .values()
-                    .map(|own| own.desk.clone())
-                    .find(|desk| {
-                        desk.read(cx)
-                            .get()
-                            .panes
-                            .iter()
-                            .any(|pane| pane.instance == *instance)
-                    });
-                if let Some(desk) = desk {
+                if let Some(desk) = holding(&windows, *instance, cx) {
                     desk.update(cx, |desk, cx| desk.set_title(*instance, title.clone(), cx));
+                }
+            }
+            SeatsEvent::Showing(instance, route) => {
+                if let Some(desk) = holding(&windows, *instance, cx) {
+                    desk.update(cx, |desk, cx| {
+                        desk.set_showing(*instance, route.clone(), cx)
+                    });
                 }
             }
             // a window placed before its view came is widened to it
@@ -197,4 +192,19 @@ impl DeskSeats {
             }
         }
     }
+}
+
+fn holding(windows: &Entity<Windows>, instance: u64, cx: &App) -> Option<Entity<Desk>> {
+    windows
+        .read(cx)
+        .by_window()
+        .values()
+        .map(|own| own.desk.clone())
+        .find(|desk| {
+            desk.read(cx)
+                .get()
+                .panes
+                .iter()
+                .any(|pane| pane.instance == instance)
+        })
 }

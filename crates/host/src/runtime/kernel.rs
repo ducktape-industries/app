@@ -372,6 +372,7 @@ pub(super) fn answer(
         // show on screen (`screen`)
         (Capability::Host, "showing") => match methods::decode::<String>(payload) {
             Ok(route) => {
+                view.intents.push(Intent::Showing(route.clone()));
                 view.showing = Some(route);
                 view.screen_moved();
                 view.reply(id, Ok(methods::encode(&())));

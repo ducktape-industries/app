@@ -24,7 +24,7 @@ pub(crate) const INSET: f32 = 12.;
 pub(crate) use crate::render::GRAB;
 
 /// A window's place on the desk, in pixels from the desk's top-left.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Frame {
     pub(crate) x: f32,
     pub(crate) y: f32,
@@ -79,6 +79,7 @@ pub(crate) struct Pane {
     /// The person moved or sized its frame (a drag, the keyboard's hold):
     /// a view's width that comes after no longer widens it.
     pub(crate) by_hand: bool,
+    pub(crate) showing: Option<String>,
 }
 
 impl Pane {
@@ -91,6 +92,7 @@ impl Pane {
             z: 0,
             title: None,
             by_hand: false,
+            showing: None,
         }
     }
 
@@ -213,6 +215,24 @@ impl Layout {
             desk: self.desk,
             ..Self::default()
         };
+    }
+
+    pub(crate) fn restored(
+        panes: Vec<Pane>,
+        focused: usize,
+        filled: bool,
+        desk: Option<(f32, f32)>,
+    ) -> Self {
+        let top = panes.iter().map(|pane| pane.z).max().unwrap_or(0);
+        Self {
+            focused: focused.min(panes.len().saturating_sub(1)),
+            filled: filled && !panes.is_empty(),
+            panes,
+            top,
+            desk,
+            initialized: true,
+            held: None,
+        }
     }
 
     /// The desk as the shell measured it. On a desk that changed size
@@ -515,6 +535,17 @@ impl Layout {
         match self.panes.iter_mut().find(|pane| pane.instance == instance) {
             Some(pane) if pane.title != title => {
                 pane.title = title;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn set_showing(&mut self, instance: u64, showing: Option<String>) -> bool {
+        let showing = showing.filter(|showing| !showing.is_empty());
+        match self.panes.iter_mut().find(|pane| pane.instance == instance) {
+            Some(pane) if pane.showing != showing => {
+                pane.showing = showing;
                 true
             }
             _ => false,

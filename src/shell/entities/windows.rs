@@ -24,6 +24,7 @@
 //! window thread comes over the `Posted` channel (`posted`); a banner of
 //! another listed network's switches to it first and opens its row there
 //! (`switching`).
+use super::arrangement::{self, Arrangement, Keeper};
 use super::{
     AccountEvent, Desk, DeskSeats, Entities, Front, Listed, Overlay, Overlays, Popped, Screen,
     SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
@@ -103,6 +104,10 @@ pub(crate) struct Windows {
     /// waits (a cold start). Set once at launch (`launch::run`); a test's
     /// windows have none unless it gives them one.
     follower: Option<Entity<crate::shell::follow::Follower>>,
+    kept: Keeper,
+    keeping: Option<String>,
+    placed: BTreeMap<WindowKey, WindowBounds>,
+    moves: BTreeMap<WindowKey, Subscription>,
 }
 
 /// A window a view floated its pane into: the program, whose next float
@@ -135,6 +140,9 @@ impl Windows {
                     SessionEvent::LeftNetwork => this.left_network(cx),
                     // the console comes forward, or opens, as the tray's Open
                     SessionEvent::Connected => {
+                        if !this.launcher {
+                            this.take_up(cx);
+                        }
                         this.raise_console(cx);
                         this.open_switched(cx);
                     }
@@ -168,6 +176,7 @@ impl Windows {
                 this.launcher = now;
                 if !now {
                     crate::perf::mark("desk");
+                    this.take_up(cx);
                 }
                 this.swap_console(cx);
                 this.open_switched(cx);
@@ -180,6 +189,10 @@ impl Windows {
                     this.appearance = appearance;
                     this.sync_appearance(cx);
                 }
+            }),
+            cx.on_app_quit(|this, cx| {
+                this.stop_keeping(cx);
+                async {}
             }),
         ];
         Self {
@@ -205,6 +218,10 @@ impl Windows {
             desk_seats: None,
             switching: None,
             follower: None,
+            kept: Keeper::load(),
+            keeping: None,
+            placed: BTreeMap::new(),
+            moves: BTreeMap::new(),
         }
     }
 
@@ -302,6 +319,16 @@ impl Windows {
         min: Option<Size<Pixels>>,
         cx: &mut Context<Self>,
     ) -> WindowKey {
+        self.open_at(kind, at.map(WindowBounds::Windowed), min, cx)
+    }
+
+    fn open_at(
+        &mut self,
+        kind: WindowKind,
+        at: Option<WindowBounds>,
+        min: Option<Size<Pixels>>,
+        cx: &mut Context<Self>,
+    ) -> WindowKey {
         let _timed = timed();
         let key = WindowKey::unique();
         self.make_own(key, kind, cx);
@@ -354,6 +381,7 @@ impl Windows {
                 if this.console != Some(key) {
                     this.popped_moved(cx);
                 }
+                this.keep(cx);
             }));
         let (desk, account) = (own.desk.clone(), self.shared.account.clone());
         let mut was = None;
@@ -393,7 +421,7 @@ impl Windows {
         &mut self,
         key: WindowKey,
         kind: WindowKind,
-        at: Option<Bounds<Pixels>>,
+        at: Option<WindowBounds>,
         min: Option<Size<Pixels>>,
         cx: &mut Context<Self>,
     ) {
@@ -415,9 +443,9 @@ impl Windows {
             }
         };
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(
-                at.unwrap_or_else(|| Bounds::centered(None, extent, cx)),
-            )),
+            window_bounds: Some(
+                at.unwrap_or_else(|| WindowBounds::Windowed(Bounds::centered(None, extent, cx))),
+            ),
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
                 appears_transparent: cfg!(target_os = "macos"),
@@ -453,6 +481,9 @@ impl Windows {
             .map(std::sync::Arc::new),
             ..Default::default()
         };
+        if let Some(at) = at {
+            self.placed.insert(key, at);
+        }
         let entities = self.entities(cx);
         let this = cx.entity();
         cx.defer(move |cx| {
@@ -462,7 +493,10 @@ impl Windows {
             let opened = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| WindowRoot::new(root_entities, key, kind, window, cx));
                 opened_view = Some(view.downgrade());
-                windows.update(cx, |this, cx| this.watch_activation(key, window, cx));
+                windows.update(cx, |this, cx| {
+                    this.watch_activation(key, window, cx);
+                    this.watch_bounds(key, window, cx);
+                });
                 window.on_window_should_close(cx, move |window, cx| {
                     let _ = closing.update(cx, |this, cx| this.floated_closes(key, window, cx));
                     release_window_input(window, cx);
@@ -490,6 +524,7 @@ impl Windows {
                         // `Seats` hears the list move: a popped-out pane's
                         // seat moves into its window now
                         cx.notify();
+                        this.keep(cx);
                     });
                 }
                 Err(error) => {
@@ -518,6 +553,15 @@ impl Windows {
             }),
         );
         self.activation(key, window.is_window_active(), cx);
+    }
+
+    fn watch_bounds(&mut self, key: WindowKey, window: &mut Window, cx: &mut Context<Self>) {
+        let moves = cx.observe_window_bounds(window, move |this, window, cx| {
+            this.placed.insert(key, window.window_bounds());
+            this.keep(cx);
+        });
+        self.placed.insert(key, window.window_bounds());
+        self.moves.insert(key, moves);
     }
 
     fn activation(&mut self, key: WindowKey, active: bool, cx: &mut Context<Self>) {
@@ -751,6 +795,8 @@ impl Windows {
         self.on_top.remove(&key);
         self.pending_on_top.remove(&key);
         self.floats.remove(&key);
+        self.placed.remove(&key);
+        self.moves.remove(&key);
         if self.console == Some(key) {
             self.console = None;
         }
@@ -759,11 +805,13 @@ impl Windows {
         }
         self.popped_moved(cx);
         self.sync_menu(cx);
+        self.keep(cx);
         cx.notify();
     }
 
     /// Every window off the screen, its input let go first, then the app.
-    pub(crate) fn quit(&self, cx: &mut Context<Self>) {
+    pub(crate) fn quit(&mut self, cx: &mut Context<Self>) {
+        self.stop_keeping(cx);
         let windows = self.handles.values().copied().collect::<Vec<_>>();
         cx.defer(move |cx| {
             for handle in windows {
@@ -906,6 +954,7 @@ impl Windows {
         if on_top && above {
             self.set_on_top(key, true, cx);
         }
+        self.keep(cx);
     }
 
     /// A view's unfloat (`host.unfloat`) of the pane with this `instance`:
@@ -1229,6 +1278,7 @@ impl Windows {
     /// program goes with them.
     fn left_network(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
+        self.keeping = None;
         // left for another chain than the banner's: its switch is over
         let here = &self.shared.session.read(cx).get().chain;
         self.switching.take_if(|(chain, _, _)| chain != here);
@@ -1456,6 +1506,84 @@ impl Windows {
             }
         })
         .detach();
+    }
+
+    fn take_up(&mut self, cx: &mut Context<Self>) {
+        let chain = self.shared.session.read(cx).get().chain.clone();
+        if chain.is_empty() || self.keeping.as_ref() == Some(&chain) {
+            return;
+        }
+        if self
+            .console_own()
+            .is_none_or(|own| own.kind != WindowKind::Console)
+        {
+            return;
+        }
+        self.keeping = Some(chain.clone());
+        let Some(arrangement) = self.kept.of(&chain).cloned() else {
+            return;
+        };
+        let displays: Vec<Bounds<Pixels>> = cx
+            .displays()
+            .iter()
+            .map(|display| display.bounds())
+            .collect();
+        for window in arrangement.windows {
+            let bounds = Some(window.bounds())
+                .filter(|bounds| arrangement::on_a_display(bounds.get_bounds(), &displays));
+            let layout = window.desk.layout();
+            let routes: Vec<(&'static str, u64, String)> = layout
+                .panes
+                .iter()
+                .filter_map(|pane| Some((pane.program, pane.instance, pane.showing.clone()?)))
+                .collect();
+            let desk = match window.console {
+                true => {
+                    if self.desk_bounds.is_none() {
+                        self.desk_bounds = bounds;
+                        if let (Some(console), Some(bounds)) = (self.console, bounds) {
+                            self.placed.insert(console, bounds);
+                        }
+                    }
+                    self.console_own().map(|own| own.desk.clone())
+                }
+                false => {
+                    let Some(program) = layout.shown().filter(|_| layout.panes.len() == 1) else {
+                        continue;
+                    };
+                    let key = self.open_at(WindowKind::View { program }, bounds, None, cx);
+                    self.by_window.get(&key).map(|own| own.desk.clone())
+                }
+            };
+            if let Some(desk) = desk {
+                desk.update(cx, |desk, cx| desk.take_up(layout, cx));
+                for (program, instance, route) in routes {
+                    crate::runtime::route_to(program, instance, route);
+                }
+            }
+        }
+    }
+
+    fn keep(&mut self, cx: &mut Context<Self>) {
+        let Some(chain) = self.keeping.clone().filter(|_| !self.launcher) else {
+            return;
+        };
+        let open = self.by_window.iter().filter_map(|(key, own)| {
+            Some(arrangement::Open {
+                console: self.console == Some(*key),
+                floated: self.floats.contains_key(key),
+                bounds: *self.placed.get(key)?,
+                layout: own.desk.read(cx).get(),
+            })
+        });
+        let arrangement = Arrangement::of(open);
+        self.kept.keep(&chain, arrangement, cx);
+    }
+
+    fn stop_keeping(&mut self, cx: &mut Context<Self>) {
+        self.keep(cx);
+        self.keeping = None;
+        self.kept.flush();
     }
 
     // ---------- tests' seams ----------

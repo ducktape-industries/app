@@ -55,6 +55,7 @@ pub enum SeatsEvent {
     /// From the pane (`program`, `instance`): one of the host's places to
     /// bring up (`host.show`).
     Show(&'static str, u64, view_wire::methods::Place),
+    Showing(u64, String),
 }
 
 pub struct Seats {
@@ -227,6 +228,7 @@ impl Seats {
             Intent::Show(place) => cx.emit(SeatsEvent::Show(program, instance, place)),
             Intent::Float(float) => cx.emit(SeatsEvent::Float(instance, float)),
             Intent::Unfloat => cx.emit(SeatsEvent::Unfloat(instance)),
+            Intent::Showing(route) => cx.emit(SeatsEvent::Showing(instance, route)),
         }
     }
 

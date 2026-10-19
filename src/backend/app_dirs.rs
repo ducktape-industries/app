@@ -17,7 +17,8 @@ use std::path::PathBuf;
 
 const APP: &str = "ducktape";
 
-/// preferences (`prefs.json`).
+/// preferences (`prefs.json`), and the windows each network last had
+/// (`windows.json`).
 pub(crate) fn config_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_CONFIG_HOME", ".config", "Library/Application Support")
 }

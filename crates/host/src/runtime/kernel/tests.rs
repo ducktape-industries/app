@@ -1677,3 +1677,18 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
     }
     handle().block_on(backend::lock_signer());
 }
+
+#[test]
+fn what_a_view_shows_goes_to_its_pane() {
+    let mut view = view();
+    view.answer(
+        wire::Request {
+            id: 1,
+            kind: "host.showing".into(),
+            payload: methods::encode(&"general".to_owned()),
+        },
+        &None,
+    );
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(view.intents, [Intent::Showing("general".into())]);
+}

@@ -148,6 +148,26 @@ impl Desk {
         self.edit(|layout| _ = layout.set_title(instance, Some(title)), cx);
     }
 
+    pub(crate) fn set_showing(&mut self, instance: u64, route: String, cx: &mut Context<Self>) {
+        let _timed = timed();
+        self.edit(|layout| _ = layout.set_showing(instance, Some(route)), cx);
+    }
+
+    pub(crate) fn take_up(&mut self, kept: Layout, cx: &mut Context<Self>) {
+        self.moved(
+            |layout| {
+                let opened = std::mem::replace(layout, kept);
+                if let Some(desk) = opened.desk {
+                    layout.measure(desk);
+                }
+                for pane in opened.panes {
+                    layout.popin(pane);
+                }
+            },
+            cx,
+        );
+    }
+
     /// The desk measured this size (the pane layer's frame callback).
     pub(crate) fn resize(&mut self, desk: (f32, f32), cx: &mut Context<Self>) {
         let _timed = timed();

@@ -1563,6 +1563,7 @@ impl Root {
             // a phone floats no pane (`OsFacts::floats`): its views' kernel
             // knows no float method, so neither comes
             SeatsEvent::Float(..) | SeatsEvent::Unfloat(_) => {}
+            SeatsEvent::Showing(..) => {}
         }
     }
 

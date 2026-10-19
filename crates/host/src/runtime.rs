@@ -159,6 +159,7 @@ pub enum Intent {
     Float(wire::methods::Float),
     /// `host.unfloat`: its pane back on the desk it left.
     Unfloat,
+    Showing(String),
 }
 
 /// How many view loads run at once, each on a loader thread of its own
