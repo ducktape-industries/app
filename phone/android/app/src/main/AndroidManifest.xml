@@ -62,6 +62,13 @@
             android:launchMode="singleTop"
             android:taskAffinity="" />
         <receiver android:name=".Ring$Decline" android:exported="false" />
+        <!-- a picture to view (Kept.kt): the files the host keeps under the cache, read-only, to whom a viewing
+             intent grants them -->
+        <provider
+            android:name=".Kept"
+            android:authorities="industries.ducktape.mobile.kept"
+            android:exported="false"
+            android:grantUriPermissions="true" />
         <service android:name=".Ring$Messages" android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />

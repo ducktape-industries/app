@@ -155,7 +155,7 @@ use node::{
     spawn_put, spawn_submit, status, tx,
 };
 #[cfg(feature = "ui")]
-pub(super) use node::{reaches_node, spawn_event, spawn_save};
+pub(super) use node::{reaches_node, spawn_event, spawn_keep, spawn_save};
 pub(super) use replies::Replies;
 use replies::{Claim, InFlight};
 

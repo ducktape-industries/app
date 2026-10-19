@@ -431,6 +431,48 @@ impl PhoneOs {
 /// server's ([`withdraw_notice`]).
 struct PhoneBanners;
 
+/// The launchers' file dialogs: iOS's (`App.swift` `Files`: a sheet of
+/// Photo Library and Files to pick from; a picture kept through Quick Look,
+/// any other file through the share sheet) and Android's (`MainActivity`:
+/// the open-document dialog; a picture in the system's viewer, any other
+/// file through the create-document dialog; on a thread of their own,
+/// since the Activity blocks it until the person answers).
+struct PhoneFiles;
+
+impl ducktape_host::contract::Files for PhoneFiles {
+    fn pick(&self, multiple: bool, done: ducktape_host::contract::PickDone) {
+        #[cfg(target_os = "ios")]
+        ios::ffi::pick(multiple, done);
+        #[cfg(target_os = "android")]
+        std::thread::spawn(move || done(android::jni::pick_files(multiple)));
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
+            let _ = multiple;
+            done(Err(NO_DIALOGS.into()));
+        }
+    }
+
+    fn keep(&self, path: &Path, done: ducktape_host::contract::KeepDone) {
+        #[cfg(target_os = "ios")]
+        ios::ffi::keep(path, done);
+        #[cfg(target_os = "android")]
+        {
+            let path = path.to_path_buf();
+            std::thread::spawn(move || done(android::jni::keep_file(&path)));
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
+            let _ = path;
+            done(Err(NO_DIALOGS.into()));
+        }
+    }
+}
+
+/// A build for neither phone (the workspace's own, its tests) has no
+/// launcher to open a dialog.
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const NO_DIALOGS: &str = "this build of the phone has no launcher to open a file dialog";
+
 impl Banners for PhoneBanners {
     fn post(&self, notice: &Notice, click: Option<Click>) -> bool {
         let row = match click {
@@ -556,6 +598,12 @@ impl OsServices for PhoneOs {
 
     fn banners(&self) -> &dyn Banners {
         &PhoneBanners
+    }
+
+    /// gpui's phone platforms have no file dialogs: the launchers' own
+    /// ([`PhoneFiles`]).
+    fn files(&self) -> Option<&dyn ducktape_host::contract::Files> {
+        Some(&PhoneFiles)
     }
 
     /// gpui_ios answers the safe area and the keyboard itself; gm's host

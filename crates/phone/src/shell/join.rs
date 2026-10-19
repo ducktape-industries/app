@@ -112,7 +112,7 @@ impl Join {
             .map(|entry| entry.url.clone());
         let node = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("garage.ducktape.industries")
+                .placeholder("duckpond.ducktape.industries")
                 .default_value(last.clone().unwrap_or_default())
                 .text_input(url_keyboard())
         });

@@ -42,6 +42,8 @@
 //! `MainActivity.systemBars(dark)` on gm's render thread, and
 //! `MainActivity.ask(permission)` (blocking until the person answers) and
 //! `MainActivity.openSettings(page)` on a camera's or a microphone's thread,
+//! `MainActivity.pickFiles(multiple)` and `MainActivity.keepFile(path)`
+//! (each blocking until the person answers) on a thread of their own,
 //! `MainActivity.banner(payload)` on the host's banner queue's, and
 //! `MainActivity.withdrawNotice(tag)` on any.
 #![allow(unsafe_code, reason = "the JNI entries the Android Activity calls")]
@@ -488,6 +490,71 @@ fn ask(permission: &str) -> bool {
     asked.unwrap_or_else(|error| {
         tracing::error!(target: "ducktape::phone", %error, "the permission was not asked");
         false
+    })
+}
+
+/// The system's open-document dialog, through the Activity
+/// (`MainActivity.pickFiles`): the paths of the Activity's copies of the
+/// files picked, `None` when the person cancelled. Blocks the calling
+/// thread (never the UI one) until the person answers.
+pub fn pick_files(multiple: bool) -> Result<Option<Vec<PathBuf>>, String> {
+    gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let picked = env
+            .call_method(
+                &activity,
+                jni::jni_str!("pickFiles"),
+                jni::jni_sig!("(Z)[Ljava/lang/String;"),
+                &[JValue::Bool(multiple)],
+            )
+            .and_then(|picked| picked.l())
+            .map_err(|error| {
+                env.exception_clear();
+                error.to_string()
+            })?;
+        if picked.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: the `String[]` the method returned, a local reference
+        // alive for this call
+        let picked =
+            unsafe { jni::objects::JObjectArray::<JObject>::from_raw(env, picked.as_raw()) };
+        let count = picked.len(env).map_err(|error| error.to_string())?;
+        let mut paths = Vec::with_capacity(count);
+        for index in 0..count {
+            let path: JObject = picked
+                .get_element(env, index)
+                .map_err(|error| error.to_string())?;
+            paths.push(PathBuf::from(gpui_mobile::android::jni::get_string(
+                env, &path,
+            )));
+        }
+        Ok(Some(paths))
+    })
+}
+
+/// `path` to the system's create-document dialog, through the Activity
+/// (`MainActivity.keepFile`), which copies it where the person chose:
+/// whether they did, `false` when they cancelled. Blocks the calling
+/// thread (never the UI one) until the person answers.
+pub fn keep_file(path: &std::path::Path) -> Result<bool, String> {
+    gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let text = path.to_string_lossy();
+        let path = env
+            .new_string(text.as_ref())
+            .map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("keepFile"),
+            jni::jni_sig!("(Ljava/lang/String;)Z"),
+            &[JValue::Object(&path)],
+        )
+        .and_then(|kept| kept.z())
+        .map_err(|error| {
+            env.exception_clear();
+            error.to_string()
+        })
     })
 }
 

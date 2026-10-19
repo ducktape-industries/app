@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
@@ -32,6 +33,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputConnectionWrapper
 import android.view.inputmethod.InputMethodManager
+import android.webkit.MimeTypeMap
 import android.widget.EditText
 import android.window.OnBackInvokedDispatcher
 import industries.ducktape.devicekey.DeviceKeyStore
@@ -194,6 +196,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             Native.destroyed(host)
             // an ask still out is refused: no instance is left to hear the answer
             asked?.offer(false)
+            picked?.offer(emptyArray())
+            kept?.offer(false)
         }
         super.onDestroy()
     }
@@ -223,6 +227,120 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             Ring.askFullScreenOnce(this)
         }
     }
+
+    /**
+     * `file.pick` (`crates/phone/src/os/android/jni.rs` `pick_files`), on Rust's own thread, never the UI one: the
+     * system's open-document dialog, each file picked copied into a folder of its own under the cache for Rust to open
+     * (Rust removes the copy once it holds it open); null when the person cancelled. Blocks until the person answers.
+     */
+    fun pickFiles(multiple: Boolean): Array<String>? {
+        synchronized(picking) {
+            if (isFinishing || isDestroyed) return null
+            val answer = ArrayBlockingQueue<Array<String>>(1)
+            picked = answer
+            runOnUiThread {
+                val open = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("*/*")
+                    .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple)
+                startActivityForResult(open, PICK)
+            }
+            return answer.take().also { picked = null }.takeIf { it.isNotEmpty() }
+        }
+    }
+
+    /**
+     * `file.save` (`jni.rs` `keep_file`), on Rust's own thread. A picture opens in the system's viewer, through
+     * [Kept] (its share and save are the viewer's); any other file goes to the system's create-document dialog, named
+     * and typed as the file at [path] is, and is copied where the person chose. Whether it was kept (a picture: shown);
+     * false when they cancelled. Blocks until the viewer closes or the person answers. Rust removes the file once it
+     * hears.
+    fun keepFile(path: String): Boolean {
+        synchronized(keeping) {
+            if (isFinishing || isDestroyed) return false
+            val file = File(path)
+            val answer = ArrayBlockingQueue<Boolean>(1)
+            kept = answer
+            keptFile = file
+            runOnUiThread {
+                val type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase())
+                    ?: "application/octet-stream"
+                if (type.startsWith("image/")) {
+                    val view = Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(Kept.uri(file), type)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    try {
+                        startActivityForResult(view, VIEW)
+                    } catch (missing: ActivityNotFoundException) {
+                        Log.w("ducktape", "no viewer for a picture", missing)
+                        kept?.offer(false)
+                    }
+                    return@runOnUiThread
+                }
+                val create = Intent(Intent.ACTION_CREATE_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType(type)
+                    .putExtra(Intent.EXTRA_TITLE, file.name)
+                startActivityForResult(create, KEEP)
+            }
+            return answer.take().also {
+                kept = null
+                keptFile = null
+            }
+        }
+    }
+
+    /** A pick's or a keep's answer; the copying is off the UI thread, since a file may be large. */
+    @Deprecated("the platform's own Activity result: this Activity uses no AndroidX")
+    override fun onActivityResult(code: Int, result: Int, data: Intent?) {
+        when (code) {
+            PICK -> Thread {
+                val copies = if (result == RESULT_OK && data != null) copies(data) else emptyArray()
+                picked?.offer(copies)
+            }.start()
+            // the viewer closed: the picture was shown
+            VIEW -> kept?.offer(true)
+            KEEP -> Thread {
+                val target = data?.data
+                val file = keptFile
+                kept?.offer(result == RESULT_OK && target != null && file != null && copyOut(file, target))
+            }.start()
+            else -> @Suppress("DEPRECATION") super.onActivityResult(code, result, data)
+        }
+    }
+
+    /** Each document [data] names, copied into a folder of its own under the cache: their paths. */
+    private fun copies(data: Intent): Array<String> {
+        val clip = data.clipData
+        val uris = clip?.let { (0 until it.itemCount).map { at -> it.getItemAt(at).uri } } ?: listOfNotNull(data.data)
+        return try {
+            uris.map { uri ->
+                val folder = File(cacheDir, "picked/" + java.util.UUID.randomUUID()).apply { mkdirs() }
+                val copy = File(folder, File(displayName(uri) ?: "file").name)
+                contentResolver.openInputStream(uri)!!.use { input -> copy.outputStream().use { input.copyTo(it) } }
+                copy.path
+            }.toTypedArray()
+        } catch (failed: Exception) {
+            // a document that cannot be read: the pick is cancelled, and the log says why
+            Log.w("ducktape", "a picked file was not copied", failed)
+            emptyArray()
+        }
+    }
+
+    /** The name the document at [uri] shows, if its provider says. */
+    private fun displayName(uri: Uri): String? =
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        }
+
+    /** [file] copied to the document at [target]: whether it was. */
+    private fun copyOut(file: File, target: Uri): Boolean = try {
+        contentResolver.openOutputStream(target)?.use { out -> file.inputStream().use { it.copyTo(out) } } != null
+    } catch (failed: Exception) {
+        Log.w("ducktape", "a file was not kept", failed)
+        false
+    }
+
 
     /** The shade's notices under [tag] taken down (Rust: its row read or cleared, or its program saw it). Any thread. */
     fun withdrawNotice(tag: String) = runOnUiThread { Ring.withdraw(this, tag) }
@@ -556,5 +674,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val asking = Any()
         @Volatile
         var asked: ArrayBlockingQueue<Boolean>? = null
+
+        /** [pickFiles]'s and [keepFile]'s request codes, their locks, and the answers they wait for. */
+        const val PICK = 7101
+        const val KEEP = 7102
+        const val VIEW = 7103
+        val picking = Any()
+        val keeping = Any()
+        @Volatile
+        var picked: ArrayBlockingQueue<Array<String>>? = null
+        @Volatile
+        var kept: ArrayBlockingQueue<Boolean>? = null
+        @Volatile
+        var keptFile: File? = null
     }
 }

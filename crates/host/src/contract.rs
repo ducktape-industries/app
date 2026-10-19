@@ -98,6 +98,41 @@ pub trait OsServices: Send + Sync + 'static {
     /// is awaited there: neither may block it (blocking work goes to
     /// `tokio::task::spawn_blocking`).
     fn mint_invite(&self, ask: MintInvite) -> Option<Answered>;
+    /// The shell's own file dialogs, where gpui's platform has none (the
+    /// phones: gpui_ios answers its picker and save dialog "not yet
+    /// implemented", gpui-mobile's Android save "cancelled"). `None`, the
+    /// default: `file.pick` and `file.save` open gpui's (the desktop).
+    fn files(&self) -> Option<&dyn Files> {
+        None
+    }
+}
+
+/// What a pick answers ([`Files::pick`]): the paths of the shell's copies
+/// of the files picked, `None` when the person cancelled, or what went
+/// wrong. Called once, from any thread.
+pub type PickDone = Box<dyn FnOnce(Result<Option<Vec<PathBuf>>, String>) + Send>;
+
+/// What a keep answers ([`Files::keep`]): whether the person kept the
+/// file, `false` when they cancelled, or what went wrong. Called once,
+/// from any thread.
+pub type KeepDone = Box<dyn FnOnce(Result<bool, String>) + Send>;
+
+/// A shell's own file dialogs ([`OsServices::files`]). Each is called on
+/// the window thread or the kernel's and only hands on: the dialog opens on
+/// the OS's own thread, and `done` answers when the person is through.
+pub trait Files: Send + Sync {
+    /// The system's picker of files (on a phone, its photos too). The shell
+    /// copies each file picked to a path of its own, in a folder of its own
+    /// under its cache; the host opens each and then removes it and its
+    /// folder (`runtime::picker`), so a copy outlives no pick.
+    fn pick(&self, multiple: bool, done: PickDone);
+    /// `path`, a file the host has just written in a folder of its own
+    /// under `Dirs::cache`, handed to the OS for the person to keep where
+    /// they choose (iOS: a picture in Quick Look, any other file in the
+    /// share sheet; Android: a picture in the system's viewer, any other
+    /// file through the create-document dialog). The host
+    /// removes the folder once `done` answers.
+    fn keep(&self, path: &std::path::Path, done: KeepDone);
 }
 
 /// Where the host keeps files. `cache` the OS may purge; `config` and

@@ -1019,6 +1019,49 @@ pub(in crate::runtime) fn spawn_save(
     spawn_method(view, id, &[], save, "host_call.file.save", None);
 }
 
+/// `file.save` on a shell that keeps files its own way
+/// (`contract::Files::keep`): the blobs written to `path`, in a folder of
+/// its own, as [`saved`] writes them, then the file handed to the shell;
+/// `true` once the person kept it, `false` when they cancelled. The folder
+/// goes once the shell answers, whatever it answered.
+#[cfg(feature = "ui")]
+pub(in crate::runtime) fn spawn_keep(
+    view: &mut View,
+    id: u64,
+    save: methods::SaveFile,
+    path: std::path::PathBuf,
+    files: &'static dyn crate::contract::Files,
+) {
+    let keep = move |node, _, _| -> Answered { Box::pin(kept(node, save, path, files)) };
+    spawn_method(view, id, &[], keep, "host_call.file.save", None);
+}
+
+/// [`spawn_keep`]'s task.
+#[cfg(feature = "ui")]
+async fn kept(
+    node: Node,
+    save: methods::SaveFile,
+    path: std::path::PathBuf,
+    files: &'static dyn crate::contract::Files,
+) -> Answer {
+    let folder = path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let made = folder.clone();
+    tokio::task::spawn_blocking(move || std::fs::create_dir_all(made))
+        .await
+        .map_err(host_fault)?
+        .map_err(host_fault)?;
+    let written = path.clone();
+    let answer = match saved(node, save, async move { Ok(Some(written)) }).await {
+        Ok(_) => crate::runtime::picker::keep(files, &path).await,
+        Err(refusal) => Err(refusal),
+    };
+    let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(folder)).await;
+    answer
+}
+
 /// `file.save`'s task: the file the person chose (none: cancelled, `false`),
 /// and each blob of `save` read from the node in order and written to it on
 /// a blocking thread; `true` once every one is written. A blob the node

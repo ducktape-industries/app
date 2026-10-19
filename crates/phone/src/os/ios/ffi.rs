@@ -21,6 +21,12 @@
 //!   program's notice the OS showed, delivered or opened; for one that
 //!   came in front, whether the OS shows it.
 //! - `ducktape_phone_call_audio(active)`: CallKit's audio session up or down.
+//! - `ducktape_phone_picked(ticket, paths, error)`: the launcher's answer to
+//!   the pick `ticket` ([`pick`]): a JSON array of its copies' paths, null
+//!   when cancelled; or what went wrong.
+//! - `ducktape_phone_kept(ticket, kept, error)`: its answer to the keep
+//!   `ticket` ([`keep`]): 1 when the person kept the file; or what went
+//!   wrong.
 //!
 //! Swift's entries called from here (`App.swift`):
 //! - `ducktape_phone_call_voice(active)`: the call's voice I/O made or gone
@@ -35,6 +41,10 @@
 //! - `ducktape_phone_banner(json) -> handed`: this phone's own banner of a
 //!   notice, its payload as JSON (`os::banner_payload`). Any thread (the
 //!   host's banner queue's).
+//! - `ducktape_phone_pick(multiple, ticket)`: the sheet of Photo Library and
+//!   Files to pick from (`Files.pick`); `ducktape_phone_keep(path, ticket)`:
+//!   a file to keep, a picture in Quick Look, any other in the share sheet
+//!   (`Files.keep`). Any thread (they hand on to the main queue).
 //!
 //! The regular remote-notification token (kind `apns`, the one a withdraw
 //! is pushed to) comes through gpui_ios's delegate hooks, set on the
@@ -44,12 +54,109 @@
 //! (gpui_ios's ObjC entries have no unwind guard, `README.ducktape.md`).
 #![allow(unsafe_code, reason = "the C ABI entry the Swift launcher calls")]
 
-use std::ffi::{CStr, c_char};
-use std::path::PathBuf;
+use ducktape_host::contract::{KeepDone, PickDone};
+use std::collections::BTreeMap;
+use std::ffi::{CStr, CString, c_char};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 #[cfg(feature = "call")]
 unsafe extern "C" {
     fn ducktape_phone_call_voice(active: u8);
+}
+
+unsafe extern "C" {
+    fn ducktape_phone_pick(multiple: u8, ticket: u64);
+    fn ducktape_phone_keep(path: *const c_char, ticket: u64);
+}
+
+/// The picks and keeps out with the launcher, by ticket, until it answers.
+static PICKS: Mutex<BTreeMap<u64, PickDone>> = Mutex::new(BTreeMap::new());
+static KEEPS: Mutex<BTreeMap<u64, KeepDone>> = Mutex::new(BTreeMap::new());
+static TICKETS: AtomicU64 = AtomicU64::new(0);
+
+/// The launcher's sheet to pick files from (`App.swift` `Files.pick`):
+/// `done` once it answers ([`ducktape_phone_picked`]).
+pub(crate) fn pick(multiple: bool, done: PickDone) {
+    let ticket = TICKETS.fetch_add(1, Ordering::Relaxed);
+    PICKS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(ticket, done);
+    // SAFETY: a Swift `@_cdecl` entry taking a byte and a number, any
+    // thread (it hands on to the main queue).
+    unsafe { ducktape_phone_pick(u8::from(multiple), ticket) }
+}
+
+/// `path` to the launcher to keep (`App.swift` `Files.keep`): `done` once
+/// it answers ([`ducktape_phone_kept`]).
+pub(crate) fn keep(path: &Path, done: KeepDone) {
+    let Some(path) = path.to_str().and_then(|path| CString::new(path).ok()) else {
+        return done(Err("the file's path is not text".into()));
+    };
+    let ticket = TICKETS.fetch_add(1, Ordering::Relaxed);
+    KEEPS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(ticket, done);
+    // SAFETY: a Swift `@_cdecl` entry taking a C string alive for the call
+    // (it copies it) and a number, any thread.
+    unsafe { ducktape_phone_keep(path.as_ptr(), ticket) }
+}
+
+/// The launcher's answer to the pick `ticket`: `paths` a JSON array of the
+/// paths of its copies, null when the person cancelled; `error` what went
+/// wrong, else null. Main thread.
+///
+/// # Safety
+/// `paths` and `error` are each null or a NUL-terminated string alive for
+/// the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ducktape_phone_picked(
+    ticket: u64,
+    paths: *const c_char,
+    error: *const c_char,
+) {
+    let Some(done) = PICKS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&ticket)
+    else {
+        return;
+    };
+    // SAFETY: the caller's contract above.
+    let (paths, error) = unsafe { (text(paths), text(error)) };
+    done(match (error, paths) {
+        (Some(error), _) => Err(error),
+        (None, None) => Ok(None),
+        (None, Some(paths)) => serde_json::from_str::<Vec<PathBuf>>(&paths)
+            .map(Some)
+            .map_err(|error| error.to_string()),
+    });
+}
+
+/// The launcher's answer to the keep `ticket`: `kept` 1 when the person
+/// kept the file (0: cancelled); `error` what went wrong, else null. Main
+/// thread.
+///
+/// # Safety
+/// `error` is null or a NUL-terminated string alive for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ducktape_phone_kept(ticket: u64, kept: u8, error: *const c_char) {
+    let Some(done) = KEEPS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&ticket)
+    else {
+        return;
+    };
+    // SAFETY: the caller's contract above.
+    let error = unsafe { text(error) };
+    done(match error {
+        Some(error) => Err(error),
+        None => Ok(kept != 0),
+    });
 }
 
 unsafe extern "C" {

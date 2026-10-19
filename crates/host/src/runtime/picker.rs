@@ -14,12 +14,20 @@
 //! `file.save`: blobs kept on this device as one file. Only the person's
 //! press or key opens the system's save dialog; the blobs go from the
 //! node to the file chosen (`kernel::spawn_save`), never through the view.
+//!
+//! A shell with dialogs of its own (`contract::Files`, the phones') picks
+//! and keeps in place of gpui: a pick answers the shell's copies, which the
+//! host opens and then removes; a save writes the file in a folder of its
+//! own under the cache, hands it to the shell to keep, and removes the
+//! folder once it answers (`kernel::spawn_keep`).
 #[cfg(feature = "ui")]
 use super::Seat;
 #[cfg(feature = "ui")]
 use super::kernel;
 use super::wire::methods::{self, Capability, refusal};
 use super::{View, wire};
+#[cfg(any(feature = "ui", test))]
+use crate::contract::Files;
 #[cfg(feature = "ui")]
 use gpui_kit::{Context, PathPromptOptions};
 use std::collections::HashMap;
@@ -212,6 +220,19 @@ fn save(view: &mut View, id: u64, payload: &[u8]) {
 #[cfg(feature = "ui")]
 pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
     for (id, pick) in std::mem::take(&mut view.picker.pending) {
+        // a shell with a picker of its own (a phone's) picks; else gpui's
+        if let Some(files) = crate::contract::os().files() {
+            let picked = shell_pick(files, pick.multiple);
+            let held = view.picker.held.clone();
+            kernel::spawn_reply(view, id, async move {
+                let paths = picked.await?;
+                let files = tokio::task::spawn_blocking(move || open_copies(paths))
+                    .await
+                    .unwrap_or_else(|error| Err(fault(error.to_string())))?;
+                Ok(methods::encode(&held.hold(files)))
+            });
+            continue;
+        }
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -234,6 +255,12 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
     }
     for (id, save) in std::mem::take(&mut view.picker.saves) {
         if !kernel::reaches_node(view, id) {
+            continue;
+        }
+        // a shell that keeps files its own way (a phone's) is handed it
+        if let Some(files) = crate::contract::os().files() {
+            let path = keeping_path(&crate::contract::os().dirs().cache, &save.name);
+            kernel::spawn_keep(view, id, save, path, files);
             continue;
         }
         let home = std::env::home_dir().unwrap_or_default();
@@ -315,6 +342,83 @@ pub(super) fn open_paths(paths: Vec<PathBuf>) -> Result<Vec<Opened>, wire::Error
     Ok(files)
 }
 
+/// The shell's own picker ([`Files::pick`]), opened now: the paths of its
+/// copies of the files picked, none when the person cancelled or the shell
+/// went without an answer.
+#[cfg(any(feature = "ui", test))]
+fn shell_pick(
+    files: &dyn Files,
+    multiple: bool,
+) -> impl std::future::Future<Output = Result<Vec<PathBuf>, wire::Error>> + use<> {
+    let (picked, answer) = tokio::sync::oneshot::channel();
+    files.pick(
+        multiple,
+        Box::new(move |paths| {
+            let _ = picked.send(paths);
+        }),
+    );
+    async move {
+        match answer.await {
+            Err(_) | Ok(Ok(None)) => Ok(Vec::new()),
+            Ok(Ok(Some(paths))) => Ok(paths),
+            Ok(Err(error)) => Err(fault(error)),
+        }
+    }
+}
+
+/// The shell's copies at `paths`, opened as [`open_paths`] opens files,
+/// then removed with their folders: the host holds each one open, and a
+/// copy outlives no pick.
+#[cfg(any(feature = "ui", test))]
+fn open_copies(paths: Vec<PathBuf>) -> Result<Vec<Opened>, wire::Error> {
+    let opened = open_paths(paths.clone());
+    for path in &paths {
+        let _ = std::fs::remove_file(path);
+        if let Some(folder) = path.parent() {
+            let _ = std::fs::remove_dir(folder);
+        }
+    }
+    opened
+}
+
+/// Where a file to keep is written first: a folder of its own under
+/// `cache`, the file named as the view named it, its last part alone.
+#[cfg(any(feature = "ui", test))]
+fn keeping_path(cache: &std::path::Path, name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = std::path::Path::new(name)
+        .file_name()
+        .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned());
+    let folder = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    cache.join("kept").join(folder).join(name)
+}
+
+/// `path` handed to the shell to keep ([`Files::keep`]): whether the person
+/// kept it, `false` when the shell went without an answer.
+#[cfg(any(feature = "ui", test))]
+pub(in crate::runtime) async fn keep(
+    files: &dyn Files,
+    path: &std::path::Path,
+) -> Result<Vec<u8>, wire::Error> {
+    let (kept, answer) = tokio::sync::oneshot::channel();
+    files.keep(
+        path,
+        Box::new(move |done| {
+            let _ = kept.send(done);
+        }),
+    );
+    match answer.await {
+        Err(_) => Ok(methods::encode(&false)),
+        Ok(Ok(done)) => Ok(methods::encode(&done)),
+        Ok(Err(error)) => Err(fault(error)),
+    }
+}
+
 /// The `len` bytes of a held file from `offset` (the caller keeps them
 /// within its size as held). A file whose size changed since it was
 /// picked is refused: its slices would mix two files.
@@ -385,6 +489,87 @@ mod tests {
         held.release(&[1, 7]);
         assert!(held.get(1).is_none(), "released");
         assert_eq!(read(&held, 2, 0, 1), b"b", "the other stays");
+    }
+
+    /// A shell whose picker answers `picked` and whose keep answers whether
+    /// the file holds `kept`.
+    struct Shell {
+        picked: Option<Result<Option<Vec<PathBuf>>, String>>,
+        kept: &'static [u8],
+    }
+
+    impl Files for Shell {
+        fn pick(&self, _: bool, done: crate::contract::PickDone) {
+            if let Some(picked) = self.picked.clone() {
+                done(picked);
+            }
+        }
+        fn keep(&self, path: &std::path::Path, done: crate::contract::KeepDone) {
+            done(Ok(std::fs::read(path).is_ok_and(|bytes| bytes == self.kept)))
+        }
+    }
+
+    fn run<T>(future: impl std::future::Future<Output = T>) -> T {
+        let runtime = tokio::runtime::Builder::new_current_thread().build();
+        runtime.unwrap().block_on(future)
+    }
+
+    #[test]
+    fn a_shells_pick_is_opened_and_its_copies_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let copy = dir.path().join("pick-1").join("tape.png");
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, b"tape").unwrap();
+        let shell = Shell {
+            picked: Some(Ok(Some(vec![copy.clone()]))),
+            kept: b"",
+        };
+        let paths = run(shell_pick(&shell, true)).unwrap();
+        let held = Held::default();
+        let picked = held.hold(open_copies(paths).unwrap());
+        assert_eq!((picked[0].name.as_str(), picked[0].size), ("tape.png", 4));
+        assert_eq!(read(&held, 1, 0, 4), b"tape", "read after its copy went");
+        assert!(!copy.parent().unwrap().exists(), "the copy and its folder");
+    }
+
+    #[test]
+    fn a_shell_pick_cancelled_or_unanswered_picks_nothing_and_a_failed_one_says_why() {
+        let shell = |picked| Shell { picked, kept: b"" };
+        assert!(
+            run(shell_pick(&shell(Some(Ok(None))), false))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(run(shell_pick(&shell(None), false)).unwrap().is_empty());
+        let failed = run(shell_pick(&shell(Some(Err("no window".into()))), false));
+        let failed = failed.unwrap_err();
+        assert_eq!(
+            (failed.code.as_str(), failed.message.as_str()),
+            ("host_fault", "no window")
+        );
+    }
+
+    #[test]
+    fn a_file_to_keep_has_a_folder_of_its_own_and_its_own_last_name() {
+        let cache = std::path::Path::new("/cache");
+        let first = keeping_path(cache, "../../etc/passwd");
+        assert_eq!(first.file_name(), Some("passwd".as_ref()));
+        assert!(first.starts_with("/cache/kept"));
+        let second = keeping_path(cache, "passwd");
+        assert_ne!(first.parent(), second.parent(), "a folder each");
+        assert_eq!(keeping_path(cache, "..").file_name(), Some("file".as_ref()));
+    }
+
+    #[test]
+    fn a_kept_file_answers_the_shells_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tape.txt");
+        std::fs::write(&path, b"kept").unwrap();
+        let shell = |kept| Shell { picked: None, kept };
+        let kept = run(keep(&shell(b"kept"), &path)).unwrap();
+        assert_eq!(kept, methods::encode(&true));
+        let cancelled = run(keep(&shell(b"other"), &path)).unwrap();
+        assert_eq!(cancelled, methods::encode(&false));
     }
 
     #[test]

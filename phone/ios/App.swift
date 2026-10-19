@@ -2,8 +2,11 @@ import AVFoundation
 import CallKit
 import CryptoKit
 import Foundation
+import PhotosUI
 import PushKit
+import QuickLook
 import UIKit
+import UniformTypeIdentifiers
 import UserNotifications
 
 /// The phone's entry. gpui (zed's `gpui_ios`) runs UIKit itself with its own app and scene delegates, so this only
@@ -493,4 +496,205 @@ public func ducktapeDeviceKeyStorage(
   } catch {
     return strdup(error.localizedDescription)
   }
+}
+
+
+/// The file dialogs Rust asks for (`crates/phone/src/os/ios/ffi.rs` `pick`, `keep`): gpui_ios has none. A pick offers
+/// a sheet of Photo Library (`PHPickerViewController`, which needs no photo permission) and Files (the document
+/// picker); each file picked is copied into a folder of its own under Caches/picked for Rust to open, and Rust removes
+/// the copy once it holds it open (`ducktape_phone_picked`). A keep shows a picture in Quick Look, whose share button
+/// saves it to Photos or Files, and hands any other file to the share sheet (`ducktape_phone_kept`); Rust removes the
+/// file once it hears the answer. One pick and one keep at a time: a second answers the first as cancelled.
+final class Files: NSObject, PHPickerViewControllerDelegate, UIDocumentPickerDelegate, QLPreviewControllerDataSource,
+  QLPreviewControllerDelegate, UIAdaptivePresentationControllerDelegate
+{
+  /// The choice sheet, which says when it is gone: iOS 27 shows an action sheet with no Cancel row, and a tap outside
+  /// it runs no action, so a pick that chose nothing is answered as cancelled once the sheet has gone.
+  private final class Sheet: UIAlertController {
+    var gone: (() -> Void)?
+    override func viewDidDisappear(_ animated: Bool) {
+      super.viewDidDisappear(animated)
+      gone?()
+    }
+  }
+
+  static let shared = Files()
+  private var picking: UInt64?
+  private var keeping: (ticket: UInt64, url: URL)?
+
+  /// The controller on top of the key window: where a dialog is presented.
+  private static func top() -> UIViewController? {
+    let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap { $0.windows }
+    var top = (windows.first { $0.isKeyWindow } ?? windows.first)?.rootViewController
+    while let shown = top?.presentedViewController { top = shown }
+    return top
+  }
+
+  /// An iPad shows a sheet as a popover: from the middle of the screen, with no arrow.
+  private static func centred(_ controller: UIViewController, over top: UIViewController) {
+    guard let popover = controller.popoverPresentationController else { return }
+    popover.sourceView = top.view
+    popover.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 0, height: 0)
+    popover.permittedArrowDirections = []
+  }
+
+  /// A copy of `url` in a folder of its own under Caches/picked, named `name` (with `url`'s extension when `name` has
+  /// none), else as `url` is.
+  private static func copy(_ url: URL, named name: String?) throws -> String {
+    let files = FileManager.default
+    let folder = files.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("picked").appendingPathComponent(UUID().uuidString)
+    try files.createDirectory(at: folder, withIntermediateDirectories: true)
+    var file = name.map { ($0 as NSString).lastPathComponent } ?? url.lastPathComponent
+    if file.isEmpty { file = url.lastPathComponent }
+    if (file as NSString).pathExtension.isEmpty && !url.pathExtension.isEmpty { file += "." + url.pathExtension }
+    let copy = folder.appendingPathComponent(file)
+    try files.copyItem(at: url, to: copy)
+    return copy.path
+  }
+
+  func pick(multiple: Bool, ticket: UInt64) {
+    if picking != nil { answer(nil) }
+    guard let top = Files.top() else {
+      "There is no window to pick files in.".withCString { ducktape_phone_picked(ticket, nil, $0) }
+      return
+    }
+    picking = ticket
+    let sheet = Sheet(title: nil, message: nil, preferredStyle: .actionSheet)
+    var chose = false
+    sheet.addAction(
+      UIAlertAction(title: "Photo Library", style: .default) { _ in
+        chose = true
+        var config = PHPickerConfiguration()
+        config.selectionLimit = multiple ? 0 : 1
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = self
+        picker.presentationController?.delegate = self
+        top.present(picker, animated: true)
+      })
+    sheet.addAction(
+      UIAlertAction(title: "Files", style: .default) { _ in
+        chose = true
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = multiple
+        picker.delegate = self
+        picker.presentationController?.delegate = self
+        top.present(picker, animated: true)
+      })
+    sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in self.answer(nil) })
+    // after the action that dismissed it, if one did: a sheet tapped away answers the pick as cancelled
+    sheet.gone = { DispatchQueue.main.async { if !chose { self.answer(nil) } } }
+    Files.centred(sheet, over: top)
+    top.present(sheet, animated: true)
+  }
+
+  /// The pick out answered: the copies' paths, or nil for cancelled.
+  private func answer(_ paths: [String]?) {
+    guard let ticket = picking else { return }
+    picking = nil
+    guard let paths else {
+      ducktape_phone_picked(ticket, nil, nil)
+      return
+    }
+    let data = (try? JSONSerialization.data(withJSONObject: paths)) ?? Data("[]".utf8)
+    (String(data: data, encoding: .utf8) ?? "[]").withCString { ducktape_phone_picked(ticket, $0, nil) }
+  }
+
+  /// The pick out failed: `why`, in the OS's words.
+  private func fail(_ why: String) {
+    guard let ticket = picking else { return }
+    picking = nil
+    why.withCString { ducktape_phone_picked(ticket, nil, $0) }
+  }
+
+  func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+    picker.dismiss(animated: true)
+    if results.isEmpty { return answer(nil) }
+    let group = DispatchGroup()
+    let lock = NSLock()
+    var paths = [String?](repeating: nil, count: results.count)
+    var failed: String?
+    for (at, result) in results.enumerated() {
+      let provider = result.itemProvider
+      guard let type = provider.registeredTypeIdentifiers.first else { continue }
+      group.enter()
+      provider.loadFileRepresentation(forTypeIdentifier: type) { url, error in
+        defer { group.leave() }
+        // the URL lives only in this callback: copied here
+        let copied = Result { () throws -> String in
+          guard let url else { throw error ?? CocoaError(.fileReadUnknown) }
+          return try Files.copy(url, named: provider.suggestedName)
+        }
+        lock.lock()
+        switch copied {
+        case .success(let path): paths[at] = path
+        case .failure(let error): failed = error.localizedDescription
+        }
+        lock.unlock()
+      }
+    }
+    group.notify(queue: .main) {
+      if let failed { self.fail(failed) } else { self.answer(paths.compactMap { $0 }) }
+    }
+  }
+
+  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+    do { answer(try urls.map { try Files.copy($0, named: nil) }) } catch { fail(error.localizedDescription) }
+  }
+
+  func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { answer(nil) }
+
+  /// A picker swiped down: as cancelled. A pick already answered is answered no more (`answer` reads `picking`).
+  func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { answer(nil) }
+
+  func keep(path: String, ticket: UInt64) {
+    if keeping != nil { kept(false, nil) }
+    let url = URL(fileURLWithPath: path)
+    guard let top = Files.top() else {
+      "There is no window to show the file in.".withCString { ducktape_phone_kept(ticket, 0, $0) }
+      return
+    }
+    keeping = (ticket, url)
+    if UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
+      let preview = QLPreviewController()
+      preview.dataSource = self
+      preview.delegate = self
+      top.present(preview, animated: true)
+      return
+    }
+    let share = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    share.completionWithItemsHandler = { _, completed, _, error in self.kept(completed, error) }
+    Files.centred(share, over: top)
+    top.present(share, animated: true)
+  }
+
+  /// The keep out answered: kept, cancelled, or what went wrong.
+  private func kept(_ done: Bool, _ error: Error?) {
+    guard let ticket = keeping?.ticket else { return }
+    keeping = nil
+    guard let error else { return ducktape_phone_kept(ticket, done ? 1 : 0, nil) }
+    error.localizedDescription.withCString { ducktape_phone_kept(ticket, 0, $0) }
+  }
+
+  func numberOfPreviewItems(in controller: QLPreviewController) -> Int { keeping == nil ? 0 : 1 }
+
+  func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+    (keeping?.url ?? URL(fileURLWithPath: "/")) as NSURL
+  }
+
+  /// Quick Look says nothing of what its share button did: shown is kept.
+  func previewControllerDidDismiss(_ controller: QLPreviewController) { kept(true, nil) }
+}
+
+/// Rust's pick (`crates/phone/src/os/ios/ffi.rs` `pick`), answered on `ducktape_phone_picked`. Any thread.
+@_cdecl("ducktape_phone_pick")
+public func ducktapePhonePick(_ multiple: UInt8, _ ticket: UInt64) {
+  DispatchQueue.main.async { Files.shared.pick(multiple: multiple != 0, ticket: ticket) }
+}
+
+/// Rust's keep of the file at `path` (`ffi.rs` `keep`), answered on `ducktape_phone_kept`. Any thread.
+@_cdecl("ducktape_phone_keep")
+public func ducktapePhoneKeep(_ path: UnsafePointer<CChar>, _ ticket: UInt64) {
+  let path = String(cString: path)
+  DispatchQueue.main.async { Files.shared.keep(path: path, ticket: ticket) }
 }
