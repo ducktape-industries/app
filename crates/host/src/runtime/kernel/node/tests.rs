@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::kernel::tests::{Mode, fake_node, read_request, respond, view};
+use crate::runtime::kernel::tests::{Mode, fake_node, read_request, respond, roles_serial, view};
 
 /// The one refusal `id` got, as (code, message).
 fn refused(view: &mut View, id: u64) -> (String, String) {
@@ -524,7 +524,6 @@ fn followers_of_one_programs_changes_share_one_socket() {
 #[test]
 fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
     let mut view = view();
-    view.targets = vec!["chat".into()];
     follow_changes(&mut view, 1, changes_node(&[]), "chat".into());
     spawn_reply(&mut view, 2, std::future::pending::<Answer>());
     let stalled = fake_node(vec![(noded::route::STATUS, Mode::Stall)]);
@@ -1201,4 +1200,98 @@ async fn the_try_network_holds_a_put() {
             "{reply:?}"
         );
     }
+}
+
+/// A view whose manifest names no program queries one, follows its changes
+/// and writes to it, each through the node like any other request: the
+/// node's answer, its block and its receipt come back to the view.
+#[test]
+fn a_view_reaches_a_program_its_manifest_never_names() {
+    use commonware_cryptography::Signer as _;
+    let _roles = roles_serial();
+    let _seat = backend::seat_serial();
+    handle().block_on(backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
+    )));
+    let mut view = view();
+    let on = |view: &View, node: &Node| crate::runtime::Connection {
+        client: Some(node.client.clone()),
+        network: node.network.clone(),
+        chain: "test-network#1".into(),
+        rev: view.connection.rev,
+        live: None,
+    };
+    let answered = |view: &mut View, id: u64| {
+        for _ in 0..500 {
+            let mut events = Vec::new();
+            view.replies.drain_into(&mut events);
+            if let Some(event) = events
+                .into_iter()
+                .find(|event| matches!(event, wire::Event::Response { id: of, .. } if *of == id))
+            {
+                return event;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("request {id} got no answer");
+    };
+    let request = |id, kind: &str, payload| wire::Request {
+        id,
+        kind: kind.into(),
+        payload,
+    };
+    let to_chat = |body: Vec<u8>| {
+        methods::encode(&methods::Call {
+            target: "chat".into(),
+            body,
+        })
+    };
+
+    let queried = fake_node(vec![(
+        noded::route::QUERY,
+        Mode::Answer(abi::encode(&vec![7u8])),
+    )]);
+    view.connection = on(&view, &queried.node);
+    view.answer(request(1, "program.query", to_chat(Vec::new())), &None);
+    assert_eq!(
+        answered(&mut view, 1),
+        wire::Event::Response {
+            id: 1,
+            result: Ok(vec![7]),
+            done: true,
+        }
+    );
+
+    let followed = changes_node(&[5]);
+    view.connection = on(&view, &followed);
+    view.answer(
+        request(2, "program.changes", methods::encode(&"chat".to_owned())),
+        &None,
+    );
+    assert_eq!(
+        answered(&mut view, 2),
+        wire::Event::Response {
+            id: 2,
+            result: Ok(methods::encode(&Some(methods::Change {
+                height: 5,
+                keys: vec![b"row/5".to_vec()],
+            }))),
+            done: false,
+        }
+    );
+
+    let (written, applied) = node_refusing_duplicates();
+    view.connection = on(&view, &written);
+    view.answer(request(3, "op.submit", to_chat(vec![1, 2, 3])), &None);
+    match answered(&mut view, 3) {
+        wire::Event::Response {
+            result, done: true, ..
+        } => assert!(
+            matches!(decoded(result), methods::Submitted::Applied { .. }),
+            "the op was carried"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 1);
+    handle().block_on(backend::lock_signer());
 }

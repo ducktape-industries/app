@@ -356,7 +356,7 @@ pub(super) fn answer(
             view.sync_route();
         }
         (Capability::Program, "query") => {
-            if node::targeted(view, id, payload, "program.query").is_some() {
+            if node::enveloped(view, id, payload).is_some() {
                 spawn_asked(view, id, payload, query, "host_call.program.query")
             }
         }
@@ -386,11 +386,11 @@ pub(super) fn answer(
             }
             spawn_asked(view, id, payload, invite, "host_call.invite.create")
         }
-        // a write: to a declared target, and after the person's native
-        // yes where the op removes or suspends a key or an agent, or is a
-        // view no vote reviewed writing to a role (`consent::needed`)
+        // a write: to any program, after the person's native yes where
+        // the op removes or suspends a key or an agent, or is a view no
+        // vote reviewed writing to a role (`consent::needed`)
         (Capability::Op, "submit") => {
-            let Some(call) = node::targeted(view, id, payload, "op.submit") else {
+            let Some(call) = node::enveloped(view, id, payload) else {
                 return true;
             };
             // the account the seated key holds, as the app resolved it

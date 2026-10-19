@@ -466,7 +466,6 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
             noded_client::wire::route::BLOB_GET,
             Mode::Answer(abi::encode(&Some(framed))),
         )]);
-        listed(abi::BlobId::Sha256(id.into()));
         let ask = methods::encode(&format!("sha256:{}", noded_client::hex::hex_encode(&id)));
         async move {
             let answer = blob_manifest(held.node.clone(), ask).await.unwrap();
@@ -524,7 +523,6 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
         noded_client::wire::route::BLOB_GET,
         Mode::Answer(abi::encode(&None::<Vec<u8>>)),
     )]);
-    listed(abi::BlobId::Sha256([0; 32]));
     let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
     let answer = blob_manifest(absent.node.clone(), ask).await.unwrap();
     assert_eq!(
@@ -533,93 +531,50 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
     );
 }
 
-/// `code` listed in the app's roster as a running program's, under a name
-/// of its own.
-fn listed(code: abi::BlobId) {
-    crate::runtime::roster::roster()
-        .lock()
-        .push(crate::backend::views::Program {
-            name: format!("manifest-test-{}", &abi::hex(code.digest())[..8]),
-            code,
-            bare: false,
-        });
-}
-
-/// `blob.manifest` reads only code the programs role names: a listed
-/// program's, a view-only entry's, or what a scheduled change brings, the
-/// scheduled list read for the ask. An id none of them name is refused,
-/// the node asked for the list and nothing else; a scheduled code is read
-/// as a seat reads it, kept under its id, so the next ask reads the disk,
-/// not the node.
+/// `blob.manifest` reads any blob, as `blob.get` does: an id no listed
+/// program, view-only entry or scheduled change names is read as a seat
+/// reads it, the node asked for the blob alone, and kept under its id, so
+/// the next ask reads the disk, not the node.
 #[tokio::test]
-async fn blob_manifest_reads_only_code_the_roster_names() {
+async fn blob_manifest_reads_any_blob() {
     use sha2::Digest as _;
-    let program = module(&[("ducktape.describe", b"scheduled")]);
+    let program = module(&[("ducktape.describe", b"named by nothing")]);
     let mut framed = format!("program {}\0", program.len()).into_bytes();
     framed.extend_from_slice(&program);
     let id = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
     let kept = crate::backend::views::cache_path(&id);
     let _ = std::fs::remove_file(&kept);
-    let scheduled = |items: Vec<::programs::Pending>| {
-        let reply = ::programs::Reply::Scheduled(::programs::PageResponse {
-            height: 12,
-            items,
-            next: None,
-        });
-        (
-            noded_client::wire::route::QUERY,
-            Mode::Answer(abi::encode(&abi::encode(&reply))),
-        )
-    };
-    let brings = ::programs::Pending {
-        height: 20,
-        change: ::programs::Change::Set(::programs::Entry {
-            program: "later".into(),
-            code: id,
-            params: Vec::new(),
-        }),
-        by: None,
-    };
     let ask = methods::encode(&format!(
         "sha256:{}",
         noded_client::hex::hex_encode(id.digest())
     ));
-    // nothing scheduled: refused, the node asked for the list alone
-    let nothing = fake_node(vec![scheduled(Vec::new())]);
-    let refusal = blob_manifest(nothing.node.clone(), ask.clone())
-        .await
-        .unwrap_err();
-    assert_eq!(refusal.code, refusal::UNDECLARED_TARGET);
-    assert_eq!(
-        nothing.accepted.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "an unnamed code reached the node"
-    );
-    // a scheduled change brings it: read, kept
-    let held = fake_node(vec![
-        scheduled(vec![brings.clone()]),
-        (
-            noded_client::wire::route::BLOB_GET,
-            Mode::Answer(abi::encode(&Some(framed.clone()))),
-        ),
-    ]);
     let size = |answer: Vec<u8>| {
         methods::decode::<Option<methods::Manifested>>(&answer)
             .unwrap()
             .map(|blob| blob.size)
     };
+    let held = fake_node(vec![(
+        noded_client::wire::route::BLOB_GET,
+        Mode::Answer(abi::encode(&Some(framed.clone()))),
+    )]);
     let answer = blob_manifest(held.node.clone(), ask.clone()).await.unwrap();
     assert_eq!(size(answer), Some(program.len() as u64));
-    assert!(kept.exists(), "a named code's read was not kept");
-    // the next ask reads the disk: a node with no blob route answers it
-    let listed_only = fake_node(vec![scheduled(vec![brings])]);
-    let answer = blob_manifest(listed_only.node.clone(), ask).await;
+    assert_eq!(
+        held.accepted.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the node was asked for the blob alone"
+    );
+    assert!(kept.exists(), "the read was not kept");
+    // the next ask reads the disk: a node with no route answers it
+    let empty = fake_node(Vec::new());
+    let answer = blob_manifest(empty.node.clone(), ask).await;
     let _ = std::fs::remove_file(&kept);
     assert_eq!(
         answer.map(size),
         Ok(Some(program.len() as u64)),
         "answered off the disk"
     );
+    assert_eq!(empty.accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 /// A blob id is hex digits only: `+f` (which `from_str_radix` reads as 15)
@@ -648,4 +603,25 @@ async fn invite_refuses_a_ttl_it_cannot_mint_before_asking_the_node() {
         );
     }
     assert_eq!(held.accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// A view built when its manifest named the programs it addressed (line 7)
+/// still loads: the line is read past, and the rest of the manifest stands.
+#[test]
+fn an_old_manifest_naming_targets_still_loads() {
+    let text = "ducktape.view.manifest\nOld\nFrom before.\nop,program,\n480\n0123abcd\nchat,identity,\n\nteal\n";
+    let view = module(&[("ducktape.view.manifest", text.as_bytes())]);
+    assert_eq!(
+        crate::runtime::manifest_of(&view),
+        crate::runtime::Listing {
+            name: "Old".into(),
+            icon: String::new(),
+            tint: view_wire::manifest::Tint::Teal,
+            description: "From before.".into(),
+            min_width: 480,
+            width: None,
+            capabilities: vec![methods::Capability::Op, methods::Capability::Program],
+            wire: "0123abcd".into(),
+        }
+    );
 }

@@ -399,14 +399,6 @@ pub(super) fn changes(view: &mut View, id: u64, payload: &[u8]) {
         );
         return;
     }
-    if !view.targets.contains(&program) {
-        view.refuse(
-            id,
-            refusal::UNDECLARED_TARGET,
-            undeclared("program.changes", &program),
-        );
-        return;
-    }
     let Some(node) = connected(view, id) else {
         return;
     };
@@ -658,8 +650,7 @@ impl Drop for NodeTask {
 }
 
 /// The envelope of a node method, its target checked: a program id
-/// (`program::is_name`, the rule a manifest's targets follow), not a
-/// path.
+/// (`program::is_name`), not a path.
 fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Error> {
     let call: methods::Call = methods::decode(ask).map_err(malformed)?;
     let target = call.target.trim();
@@ -672,37 +663,20 @@ fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Error> {
     }
 }
 
-fn undeclared(kind: &str, target: &str) -> String {
-    format!("`{kind}` names `{target}`, which this view's manifest does not list among its targets")
-}
-
-/// The envelope of `program.query` or `op.submit` (`kind`) from `view`, its
-/// target among the view's manifest targets; `None` with the request
-/// refused otherwise (`malformed_request`, `undeclared_target`). The task
+/// The envelope of `program.query` or `op.submit` from `view`; `None`
+/// with the request refused `malformed_request` when it names no
+/// program. Any program may be named: whether a view may read or write
+/// it is that program's to decide, never the view's manifest's. The task
 /// decodes the envelope again: a string and the bytes, cheaper than
 /// carrying it.
-pub(super) fn targeted(
-    view: &mut View,
-    id: u64,
-    payload: &[u8],
-    kind: &str,
-) -> Option<methods::Call> {
-    let call = match call_of(payload) {
-        Ok(call) => call,
+pub(super) fn enveloped(view: &mut View, id: u64, payload: &[u8]) -> Option<methods::Call> {
+    match call_of(payload) {
+        Ok(call) => Some(call),
         Err(refusal) => {
             view.reply(id, Err(refusal));
-            return None;
+            None
         }
-    };
-    if !view.targets.contains(&call.target) {
-        view.refuse(
-            id,
-            refusal::UNDECLARED_TARGET,
-            undeclared(kind, &call.target),
-        );
-        return None;
     }
-    Some(call)
 }
 
 pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {
@@ -1141,37 +1115,18 @@ fn blob_id(ask: &[u8]) -> Result<abi::BlobId, wire::Error> {
     })
 }
 
-/// `blob.manifest`: a blob the programs role names (a listed program's
-/// code, a view-only entry's, or one a scheduled change brings: the
-/// scheduled list is read for the ask, never per block), read as a seat
+/// `blob.manifest`: any blob, as `blob.get` reads any blob, read as a seat
 /// reads it (`views::program_bytes`, cached under its id); the view in its
 /// `ducktape.view` section or the blob itself for a view-only entry, and
 /// that view's manifest as `manifest_of` would read it. A blob is a view by
 /// its manifest section, read or not: one this host cannot read is a view
 /// with no manifest, never a program that draws nothing. The bytes stay on
-/// the host. An id the roster does not name is refused as
-/// `undeclared_target`, never fetched: `None` is the node's word that it
-/// holds no such blob, and a view asks the host only about code the chain
-/// names, as a node method names only a program its manifest declares.
+/// the host. `None` is the node's word that it holds no such blob.
 pub(super) fn blob_manifest(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
         use backend::views::{Fetch, VIEW_SECTION, program_bytes, section};
         use view_wire::manifest::{MANIFEST_SECTION, read_manifest};
         let id = blob_id(&ask)?;
-        let named = super::super::roster::roster().names_code(&id)
-            || match backend::views::coming(&node.client, &node.network).await {
-                Ok(coming) => coming.contains(&id),
-                Err(Fetch::Unreachable(reason)) => {
-                    return Err(wire::Error::new(refusal::RPC_CLIENT, reason));
-                }
-                Err(error) => return Err(host_fault(error)),
-            };
-        if !named {
-            return Err(wire::Error::new(
-                refusal::UNDECLARED_TARGET,
-                "the programs role names no such code",
-            ));
-        }
         let bytes = match program_bytes(&node.client, &id).await {
             Ok((bytes, _)) => bytes,
             Err(Fetch::NotHeld) => return Ok(methods::encode(&None::<methods::Manifested>)),

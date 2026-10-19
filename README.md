@@ -7,7 +7,7 @@ inside its chrome is a wasm view a program ships; the app's own screens are
 two — reach a node, unlock a key.
 
 ```bash
-# a node (ducktape-industries/ducktape, rev 7f72b1a49) is a
+# a node (ducktape-industries/ducktape, rev b5f164664) is a
 # separate process this app talks to over /v1; run one, then:
 cargo run -p ducktape-app
 DUCKTAPE_RPC=http://127.0.0.1:8844 cargo run -p ducktape-app   # skip the connect screen
@@ -139,8 +139,8 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (rev `f375edd060d7588cff79b429967bee31a5cd54b2`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
-`ducktape-industries/ducktape` (rev `7f72b1a49d4fa3078fab42de42b71d8d73402a42`, the rev that programs rev pins): `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
+`ducktape-industries/programs` (rev `e042ecf0c52b7168c09500b952e8fdb4d9c303e7`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
+`ducktape-industries/ducktape` (rev `b5f164664d555ff054cd32559879abf8104e1c4a`, the rev that programs rev pins): `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
 `ducktape-industries/gpui-pre` (rev `c698ed2c7e8eeed46641e5ea9622ee55b84b1486`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
 
 ## Building

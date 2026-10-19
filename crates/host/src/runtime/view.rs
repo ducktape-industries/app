@@ -112,9 +112,6 @@ pub(super) struct View {
     /// The capabilities the manifest declares: a method whose capability is
     /// not among them is refused before it is routed.
     pub capabilities: Vec<Capability>,
-    /// The programs the manifest names as targets: a node method naming
-    /// another is refused before it is routed.
-    pub targets: Vec<String>,
     /// The manifest's `MIN_WINDOW_WIDTH`: the narrowest the view is laid
     /// out, and so the narrowest a window holding it is sized.
     pub min_width: u32,

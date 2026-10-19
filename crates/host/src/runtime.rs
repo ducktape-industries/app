@@ -236,7 +236,7 @@ pub mod pictures;
 /// What a view's manifest says, read before any of its code runs: the
 /// name, icon, tint and description the rail and Home list it by, the narrowest
 /// it is laid out, the width a desk window opens it at, the capabilities it
-/// declares, its targets, and the wire
+/// declares, and the wire
 /// it was built against (another than this app's runs all the same, and
 /// whatever then fails says so: `View::failure`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -248,7 +248,6 @@ pub struct Listing {
     pub min_width: u32,
     pub width: Option<u32>,
     pub capabilities: Vec<Capability>,
-    pub targets: Vec<String>,
     pub wire: String,
 }
 
@@ -264,7 +263,6 @@ fn manifest_of(bytes: &[u8]) -> Listing {
             min_width: manifest.min_width,
             width: manifest.width,
             capabilities: manifest.capabilities,
-            targets: manifest.targets,
             wire: manifest.wire_id,
         })
         .unwrap_or_default()
@@ -286,7 +284,6 @@ pub fn listing(program: &str) -> Option<Listing> {
                 min_width: $held.min_width,
                 width: $held.width,
                 capabilities: $held.capabilities.clone(),
-                targets: $held.targets.clone(),
                 wire: $held.wire.clone(),
             }
         };

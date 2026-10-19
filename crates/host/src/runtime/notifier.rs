@@ -379,7 +379,6 @@ impl View {
         notifier.connection = connection.clone();
         notifier.name = listing.name;
         notifier.capabilities = listing.capabilities;
-        notifier.targets = listing.targets;
         notifier.wire = listing.wire;
         notifier.inited(&shown).await?;
         Ok(notifier)

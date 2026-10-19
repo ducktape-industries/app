@@ -300,7 +300,6 @@ impl View {
         fresh.tint = view.tint;
         fresh.description = view.description.clone();
         fresh.capabilities = view.capabilities.clone();
-        fresh.targets = view.targets.clone();
         fresh.min_width = view.min_width;
         fresh.width = view.width;
         fresh.wire = view.wire.clone();
@@ -650,7 +649,6 @@ impl View {
             tint,
             description,
             capabilities,
-            targets,
             min_width,
             width,
             wire,
@@ -716,7 +714,6 @@ impl View {
         sibling.tint = *tint;
         sibling.description = description.clone();
         sibling.capabilities = capabilities.clone();
-        sibling.targets = targets.clone();
         sibling.min_width = *min_width;
         sibling.width = *width;
         sibling.wire = wire.clone();
@@ -876,7 +873,6 @@ impl View {
         view.tint = listing.tint;
         view.description = listing.description;
         view.capabilities = listing.capabilities;
-        view.targets = listing.targets;
         view.min_width = listing.min_width;
         view.width = listing.width;
         view.wire = listing.wire;
@@ -959,7 +955,6 @@ impl View {
             tint: Tint::None,
             description: String::new(),
             capabilities: Vec::new(),
-            targets: Vec::new(),
             min_width: 0,
             width: None,
             // the manifest's, once `load` reads it
@@ -1123,7 +1118,6 @@ fn view_code(
         min_width: listing.min_width,
         width: listing.width,
         capabilities: listing.capabilities,
-        targets: listing.targets,
         wire: listing.wire,
     }
 }

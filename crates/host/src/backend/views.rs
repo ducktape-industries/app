@@ -128,39 +128,6 @@ pub async fn roles(client: &RpcClient, network: &str) -> Result<abi::Roles, Fetc
     }
 }
 
-/// The code every scheduled change brings (a program set, a view set), in
-/// the programs role's order, whatever height it lands at: what the
-/// network is about to run, so a view may ask about it (`blob.manifest`)
-/// before it does. Read for that ask, not per block. Empty from a programs
-/// role that predates the question.
-pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fetch> {
-    use ::programs::{PageRequest, Query, Reply};
-    let mut codes = Vec::new();
-    let mut after = None;
-    loop {
-        let page = PageRequest { after, limit: None };
-        let page = match ask(client, network, Query::Scheduled { page }).await {
-            Ok(Reply::Scheduled(page)) => page,
-            Ok(_) => {
-                return Err(Fetch::Unreadable(
-                    "the programs role answered the scheduled question with another reply".into(),
-                ));
-            }
-            Err(Fetch::Refused(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(error),
-        };
-        codes.extend(
-            page.items
-                .iter()
-                .filter_map(|pending| pending.change.code()),
-        );
-        let Some(next) = page.next else {
-            return Ok(codes);
-        };
-        after = Some(next);
-    }
-}
-
 async fn ask(
     client: &RpcClient,
     network: &str,
