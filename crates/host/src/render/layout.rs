@@ -91,6 +91,10 @@ impl ViewTree {
                 };
             }
         }
+        // first, so a node inside that hears it too hears it first
+        if let Some(handler) = interactivity.on_aux_click {
+            element = element.child(super::interactivity::long_press(handler, cx));
+        }
         for child in children {
             element = element.child(self.node(child, window, cx));
         }

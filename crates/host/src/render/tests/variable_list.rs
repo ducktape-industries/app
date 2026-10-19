@@ -700,3 +700,96 @@ fn a_window_slid_by_two_splices_keeps_a_scrolled_reader_on_their_row(
     );
     assert_eq!(after.offset_in_item, scrolled.offset_in_item);
 }
+
+/// A thread's list as chat-view sends it once every reply is in: top
+/// aligned, following its end, opened on its first row.
+fn following_list(count: usize, revision: u64, commands: Vec<wire::ListCommand>) -> wire::Node {
+    let rows = (0..count)
+        .map(|index| fixed_row(100 + index as u64, 20., 0x404040))
+        .collect();
+    let mut list = variable_list_node(count, wire::ListAlignment::Top, 0, rows);
+    if let wire::Node::List {
+        following_tail,
+        revision: sent_at,
+        commands: sent,
+        ..
+    } = &mut list
+    {
+        *following_tail = true;
+        *sent_at = revision;
+        *sent = commands;
+    }
+    let style = div().w(px(200.)).h(px(120.)).style().clone();
+    container_with_style("room", style, [list])
+}
+
+fn laid_out(native: &mut gpui_kit::VisualTestContext) {
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        window.simulate_next_frame(cx);
+        window.render_frame(cx);
+    });
+}
+
+fn sent(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext, node: wire::Node) {
+    native.update(|_, cx| tree.update(cx, |tree, cx| tree.replace(node, &[], cx)));
+    laid_out(native);
+}
+
+/// A list that follows its end moves for a row that arrives only while it
+/// stands at its end: scrolled up, nothing moves; back at the end, it
+/// follows again. gpui decides it at each layout by where the list stands,
+/// which is what chat-view leans on (J-075).
+#[gpui_kit::test]
+fn a_following_list_follows_arrivals_only_while_it_stands_at_its_end(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let top = wire::ListOffset {
+        item_ix: 0,
+        offset_in_item: 0.,
+    };
+    let opened = following_list(
+        40,
+        1,
+        vec![
+            wire::ListCommand::SetFollowMode { tail: true },
+            wire::ListCommand::ScrollTo(top),
+        ],
+    );
+    let window = cx.open_window(size(px(200.), px(120.)), |_, _| ViewTree::new(opened));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    laid_out(&mut native);
+    let state = tree.read_with(&native, |tree, _| {
+        let list = tree.variable_lists.values().next().expect("the list");
+        list.state.clone()
+    });
+    assert!(!state.is_following_tail(), "opened on its first row");
+    let arrival = |count: usize, revision| {
+        let at = count - 1;
+        let splice = wire::ListCommand::Splice {
+            start: at,
+            end: at,
+            count: 1,
+        };
+        following_list(count, revision, vec![splice])
+    };
+    sent(&tree, &mut native, arrival(41, 2));
+    assert_eq!(
+        state.logical_scroll_top().item_ix,
+        0,
+        "scrolled up: nothing moves"
+    );
+    assert!(!state.is_following_tail());
+    let to_end = following_list(41, 3, vec![wire::ListCommand::ScrollToEnd]);
+    sent(&tree, &mut native, to_end);
+    assert!(state.is_following_tail(), "at its end, it follows");
+    sent(&tree, &mut native, arrival(42, 4));
+    assert!(state.is_following_tail());
+    assert_eq!(
+        state.item_is_below_viewport(41),
+        Some(false),
+        "the row that arrived is on screen"
+    );
+}

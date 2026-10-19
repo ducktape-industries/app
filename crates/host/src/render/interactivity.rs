@@ -1,14 +1,14 @@
 //! A node's `wire::Interactivity` onto a gpui element: focus and tab
 //! order, tooltips, one listener per handler the view set, each emitting
-//! the matching `wire::Event`, the keys the view consumes, and the `KeyUp`
-//! owed to a node the keyboard left with a key down in it.
+//! the matching `wire::Event`, the keys the view consumes, the `KeyUp` owed
+//! to a node the keyboard left with a key down in it, and a long press.
 
 use super::{AuthoredPath, Tree, ViewTree};
 use gpui_kit::{
-    App, AppContext as _, Context, FocusHandle, KeyDownEvent, KeyUpEvent, Keystroke,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
-    MousePressureEvent, MouseUpEvent, PinchEvent, ScrollWheelEvent, StatefulInteractiveElement,
-    Subscription, Window,
+    App, AppContext as _, Context, DispatchPhase, FocusHandle, IntoElement, KeyDownEvent,
+    KeyUpEvent, Keystroke, LongPressEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseExitEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent, PinchEvent, ScrollWheelEvent,
+    StatefulInteractiveElement, Subscription, TouchPhase, Window,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -538,4 +538,44 @@ fn apply_misc<E: StatefulInteractiveElement>(
         ));
     }
     element
+}
+
+/// A zero-paint canvas over a node that hears aux clicks: a finger held on
+/// it is that click, as `TouchClickEvent::long_press` says (touch's twin of
+/// the right button), which gpui-pre recognizes but hands to no aux-click
+/// listener. The press is claimed, so no tap follows it and nothing under
+/// the node hears it.
+pub(super) fn long_press(handler: u32, cx: &mut Context<ViewTree>) -> impl IntoElement + use<> {
+    use gpui_kit::Styled as _;
+    let view = cx.entity().downgrade();
+    gpui_kit::canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
+        move |_, hitbox, window, _| {
+            window.on_mouse_event(move |event: &LongPressEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble
+                    || event.phase != TouchPhase::Started
+                    || window.default_prevented()
+                    || !hitbox.is_hovered(window)
+                {
+                    return;
+                }
+                window.prevent_default();
+                cx.stop_propagation();
+                let click = gpui_kit::ClickEvent::Touch(gpui_kit::TouchClickEvent {
+                    position: event.start_position,
+                    tap_count: 1,
+                    long_press: true,
+                });
+                let _ = view.update(cx, |this, cx| {
+                    this.activate();
+                    cx.emit(wire::Event::AuxClick {
+                        handler,
+                        event: (&click).into(),
+                    });
+                });
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
 }

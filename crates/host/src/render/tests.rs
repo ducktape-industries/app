@@ -306,11 +306,13 @@ mod inputs;
 mod inspect;
 mod layout;
 mod links;
+mod long_press;
 mod overlay;
 mod page_motion;
 #[cfg(target_os = "linux")]
 pub(super) mod picture_pixels;
 mod picture_presentation;
+mod picture_touch;
 mod press_release;
 mod primitives;
 mod rich_tooltip;
