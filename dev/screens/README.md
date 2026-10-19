@@ -26,7 +26,8 @@ per-fixture renderer/Xvfb logs are written to `OUTPUT_DIR/logs`.
 
 `dev/screens/png.sh FRAME_JSON OUT_PNG [WxH] [light|dark]` draws the same whole frame to a PNG with
 no display: the host's headless wgpu renderer (Mesa's lavapipe where there is no GPU), the app's
-theme, the bundled faces and Noto Color Emoji. It needs none of Xvfb, xdotool or ImageMagick, so it
+theme, the bundled faces, Noto Color Emoji and the bundled assets (`gpui_kit::assets::AllAssets`,
+so a view's icons draw). It needs none of Xvfb, xdotool or ImageMagick, so it
 runs in a pods pod. The size defaults to `--render-tree`'s 1100x760, the theme to light. It is an
 ignored host test (`crates/host/src/render/tests/snap.rs`, Linux only) the script runs with
 `SNAP_FRAME`, `SNAP_OUT`, `SNAP_SIZE` and `SNAP_THEME`; the PNG is at the renderer's scale (2x).
