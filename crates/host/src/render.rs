@@ -448,7 +448,8 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // One arm, one method (Space, a bare div, is the one exception): this
+        // One arm, one method (Space and Unknown, a bare div, are the
+        // exceptions): this
         // dispatcher is on the recursion chain for every nesting level the
         // wire allows (`wire::MAX_DEPTH`), and an unoptimised build gives a
         // function the stack of ALL its arms at once — inlined bodies here
@@ -473,6 +474,9 @@ impl ViewTree {
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node),
             Node::Space => div().into_any_element(),
+            // a node a later view-wire wrote, which this build cannot read:
+            // drawn as nothing (view-wire's `Node::Unknown` contract)
+            Node::Unknown { .. } => div().into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, window, cx),
             Node::Container(view_wire::ContainerNode { .. }) => self.container(node, window, cx),

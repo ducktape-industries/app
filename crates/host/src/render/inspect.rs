@@ -67,6 +67,7 @@ fn kind(node: &wire::Node) -> &'static str {
         Node::Deferred { .. } => "deferred",
         Node::Canvas { .. } => "canvas",
         Node::Space => "space",
+        Node::Unknown { .. } => "unknown",
     }
 }
 
