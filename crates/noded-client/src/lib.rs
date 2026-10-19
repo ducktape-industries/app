@@ -151,9 +151,25 @@ impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
         match error.is_connect() {
             true => Error::Unreachable(error.to_string()),
-            false => Error::Transport(error.to_string()),
+            false => Error::Transport(with_causes(&error)),
         }
     }
+}
+
+// reqwest's own words name only the step that failed ("error decoding
+// response body" for any failure reading a body); the causes under them say
+// why (a reset, an early close, a deadline), each once.
+fn with_causes(error: &reqwest::Error) -> String {
+    let mut sentence = error.to_string();
+    let mut cause = std::error::Error::source(error);
+    while let Some(inner) = cause {
+        let said = inner.to_string();
+        if !said.is_empty() && !sentence.ends_with(&said) {
+            sentence = format!("{sentence}: {said}");
+        }
+        cause = inner.source();
+    }
+    sentence
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -551,6 +567,26 @@ mod tests {
                 .await
                 .expect("the read never gave up");
         assert!(matches!(read, Err(Error::Transport(_))), "{read:?}");
+    }
+
+    // A body cut short after its head says why, not only that the body did
+    // not read: reqwest's causes come with its own words.
+    #[tokio::test]
+    async fn a_body_cut_short_says_its_cause() {
+        use tokio::io::AsyncWriteExt as _;
+        let client = reading(Duration::from_secs(5), |mut stream| async move {
+            let head = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n";
+            stream.write_all(head.as_bytes()).await.unwrap();
+            stream.write_all(&[1; 10]).await.unwrap();
+        })
+        .await;
+        let read = client.blob(BlobId::Sha256([0; 32])).await;
+        let Err(Error::Transport(sentence)) = read else {
+            panic!("{read:?}");
+        };
+        let step = "error decoding response body: ";
+        assert!(sentence.starts_with(step), "{sentence}");
+        assert!(sentence.len() > step.len(), "{sentence}");
     }
 
     /// A blob that keeps coming, a byte at a time, for longer than the idle
