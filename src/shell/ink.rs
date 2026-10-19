@@ -235,6 +235,17 @@ pub(super) fn button(
     press: impl Into<Press>,
     ink: &Ink,
 ) -> AnyElement {
+    button_on(id, text, kind, move |_, cx| run(cx), press, ink)
+}
+
+pub(super) fn button_on(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    kind: Kind,
+    run: impl Fn(&ClickEvent, &mut App) + 'static,
+    press: impl Into<Press>,
+    ink: &Ink,
+) -> AnyElement {
     let press = press.into();
     let disabled = press != Press::Ready;
     let text = text.into();
@@ -261,9 +272,9 @@ pub(super) fn button(
         .text_color(fg)
         .when(disabled, |button| button.opacity(0.3))
         .when(!disabled, |button| {
-            button.cursor_pointer().on_click(move |_, _, cx| {
+            button.cursor_pointer().on_click(move |click, _, cx| {
                 cx.stop_propagation();
-                run(cx)
+                run(click, cx)
             })
         })
         .child(text);

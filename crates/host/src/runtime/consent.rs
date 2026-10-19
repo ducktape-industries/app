@@ -32,12 +32,7 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(feature = "ui")]
 mod sheet;
 #[cfg(feature = "ui")]
-pub use sheet::sheet;
-
-/// How long Approve takes no press after the card opens: a second press
-/// the view asked for ("press twice") lands on the card before anyone
-/// read it.
-pub const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+pub use sheet::{counts, sheet};
 
 /// The card's title for an op to the person's account (identity's).
 pub const ACCOUNT: &str = "Confirm a change to your account";

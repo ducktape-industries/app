@@ -7,8 +7,6 @@ use crate::runtime::consent;
 use crate::shell::entities::Overlay;
 use gpui_kit::*;
 
-pub(in crate::shell) use crate::runtime::consent::SETTLE;
-
 /// The card's usual height, a few lines of description in it: where it
 /// hangs in a short window (`dialog_fit`).
 const TALL: f32 = 360.;
@@ -22,9 +20,8 @@ impl OverlayLayer {
     /// words. Approve lets the op go on to be signed; Cancel, or the dialog
     /// closed any other way (`Windows`), refuses it. The card is the ask's
     /// own (its id is in the dialog's): it shows no other ask's words, and
-    /// a press that began on another card is not one on it, nor one in the
-    /// first [`SETTLE`] after it opened. In a short window the description
-    /// scrolls and Approve stays on screen.
+    /// a press that began on another card is not one on it. In a short
+    /// window the description scrolls and Approve stays on screen.
     pub(super) fn consent(&self, ask: u64, window: &Window, cx: &App) -> AnyElement {
         let ink = Ink::of(self.prefs.read(cx).get().dark());
         let Some((_, words)) = consent::front().filter(|(front, _)| *front == ask) else {
@@ -38,30 +35,22 @@ impl OverlayLayer {
             let front = consent::front().map(|(id, _)| id);
             overlays.update(cx, |overlays, cx| overlays.follow_consent(front, cx));
         };
-        // Approve's press, once the card's first moment has passed
         let approved = {
             let answer = answer.clone();
-            let overlays = self.overlays.entity().clone();
-            move |cx: &mut App| {
-                let opened = overlays.read(cx).opened();
-                if cx
-                    .background_executor()
-                    .now()
-                    .saturating_duration_since(opened)
-                    >= SETTLE
-                {
-                    answer(true, cx);
-                }
-            }
+            move |cx: &mut App| answer(true, cx)
         };
         if ducktape_host::contract::os().facts().touch_first {
             return self.consent_sheet(ask, words, approved, answer, window, cx);
         }
-        let approve = button(
+        let approve = button_on(
             "consent-approve",
             "Approve",
             Kind::Primary,
-            approved,
+            move |click, cx| {
+                if consent::counts(click) {
+                    approved(cx)
+                }
+            },
             false,
             &ink,
         );
@@ -114,6 +103,7 @@ impl OverlayLayer {
                 .child(crate::a11y::whole(label.child(shown)))
         });
         let title = words.title;
+        let focus = self.card.clone();
         let (top, tall) = dialog_fit(
             f32::from(window.viewport_size().height),
             self.inset(window, cx),
@@ -130,7 +120,8 @@ impl OverlayLayer {
             self.inset(window, cx),
             &ink,
             |card| {
-                card.mt(px(top))
+                card.track_focus(&focus)
+                    .mt(px(top))
                     .max_h(px(tall))
                     .w(px(440.))
                     .max_w_full()
@@ -160,8 +151,7 @@ impl OverlayLayer {
     /// eyebrow, "<verb>: <target>", the op's facts, what it takes away,
     /// Cancel and the verb (in danger for one that takes something away),
     /// and the caption on who signs; every size the phone's own. A press on
-    /// the scrim closes it, as Cancel does. Approve keeps the desktop's
-    /// first moment ([`SETTLE`]).
+    /// the scrim closes it, as Cancel does.
     fn consent_sheet(
         &self,
         ask: u64,
@@ -197,6 +187,7 @@ impl OverlayLayer {
         let panel = div()
             .id(SharedString::from(format!("consent-{ask}")))
             .control(Role::Dialog, title)
+            .track_focus(&self.card)
             .occlude()
             .flex()
             .flex_col()

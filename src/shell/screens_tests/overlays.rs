@@ -2,7 +2,6 @@
 //! back as it closes (docs/ax.md §4 gap 5): the dialogs on a scrim and the
 //! menus hanging from the bar alike, and one giving way to the next. A menu
 //! the keys leave closes, and leaves them where they went.
-use super::super::layers::SETTLE;
 use super::super::layers::tests::open_now;
 use super::*;
 use crate::runtime::consent;
@@ -533,16 +532,8 @@ fn ask(
 }
 
 /// The console's card synced to the consent queue (`Windows::sync_consent`),
-/// then the draw that shows it and the one after the keys enter it, and
-/// the card's first moment passed (`SETTLE`): a press from here on is the
-/// person's own on it.
+/// then the draw that shows it and the one after the keys enter it.
 fn sync(view: &Entity<WindowRoot>, native: &mut VisualTestContext) {
-    up(view, native);
-    native.executor().advance_clock(SETTLE);
-}
-
-/// [`sync`], the card's first moment not passed yet.
-fn up(view: &Entity<WindowRoot>, native: &mut VisualTestContext) {
     let app = super::super::layers::tests::entities(view, native);
     app.windows
         .update(native, |windows, cx| windows.sync_consent(cx));
@@ -586,6 +577,24 @@ fn key(native: &mut VisualTestContext, down: bool, is_held: bool) {
     native.update(draw);
 }
 
+fn second_click(native: &mut VisualTestContext, at: gpui_kit::Point<Pixels>) {
+    let (button, modifiers) = (gpui_kit::MouseButton::Left, gpui_kit::Modifiers::none());
+    native.simulate_event(gpui_kit::MouseDownEvent {
+        button,
+        position: at,
+        modifiers,
+        click_count: 2,
+        first_mouse: false,
+    });
+    native.simulate_event(gpui_kit::MouseUpEvent {
+        button,
+        position: at,
+        modifiers,
+        click_count: 2,
+    });
+    native.update(draw);
+}
+
 /// Enter held down since before the card opened (pressed on the desk, the
 /// card opening under it and taking the keys, the key repeating, released
 /// on the card) does not approve it: that press did not begin on the card.
@@ -600,7 +609,7 @@ fn enter_held_from_before_the_card_opened_does_not_approve_it(cx: &mut TestAppCo
     native.update(|window, _| {
         assert_eq!(
             focused_node(window),
-            Some((Role::Button, "Approve".to_owned())),
+            Some((Role::Dialog, consent::ACCOUNT.to_owned())),
             "the card took the keys"
         );
     });
@@ -612,14 +621,26 @@ fn enter_held_from_before_the_card_opened_does_not_approve_it(cx: &mut TestAppCo
     assert!(shows(&mut native, "chat asks to suspend agent #3."));
     key(&mut native, true, false);
     key(&mut native, false, false);
-    assert!(approved(&mut told), "a press on the card approves it");
+    assert!(
+        consent::front().is_some(),
+        "an Enter on the card itself answered it"
+    );
+    native.simulate_keystrokes("tab");
+    native.update(draw);
+    native.update(|window, _| {
+        assert_eq!(
+            focused_node(window),
+            Some((Role::Button, "Approve".to_owned())),
+            "Tab reaches Approve"
+        );
+    });
+    key(&mut native, true, false);
+    key(&mut native, false, false);
+    assert!(approved(&mut told), "an Enter on Approve approves it");
 }
 
-/// Approve takes no press in the card's first moment: a second press the
-/// view asked for ("press twice") would land on the card before anyone
-/// read it. A click and Enter then do nothing; after it, a click approves.
 #[gpui_kit::test]
-fn approve_takes_no_press_in_the_cards_first_moment(cx: &mut TestAppContext) {
+fn approve_takes_no_click_that_carries_on_a_count_or_enter_on_the_card(cx: &mut TestAppContext) {
     let (view, mut native) = open(gate::desk(), cx);
     super::activate(&mut native);
     let said = "Program chat asks your key to vote in the validators' program.";
@@ -636,20 +657,19 @@ fn approve_takes_no_press_in_the_cards_first_moment(cx: &mut TestAppContext) {
         },
     )
     .expect("queued");
-    up(&view, &mut native);
+    sync(&view, &mut native);
     assert!(shows(&mut native, said));
     let at = bar_button(&mut native, "consent-approve");
     let none = gpui_kit::Modifiers::none();
-    native.simulate_click(at, none);
+    second_click(&mut native, at);
     key(&mut native, true, false);
     key(&mut native, false, false);
     assert!(
         consent::front().is_some(),
-        "a press in the first moment approved it"
+        "a second click of a count, or an Enter on the card, approved it"
     );
-    native.executor().advance_clock(SETTLE);
     native.simulate_click(at, none);
-    assert!(approved(&mut told), "a click after it approves it");
+    assert!(approved(&mut told), "a click of its own approves it");
 }
 
 /// In a short window a long description scrolls inside the card, and
@@ -770,6 +790,8 @@ fn a_withdrawn_asks_card_gives_way_to_a_new_card(cx: &mut TestAppContext) {
         "a click begun on the old card answered the new one"
     );
 
+    native.simulate_keystrokes("tab");
+    native.update(draw);
     native.update(|window, _| {
         assert_eq!(
             focused_node(window),
@@ -793,8 +815,8 @@ fn a_withdrawn_asks_card_gives_way_to_a_new_card(cx: &mut TestAppContext) {
 /// Under touch the card is the phone's confirm sheet (mobile
 /// `src/kit/Confirm.tsx`): docked to the window's bottom, the ask's title
 /// as its eyebrow, "Suspend: agent #12", the program, the agent and who
-/// signs, what it takes away, Cancel and Suspend. Its first moment takes no
-/// press, as the desktop card's does; Cancel refuses it.
+/// signs, what it takes away, Cancel and Suspend. A second click of a count
+/// is no yes, as on the desktop card; Cancel refuses it.
 #[gpui_kit::test]
 fn under_touch_the_card_is_the_phones_confirm_sheet(cx: &mut TestAppContext) {
     ducktape_host::contract::testing::touch_first_for_test(true);
@@ -803,7 +825,7 @@ fn under_touch_the_card_is_the_phones_confirm_sheet(cx: &mut TestAppContext) {
     let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
     let words = consent::needed("chat", None, identity::PROGRAM, &suspend, Some(7)).unwrap();
     let mut told = consent::queue("chat", 0, words).expect("queued");
-    up(&view, &mut native);
+    sync(&view, &mut native);
     for said in [
         "Suspend: agent #12",
         "Program",
@@ -835,12 +857,11 @@ fn under_touch_the_card_is_the_phones_confirm_sheet(cx: &mut TestAppContext) {
     );
     let none = gpui_kit::Modifiers::none();
     let at = bar_button(&mut native, "consent-approve");
-    native.simulate_click(at, none);
+    second_click(&mut native, at);
     assert!(
         consent::front().is_some(),
-        "a press in the first moment approved it"
+        "a second click of a count approved it"
     );
-    native.executor().advance_clock(SETTLE);
     let at = bar_button(&mut native, "consent-cancel");
     native.simulate_click(at, none);
     assert!(consent::front().is_none(), "Cancel answered it");

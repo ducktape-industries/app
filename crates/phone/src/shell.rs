@@ -66,7 +66,6 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 
 /// The door's name for the phone's one window: its ids read
 /// `phone:home/<program>`.
@@ -526,9 +525,8 @@ pub struct Root {
     stack: Entity<Stack>,
     sheet: Option<Sheet>,
     /// The consent queue's front, shown over any sheet until it is
-    /// answered, and when it came up (Approve keeps no press in its first
-    /// moment, `consent::SETTLE`).
-    consent: Option<(u64, std::time::Instant)>,
+    /// answered.
+    consent: Option<u64>,
     /// An alert over everything but the consent sheet (Expo `Alert`): its
     /// title and its sentence, dismissed by OK or Back.
     alert: Option<(&'static str, String)>,
@@ -585,7 +583,7 @@ pub struct Root {
     /// The sheet, the consent sheet, the alert and the toast as drawn, each
     /// coming and going; and each sheet's panel height, as last laid out.
     drawn_sheet: Option<Shown<Sheet>>,
-    drawn_consent: Option<Shown<(u64, Instant, consent::Words)>>,
+    drawn_consent: Option<Shown<(u64, consent::Words)>>,
     drawn_alert: Option<Shown<(&'static str, String)>>,
     drawn_toast: Option<Shown<String>>,
     sheet_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
@@ -1274,7 +1272,7 @@ impl Root {
     /// The consent sheet goes (its scrim, Back): its ask is refused, as
     /// Cancel refuses it, and the queue's next shows.
     fn refuse_consent(&mut self, cx: &mut Context<Self>) {
-        if let Some((ask, _)) = self.consent.take() {
+        if let Some(ask) = self.consent.take() {
             consent::answer(ask, false);
             self.consent_moved(cx);
         }
@@ -1283,11 +1281,7 @@ impl Root {
     /// The consent queue moved: its front shows in the consent sheet, over
     /// any other sheet; none, and the consent sheet goes.
     fn consent_moved(&mut self, cx: &mut Context<Self>) {
-        self.consent = match (consent::front(), self.consent) {
-            (Some((ask, _)), Some((shown, opened))) if shown == ask => Some((shown, opened)),
-            (Some((ask, _)), _) => Some((ask, Self::now(cx))),
-            (None, _) => None,
-        };
+        self.consent = consent::front().map(|(ask, _)| ask);
         cx.notify();
     }
 
@@ -1689,11 +1683,11 @@ impl Root {
         Some(sheet::frame("sheet", name, content, at, close, palette, cx))
     }
 
-    /// The consent sheet for `ask`, opened at `opened`, its `words`: the
+    /// The consent sheet for `ask`, its `words`: the
     /// host's confirm sheet content in the phone's sheet, where `at` says.
     fn consent_sheet(
         &mut self,
-        (ask, opened, words): (u64, Instant, consent::Words),
+        (ask, words): (u64, consent::Words),
         at: sheet::At,
         palette: look::Palette,
         cx: &mut Context<Self>,
@@ -1708,13 +1702,7 @@ impl Root {
                 .unwrap_or_default();
         };
         let approve = answer.clone();
-        // Approve takes no press in the sheet's first moment: a second
-        // press the view asked for lands before anyone read it
-        let approved = move |cx: &mut App| {
-            if Self::now(cx).saturating_duration_since(opened) >= consent::SETTLE {
-                approve(true, cx);
-            }
-        };
+        let approved = move |cx: &mut App| approve(true, cx);
         let body = consent::sheet(words, palette.dark(), approved, answer);
         let refuse = Self::refuse_consent;
         sheet::frame("consent", title, body, at, refuse, palette, cx)
@@ -2215,9 +2203,9 @@ impl Render for Root {
         }
         // an ask answered elsewhere is no longer the queue's front: its
         // sheet goes
-        let asked = self.consent.and_then(|(ask, opened)| {
+        let asked = self.consent.and_then(|ask| {
             let (_, words) = consent::front().filter(|(front, _)| *front == ask)?;
-            Some((ask, opened, words))
+            Some((ask, words))
         });
         if self.consent.is_some() && asked.is_none() {
             self.consent = None;

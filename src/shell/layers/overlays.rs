@@ -30,8 +30,6 @@ use std::collections::HashMap;
 
 mod approve;
 mod consent;
-#[cfg(test)]
-pub(in crate::shell) use consent::SETTLE;
 mod settings;
 mod spotlight;
 
@@ -88,6 +86,7 @@ pub(in crate::shell) struct OverlayLayer {
     /// A menu hanging from the bar (`Chrome`'s): the keys go into it when
     /// it opens.
     menu: FocusHandle,
+    card: FocusHandle,
     _subscriptions: [Subscription; 4],
 }
 
@@ -179,6 +178,7 @@ impl OverlayLayer {
             entering: None,
             modal: cx.focus_handle(),
             menu,
+            card: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
     }
@@ -251,6 +251,7 @@ impl OverlayLayer {
         }
         self.entering = Some(match open {
             Overlay::Network | Overlay::Menu(_) => self.menu.clone(),
+            Overlay::Consent(_) => self.card.clone(),
             _ => self.modal.clone(),
         });
     }
@@ -263,7 +264,9 @@ impl OverlayLayer {
         };
         if !into.contains_focused(window, cx) {
             into.focus(window, cx);
-            window.focus_next(cx);
+            if into != self.card {
+                window.focus_next(cx);
+            }
         }
     }
 

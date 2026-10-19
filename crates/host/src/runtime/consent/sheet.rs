@@ -11,7 +11,7 @@ use crate::fonts::{FAMILY_MONO, FAMILY_UI};
 use crate::theme::hsla as color;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Div, FontWeight, InteractiveElement as _, ParentElement as _, Role, Stateful,
+    App, ClickEvent, Div, FontWeight, InteractiveElement as _, ParentElement as _, Role, Stateful,
     StatefulInteractiveElement as _, Styled as _, Text, div, px,
 };
 
@@ -23,6 +23,12 @@ const MD: f32 = design::spacing::MD as f32;
 const LG: f32 = design::spacing::LG as f32;
 const BLOCK: f32 = design::spacing::BLOCK as f32;
 const INSET: f32 = 20.;
+
+type Run = Box<dyn Fn(&ClickEvent, &mut App)>;
+
+pub fn counts(click: &ClickEvent) -> bool {
+    click.click_count() == 1
+}
 
 /// The sheet's content for `asked`, scrolling when it outgrows the sheet:
 /// Cancel answers no (`answer(false)`), the verb `approved`.
@@ -110,7 +116,7 @@ pub fn sheet(
                      tone: design::Color,
                      weight: u16,
                      tall: f32,
-                     run: Box<dyn Fn(&mut App)>| {
+                     run: Run| {
         let filled = ground.is_some();
         let button = face(15., 21., weight, false)
             .id(id)
@@ -127,9 +133,9 @@ pub fn sheet(
             .when_some(ground, |button, ground| button.bg(color(ground)))
             .text_color(color(tone))
             .cursor_pointer()
-            .on_click(move |_, _, cx| {
+            .on_click(move |click, _, cx| {
                 cx.stop_propagation();
-                run(cx)
+                run(click, cx)
             })
             .child(div().truncate().child(label));
         let ring = match filled {
@@ -146,7 +152,7 @@ pub fn sheet(
         palette.muted,
         400,
         48.,
-        Box::new(move |cx| answer(false, cx)),
+        Box::new(move |_: &ClickEvent, cx: &mut App| answer(false, cx)),
     );
     cancel.style().flex_grow = Some(1.);
     let (ground, edge, tone, tall) = match card.danger {
@@ -166,7 +172,11 @@ pub fn sheet(
         tone,
         500,
         tall,
-        Box::new(approved),
+        Box::new(move |click: &ClickEvent, cx: &mut App| {
+            if counts(click) {
+                approved(cx)
+            }
+        }),
     );
     verb.style().flex_grow = Some(2.);
     let buttons = div()
