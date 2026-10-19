@@ -316,8 +316,7 @@ pub(crate) fn on_open(open: fn(Opened, Option<String>)) {
 /// `Inbound`. A row opens as if picked in the centre — read now, and its
 /// `duck://` link opened (the view's seat, when it carried none). A row of
 /// another chain than the one in hand goes to the shell as it is, to
-/// switch first. `activation` is the OS's token for the click, handed on
-/// with what it opens.
+/// switch first.
 pub(crate) fn clicked(click: Click, activation: Option<String>) {
     tracing::info!(target: "ducktape::app", ?click, "a banner was clicked");
     let Some(opened) = opened(click) else {

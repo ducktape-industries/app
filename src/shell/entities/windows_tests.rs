@@ -282,9 +282,6 @@ fn an_https_link_opens_in_the_web_view_else_in_the_system_browser(cx: &mut TestA
     assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/c"));
 }
 
-/// A click on the update notice (`runtime::notify` posts it as a banner's
-/// `Updates`): Settings opens on the console, on its Updates page, and the
-/// console comes forward with the click's activation token.
 #[gpui_kit::test]
 fn the_update_notice_opens_settings_on_updates(cx: &mut TestAppContext) {
     let (app, key) = console(cx);

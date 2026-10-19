@@ -1185,8 +1185,6 @@ impl Windows {
         }
     }
 
-    /// The app and its console brought to the front, with the activation
-    /// token the OS gave the act that asked (a launch, a banner's click).
     fn come_forward(&mut self, token: Option<String>, cx: &mut Context<Self>) {
         if cfg!(target_os = "macos") {
             cx.activate(true);
@@ -1738,9 +1736,6 @@ async fn left_full_size(
 /// (`runtime::notify`), the passkey ceremony's page (`backend::auth_page`)
 /// or the self-update's word (`update`).
 pub(crate) enum Posted {
-    /// What a banner's click opens (a link, a row of another network's
-    /// log, Settings › Updates), the console brought forward with the
-    /// click's activation token.
     Banner(crate::runtime::notify::Opened, Option<String>),
     /// A web page, for the system browser.
     Url(String),

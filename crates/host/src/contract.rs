@@ -389,9 +389,7 @@ pub enum Signal {
     /// The insets changed: re-read `OsServices::insets`, re-place.
     InsetsChanged,
     /// A banner the host raised was clicked: the centre opens what it
-    /// names, through [`Boot::open`], with the activation token the OS
-    /// gave the click (freedesktop's `ActivationToken`), which lets the
-    /// window that opens it come forward.
+    /// names, through [`Boot::open`].
     BannerClick(Click, Option<String>),
 }
 

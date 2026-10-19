@@ -44,9 +44,8 @@ pub(crate) fn install_inbound(inbound: Inbound) {
     macos::start();
 }
 
-/// A banner clicked, from the OS's own thread, with the token the OS gave
-/// the click to bring a window forward: into the host through the one
-/// inbound channel.
+/// A banner clicked, from the OS's own thread: into the host through the
+/// one inbound channel.
 fn clicked(click: Click, activation: Option<String>) {
     match INBOUND.get() {
         Some(inbound) => inbound.send(Signal::BannerClick(click, activation)),

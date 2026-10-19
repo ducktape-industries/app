@@ -256,17 +256,12 @@ fn clicks() -> &'static Mutex<HashMap<u32, Click>> {
     CLICKS.get_or_init(Mutex::default)
 }
 
-/// What the daemon says of a banner: the activation token it hands the
-/// app for the click it is about to tell (`ActivationToken`, spec 1.2),
-/// or the action taken on it (`ActionInvoked`).
 #[derive(Debug, PartialEq)]
 enum Said {
     Token(u32, String),
     Action(u32, String),
 }
 
-/// An action taken on a banner, with the token the daemon sent for it
-/// just before, if it sent one: the banner, the action, the token.
 fn acted(tokens: &mut HashMap<u32, String>, said: Said) -> Option<(u32, String, Option<String>)> {
     match said {
         Said::Token(banner, token) => {
@@ -278,8 +273,7 @@ fn acted(tokens: &mut HashMap<u32, String>, said: Said) -> Option<(u32, String, 
 }
 
 /// One thread for the life of the process, hearing the daemon say a
-/// banner was clicked: what it names is opened, its window brought forward
-/// with the click's activation token.
+/// banner was clicked: what it names is opened.
 fn listen(bus: &'static zbus::blocking::Connection) {
     static LISTENING: OnceLock<()> = OnceLock::new();
     LISTENING.get_or_init(|| {
