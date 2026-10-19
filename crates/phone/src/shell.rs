@@ -553,6 +553,7 @@ pub struct Root {
     appearance: Appearance,
     /// Debug mode's numbers, read while the Open tab is on screen.
     readout: debug::Readout,
+    held: ducktape_host::a11y::HeldKeys,
     /// The programs Home's caption counts while they are being prepared.
     run: home::Run,
     /// Home's filter, and whether it is open (its magnifier pressed).
@@ -694,6 +695,7 @@ impl Root {
             switching: None,
             appearance,
             readout: debug::Readout::default(),
+            held: Default::default(),
             run: home::Run::default(),
             search,
             filtering: false,
@@ -2096,13 +2098,13 @@ impl Render for Root {
             && self.page(cx) == Page::Root(Tab::Open);
         let shown = open && self.shared.prefs.read(cx).get().debug && window.is_window_active();
         self.readout.follow(shown, window, cx);
-        let mut root = div()
+        let mut root = self.held.on(div()
             .size_full()
             .relative()
             .flex()
             .flex_col()
             .bg(palette.background())
-            .text_color(palette.foreground());
+            .text_color(palette.foreground()));
         if join::step(*self.shared.screen.read(cx).get()).is_some() {
             swipe::publish(swipe::Shown::default());
             // nothing of the network left stays over the join, nor comes

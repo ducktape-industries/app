@@ -10,8 +10,8 @@
 use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live, Orientation};
 use gpui_kit::{
     AccessibleAction, App, Div, ElementId, FocusHandle, Hsla, InteractiveElement, Interactivity,
-    IntoElement, MouseButton, ParentElement, Role, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Window, div,
+    IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, ParentElement, Role, SharedString,
+    Stateful, StatefulInteractiveElement, Styled, WeakFocusHandle, Window, div,
 };
 
 /// A clickable element as assistive technology meets it: in the tree as
@@ -425,6 +425,37 @@ pub fn private<E: InteractiveElement>(element: E) -> E {
     Patch::default().class_name(AX_PRIVATE).on(element)
 }
 
+type Downs = Vec<(String, Option<WeakFocusHandle>)>;
+
+#[derive(Clone, Default)]
+pub struct HeldKeys(std::rc::Rc<std::cell::RefCell<Downs>>);
+
+impl HeldKeys {
+    pub fn on<E: InteractiveElement>(&self, element: E) -> E {
+        let (downs, ups) = (self.0.clone(), self.0.clone());
+        element
+            .capture_key_down(move |event: &KeyDownEvent, window, cx| {
+                let key = &event.keystroke.key;
+                if key != "enter" && key != "space" {
+                    return;
+                }
+                let focus = window.focused(cx).map(|handle| handle.downgrade());
+                let mut downs = downs.borrow_mut();
+                let began = downs.iter().position(|(down, _)| down == key);
+                match (event.is_held, began) {
+                    (false, Some(at)) => downs[at].1 = focus,
+                    (false, None) => downs.push((key.clone(), focus)),
+                    (true, Some(at)) if downs[at].1 != focus => window.prevent_default(),
+                    (true, _) => {}
+                }
+            })
+            .capture_key_up(move |event: &KeyUpEvent, _, _| {
+                ups.borrow_mut()
+                    .retain(|(down, _)| *down != event.keystroke.key);
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +501,94 @@ mod tests {
             assert_eq!(node.class_name(), Some(AX_PRIVATE));
             assert!(!node.supports_action(gpui_kit::accesskit::Action::Focus));
         });
+    }
+
+    struct Two {
+        held: HeldKeys,
+        a: FocusHandle,
+        b: FocusHandle,
+        clicks: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+    }
+
+    impl Render for Two {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let button = |name: &'static str, focus: &FocusHandle| {
+                let clicks = self.clicks.clone();
+                div()
+                    .id(name)
+                    .size(px(20.))
+                    .track_focus(focus)
+                    .on_click(move |_, _, _| clicks.borrow_mut().push(name))
+            };
+            self.held.on(div()
+                .size_full()
+                .child(button("a", &self.a))
+                .child(button("b", &self.b)))
+        }
+    }
+
+    fn two(cx: &mut TestAppContext) -> (gpui_kit::Entity<Two>, VisualTestContext) {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, cx| Two {
+            held: HeldKeys::default(),
+            a: cx.focus_handle(),
+            b: cx.focus_handle(),
+            clicks: Default::default(),
+        });
+        let view = window.root(cx).unwrap();
+        let native = VisualTestContext::from_window(window.into(), cx);
+        (view, native)
+    }
+
+    fn focus(view: &gpui_kit::Entity<Two>, native: &mut VisualTestContext, a: bool) {
+        native.update(|window, cx| {
+            let handle = view.read_with(cx, |two, _| match a {
+                true => two.a.clone(),
+                false => two.b.clone(),
+            });
+            handle.focus(window, cx);
+            window.render_frame(cx);
+        });
+    }
+
+    fn enter(native: &mut VisualTestContext, down: bool, is_held: bool) {
+        let keystroke = gpui_kit::Keystroke::parse("enter").unwrap();
+        match down {
+            true => native.simulate_event(KeyDownEvent {
+                keystroke,
+                is_held,
+                prefer_character_input: false,
+            }),
+            false => native.simulate_event(KeyUpEvent { keystroke }),
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_key_held_from_before_the_focus_moved_clicks_nothing(cx: &mut TestAppContext) {
+        let (view, mut native) = two(cx);
+        focus(&view, &mut native, false);
+        enter(&mut native, true, false);
+        focus(&view, &mut native, true);
+        for _ in 0..3 {
+            enter(&mut native, true, true);
+        }
+        enter(&mut native, false, false);
+        let clicks =
+            native.update(|_, cx| view.read_with(cx, |two, _| two.clicks.borrow().clone()));
+        assert!(clicks.is_empty(), "{clicks:?}");
+    }
+
+    #[gpui_kit::test]
+    fn a_press_held_on_its_element_clicks_it_once(cx: &mut TestAppContext) {
+        let (view, mut native) = two(cx);
+        focus(&view, &mut native, true);
+        enter(&mut native, true, false);
+        for _ in 0..3 {
+            enter(&mut native, true, true);
+        }
+        enter(&mut native, false, false);
+        let clicks =
+            native.update(|_, cx| view.read_with(cx, |two, _| two.clicks.borrow().clone()));
+        assert_eq!(clicks, ["a"]);
     }
 }

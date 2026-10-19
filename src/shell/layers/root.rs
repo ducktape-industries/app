@@ -57,6 +57,7 @@ pub(in crate::shell) struct WindowRoot {
     /// ended on the frame after the one that shows it (docs/perf.md).
     switching: Option<crate::perf::Timer>,
     pub(in crate::shell) focus: FocusHandle,
+    held: crate::a11y::HeldKeys,
     _subscriptions: [Subscription; 2],
 }
 
@@ -131,6 +132,7 @@ impl WindowRoot {
             menu,
             switching: None,
             focus,
+            held: Default::default(),
             app,
             _subscriptions: subscriptions,
         }
@@ -302,7 +304,8 @@ impl Render for WindowRoot {
             .id("desktop-root")
             .role(gpui_kit::Role::Group)
             .aria_label("Ducktape"));
-        self.on_keys(root, cx)
+        self.held
+            .on(self.on_keys(root, cx))
             .size_full()
             .bg(ink.bg)
             .text_color(ink.ink)
