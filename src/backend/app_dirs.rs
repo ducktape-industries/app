@@ -16,11 +16,24 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 const APP: &str = "ducktape";
+const CONFIG: [&str; 3] = ["XDG_CONFIG_HOME", ".config", "Library/Application Support"];
 
 /// preferences (`prefs.json`), and the windows each network last had
 /// (`windows.json`).
 pub(crate) fn config_dir() -> Result<PathBuf, String> {
-    platform_dir("XDG_CONFIG_HOME", ".config", "Library/Application Support")
+    let [var, linux, macos] = CONFIG;
+    platform_dir(var, linux, macos)
+}
+
+pub(crate) fn config_is_default() -> bool {
+    let [var, linux, macos] = CONFIG;
+    let default = resolve(
+        None,
+        std::env::var_os("HOME"),
+        var,
+        platform_default(linux, macos),
+    );
+    config_dir().ok() == default.ok()
 }
 
 /// the self-update's install on Linux (`update::Layout`).
@@ -53,16 +66,19 @@ fn platform_dir(
     linux_default: &str,
     macos_default: &str,
 ) -> Result<PathBuf, String> {
-    let default = match cfg!(target_os = "macos") {
-        true => macos_default,
-        false => linux_default,
-    };
     resolve(
         std::env::var_os(xdg_var),
         std::env::var_os("HOME"),
         xdg_var,
-        default,
+        platform_default(linux_default, macos_default),
     )
+}
+
+fn platform_default<'a>(linux_default: &'a str, macos_default: &'a str) -> &'a str {
+    match cfg!(target_os = "macos") {
+        true => macos_default,
+        false => linux_default,
+    }
 }
 
 /// the rule over explicit inputs, so a test reads no process env: a

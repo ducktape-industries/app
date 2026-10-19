@@ -21,6 +21,6 @@ pub(crate) mod passkey;
 pub(crate) mod recovery;
 pub(crate) mod send;
 
-pub(crate) use app_dirs::{app_log_path, cache_dir, config_dir, data_dir};
+pub(crate) use app_dirs::{app_log_path, cache_dir, config_dir, config_is_default, data_dir};
 pub(crate) use ducktape_host::backend::*;
 pub(crate) use key_dir::{key_exists, keystore_root, open_password_locked};

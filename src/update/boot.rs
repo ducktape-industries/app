@@ -46,7 +46,7 @@ pub(super) enum Boot {
     /// Not an installed app: no update state was read or written.
     Off,
     /// An installed app whose updater another of its processes runs: this
-    /// one goes on with it off, and touched nothing.
+    /// one goes on with it off until that one lets it go, and touched nothing.
     Elsewhere,
     /// This image is the release that should run: the app goes on, its
     /// updater armed with this phase.
@@ -68,6 +68,7 @@ pub(crate) fn boot() {
         Ok(Boot::Elsewhere) => {
             debug!(target: TARGET, event = "app_update_held", "another process runs this install's updater");
             super::channel::elsewhere();
+            take_over(layout, &own);
         }
         Ok(Boot::Run(phase)) => super::channel::arm(layout, phase),
         Ok(Boot::Exec(_)) if cfg!(target_os = "macos") => {
@@ -91,6 +92,44 @@ pub(crate) fn boot() {
             warn!(target: TARGET, event = "app_update_refused", reason = refusal.reason, detail = %refusal.detail, "going on with the updater off");
         }
     }
+}
+
+fn take_over(layout: Layout, own: &Path) {
+    let own_id = match super::file_id(own) {
+        Ok(own_id) => own_id,
+        Err(refusal) => {
+            warn!(target: TARGET, event = "app_update_refused", reason = refusal.reason, detail = %refusal.detail, "going on with the updater off");
+            return;
+        }
+    };
+    let waiting = std::thread::Builder::new()
+        .name("updater-wait".into())
+        .spawn(move || {
+            let taken = super::wait_install(&layout).and_then(|()| takeover_at(&layout, own_id));
+            match taken {
+                Ok(Some(phase)) => {
+                    info!(target: TARGET, event = "app_update_taken_over");
+                    super::channel::took_over(layout, phase);
+                }
+                Ok(None) => {
+                    super::let_go_install(&layout);
+                    info!(target: TARGET, event = "app_update_moved", "the install names another release now: the updater stays off until a restart");
+                }
+                Err(refusal) => {
+                    warn!(target: TARGET, event = "app_update_refused", reason = refusal.reason, detail = %refusal.detail, "going on with the updater off");
+                }
+            }
+        });
+    if let Err(error) = waiting {
+        warn!(target: TARGET, event = "app_update_disabled", %error, "no thread to wait for the updater");
+    }
+}
+
+pub(super) fn takeover_at(layout: &Layout, own_id: (u64, u64)) -> Result<Option<Phase>, Refusal> {
+    let Some(phase) = super::read_state(&layout.state_path())? else {
+        return Ok(None);
+    };
+    Ok((super::file_id(&layout.app_exe())? == own_id).then_some(phase))
 }
 
 /// The decision over explicit inputs, every file effect performed: `own` is

@@ -12,6 +12,7 @@ pub(crate) struct Snapshot {
     /// picks the icon: online or offline
     connected: bool,
     tooltip: String,
+    title: Option<String>,
     labels: [String; ROWS],
 }
 
@@ -50,7 +51,12 @@ impl Snapshot {
         }
     }
 
-    pub(crate) fn of(session: &SessionState, chain: &Chain, appearance: Appearance) -> Self {
+    pub(crate) fn of(
+        session: &SessionState,
+        chain: &Chain,
+        appearance: Appearance,
+        named: bool,
+    ) -> Self {
         let mut labels: [String; ROWS] = std::array::from_fn(|_| String::new());
         labels[NETWORK] = match session.network.is_empty() {
             true => "No network".into(),
@@ -73,6 +79,7 @@ impl Snapshot {
         Self {
             connected: session.connected,
             tooltip: format!("{} — {}", labels[NETWORK], labels[STATUS]),
+            title: named.then(|| labels[NETWORK].clone()),
             labels,
         }
     }
@@ -107,6 +114,7 @@ pub struct Tray {
     session: Entity<Session>,
     chain: Entity<Chain>,
     prefs: Entity<Slice<Prefs>>,
+    named: bool,
     _follows: [Subscription; 3],
 }
 
@@ -132,6 +140,7 @@ pub fn init(app: &Shared, cx: &mut App) -> (Entity<Tray>, UnboundedReceiver<usiz
             session: app.session.clone(),
             chain: app.chain.clone(),
             prefs: app.prefs.clone(),
+            named: !crate::backend::config_is_default(),
             _follows: [
                 cx.observe(&app.session, |tray: &mut Tray, _, cx| tray.follow(cx)),
                 cx.observe(&app.chain, |tray: &mut Tray, _, cx| tray.follow(cx)),
@@ -150,6 +159,7 @@ impl Tray {
             self.session.read(cx).get(),
             self.chain.read(cx),
             self.prefs.read(cx).get().appearance,
+            self.named,
         );
         self.sync(next);
     }
@@ -294,6 +304,9 @@ mod native {
                     .set_tooltip(Some(&next.tooltip))
                     .map_err(|error| error.to_string())?;
             }
+            if previous.is_none_or(|old| old.title != next.title) {
+                self.tray.set_title(next.title.as_deref());
+            }
             for row in 0..ROWS {
                 if previous.is_none_or(|old| old.labels[row] != next.labels[row]) {
                     self.rows[row].set_text(&next.labels[row]);
@@ -327,25 +340,31 @@ mod tests {
             ..SessionState::default()
         };
         let chain = Chain::default();
-        let snapshot = Snapshot::of(&session, &chain, Appearance::System);
+        let snapshot = Snapshot::of(&session, &chain, Appearance::System, false);
         assert_eq!(snapshot.labels[NETWORK], "dognet");
         assert_eq!(snapshot.labels[STATUS], "Not connected");
         assert!(!snapshot.connected);
+        assert_eq!(
+            snapshot.title, None,
+            "the default profile's item has no title"
+        );
+        let named = Snapshot::of(&session, &chain, Appearance::System, true);
+        assert_eq!(named.title.as_deref(), Some("dognet"));
         session.connected = true;
         let chain = Chain {
             height: 7,
             ..Chain::default()
         };
-        let snapshot = Snapshot::of(&session, &chain, Appearance::System);
+        let snapshot = Snapshot::of(&session, &chain, Appearance::System, false);
         assert_eq!(snapshot.labels[STATUS], "Connected · block 7");
         session.reconnecting = true;
-        let snapshot = Snapshot::of(&session, &chain, Appearance::System);
+        let snapshot = Snapshot::of(&session, &chain, Appearance::System, false);
         assert_eq!(snapshot.labels[STATUS], "Reconnecting…");
         // the node the attempt out is for, not what the address field holds
         session.connecting = true;
         session.reaching = "http://b".into();
         session.endpoint = "http://bx".into();
-        let snapshot = Snapshot::of(&session, &chain, Appearance::System);
+        let snapshot = Snapshot::of(&session, &chain, Appearance::System, false);
         assert_eq!(snapshot.labels[STATUS], "Reaching http://b…");
     }
 

@@ -96,7 +96,7 @@ impl DesktopOs {
 }
 
 /// A directory only this user may enter, made if missing.
-fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+pub(crate) fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]

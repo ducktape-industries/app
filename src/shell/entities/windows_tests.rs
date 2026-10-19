@@ -1571,3 +1571,36 @@ fn a_switch_takes_the_followed_chains_log_in_memory(cx: &mut TestAppContext) {
         "the set kept its log"
     );
 }
+
+/// A later launch of this profile hands its link over (a notice's, naming a
+/// room and a thread in it): the console comes forward, and the pane the
+/// link opens is handed the whole route, the thread with its room.
+#[gpui_kit::test]
+fn a_link_a_later_launch_hands_over_reaches_its_pane_whole(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "handed-over-link";
+    let (app, console) = console(cx);
+    listed(&app, &[PROGRAM], cx);
+    let desk = desk_of(&app, console, cx);
+    let dir = tempfile::tempdir().unwrap();
+    let crate::profile::Claim::Held(profile) = crate::profile::claim_at(dir.path(), &[]).unwrap()
+    else {
+        panic!("the first launch holds the profile");
+    };
+    let (handed, launches) = std::sync::mpsc::channel();
+    profile.serve(move |args| handed.send(args).is_ok());
+    let link = format!("duck://{PROGRAM}/channel-7/thread/42");
+    let later = crate::profile::claim_at(dir.path(), std::slice::from_ref(&link)).unwrap();
+    assert!(matches!(later, crate::profile::Claim::HandedOver));
+    let args = launches.recv().unwrap();
+    assert_eq!(args, [link]);
+    app.windows
+        .update(cx, |windows, cx| windows.launched(args, cx));
+    cx.run_until_parked();
+    let layout = desk.read_with(cx, |desk, _| desk.get().clone());
+    let pane = &layout.panes[layout.focused];
+    assert_eq!(pane.program, PROGRAM);
+    assert_eq!(
+        crate::runtime::take_route(PROGRAM, pane.instance).as_deref(),
+        Some("channel-7/thread/42")
+    );
+}

@@ -541,9 +541,10 @@ fn let_go_install(layout: &Layout) {
         .retain(|(at, _)| *at != path);
 }
 
-/// Wait until no process holds `<updates>/lock`, then let it go: the
-/// restart's waiter hands the install over free.
-fn await_install(layout: &Layout) -> Result<(), Refusal> {
+/// Wait until no other process holds `<updates>/lock`: the open file that
+/// holds it now. The restart's waiter lets it go at once, handing the
+/// install over free; [`wait_install`] keeps it.
+fn await_install(layout: &Layout) -> Result<std::fs::File, Refusal> {
     let path = layout.updates.join("lock");
     refuse_symlink(&path)?;
     let file = std::fs::OpenOptions::new()
@@ -553,11 +554,19 @@ fn await_install(layout: &Layout) -> Result<(), Refusal> {
         .open(&path)
         .map_err(|error| Refusal::io("lock_failed", &path, &error))?;
     // SAFETY: an open descriptor and a flag constant; blocks until held,
-    // and closing the file below lets it go.
+    // and closing the file lets it go.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
         let error = std::io::Error::last_os_error();
         return Err(Refusal::io("lock_failed", &path, &error));
     }
+    Ok(file)
+}
+
+fn wait_install(layout: &Layout) -> Result<(), Refusal> {
+    let file = await_install(layout)?;
+    HELD.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((layout.updates.join("lock"), file));
     Ok(())
 }
 

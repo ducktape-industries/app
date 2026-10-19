@@ -1128,6 +1128,16 @@ impl Windows {
         self.open_link_into(link, opens, cx);
     }
 
+    /// A later launch of this profile, handed over (`profile`): the console
+    /// forward, and each of its arguments opened as a link from outside is,
+    /// its whole route handed to the pane it opens.
+    pub(crate) fn launched(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+        self.raise_console(cx);
+        for link in args {
+            self.open_link(&link, None, cx);
+        }
+    }
+
     fn open_link_into(&mut self, link: &str, opens: Opens, cx: &mut Context<Self>) {
         let _timed = timed();
         let chain = self.shared.session.read(cx).get().chain.clone();

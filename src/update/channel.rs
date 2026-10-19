@@ -84,6 +84,7 @@ static MOVED: OnceLock<fn()> = OnceLock::new();
 static RESTARTING: AtomicBool = AtomicBool::new(false);
 /// The boot step found another process of this install running its updater.
 static ELSEWHERE: AtomicBool = AtomicBool::new(false);
+static RENDERED: AtomicBool = AtomicBool::new(false);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -161,6 +162,15 @@ pub(super) fn elsewhere() {
     ELSEWHERE.store(true, Ordering::SeqCst);
 }
 
+pub(super) fn took_over(layout: Layout, phase: Phase) {
+    arm(layout, phase);
+    ELSEWHERE.store(false, Ordering::SeqCst);
+    moved();
+    if RENDERED.load(Ordering::SeqCst) {
+        start_armed();
+    }
+}
+
 /// The shell says how it hears the reading moved.
 pub(crate) fn on_moved(moved: fn()) {
     let _ = MOVED.set(moved);
@@ -171,6 +181,11 @@ pub(crate) fn on_moved(moved: fn()) {
 pub(crate) fn rendered() {
     #[cfg(test)]
     RENDERED_HERE.with(|count| count.set(count.get() + 1));
+    RENDERED.store(true, Ordering::SeqCst);
+    start_armed();
+}
+
+fn start_armed() {
     let Some(mut updater) = lock(&ARMED).take() else {
         return;
     };

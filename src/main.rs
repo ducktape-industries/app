@@ -7,6 +7,7 @@ use ducktape_host::ax;
 use ducktape_host::{a11y, fonts, perf, render, runtime};
 mod backend;
 mod os;
+mod profile;
 mod shell;
 mod tray;
 mod ui;
@@ -88,17 +89,25 @@ fn main() {
     perf::start();
     install_log();
     perf::mark("log");
+    let profile = match profile::claim() {
+        Ok(profile::Claim::HandedOver) => return,
+        Ok(profile::Claim::Held(profile)) => Some(profile),
+        Err(error) => {
+            tracing::warn!(target: "ducktape::app", event = "profile_unlocked", %error, "going on with this profile unlocked");
+            None
+        }
+    };
     // the self-update's boot step: flip to a staged release, or back from
     // one that never came up, and run the release that should run
     update::boot();
     raise_open_file_limit();
     #[cfg(debug_assertions)]
     if let Some(live) = live {
-        shell::run_live(live, os.clone());
+        shell::run_live(live, os.clone(), profile);
         render::web::shutdown();
         return;
     }
-    shell::run(os);
+    shell::run(os, profile);
     render::web::shutdown();
 }
 

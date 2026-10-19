@@ -20,18 +20,22 @@ enum Boot {
     Live(super::Live),
 }
 
-pub(crate) fn run(os: Arc<dyn OsServices>) {
-    start(Boot::Console, os)
+pub(crate) fn run(os: Arc<dyn OsServices>, profile: Option<crate::profile::Profile>) {
+    start(Boot::Console, os, profile)
 }
 
 /// `ducktape-app --live`: the app as [`run`] starts it, with the one
 /// view's window in place of the console.
 #[cfg(debug_assertions)]
-pub(crate) fn run_live(live: super::Live, os: Arc<dyn OsServices>) {
-    start(Boot::Live(live), os)
+pub(crate) fn run_live(
+    live: super::Live,
+    os: Arc<dyn OsServices>,
+    profile: Option<crate::profile::Profile>,
+) {
+    start(Boot::Live(live), os, profile)
 }
 
-fn start(boot: Boot, os: Arc<dyn OsServices>) {
+fn start(boot: Boot, os: Arc<dyn OsServices>, profile: Option<crate::profile::Profile>) {
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     let (url_sender, mut urls) = futures::channel::mpsc::unbounded::<Vec<String>>();
     application.on_open_urls(move |urls| {
@@ -88,6 +92,22 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
                     }
                 });
                 if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let (handed, mut launches) = futures::channel::mpsc::unbounded::<Vec<String>>();
+        if let Some(profile) = profile {
+            profile.serve(move |args| handed.unbounded_send(args).is_ok());
+        }
+        let launch_windows = windows.downgrade();
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            while let Some(args) = launches.next().await {
+                if launch_windows
+                    .update(cx, |windows, cx| windows.launched(args, cx))
+                    .is_err()
+                {
                     break;
                 }
             }

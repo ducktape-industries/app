@@ -1026,6 +1026,54 @@ mod linux {
         assert_eq!(state(&layout), staged);
     }
 
+    #[test]
+    fn a_process_that_found_the_updater_held_takes_it_once_it_is_let_go() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use crate::update::boot::{Boot, boot_at, takeover_at};
+        let (_root, layout) = rig();
+        let (a, b) = (Sha::digest(b"a"), Sha::digest(b"b"));
+        for (sha, name) in [(a, "a"), (b, "b")] {
+            let exe = layout.release_exe(sha);
+            std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            std::fs::write(&exe, script(name)).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        crate::update::replace_symlink(&layout.current_link(), &Layout::link_target(a)).unwrap();
+        let staged = Phase::Staged(ducktape_updater::Staged {
+            current: a,
+            previous: None,
+            pinned_sequence: 10,
+            staged: b,
+            sequence: 11,
+            display: "0.1.0+b".into(),
+            channel: "stable".into(),
+            refused: None,
+            asked: false,
+        });
+        crate::update::persist_phase(&layout, &staged).unwrap();
+        let other = std::fs::File::create(layout.updates.join("lock")).unwrap();
+        other.try_lock().unwrap();
+        let own = layout.release_exe(a);
+        assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Elsewhere);
+        let own_id = crate::update::file_id(&own).unwrap();
+        let waiting = layout.clone();
+        let taken = std::thread::spawn(move || {
+            crate::update::wait_install(&waiting).and_then(|()| takeover_at(&waiting, own_id))
+        });
+        drop(other);
+        assert_eq!(taken.join().unwrap().unwrap(), Some(staged.clone()));
+        let next = std::fs::File::open(layout.updates.join("lock")).unwrap();
+        assert!(next.try_lock().is_err(), "this process holds it now");
+        crate::update::replace_symlink(&layout.current_link(), &Layout::link_target(b)).unwrap();
+        assert_eq!(
+            takeover_at(&layout, own_id).unwrap(),
+            None,
+            "an install that names another release is not taken up"
+        );
+        assert_eq!(state(&layout), staged);
+    }
+
     /// The person picks nightly while a stable check is downloading: the
     /// download's answer is the old channel's, so it is dropped, never
     /// staged, and the next turn's switch collects what it left. Nothing is

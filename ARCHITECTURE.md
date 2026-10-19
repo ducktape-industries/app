@@ -83,7 +83,7 @@ the core free of every shell, OS and key crate.
 
 | Module | Owns | Runs on |
 |---|---|---|
-| `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), the desktop's `OsServices` installed (`DUCKTAPE_VIEWS_DIR` is one of its directories), `app.log` + panic hook, fd limit, then `shell::run` | process start |
+| `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), the desktop's `OsServices` installed (`DUCKTAPE_VIEWS_DIR` is one of its directories), `app.log` + panic hook, the profile claimed before the update boot step (`profile.rs`: one running copy per config directory holds `<config>/lock`; a later launch hands its arguments over `<config>/run/app.sock` and exits, or waits for the lock when nothing takes them), fd limit, then `shell::run` | process start |
 | `shell.rs`, `shell/` | the native chrome. `shell.rs` is the module root (`run`, `WindowKind`, `chord_label`); `shell/launch.rs` starts the app and wires what arrives from outside to the entity it moves. The desktop's entities (`shell/entities/`: `Windows` and each window's `Desk`, `Overlays`, `Spotlight`, `Front`, `DotSlot`; `DeskSeats`) over the host's shared ones (`crates/host/src/session/`: `Session`, `Account`, `Chain`, `Screen`, `Toast`, `Prefs`, `Notifications`, `Rail`, `Seats`), `layers::WindowRoot` (one per OS window, laying its layers out: `LauncherLayer`, `Chrome`, `PaneLayer`, `OverlayLayer`, `StatusDot`, `ToastView`), launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
 | `ui.rs`, `ui/` | the pure pane geometry (`ui/layout.rs`: `Layout`, `Pane`, `PaneMessage`), which each window's `Desk` holds | window thread |
 | `runtime.rs`, `runtime/` | seats, views (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
@@ -94,7 +94,7 @@ the core free of every shell, OS and key crate.
 | `src/os.rs`, `src/backend/` (desktop) | the desktop's `OsServices` (`app_dirs`, the freedesktop / macOS banners, `invite`), `device_key`, `key_dir`, `passkey` through `auth_page` and `loopback`, `recovery`, `send` (`ducktape-app send`: one transaction from the terminal, signed with the device key) | same |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
 | `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
-| `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item (`Tray`, an entity observing `Session`, `Chain` and `Prefs`) | window thread |
+| `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item (`Tray`, an entity observing `Session`, `Chain` and `Prefs`; a profile other than the default one names its network beside the icon) | window thread |
 
 Dependencies, top down (an arrow means "calls into"):
 
@@ -552,7 +552,9 @@ draws nothing.
   its rows call `Windows::raise_console`, `Windows::quit` and
   `Prefs::set_appearance`) and the console (`Windows::open(Console)`), then
   wires what arrives from outside: open-URL requests and the links a
-  banner posts (`Windows::open_link`, `Windows::posted`), a window closing
+  banner posts (`Windows::open_link`, `Windows::posted`), a later launch
+  of this profile (`profile::Profile::serve`: `Windows::raise_console`,
+  then `Windows::open_link` for each of its arguments), a window closing
   (`Windows::forget_closed`), the AX door (`Windows::served`,
   `Seats::settle`), the Quit action (`Windows::quit`). The entities and
   the tray live until the app quits.
