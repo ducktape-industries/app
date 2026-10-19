@@ -357,6 +357,40 @@ async fn a_large_blob_is_read_whole() {
     );
 }
 
+/// `file.save` over a file already there: a blob the node does not hold
+/// leaves the file as it was and nothing beside it; a save of every blob
+/// puts them in its place, in order.
+#[cfg(feature = "ui")]
+#[tokio::test]
+async fn a_failed_save_leaves_the_file_it_would_replace() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(&path, b"kept").unwrap();
+    let save = |blobs| methods::SaveFile {
+        name: "notes.txt".into(),
+        blobs,
+    };
+    let none = abi::encode(&None::<Vec<u8>>);
+    let missing = fake_node(vec![(noded::route::BLOB_GET, Mode::Answer(none))]);
+    let chosen = std::future::ready(Ok(Some(path.clone())));
+    let refused = saved(missing.node.clone(), save(vec![[1; 32]]), chosen)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, refusal::NODE_FAILED);
+    assert_eq!(std::fs::read(&path).unwrap(), b"kept");
+    let beside = std::fs::read_dir(dir.path()).unwrap().count();
+    assert_eq!(beside, 1, "nothing is left beside it");
+
+    let framed = abi::encode(&Some(b"blob 3\0new".to_vec()));
+    let holding = fake_node(vec![(noded::route::BLOB_GET, Mode::Answer(framed))]);
+    let chosen = std::future::ready(Ok(Some(path.clone())));
+    let answer = saved(holding.node.clone(), save(vec![[1; 32], [2; 32]]), chosen).await;
+    assert_eq!(answer, Ok(methods::encode(&true)));
+    assert_eq!(std::fs::read(&path).unwrap(), b"newnew");
+    let beside = std::fs::read_dir(dir.path()).unwrap().count();
+    assert_eq!(beside, 1, "the new file took the old one's place");
+}
+
 fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let node = Node {

@@ -971,29 +971,15 @@ pub(super) fn spawn_put(view: &mut View, id: u64, payload: &[u8]) {
         Ok(blobs) => blobs,
         Err(refusal) => return view.reply(id, Err(refusal)),
     };
-    let Some(node) = connected(view, id) else {
-        return;
-    };
     let replies = view.replies.clone();
-    let claim = Claim::default();
-    let held = claim.clone();
-    let key = view.perf_key();
-    let asked = crate::perf::on().then(std::time::Instant::now);
-    start(view, id, None, claim, async move {
-        let sent = {
-            let (replies, held) = (replies.clone(), held.clone());
-            move |bytes| {
-                let item = methods::encode(&methods::Putting::Sent(bytes));
-                replies.answer(&held, id, Ok(item), false);
-            }
+    let putting = move |node, _, held: Claim| -> Answered {
+        let sent = move |bytes| {
+            let item = methods::encode(&methods::Putting::Sent(bytes));
+            replies.answer(&held, id, Ok(item), false);
         };
-        let answer = put(node, blobs, sent).await;
-        if let Some(asked) = asked {
-            let micros = asked.elapsed().as_micros() as u64;
-            crate::perf::record(key, "host_call.op.put", micros);
-        }
-        replies.answer(&held, id, answer, true);
-    });
+        Box::pin(put(node, blobs, sent))
+    };
+    spawn_method(view, id, &[], putting, "host_call.op.put", None);
 }
 
 /// Whether the view's request `id` can reach the node now, refusing it
@@ -1063,8 +1049,10 @@ async fn kept(
 }
 
 /// `file.save`'s task: the file the person chose (none: cancelled, `false`),
-/// and each blob of `save` read from the node in order and written to it on
-/// a blocking thread; `true` once every one is written. A blob the node
+/// and each blob of `save` read from the node in order and written on a
+/// blocking thread to a new file beside it, which takes its place once
+/// every one is written (`true`). A save that fails or goes with the view
+/// leaves what was there as it was, and nothing beside it. A blob the node
 /// does not hold is refused `node_failed`, a file that cannot be written
 /// `host_fault`, naming it by its name alone.
 #[cfg(feature = "ui")]
@@ -1078,11 +1066,15 @@ async fn saved(
     };
     let methods::SaveFile { name, blobs } = save;
     let named = move |error: std::io::Error| host_fault(format!("{name}: {error}"));
-    let file = tokio::task::spawn_blocking(move || std::fs::File::create(path))
+    let folder = path
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    let mut file = tokio::task::spawn_blocking(move || beside(&folder))
         .await
         .map_err(host_fault)?
         .map_err(named.clone())?;
-    let file = std::sync::Arc::new(Mutex::new(file));
     for digest in blobs {
         let Some(framed) = node
             .client
@@ -1097,16 +1089,34 @@ async fn saved(
         let body = noded_client::wire::unframe(&framed)
             .ok_or_else(|| host_fault("blob has no header"))?
             .to_vec();
-        let file = file.clone();
-        tokio::task::spawn_blocking(move || {
+        file = tokio::task::spawn_blocking(move || {
             use std::io::Write as _;
-            file.lock().expect("a saved file").write_all(&body)
+            file.write_all(&body).map(|()| file)
         })
         .await
         .map_err(host_fault)?
         .map_err(named.clone())?;
     }
+    tokio::task::spawn_blocking(move || file.persist(path))
+        .await
+        .map_err(host_fault)?
+        .map_err(|persisting| named(persisting.error))?;
     Ok(methods::encode(&true))
+}
+
+/// A new file in `folder` for a save to write, made as `File::create`
+/// makes one (the umask applied, not a temporary file's 0600), and removed
+/// if it is dropped before it takes the chosen file's place.
+#[cfg(feature = "ui")]
+fn beside(folder: &std::path::Path) -> std::io::Result<tempfile::NamedTempFile> {
+    tempfile::Builder::new()
+        .prefix(".ducktape-save-")
+        .make_in(folder, |path| {
+            std::fs::File::options()
+                .write(true)
+                .create_new(true)
+                .open(path)
+        })
 }
 
 /// An event the host makes for the view on [`handle`], counted in flight

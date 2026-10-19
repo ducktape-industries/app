@@ -6,7 +6,8 @@
 //! blocking thread and held for the view, by handle, until it lets go of
 //! them (`file.release`) or goes away. Files pasted (`clipboard.files`)
 //! or dropped on the view (`Event::FileDrop`) are held the same way, a
-//! pasted picture as its bytes. `op.put` reads them a slice at a time
+//! pasted picture in an unnamed file of its own, so the host's memory
+//! never holds what a view keeps. `op.put` reads them a slice at a time
 //! ([`slice`]), at most `BLOB_MOST` each, and the bytes go to the node,
 //! never through the view. A view gets each file's own name, never its
 //! path.
@@ -32,6 +33,8 @@ use crate::contract::Files;
 use gpui_kit::{Context, PathPromptOptions};
 use std::collections::HashMap;
 use std::fs::File;
+#[cfg(any(feature = "ui", test))]
+use std::io::Write;
 use std::io::{Read, Seek, SeekFrom};
 #[cfg(any(feature = "ui", test))]
 use std::path::PathBuf;
@@ -57,62 +60,49 @@ struct Open {
     files: HashMap<u64, Arc<Picked>>,
 }
 
-/// One file the view holds.
+/// One file the view holds, or one opened for it to hold
+/// ([`Held::hold`]).
 pub(super) struct Picked {
     name: String,
     /// its size as held: a file of another size since is not the one the
     /// person picked
     pub(super) size: u64,
-    source: Source,
+    file: Mutex<File>,
 }
 
-/// Where a held file's bytes are.
-enum Source {
-    /// a file on this device, open
-    File(Mutex<File>),
-    /// bytes the host holds itself: a picture pasted from the clipboard
-    Bytes(Arc<[u8]>),
-}
-
-/// A file opened, or bytes taken, not held yet ([`Held::hold`]).
-pub(super) struct Opened {
-    name: String,
-    size: u64,
-    source: Source,
-}
-
-impl Opened {
-    /// Bytes the host holds itself, named `name`.
+impl Picked {
+    /// `bytes` named `name`, written to an unnamed file of their own (gone
+    /// once the last handle to it is), on the calling thread: a pasted
+    /// picture.
     #[cfg(any(feature = "ui", test))]
-    pub(super) fn bytes(name: String, bytes: Vec<u8>) -> Self {
-        Self {
-            name,
+    pub(super) fn bytes(name: String, bytes: &[u8]) -> Result<Self, wire::Error> {
+        let named = |error: std::io::Error| fault(format!("{name}: {error}"));
+        let mut file = tempfile::tempfile().map_err(named)?;
+        file.write_all(bytes).map_err(named)?;
+        Ok(Self {
             size: bytes.len() as u64,
-            source: Source::Bytes(bytes.into()),
-        }
+            file: Mutex::new(file),
+            name,
+        })
     }
 }
 
 impl Held {
     /// `files` held, each under a new handle, as the view is told them.
     #[cfg(any(feature = "ui", test))]
-    pub(super) fn hold(&self, files: Vec<Opened>) -> Vec<methods::Picked> {
+    pub(super) fn hold(&self, files: Vec<Picked>) -> Vec<methods::Picked> {
         let open = &mut *self.0.lock().expect("held files");
         files
             .into_iter()
-            .map(|Opened { name, size, source }| {
+            .map(|picked| {
                 open.next += 1;
-                let picked = Picked {
-                    name: name.clone(),
-                    size,
-                    source,
+                let told = methods::Picked {
+                    name: picked.name.clone(),
+                    size: picked.size,
+                    file: open.next,
                 };
                 open.files.insert(open.next, Arc::new(picked));
-                methods::Picked {
-                    name,
-                    size,
-                    file: open.next,
-                }
+                told
             })
             .collect()
     }
@@ -315,7 +305,7 @@ pub(super) fn dropped(view: &View, handler: u32, paths: Vec<PathBuf>) {
 /// in order. A path that is not a file, or that cannot be opened, refuses
 /// them all by its name alone.
 #[cfg(any(feature = "ui", test))]
-pub(super) fn open_paths(paths: Vec<PathBuf>) -> Result<Vec<Opened>, wire::Error> {
+pub(super) fn open_paths(paths: Vec<PathBuf>) -> Result<Vec<Picked>, wire::Error> {
     let mut files = Vec::with_capacity(paths.len());
     for path in paths {
         let name = path
@@ -333,10 +323,10 @@ pub(super) fn open_paths(paths: Vec<PathBuf>) -> Result<Vec<Opened>, wire::Error
         if !metadata.is_file() {
             return Err(not_a_file());
         }
-        files.push(Opened {
+        files.push(Picked {
             name,
             size: metadata.len(),
-            source: Source::File(Mutex::new(file)),
+            file: Mutex::new(file),
         });
     }
     Ok(files)
@@ -423,12 +413,8 @@ pub(in crate::runtime) async fn keep(
 /// within its size as held). A file whose size changed since it was
 /// picked is refused: its slices would mix two files.
 pub(super) fn slice(picked: &Picked, offset: u64, len: u64) -> Result<Vec<u8>, wire::Error> {
-    let file = match &picked.source {
-        Source::Bytes(bytes) => return Ok(bytes[offset as usize..][..len as usize].to_vec()),
-        Source::File(file) => file,
-    };
     let named = |error: std::io::Error| fault(format!("{}: {error}", picked.name));
-    let file = &mut *file.lock().expect("a picked file");
+    let file = &mut *picked.file.lock().expect("a picked file");
     if file.metadata().map_err(named)?.len() != picked.size {
         return Err(fault(format!(
             "{} changed since it was picked",
@@ -573,9 +559,9 @@ mod tests {
     }
 
     #[test]
-    fn bytes_the_host_holds_read_as_a_file_does() {
+    fn a_pasted_picture_is_held_in_a_file_and_read_as_one() {
         let held = Held::default();
-        let picture = Opened::bytes("image.png".into(), b"picture".to_vec());
+        let picture = Picked::bytes("image.png".into(), b"picture").unwrap();
         let picked = held.hold(vec![picture]);
         assert_eq!((picked[0].name.as_str(), picked[0].size), ("image.png", 7));
         assert_eq!(read(&held, 1, 2, 3), b"ctu");

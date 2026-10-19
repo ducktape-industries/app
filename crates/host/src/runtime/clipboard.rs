@@ -79,12 +79,13 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
 }
 
 /// `clipboard.files`: the clipboard's text, and its files and pictures held
-/// for the view. A picture is held as its bytes, named `image.<ext>` by its
-/// format; a file is opened on a blocking thread, and one that cannot be
-/// refuses the whole ask by its name alone, as a pick does.
+/// for the view. A picture is written to an unnamed file of its own and
+/// held as a file, named `image.<ext>` by its format; that and opening a
+/// file run on a blocking thread, and one that fails refuses the whole ask
+/// by its name alone, as a pick does.
 #[cfg(feature = "ui")]
 fn files(view: &mut View, id: u64, cx: &mut Context<Seat>) {
-    let (mut text, mut paths, mut files) = (String::new(), Vec::new(), Vec::new());
+    let (mut text, mut paths, mut pictures) = (String::new(), Vec::new(), Vec::new());
     if let Some(item) = cx.read_from_clipboard() {
         for entry in item.entries() {
             match entry {
@@ -94,19 +95,24 @@ fn files(view: &mut View, id: u64, cx: &mut Context<Seat>) {
                 }
                 ClipboardEntry::Image(image) => {
                     let name = format!("image.{}", image.format.extension());
-                    files.push(picker::Opened::bytes(name, image.bytes.clone()));
+                    pictures.push((name, image.bytes.clone()));
                 }
             }
         }
     }
     let held = view.picker.held();
     kernel::spawn_reply(view, id, async move {
-        if !paths.is_empty() {
-            let opened = tokio::task::spawn_blocking(move || picker::open_paths(paths))
-                .await
-                .unwrap_or_else(|error| Err(picker::fault(error.to_string())))?;
-            files.extend(opened);
-        }
+        let opened = tokio::task::spawn_blocking(move || {
+            let mut files = pictures
+                .into_iter()
+                .map(|(name, bytes)| picker::Picked::bytes(name, &bytes))
+                .collect::<Result<Vec<_>, _>>()?;
+            files.extend(picker::open_paths(paths)?);
+            Ok(files)
+        });
+        let files = opened
+            .await
+            .unwrap_or_else(|error| Err(picker::fault(error.to_string())))?;
         let files = held.hold(files);
         Ok(methods::encode(&methods::Pasted { files, text }))
     });

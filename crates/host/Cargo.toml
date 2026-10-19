@@ -99,6 +99,9 @@ view-meter = { path = "../view-meter" }
 wat = { version = "1", optional = true }
 libc.workspace = true
 sha1 = "0.10"
+# files of the host's own that nothing keeps (a save's landing file, a
+# pasted picture, a blob read for a view)
+tempfile.workspace = true
 # the node's client, shared with the phone; a signer is whatever the shell
 # seats (`noded_client::Signer`), so no key crate is named here
 noded-client = { path = "../noded-client" }
@@ -125,7 +128,6 @@ noded-client = { path = "../noded-client", features = ["commonware"] }
 # hand-written wasm for the describe method's hostile-section tests
 wat = "1"
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
-tempfile.workspace = true
 # what a test reads back of the warnings a cache problem logs (`runner/wasmtime.rs`)
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
