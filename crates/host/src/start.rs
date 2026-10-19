@@ -84,8 +84,15 @@ fn drain(
                 Signal::Lifecycle(phase) => {
                     // seats stop turning in the background and turn again
                     // in front (`Backgrounded`); the node's sockets and polls
-                    // close there and open again in front (`set_in_front`)
-                    let backgrounded = matches!(phase, gpui_kit::AppLifecyclePhase::Background);
+                    // close there and open again in front (`set_in_front`).
+                    // A scene the OS took back (iOS reclaims a background
+                    // app's scene) is behind as well: in front again only
+                    // when a scene comes to the front.
+                    let backgrounded = matches!(
+                        phase,
+                        gpui_kit::AppLifecyclePhase::Background
+                            | gpui_kit::AppLifecyclePhase::Disconnected
+                    );
                     cx.update(|cx| cx.set_global(crate::runtime::Backgrounded(backgrounded)));
                     crate::runtime::set_in_front(!backgrounded);
                     if session
@@ -166,5 +173,10 @@ mod tests {
         inbound.send(Signal::Lifecycle(gpui_kit::AppLifecyclePhase::Foreground));
         cx.run_until_parked();
         assert_eq!(backgrounded(cx), Some(false));
+        // the scene taken back while the app is behind keeps it behind
+        inbound.send(Signal::Lifecycle(gpui_kit::AppLifecyclePhase::Background));
+        inbound.send(Signal::Lifecycle(gpui_kit::AppLifecyclePhase::Disconnected));
+        cx.run_until_parked();
+        assert_eq!(backgrounded(cx), Some(true));
     }
 }
