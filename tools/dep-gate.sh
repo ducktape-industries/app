@@ -144,4 +144,12 @@ else
     skip "cargo-deny is not installed (row 7)"
 fi
 
+drawn=$(git grep -n -E '\.render_frame\(' -- '*.rs' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+if [ -z "$drawn" ]; then
+    pass "no Rust code calls the kit's render_frame: tests draw with render::draw_frame or refresh_and_draw, which keep a frame's cache replay"
+else
+    fail "the kit's render_frame refreshes before it draws, which hides a cache replay that a real frame takes; use render::draw_frame or refresh_and_draw:"
+    printf '%s\n' "$drawn" | sed 's/^/      /'
+fi
+
 exit $status
