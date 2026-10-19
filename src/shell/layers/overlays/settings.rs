@@ -822,14 +822,14 @@ impl OverlayLayer {
         let check = match shown.checking {
             true => crate::a11y::Patch::default()
                 .busy()
+                .disabled()
                 .on(crate::a11y::keyboard(
                     // read at 0.3, as `ink::button` busy
                     button("updates/check", "Checking…")
                         .cursor_default()
                         .opacity(0.3),
                     ink.ink,
-                )
-                .aria_disabled(true)),
+                )),
             false => crate::a11y::keyboard(
                 button("updates/check", "Check now").on_click(|_, _, cx| {
                     crate::update::check_now();

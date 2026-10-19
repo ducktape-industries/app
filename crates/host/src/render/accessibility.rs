@@ -178,6 +178,7 @@ pub fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessi
         read_only,
     } = accessible;
     let element = crate::a11y::Patch {
+        disabled,
         invalid,
         required,
         read_only,
@@ -199,9 +200,6 @@ pub fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessi
         }
         if let Some(value) = value {
             node = node.aria_value(value);
-        }
-        if disabled {
-            node = node.aria_disabled(true);
         }
         node
     })
@@ -288,9 +286,6 @@ impl ViewTree {
         if let Some(value) = aria.expanded {
             element = element.aria_expanded(value);
         }
-        if let Some(value) = aria.disabled {
-            element = element.aria_disabled(value);
-        }
         if let Some(value) = aria.numeric_value {
             element = element.aria_numeric_value(value);
         }
@@ -343,6 +338,7 @@ impl ViewTree {
         element = crate::a11y::Patch {
             live: aria.live,
             busy: aria.busy,
+            disabled: aria.disabled.unwrap_or(false),
             required: aria.required,
             read_only: aria.read_only,
             invalid: aria.invalid,

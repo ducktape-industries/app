@@ -267,11 +267,12 @@ pub(super) fn button(
             })
         })
         .child(text);
-    let button = crate::a11y::keyboard(button, ink.ring(filled)).aria_disabled(disabled);
-    match press {
-        Press::Busy => crate::a11y::Patch::default().busy().on(button),
-        _ => button,
+    crate::a11y::Patch {
+        busy: matches!(press, Press::Busy),
+        disabled,
+        ..Default::default()
     }
+    .on(crate::a11y::keyboard(button, ink.ring(filled)))
     .into_any_element()
 }
 

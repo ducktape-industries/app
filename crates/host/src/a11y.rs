@@ -173,6 +173,7 @@ pub struct Patch {
     pub modal: bool,
     pub live: Option<Live>,
     pub busy: bool,
+    pub disabled: bool,
     pub required: bool,
     pub read_only: bool,
     pub invalid: Option<Invalid>,
@@ -198,6 +199,13 @@ impl Patch {
     pub fn live(self, live: Live) -> Self {
         Self {
             live: Some(live),
+            ..self
+        }
+    }
+
+    pub fn disabled(self) -> Self {
+        Self {
+            disabled: true,
             ..self
         }
     }
@@ -266,6 +274,9 @@ impl Patch {
                 }
                 if self.busy {
                     node.set_busy();
+                }
+                if self.disabled {
+                    node.set_disabled();
                 }
                 if self.required {
                     node.set_required();

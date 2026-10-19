@@ -711,7 +711,7 @@ fn mode_switch(
         .border_1()
         .border_color(ink.ink)
         .child(program)
-        .child(chat.aria_disabled(true))
+        .child(crate::a11y::Patch::default().disabled().on(chat))
         .into_any_element()
 }
 
