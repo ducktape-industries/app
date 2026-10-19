@@ -184,6 +184,7 @@ fn pending_routes() -> &'static Routes {
 /// wake that seat if it is open: its view reads the route in its next
 /// turn, and no other seat of the program hears of it.
 pub fn route_to(program: &'static str, instance: u64, route: String) {
+    tracing::info!(target: "ducktape::app", program, instance, %route, "a link's route waits for its seat");
     pending_routes()
         .lock()
         .expect("pending routes")

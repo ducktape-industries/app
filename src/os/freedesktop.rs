@@ -256,15 +256,36 @@ fn clicks() -> &'static Mutex<HashMap<u32, Click>> {
     CLICKS.get_or_init(Mutex::default)
 }
 
+/// What the daemon says of a banner: the activation token it hands the
+/// app for the click it is about to tell (`ActivationToken`, spec 1.2),
+/// or the action taken on it (`ActionInvoked`).
+#[derive(Debug, PartialEq)]
+enum Said {
+    Token(u32, String),
+    Action(u32, String),
+}
+
+/// An action taken on a banner, with the token the daemon sent for it
+/// just before, if it sent one: the banner, the action, the token.
+fn acted(tokens: &mut HashMap<u32, String>, said: Said) -> Option<(u32, String, Option<String>)> {
+    match said {
+        Said::Token(banner, token) => {
+            tokens.insert(banner, token);
+            None
+        }
+        Said::Action(banner, action) => Some((banner, action, tokens.remove(&banner))),
+    }
+}
+
 /// One thread for the life of the process, hearing the daemon say a
-/// banner was clicked: what it names is opened.
+/// banner was clicked: what it names is opened, its window brought forward
+/// with the click's activation token.
 fn listen(bus: &'static zbus::blocking::Connection) {
     static LISTENING: OnceLock<()> = OnceLock::new();
     LISTENING.get_or_init(|| {
         let rule = zbus::MatchRule::builder()
             .msg_type(zbus::message::Type::Signal)
             .interface("org.freedesktop.Notifications")
-            .and_then(|rule| rule.member("ActionInvoked"))
             .map(|rule| rule.build());
         let messages = rule
             .and_then(|rule| zbus::blocking::MessageIterator::for_match_rule(rule, bus, Some(64)));
@@ -278,8 +299,16 @@ fn listen(bus: &'static zbus::blocking::Connection) {
         let spawned = std::thread::Builder::new()
             .name("notice-clicks".into())
             .spawn(move || {
+                let mut tokens = HashMap::new();
                 for message in messages.flatten() {
-                    let Ok((banner, action)) = message.body().deserialize::<(u32, String)>() else {
+                    let header = message.header();
+                    let told = message.body().deserialize::<(u32, String)>();
+                    let said = match (header.member().map(|member| member.as_str()), told) {
+                        (Some("ActivationToken"), Ok((banner, token))) => Said::Token(banner, token),
+                        (Some("ActionInvoked"), Ok((banner, action))) => Said::Action(banner, action),
+                        _ => continue,
+                    };
+                    let Some((banner, action, activation)) = acted(&mut tokens, said) else {
                         continue;
                     };
                     let click = clicks()
@@ -287,9 +316,10 @@ fn listen(bus: &'static zbus::blocking::Connection) {
                         .expect("banner clicks")
                         .get(&banner)
                         .cloned();
+                    tracing::info!(target: "ducktape::app", banner, %action, known = click.is_some(), activation = activation.is_some(), "the notification daemon said a banner was acted on");
                     match (click, action.as_str()) {
                         // a call's Answer opens it as a click does
-                        (Some(click), "default" | "answer") => super::clicked(click),
+                        (Some(click), "default" | "answer") => super::clicked(click, activation),
                         // a call's Decline is this device's alone (SPEC D11)
                         (Some(_), "decline") => declined(banner),
                         _ => {}
@@ -529,6 +559,31 @@ fn notify(
         quack();
     }
     Ok(raised)
+}
+
+#[cfg(test)]
+#[test]
+fn a_click_carries_the_token_the_daemon_sent_for_it() {
+    let mut tokens = HashMap::new();
+    let token = |banner, token: &str| Said::Token(banner, token.into());
+    let action = |banner, action: &str| Said::Action(banner, action.into());
+    assert_eq!(acted(&mut tokens, token(5, "kwin-42")), None);
+    assert_eq!(
+        acted(&mut tokens, action(5, "default")),
+        Some((5, "default".into(), Some("kwin-42".into())))
+    );
+    assert_eq!(
+        acted(&mut tokens, action(5, "default")),
+        Some((5, "default".into(), None)),
+        "a token is spent on the click it came for"
+    );
+    assert_eq!(acted(&mut tokens, token(6, "mako-7")), None);
+    assert_eq!(
+        acted(&mut tokens, action(7, "default")),
+        Some((7, "default".into(), None)),
+        "another banner's token is not this one's"
+    );
+    assert!(tokens.contains_key(&6));
 }
 
 #[cfg(test)]

@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 // `withdraw(chain, tag)` and `withdraw_host()`. All block on OS calls; a view's run
 // only through `notify::in_order` under the view's program, on the blocking
 // pool, and the host's on the thread that posts it. A click on a banner
-// goes to the host as `Signal::BannerClick(click)` through `Inbound`.
+// goes to the host as `Signal::BannerClick(click, activation)` through `Inbound`.
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -44,11 +44,12 @@ pub(crate) fn install_inbound(inbound: Inbound) {
     macos::start();
 }
 
-/// A banner clicked, from the OS's own thread: into the host through the
-/// one inbound channel.
-fn clicked(click: Click) {
+/// A banner clicked, from the OS's own thread, with the token the OS gave
+/// the click to bring a window forward: into the host through the one
+/// inbound channel.
+fn clicked(click: Click, activation: Option<String>) {
     match INBOUND.get() {
-        Some(inbound) => inbound.send(Signal::BannerClick(click)),
+        Some(inbound) => inbound.send(Signal::BannerClick(click, activation)),
         None => {
             tracing::error!(target: "ducktape::app", reason = "no_host", "a banner was clicked before the host started")
         }

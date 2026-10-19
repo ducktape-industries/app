@@ -109,7 +109,7 @@ declare_class!(
                 withdraw(&chain, &tag);
                 ducktape_host::runtime::notify::declined(&chain, &tag);
             } else if let Some(click) = click.filter(|_| default || action == ANSWER) {
-                super::clicked(click);
+                super::clicked(click, None);
             }
             done.call(());
         }

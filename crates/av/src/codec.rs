@@ -502,7 +502,7 @@ pub(crate) const NAL_SPS: u8 = 7;
 pub(crate) const NAL_PPS: u8 = 8;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// `frames` 20 ms frames of a `hz` tone at half scale, from sample
@@ -744,7 +744,7 @@ mod tests {
     /// the one `DUCKTAPE_OPENH264` names, else the one for this machine
     /// fetched once from Cisco into the temp dir (curl and bzip2, as the
     /// app does in Rust).
-    fn ready() {
+    pub(crate) fn ready() {
         #[cfg(target_os = "linux")]
         super::cisco::supply(|| {
             use std::path::PathBuf;

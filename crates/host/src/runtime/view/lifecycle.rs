@@ -1092,6 +1092,7 @@ impl View {
             return;
         };
         if let Some(route) = crate::runtime::take_route(self.program, self.instance) {
+            tracing::info!(target: "ducktape::app", program = self.program, instance = self.instance, %route, "a seat's view is handed its route");
             self.stream_item(id, wire::methods::encode(&route));
         }
     }

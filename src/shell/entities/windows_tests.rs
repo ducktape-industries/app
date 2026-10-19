@@ -282,21 +282,30 @@ fn an_https_link_opens_in_the_web_view_else_in_the_system_browser(cx: &mut TestA
     assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/c"));
 }
 
-/// A click on the update notice (`runtime::notify` posts `OpenUpdates`):
-/// Settings opens on the console, on its Updates page.
+/// A click on the update notice (`runtime::notify` posts it as a banner's
+/// `Updates`): Settings opens on the console, on its Updates page, and the
+/// console comes forward with the click's activation token.
 #[gpui_kit::test]
 fn the_update_notice_opens_settings_on_updates(cx: &mut TestAppContext) {
     let (app, key) = console(cx);
     let overlays = app
         .windows
         .read_with(cx, |windows, _| windows.own(key).unwrap().overlays.clone());
-    app.windows.update(cx, |windows, cx| {
-        windows.posted(super::windows::Posted::OpenUpdates, cx)
-    });
+    let token = "mako-banner-7";
+    let clicked =
+        super::windows::Posted::Banner(crate::runtime::notify::Opened::Updates, Some(token.into()));
+    app.windows
+        .update(cx, |windows, cx| windows.posted(clicked, cx));
     cx.run_until_parked();
     assert_eq!(
         overlays.read_with(cx, |it, _| *it.get()),
         Some(Overlay::Settings(super::SettingsPage::Updates))
+    );
+    let activated = crate::shell::windows::ACTIVATED.with_borrow(|told| told.clone());
+    assert_eq!(
+        activated.last().map(|(_, told)| told.as_deref()),
+        Some(Some(token)),
+        "the console came forward with the click's token"
     );
 }
 
@@ -1461,7 +1470,8 @@ fn another_networks_notice_switches_then_opens(cx: &mut TestAppContext) {
     let followed = crate::runtime::follow_for_test(THERE, &chain, "", None).expect("its set");
     let row = logged_there(&followed, PROGRAM);
     app.windows.update(cx, |windows, cx| {
-        windows.posted(super::windows::Posted::Row { chain, row }, cx)
+        let opened = crate::runtime::notify::Opened::Row { chain, row };
+        windows.posted(super::windows::Posted::Banner(opened, None), cx)
     });
     let reaching = app
         .session
@@ -1494,10 +1504,11 @@ fn another_networks_notice_switches_then_opens_cold(cx: &mut TestAppContext) {
         };
         session.seed(state, cx)
     });
-    let posted = super::windows::Posted::Row {
+    let opened = crate::runtime::notify::Opened::Row {
         chain: chain.clone(),
         row: 1,
     };
+    let posted = super::windows::Posted::Banner(opened, None);
     app.windows
         .update(cx, |windows, cx| windows.posted(posted, cx));
     let state = app

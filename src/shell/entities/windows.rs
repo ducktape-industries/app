@@ -1179,21 +1179,26 @@ impl Windows {
     }
 
     pub(crate) fn launched(&mut self, launch: crate::profile::Launch, cx: &mut Context<Self>) {
+        self.come_forward(launch.activation, cx);
+        for link in launch.args {
+            self.open_link(&link, None, cx);
+        }
+    }
+
+    /// The app and its console brought to the front, with the activation
+    /// token the OS gave the act that asked (a launch, a banner's click).
+    fn come_forward(&mut self, token: Option<String>, cx: &mut Context<Self>) {
         if cfg!(target_os = "macos") {
             cx.activate(true);
         }
         self.raise_console(cx);
         if let Some(handle) = self.console.and_then(|key| self.handles.get(&key).copied()) {
-            let token = launch.activation.clone();
             cx.defer(move |cx| {
                 let told = handle.update(cx, |_, window, _| windows::activate(window, token.as_deref()));
                 if let Ok(Err(error)) = told {
                     tracing::warn!(target: "ducktape::app", reason = "activate_failed", %error, "the console was not brought to the front");
                 }
             });
-        }
-        for link in launch.args {
-            self.open_link(&link, None, cx);
         }
     }
 
@@ -1367,20 +1372,26 @@ impl Windows {
     /// A link or a page asked for off the window thread (a banner's click,
     /// the passkey page).
     pub(crate) fn posted(&mut self, posted: Posted, cx: &mut Context<Self>) {
+        use crate::runtime::notify::Opened;
         match posted {
-            Posted::Row { chain, row } => {
-                self.switching = Some((chain, row, false));
-                self.open_switched(cx);
-            }
-            Posted::Link(url) => {
-                // the banner's row was read as it was clicked
-                self.shared
-                    .notifications
-                    .update(cx, |notifications, cx| _ = notifications.refresh(cx));
-                self.open_link(&url, None, cx);
+            Posted::Banner(opened, activation) => {
+                self.come_forward(activation, cx);
+                match opened {
+                    Opened::Row { chain, row } => {
+                        self.switching = Some((chain, row, false));
+                        self.open_switched(cx);
+                    }
+                    Opened::Link(url) => {
+                        // the banner's row was read as it was clicked
+                        self.shared
+                            .notifications
+                            .update(cx, |notifications, cx| _ = notifications.refresh(cx));
+                        self.open_link(&url, None, cx);
+                    }
+                    Opened::Updates => self.open_settings(Some(SettingsPage::Updates), cx),
+                }
             }
             Posted::Url(url) => cx.open_url(&url),
-            Posted::OpenUpdates => self.open_settings(Some(SettingsPage::Updates), cx),
             Posted::UpdatesMoved => {
                 // its notices' rows too: the bell's count and list
                 self.shared
@@ -1727,14 +1738,12 @@ async fn left_full_size(
 /// (`runtime::notify`), the passkey ceremony's page (`backend::auth_page`)
 /// or the self-update's word (`update`).
 pub(crate) enum Posted {
-    /// A link, for `Windows::open_link`.
-    Link(String),
-    /// A row of another network's log, for `Windows::open_switched`.
-    Row { chain: String, row: u64 },
+    /// What a banner's click opens (a link, a row of another network's
+    /// log, Settings › Updates), the console brought forward with the
+    /// click's activation token.
+    Banner(crate::runtime::notify::Opened, Option<String>),
     /// A web page, for the system browser.
     Url(String),
-    /// Settings › Updates, on the console: the update notice was clicked.
-    OpenUpdates,
     /// The updater's reading moved, or its notices' rows: whatever shows
     /// them draws again.
     UpdatesMoved,
@@ -1762,12 +1771,8 @@ pub(crate) fn posted() -> UnboundedReceiver<Posted> {
 
 /// The desktop's `Boot::open`: what a banner click names, posted to
 /// `Windows::posted`.
-pub(crate) fn open_banner(opened: crate::runtime::notify::Opened) {
-    post(match opened {
-        crate::runtime::notify::Opened::Link(url) => Posted::Link(url),
-        crate::runtime::notify::Opened::Row { chain, row } => Posted::Row { chain, row },
-        crate::runtime::notify::Opened::Updates => Posted::OpenUpdates,
-    })
+pub(crate) fn open_banner(opened: crate::runtime::notify::Opened, activation: Option<String>) {
+    post(Posted::Banner(opened, activation))
 }
 
 fn post(posted: Posted) {

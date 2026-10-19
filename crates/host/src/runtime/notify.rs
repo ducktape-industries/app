@@ -303,11 +303,11 @@ pub enum Opened {
 
 /// What opens what a banner click names: the shell's `Boot::open`, which
 /// `start` installs ([`on_open`]) so this layer never calls up into it.
-static OPEN: OnceLock<fn(Opened)> = OnceLock::new();
+static OPEN: OnceLock<fn(Opened, Option<String>)> = OnceLock::new();
 
 /// `Boot::open` installed: how what a banner click opens reaches the
 /// shell's windows. The first one stays.
-pub(crate) fn on_open(open: fn(Opened)) {
+pub(crate) fn on_open(open: fn(Opened, Option<String>)) {
     let _ = OPEN.set(open);
 }
 
@@ -316,13 +316,19 @@ pub(crate) fn on_open(open: fn(Opened)) {
 /// `Inbound`. A row opens as if picked in the centre — read now, and its
 /// `duck://` link opened (the view's seat, when it carried none). A row of
 /// another chain than the one in hand goes to the shell as it is, to
-/// switch first.
-pub(crate) fn clicked(click: Click) {
+/// switch first. `activation` is the OS's token for the click, handed on
+/// with what it opens.
+pub(crate) fn clicked(click: Click, activation: Option<String>) {
+    tracing::info!(target: "ducktape::app", ?click, "a banner was clicked");
     let Some(opened) = opened(click) else {
+        tracing::info!(target: "ducktape::app", reason = "row_gone", "a clicked banner's row is gone");
         return;
     };
+    if let Opened::Link(link) = &opened {
+        tracing::info!(target: "ducktape::app", %link, "a clicked banner opens its link");
+    }
     match OPEN.get() {
-        Some(open) => open(opened),
+        Some(open) => open(opened, activation),
         None => {
             tracing::error!(target: "ducktape::app", reason = "no_link_opener", "a banner's link could not be opened")
         }

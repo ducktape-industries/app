@@ -389,8 +389,10 @@ pub enum Signal {
     /// The insets changed: re-read `OsServices::insets`, re-place.
     InsetsChanged,
     /// A banner the host raised was clicked: the centre opens what it
-    /// names, through [`Boot::open`].
-    BannerClick(Click),
+    /// names, through [`Boot::open`], with the activation token the OS
+    /// gave the click (freedesktop's `ActivationToken`), which lets the
+    /// window that opens it come forward.
+    BannerClick(Click, Option<String>),
 }
 
 /// What a shell hands [`start`](crate::start::start).
@@ -402,7 +404,7 @@ pub struct Boot {
     pub runner: Arc<dyn ViewRunner>,
     /// What opens what a banner click names (a `duck://` link, Settings ›
     /// Updates) in the shell's windows. Called on the GPUI thread.
-    pub open: fn(Opened),
+    pub open: fn(Opened, Option<String>),
 }
 
 static OS: OnceLock<Arc<dyn OsServices>> = OnceLock::new();

@@ -203,6 +203,7 @@ mod tests {
     #[test]
     fn stamped_frames_survive_the_video_codec() {
         use crate::codec::{VideoDecoder, VideoEncoder};
+        crate::codec::tests::ready();
         let mut bars = Bars::new();
         let mut encoder = VideoEncoder::new(WIDTH, HEIGHT, 600_000, FPS as u32).expect("encoder");
         let mut decoder = VideoDecoder::new().expect("decoder");

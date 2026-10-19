@@ -102,7 +102,9 @@ fn drain(
                         break;
                     }
                 }
-                Signal::BannerClick(click) => crate::runtime::notify::clicked(click),
+                Signal::BannerClick(click, activation) => {
+                    crate::runtime::notify::clicked(click, activation)
+                }
                 other => {
                     let _ = to_shell.try_send(other);
                 }
@@ -120,7 +122,7 @@ mod tests {
 
     static OPENED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
-    fn opened(opened: Opened) {
+    fn opened(opened: Opened, _activation: Option<String>) {
         OPENED.lock().unwrap().push(match opened {
             Opened::Link(_) => "link",
             Opened::Row { .. } => "row",
@@ -154,11 +156,12 @@ mod tests {
             })
         };
         inbound.send(Signal::Back);
-        inbound.send(Signal::BannerClick(Click::Updates));
-        inbound.send(Signal::BannerClick(Click::Row {
+        inbound.send(Signal::BannerClick(Click::Updates, None));
+        let row = Click::Row {
             chain: "never-in-hand#01".into(),
             row: 1,
-        }));
+        };
+        inbound.send(Signal::BannerClick(row, None));
         inbound.send(Signal::Lifecycle(gpui_kit::AppLifecyclePhase::Background));
         inbound.send(Signal::MemoryWarning);
         cx.run_until_parked();

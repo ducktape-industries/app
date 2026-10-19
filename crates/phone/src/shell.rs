@@ -265,7 +265,7 @@ fn log_os_notices(cx: &mut App) {
 /// What a banner's click names, from the host's notification centre: a
 /// link opens as any other; the phone's app store updates the app, so
 /// there is no Updates page.
-fn banner_opened(opened: Banner) {
+fn banner_opened(opened: Banner, _activation: Option<String>) {
     match opened {
         Banner::Link(link) => crate::os::link(link),
         // a phone's banners are all the chain in hand's (`os::PhoneBanners`)
@@ -367,7 +367,7 @@ fn handed_on(signal: Signal, cx: &mut App) {
             }
         }
         // the host consumes these
-        Signal::Lifecycle(_) | Signal::BannerClick(_) => {}
+        Signal::Lifecycle(_) | Signal::BannerClick(..) => {}
     }
 }
 
