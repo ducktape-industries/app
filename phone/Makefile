@@ -67,9 +67,6 @@ ios-sim:
 		-configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath build/derived -jobs 4 -quiet build
 	@echo $(IOS_APP)
 
-# The XCUITest driver the mac service taps system UI with (ios/Driver), built for testing
-# beside the app ios-sim built; the last line is its .xctestrun, which `xcodebuild
-# test-without-building -xctestrun` runs.
 ios-driver:
 	cd $(ROOT)/phone/ios && xcodegen generate --quiet
 	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphonesimulator \

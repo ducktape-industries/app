@@ -24,7 +24,6 @@ final class Driver: XCTestCase {
         }
     }
 
-    // The Mac holds a command until it is done, so asking again after a lost or timed-out request gets the same one.
     private func next(_ base: URL, after: Int) throws -> [String: Any] {
         var components = URLComponents(url: base.appendingPathComponent("next"), resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "after", value: String(after))]
