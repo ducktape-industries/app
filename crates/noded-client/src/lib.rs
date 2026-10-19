@@ -299,15 +299,29 @@ impl Client {
         self.post(route::TX, ask).await
     }
 
+    /// Each block's writes to `program`, values and all.
     pub async fn changes(
         &self,
         program: &str,
     ) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
-        let url = format!(
-            "{}{}/{program}",
-            self.base.replacen("http", "ws", 1),
-            route::CHANGES
-        );
+        self.follow(format!("{}/{program}", route::CHANGES)).await
+    }
+
+    /// Each block's writes to `program`, the keys alone (`?keys`): every
+    /// value `None`. A node that does not know `?keys` sends the values
+    /// too, which a caller of this never reads.
+    pub async fn changed_keys(
+        &self,
+        program: &str,
+    ) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
+        self.follow(format!("{}/{program}?keys", route::CHANGES))
+            .await
+    }
+
+    /// The changes socket at `path`; the node's ping for a block that wrote
+    /// nothing there is answered and skipped.
+    async fn follow(&self, path: String) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
+        let url = format!("{}{path}", self.base.replacen("http", "ws", 1));
         let unbounded = WebSocketConfig {
             max_message_size: None,
             max_frame_size: None,

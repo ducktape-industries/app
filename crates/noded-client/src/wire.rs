@@ -26,6 +26,9 @@ pub mod route {
     pub const BLOB_GET: &str = "/v1/blob/get";
     /// A blob upload: a signed blobs-role `Put` and the bytes it names.
     pub const BLOB_PUT: &str = "/v1/blob/put";
+    /// `/v1/changes/<program>[?keys]`: a websocket of each block's writes
+    /// to the program (`?keys`: the keys alone), a ping for a block that
+    /// wrote nothing there.
     pub const CHANGES: &str = "/v1/changes";
     pub const BLOCKS: &str = "/v1/blocks";
     pub const BLOCK: &str = "/v1/block";

@@ -83,9 +83,11 @@ fn drain(
             match signal {
                 Signal::Lifecycle(phase) => {
                     // seats stop turning in the background and turn again
-                    // in front (`Backgrounded`)
+                    // in front (`Backgrounded`); the node's sockets and polls
+                    // close there and open again in front (`set_in_front`)
                     let backgrounded = matches!(phase, gpui_kit::AppLifecyclePhase::Background);
                     cx.update(|cx| cx.set_global(crate::runtime::Backgrounded(backgrounded)));
+                    crate::runtime::set_in_front(!backgrounded);
                     if session
                         .update(cx, |session, cx| session.lifecycle(phase, cx))
                         .is_err()

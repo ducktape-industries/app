@@ -398,9 +398,11 @@ its meaning; the host and the views name the const, never the string.
    `view.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
 6. **Subscriptions.** `program.changes <program>` (`follow_changes`: one WebSocket
-   `/v1/changes/<program>` per subscription), `chain.heads` (`heads`: polls
+   `/v1/changes/<program>?keys` (the keys alone) per node and program, held while a follower's view
+   is on screen, a notifier's always, and the app in front; a follower back
+   is told to re-read first), `chain.heads` (`heads`: polls
    status at half the node's block time and reads the advance from
-   `/v1/blocks`), `live.publish`/`live.subscribe`/
+   `/v1/blocks`, on the same terms), `live.publish`/`live.subscribe`/
    `live.tracks` (`kernel/live.rs`: a request on the connection's live
    session, opened again on a lost session or a reconnect, its items the
    node's objects and announces), `clock.ticks`, `host.session`,

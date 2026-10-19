@@ -686,6 +686,8 @@ impl View {
             visible: _,
             visibility_change: _,
             visibility_subscriptions: _,
+            on_screen: _,
+            in_front: _,
             placement: _,
             placement_change: _,
             placement_subscriptions: _,
@@ -990,6 +992,8 @@ impl View {
             visible: false,
             visibility_change: None,
             visibility_subscriptions: Vec::new(),
+            on_screen: tokio::sync::watch::channel(false).0,
+            in_front: kernel::in_front(),
             placement: Default::default(),
             placement_change: None,
             placement_subscriptions: Vec::new(),
@@ -1029,6 +1033,8 @@ impl View {
     }
 
     pub fn set_visible(&mut self, visible: bool) {
+        self.on_screen
+            .send_if_modified(|shown| std::mem::replace(shown, visible) != visible);
         if self.visible == visible {
             return;
         }

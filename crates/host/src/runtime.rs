@@ -37,7 +37,7 @@ pub mod web;
 #[cfg(feature = "call")]
 pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
-pub use kernel::{Answered, day, local_offset};
+pub use kernel::{Answered, day, local_offset, set_in_front};
 // a host with no screen runs each program's notifier per account (`crates/pushd`)
 pub use notifier::{Carried, Recipient, Said, notify_for};
 // the web view cleans a page's title as a window's (render/web.rs), the

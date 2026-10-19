@@ -78,13 +78,17 @@
 //!   describe module reads it, or `None` (`describe`).
 //! - `invite.create` `CreateInvite{ttl_days}` — `Invite{invite, notes}`. Node refusals retain their tokens.
 //! - `program.changes` `<program>` — a subscription that gets one item per
-//!   block that wrote to `program` (`/v1/changes/<program>`): the block's
+//!   block that wrote to `program` (`/v1/changes/<program>?keys`): the block's
 //!   height and the keys it wrote, as the node publishes them, so the view
-//!   re-reads what moved; `None` when the link was reopened and the view
-//!   should re-read everything.
+//!   re-reads what moved; `None` when the link was reopened, or the view
+//!   came back on screen or the app in front, and the view should re-read
+//!   everything. Only a view on screen (a notifier: always) of an app in
+//!   front holds the socket: off screen or behind another app it lets go,
+//!   and a socket no view holds closes.
 //! - `chain.heads` — a subscription that gets one `Head` per finalized block,
 //!   oldest first: the host reads the node's status at half its block
-//!   time and fills each advance from the block archive.
+//!   time and fills each advance from the block archive, while the view
+//!   is on screen and the app in front; back, it goes on from the tip.
 //!
 //! A connect inside the network opens both again on the new node
 //! (`reconnected`): neither ends on it.
@@ -153,6 +157,24 @@ use node::{
 pub(super) use node::{reaches_node, spawn_event, spawn_save};
 pub(super) use replies::Replies;
 use replies::{Claim, InFlight};
+
+/// Whether the app is in front of the person: a phone's lifecycle moves it
+/// (`set_in_front`), a desktop's app always is. Behind another app no view
+/// holds a socket or a poll of the node.
+fn front() -> &'static tokio::sync::watch::Sender<bool> {
+    static FRONT: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+    FRONT.get_or_init(|| tokio::sync::watch::channel(true).0)
+}
+
+/// The app went behind another (`false`) or came in front again.
+pub fn set_in_front(in_front: bool) {
+    front().send_if_modified(|front| std::mem::replace(front, in_front) != in_front);
+}
+
+/// Whether the app is in front, as a view's tasks read it.
+pub(super) fn in_front() -> tokio::sync::watch::Receiver<bool> {
+    front().subscribe()
+}
 
 /// The one current-thread tokio runtime every async I/O in the app runs
 /// on — node HTTP and websockets here, the shell's task stream, the loader

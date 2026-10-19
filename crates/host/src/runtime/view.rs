@@ -196,6 +196,12 @@ pub(super) struct View {
     pub visible: bool,
     pub visibility_change: Option<bool>,
     pub visibility_subscriptions: Vec<u64>,
+    /// `visible`, for the kernel's tasks: a node subscription follows the
+    /// node only while its view is on screen (`kernel::node::Wanted`).
+    pub(crate) on_screen: tokio::sync::watch::Sender<bool>,
+    /// Whether the app is in front (`kernel::set_in_front`), as this
+    /// view's tasks read it.
+    pub(crate) in_front: tokio::sync::watch::Receiver<bool>,
     /// Where its pane is (`host.placement`), as the seat last placed it,
     /// the change not told yet, and the subscriptions that hear it.
     pub placement: wire::methods::Placement,

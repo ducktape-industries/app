@@ -1295,3 +1295,159 @@ fn a_view_reaches_a_program_its_manifest_never_names() {
     assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 1);
     handle().block_on(backend::lock_signer());
 }
+
+/// A changes node that also counts its sockets: those it took, and those
+/// the client closed since.
+struct Watched {
+    node: Node,
+    opened: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// [`changes_node`], each socket counted when it opens and when the client
+/// closes it.
+fn watched_changes_node(heights: &'static [u64]) -> Watched {
+    let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (taken, gone) = (opened.clone(), closed.clone());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let node = Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+    };
+    handle().spawn(async move {
+        use futures::{SinkExt as _, StreamExt as _};
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        while let Ok((stream, _)) = listener.accept().await {
+            let (taken, gone) = (taken.clone(), gone.clone());
+            tokio::spawn(async move {
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                for &height in heights {
+                    let change = noded::Change {
+                        height,
+                        root: abi::Root([0; 32]),
+                        writes: vec![(format!("row/{height}").into_bytes(), None)],
+                    };
+                    let sent =
+                        tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change));
+                    socket.send(sent).await.unwrap();
+                }
+                while let Some(Ok(_)) = socket.next().await {}
+                gone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+    });
+    Watched {
+        node,
+        opened,
+        closed,
+    }
+}
+
+/// `count`'s value once it is `want`, waiting up to two seconds for it.
+fn counted(count: &std::sync::atomic::AtomicUsize, want: usize) -> usize {
+    for _ in 0..200 {
+        if count.load(std::sync::atomic::Ordering::SeqCst) == want {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    count.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// One `program.changes` item: the block at `height`, as the watched node
+/// writes it, or `None`.
+fn change_item(height: Option<u64>) -> wire::Event {
+    let change = height.map(|height| methods::Change {
+        height,
+        keys: vec![format!("row/{height}").into_bytes()],
+    });
+    wire::Event::Response {
+        id: 1,
+        result: Ok(methods::encode(&change)),
+        done: false,
+    }
+}
+
+/// A view off screen (a phone's seated pane on another tab) holds no
+/// socket, and the node is asked for none; on screen it opens the feed, is
+/// told first to re-read what moved while it was away (`None`), and hears
+/// the blocks; off screen again it lets go, and the socket no view holds
+/// closes. Before, every seated view held its program's socket whether or
+/// not anyone saw it: a phone on its Home tab followed every program on
+/// the network, about a megabyte a minute on duckpond.
+#[test]
+fn a_view_off_screen_holds_no_socket() {
+    let watched = watched_changes_node(&[5]);
+    let mut view = view();
+    view.set_visible(false);
+    follow_changes(&mut view, 1, watched.node.clone(), "chat".into());
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        counted(&watched.opened, 0),
+        0,
+        "a socket with no one to see it"
+    );
+    assert_eq!(drained(&view, 0), []);
+    view.set_visible(true);
+    assert_eq!(
+        drained(&view, 2),
+        [change_item(None), change_item(Some(5))],
+        "back on screen: re-read, then the blocks"
+    );
+    assert_eq!(counted(&watched.opened, 1), 1);
+    view.set_visible(false);
+    assert_eq!(
+        counted(&watched.closed, 1),
+        1,
+        "off screen, the socket closes"
+    );
+}
+
+/// Behind another app (a phone's lifecycle, `set_in_front`) no view holds
+/// a socket, its notifier neither, though a notifier follows with no
+/// screen: the socket closes, and in front again it opens and the follower
+/// re-reads first. Before, a phone in the background kept every socket,
+/// and the node queued each block's writes for it until it woke.
+#[test]
+fn an_app_behind_another_holds_no_socket() {
+    let watched = watched_changes_node(&[5]);
+    let (front, in_front) = tokio::sync::watch::channel(true);
+    let mut notifier = view();
+    notifier.notifier = true;
+    notifier.set_visible(false);
+    notifier.in_front = in_front;
+    follow_changes(&mut notifier, 1, watched.node.clone(), "chat".into());
+    assert_eq!(
+        drained(&notifier, 1),
+        [change_item(Some(5))],
+        "a notifier follows with no screen"
+    );
+    front.send_replace(false);
+    assert_eq!(counted(&watched.closed, 1), 1, "behind, the socket closes");
+    front.send_replace(true);
+    assert_eq!(
+        drained(&notifier, 2),
+        [change_item(None), change_item(Some(5))],
+        "in front again: re-read, then the blocks"
+    );
+    assert_eq!(counted(&watched.opened, 2), 2);
+}
+
+/// `chain.heads` asks the node nothing for a view off screen, and starts
+/// asking once it is on screen.
+#[test]
+fn heads_off_screen_ask_nothing() {
+    let stalled = fake_node(vec![(noded::route::STATUS, Mode::Stall)]);
+    let mut view = view();
+    view.set_visible(false);
+    follow_heads(&mut view, 1, stalled.node.clone());
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(counted(&stalled.accepted, 0), 0, "a status read for no one");
+    view.set_visible(true);
+    assert_eq!(counted(&stalled.accepted, 1), 1);
+}

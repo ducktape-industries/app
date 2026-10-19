@@ -406,55 +406,133 @@ pub(super) fn changes(view: &mut View, id: u64, payload: &[u8]) {
 }
 
 /// Subscription `id`: `program.changes` of `program` on `node`, one
-/// follower of its [`Feed`]. A follower that falls more than
-/// [`FEED_BACKLOG`] items behind is told to re-read (`None`), as after a
-/// reopened socket, rather than holding the socket up for everyone.
+/// follower of its [`Feed`] while it is [`Wanted`]: off screen or behind
+/// another app it lets go of the feed (the last follower gone, the socket
+/// closes), and back it joins again and is told first to re-read
+/// (`None`), as after a reopened socket.
 fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
     let replies = view.replies.clone();
     let subscribed = (id, program.clone());
     let follows = Follow::Changes(program.clone());
-    let (feed, mut items) = feed(&node, &program);
+    let mut wanted = Wanted::of(view);
+    // joined before the socket can send anything, where it may join now
+    let mut joined = wanted.now().then(|| feed(&node, &program));
     let claim = Claim::default();
     let held = claim.clone();
     start(view, id, Some(follows), claim, async move {
-        use tokio::sync::broadcast::error::RecvError;
-        // held while the subscription runs: the last follower gone, the
-        // socket closes
-        let _feed = feed;
         let mut drained = replies.drains();
         loop {
-            let item = match items.recv().await {
-                Ok(item) => item,
-                Err(RecvError::Lagged(_)) => Ok(methods::encode(&None::<methods::Change>)),
-                Err(RecvError::Closed) => return,
+            let (feed, mut items) = match joined.take() {
+                Some(joined) => joined,
+                None => {
+                    wanted.until(true).await;
+                    let joined = feed(&node, &program);
+                    // what was written while it was away is not known
+                    let reread = Ok(methods::encode(&None::<methods::Change>));
+                    let told = tokio::select! {
+                        told = replies.subscription_item(&mut drained, &held, id, reread) => told,
+                        () = wanted.until(false) => continue,
+                    };
+                    if !told {
+                        return;
+                    }
+                    joined
+                }
             };
-            // a node that did not take the socket ends the subscription with why
-            if item.is_err() {
-                replies.answer(&held, id, item, true);
-                return;
-            }
-            if !replies
-                .subscription_item(&mut drained, &held, id, item)
-                .await
-            {
-                return;
+            // held while it is wanted: the last follower gone, the socket
+            // closes
+            let _feed = feed;
+            loop {
+                let item = tokio::select! {
+                    item = items.recv() => item,
+                    () = wanted.until(false) => break,
+                };
+                let Some(item) = item else {
+                    return;
+                };
+                // a node that did not take the socket ends the subscription with why
+                if item.is_err() {
+                    replies.answer(&held, id, item, true);
+                    return;
+                }
+                // a view that stops taking items (its app behind another)
+                // holds no socket while it does not: the item waits in its
+                // queue
+                let told = tokio::select! {
+                    told = replies.subscription_item(&mut drained, &held, id, item) => told,
+                    () = wanted.until(false) => break,
+                };
+                if !told {
+                    return;
+                }
             }
         }
     });
     view.live_subscriptions.push(subscribed);
 }
 
-/// Items a follower may fall behind its feed before it is told to re-read.
-const FEED_BACKLOG: usize = 256;
+/// When a view's node subscription holds its socket or its poll: while
+/// the app is in front of the person and the view on screen; a notifier,
+/// which is never on a screen, while the app is in front. A phone behind
+/// another app, or on a tab whose panes are seated but not shown, asks the
+/// node nothing for them: its notices come by push.
+struct Wanted {
+    front: tokio::sync::watch::Receiver<bool>,
+    on_screen: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl Wanted {
+    fn of(view: &View) -> Self {
+        Self {
+            front: view.in_front.clone(),
+            on_screen: (!view.notifier).then(|| view.on_screen.subscribe()),
+        }
+    }
+
+    fn now(&self) -> bool {
+        let shown = |on_screen: &tokio::sync::watch::Receiver<bool>| *on_screen.borrow();
+        *self.front.borrow() && self.on_screen.as_ref().is_none_or(shown)
+    }
+
+    /// Once it is wanted (`true`), or once it no longer is.
+    async fn until(&mut self, wanted: bool) {
+        while self.now() != wanted {
+            let Self { front, on_screen } = self;
+            // a value whose sender is gone moves no more
+            let front = async {
+                if front.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            };
+            let screen = async {
+                let moved = match on_screen {
+                    Some(shown) => shown.changed().await.is_ok(),
+                    None => false,
+                };
+                if !moved {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::select! {
+                () = front => {}
+                () = screen => {}
+            }
+        }
+    }
+}
 
 /// ONE `/v1/changes/<program>` socket per node and program, however many
-/// subscriptions follow it (a program's panes and its notifier; on a host
-/// with no screen, one notifier per account): each item goes to every
-/// follower. Opened by the first follower, closed with the last.
+/// subscriptions follow it (a program's panes on screen and its notifier;
+/// on a host with no screen, one notifier per account): each item goes to
+/// every follower, into its own queue, which holds what its view has not
+/// taken yet. Opened by the first follower, closed with the last.
 struct Feed {
-    items: tokio::sync::broadcast::Sender<Answer>,
+    followers: Followers,
     socket: tokio::task::JoinHandle<()>,
 }
+
+/// A feed's followers, each the queue of one subscription.
+type Followers = std::sync::Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Answer>>>>;
 
 impl Drop for Feed {
     fn drop(&mut self) {
@@ -465,13 +543,13 @@ impl Drop for Feed {
 type Feeds = HashMap<(String, String), std::sync::Weak<Feed>>;
 
 /// The feed of `program` on `node`, opened if none runs, and a follower's
-/// own place in it (made before the socket can send anything).
+/// own queue in it (made before the socket can send anything).
 fn feed(
     node: &Node,
     program: &str,
 ) -> (
     std::sync::Arc<Feed>,
-    tokio::sync::broadcast::Receiver<Answer>,
+    tokio::sync::mpsc::UnboundedReceiver<Answer>,
 ) {
     static FEEDS: OnceLock<Mutex<Feeds>> = OnceLock::new();
     let mut feeds = FEEDS
@@ -479,34 +557,45 @@ fn feed(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let key = (node.client.endpoint().to_owned(), program.to_owned());
+    let (follower, items) = tokio::sync::mpsc::unbounded_channel();
     // a feed whose node refused the socket has ended: the next follower opens another
     if let Some(feed) = feeds.get(&key).and_then(std::sync::Weak::upgrade)
         && !feed.socket.is_finished()
     {
-        let follower = feed.items.subscribe();
-        return (feed, follower);
+        feed.followers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(follower);
+        return (feed, items);
     }
     feeds.retain(|_, feed| feed.strong_count() > 0);
-    let (items, follower) = tokio::sync::broadcast::channel(FEED_BACKLOG);
+    let followers: Followers = std::sync::Arc::new(Mutex::new(vec![follower]));
     let socket = handle().spawn(socket(
         node.client.clone(),
         program.to_owned(),
-        items.clone(),
+        followers.clone(),
     ));
-    let feed = std::sync::Arc::new(Feed { items, socket });
+    let feed = std::sync::Arc::new(Feed { followers, socket });
     feeds.insert(key, std::sync::Arc::downgrade(&feed));
-    (feed, follower)
+    (feed, items)
 }
 
 /// A feed's socket: each change the node publishes, to every follower.
-async fn socket(client: RpcClient, program: String, items: tokio::sync::broadcast::Sender<Answer>) {
+async fn socket(client: RpcClient, program: String, followers: Followers) {
     use futures::StreamExt as _;
+    // to every follower still there; one that let go is dropped
+    let send = |item: Answer| {
+        followers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|follower| follower.send(item.clone()).is_ok());
+    };
     loop {
-        let mut changes = match client.changes(&program).await {
+        let mut changes = match client.changed_keys(&program).await {
             Ok(changes) => changes,
             Err(error) => {
                 tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
-                let _ = items.send(Err(refused(error)));
+                send(Err(refused(error)));
                 return;
             }
         };
@@ -520,12 +609,12 @@ async fn socket(client: RpcClient, program: String, items: tokio::sync::broadcas
                 })),
                 Err(_) => break,
             };
-            let _ = items.send(Ok(item));
+            send(Ok(item));
         }
         // the socket closed: the node restarted or the link dropped. Say so
         // once (each follower re-reads) and open it again; a node that does
         // not take it again ends every follower's subscription with why.
-        let _ = items.send(Ok(methods::encode(&None::<methods::Change>)));
+        send(Ok(methods::encode(&None::<methods::Change>)));
     }
 }
 
@@ -550,12 +639,19 @@ pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
     follow_heads(view, id, node);
 }
 
-/// Subscription `id`: `chain.heads` on `node`.
+/// Subscription `id`: `chain.heads` on `node`, read while it is
+/// [`Wanted`]: back on screen or in front, it goes on from the tip, as
+/// after a reconnect.
 fn follow_heads(view: &mut View, id: u64, node: Node) {
+    let mut wanted = Wanted::of(view);
     spawn_subscription(view, id, Follow::Heads, move |mut items| async move {
         let mut last: Option<u64> = None;
         let mut block_time_ms = None;
         loop {
+            if !wanted.now() {
+                wanted.until(true).await;
+                last = None;
+            }
             let read = next_heads(&node, last).await;
             let pace = match (read, block_time_ms) {
                 (Ok((heads, read_block_time_ms)), _) => {

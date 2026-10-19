@@ -22,6 +22,10 @@ pub(in crate::runtime) fn view() -> View {
     )
     .unwrap();
     view.capabilities = Capability::ALL.to_vec();
+    // on screen, of an app always in front: its node subscriptions follow
+    // at once, whatever another test does to the app's own
+    view.on_screen.send_replace(true);
+    view.in_front = tokio::sync::watch::channel(true).1;
     view
 }
 
