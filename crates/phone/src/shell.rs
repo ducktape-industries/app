@@ -435,6 +435,8 @@ fn open_door(cx: &mut App) {
                 .unwrap_or_default()
         };
         // whether every seat's tick has landed: a read parks until then
+        let seated = seats.clone();
+        let views = move |cx: &App| seated.read(cx).seated(cx);
         let settle = move |cx: &mut App| seats.update(cx, |seats, cx| seats.settle(cx));
         let keep = |_: &Window, _: &App| None;
         let chords = Vec::new;
@@ -443,6 +445,7 @@ fn open_door(cx: &mut App) {
             settle: &settle,
             keep: &keep,
             chords: &chords,
+            views: &views,
         };
         ax::serve(calls, door, cx).await;
     })

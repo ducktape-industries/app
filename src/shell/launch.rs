@@ -185,6 +185,13 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
                         .map(|windows| windows.read(cx).served())
                         .unwrap_or_default()
                 };
+                let views_seats = door_seats.clone();
+                let views = move |cx: &gpui_kit::App| {
+                    views_seats
+                        .upgrade()
+                        .map(|seats| seats.read(cx).seated(cx))
+                        .unwrap_or_default()
+                };
                 let settle = move |cx: &mut gpui_kit::App| {
                     door_seats
                         .update(cx, |seats, cx| seats.settle(cx))
@@ -196,6 +203,7 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
                     settle: &settle,
                     keep: &keep,
                     chords: &chords,
+                    views: &views,
                 };
                 crate::ax::serve(calls, door, cx).await;
             })

@@ -32,6 +32,8 @@
 //! controls its Help lists with a chord (AX-114).
 //! Every read draws the window it reads, and every answer carries
 //! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
+//! `/inspect/*` ([`inspect`]) reads each view's own tree as the host holds
+//! it instead, and presses a node by sending its own handler event (J-094).
 //!
 //! Compiled with the `ax-door` feature (the kit and qa builds) and nowhere
 //! else: a release build has no door to open and no client for one. The
@@ -53,6 +55,7 @@ use std::time::{Duration, Instant};
 mod actions;
 pub mod audit;
 mod http;
+pub mod inspect;
 mod tree;
 
 use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
@@ -239,6 +242,9 @@ pub enum Request {
     /// the designed animations still and put them back. Once set, gpui no
     /// longer follows the OS's own ask.
     Motion(Motion),
+    /// `/inspect/*`: the views' own trees, not the accessibility tree
+    /// (`inspect`).
+    Inspect(inspect::Ask),
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -326,6 +332,9 @@ pub struct Door<'a> {
     pub keep: &'a dyn Fn(&Window, &App) -> Option<Restore>,
     /// The shell's command chords, `(control name, chord)`, for the audit.
     pub chords: &'a dyn Fn() -> Vec<(String, String)>,
+    /// Every seated view the inspector reads: its window, program and
+    /// tree (`Seats::seated`).
+    pub views: &'a dyn Fn(&App) -> Vec<inspect::Seated>,
 }
 
 const POLL: Duration = Duration::from_millis(50);
@@ -581,6 +590,7 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
             perf_reply(by_instance, &windows)
         }
         Request::PerfReset => perf_reset_reply(),
+        Request::Inspect(ask) => inspect::answer(ask, door, cx).await,
         Request::Motion(Motion { reduce }) => {
             cx.update(|cx| cx.set_reduce_motion(reduce));
             Reply::ok(json!({}))
@@ -857,6 +867,7 @@ mod tests {
                 let door = Door {
                     keep: &|_, _| None,
                     chords: &Vec::new,
+                    views: &|_| Vec::new(),
                     windows: &served,
                     settle: &|_| true,
                 };
@@ -1013,6 +1024,7 @@ mod tests {
                 let door = Door {
                     keep: &|_, _| None,
                     chords: &Vec::new,
+                    views: &|_| Vec::new(),
                     windows: &served,
                     settle: if settles { &settle } else { &quiet },
                 };

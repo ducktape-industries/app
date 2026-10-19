@@ -279,7 +279,7 @@ impl Seat {
         self.standin.as_ref()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "ax-door"))]
     pub fn window(&self) -> Option<AnyWindowHandle> {
         self.window
     }

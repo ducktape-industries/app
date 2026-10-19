@@ -1034,6 +1034,17 @@ House words, and where one word means several things.
   `ducktape-app ax tree` (or `actions`, `act <id> <action>`, `key`, `keys`,
   `drag`, `wait`); the client reads the door file for port and
   token. `DUCKTAPE_AX_DOOR_PRIVATE=1` adds `reveal`.
+- **Inspect a running app.** On the same door, `ducktape-app ax inspect
+  tree [--in W[:V]]`, `find [--id --role --label --text --in]`,
+  `press <id> [click|aux_click|submit|dismiss]`, `type <id> <text>`,
+  `wait … --deadline-ms MS [--gone]` and `screenshot [--window W]` read
+  each view's own tree as the host holds it (`ax/inspect.rs`,
+  `render/inspect.rs`), never the accessibility tree. Ids are
+  `<window>:<view>/<authored path>`; a press sends the node's own handler
+  event, with no pointer and no position.
+  `screenshot` is gpui's `Window::render_to_image`, which gpui builds only
+  with `test-support`; any other build answers 501 and the OS's own
+  screenshot stands in.
 - **Node-less screenshots.** `dev/screens/chat-screens.sh FIXTURES OUT`
   builds the debug binary and, per fixture in `manifest.json`, runs
   `ducktape-app --render-tree` (`shell/fixtures.rs`: a `ViewTree` in a

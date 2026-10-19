@@ -318,6 +318,24 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
         }),
         ("POST", "perf/reset") => Ok(Request::PerfReset),
         ("POST", "motion") => parse(body).map(Request::Motion),
+        ("GET", "inspect/tree") => Ok(Request::Inspect(inspect::Ask::Tree(
+            params.get("in").map(|scope| scope.to_string()),
+        ))),
+        ("POST", "inspect/find") => {
+            parse(body).map(|find| Request::Inspect(inspect::Ask::Find(find)))
+        }
+        ("POST", "inspect/press") => {
+            parse(body).map(|press| Request::Inspect(inspect::Ask::Press(press)))
+        }
+        ("POST", "inspect/type") => {
+            parse(body).map(|typed| Request::Inspect(inspect::Ask::Type(typed)))
+        }
+        ("POST", "inspect/wait") => {
+            parse(body).map(|wait| Request::Inspect(inspect::Ask::Wait(wait)))
+        }
+        ("GET", "inspect/screenshot") => Ok(Request::Inspect(inspect::Ask::Screenshot(
+            params.get("window").map(|window| window.to_string()),
+        ))),
         _ => {
             let mut endpoints = vec![
                 "GET /tree",
@@ -331,6 +349,12 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
                 "GET /perf",
                 "POST /perf/reset",
                 "POST /motion",
+                "GET /inspect/tree",
+                "POST /inspect/find",
+                "POST /inspect/press",
+                "POST /inspect/type",
+                "POST /inspect/wait",
+                "GET /inspect/screenshot",
             ];
             if private {
                 endpoints.push("POST /reveal");
@@ -379,7 +403,13 @@ const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--comp
        ducktape-app ax audit [--window W] [--view V] [--walk] [--launcher]   (docs/ax.md phase 1; --launcher: the shell screen is not the desk)
        ducktape-app ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]
        ducktape-app ax perf [--by instance | --reset]   (docs/perf.md; the app launched with DUCKTAPE_PERF=1; --reset zeroes the counters)
-       ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)";
+       ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)
+       ducktape-app ax inspect tree [--in W[:V]]   (the views' own trees, by authored path; no accessibility tree)
+       ducktape-app ax inspect find [--id ID] [--role R] [--label L] [--text T] [--in W[:V]]
+       ducktape-app ax inspect press <id> [click|aux_click|submit|dismiss]   (sends the node's own handler event)
+       ducktape-app ax inspect type <id> <text>
+       ducktape-app ax inspect wait [--id ID] [--role R] [--label L] [--text T] [--in W[:V]] [--gone] --deadline-ms MS
+       ducktape-app ax inspect screenshot [--window W]   (a PNG in base64, in a build with test-support; else 501 in its own words)";
 
 /// `x,y` as the CLI takes a position.
 fn point(word: &str) -> Option<[f32; 2]> {
@@ -498,6 +528,37 @@ fn request(args: &[String]) -> Option<(&'static str, String, String)> {
             ("GET", format!("/perf?{}", query(&["by"])), String::new())
         }
         (Some("perf"), []) if !flags.contains_key("by") => ("POST", "/perf/reset".to_owned(), String::new()),
+        (Some("inspect"), ["tree"]) => ("GET", format!("/inspect/tree?{}", query(&["in"])), String::new()),
+        (Some("inspect"), ["find"]) => (
+            "POST",
+            "/inspect/find".to_owned(),
+            json!({ "id": flags.get("id"), "role": flags.get("role"), "label": flags.get("label"), "text": flags.get("text"), "in": flags.get("in") }).to_string(),
+        ),
+        (Some("inspect"), ["press", id, press @ ..]) if press.len() <= 1 => (
+            "POST",
+            "/inspect/press".to_owned(),
+            json!({ "id": id, "press": press.first().copied().unwrap_or("click") }).to_string(),
+        ),
+        (Some("inspect"), ["type", id, text]) => (
+            "POST",
+            "/inspect/type".to_owned(),
+            json!({ "id": id, "text": text }).to_string(),
+        ),
+        (Some("inspect"), ["wait"]) if flags.get("deadline-ms").is_some_and(|ms| ms.parse::<u64>().is_ok()) => (
+            "POST",
+            "/inspect/wait".to_owned(),
+            json!({
+                "id": flags.get("id"),
+                "role": flags.get("role"),
+                "label": flags.get("label"),
+                "text": flags.get("text"),
+                "in": flags.get("in"),
+                "gone": flags.contains_key("gone"),
+                "deadline_ms": flags.get("deadline-ms").and_then(|ms| ms.parse::<u64>().ok()),
+            })
+            .to_string(),
+        ),
+        (Some("inspect"), ["screenshot"]) => ("GET", format!("/inspect/screenshot?{}", query(&["window"])), String::new()),
         _ => return None,
     };
     Some((method, target, body))

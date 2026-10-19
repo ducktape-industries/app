@@ -1528,6 +1528,7 @@ pub async fn door_audit(
             let door = crate::ax::Door {
                 keep,
                 chords: &Vec::new,
+                views: &|_| Vec::new(),
                 windows: &served,
                 settle: &|_| true,
             };

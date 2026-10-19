@@ -247,4 +247,17 @@ impl Seats {
         }
         landed
     }
+
+    /// Every placed seat's view, for the inspector (`ax::inspect`): the
+    /// window it is drawn in, its program and its tree.
+    #[cfg(any(test, feature = "ax-door"))]
+    pub fn seated(&self, cx: &App) -> Vec<crate::ax::inspect::Seated> {
+        self.map
+            .values()
+            .filter_map(|routed| {
+                let seat = routed.seat.read(cx);
+                Some((seat.window()?, seat.program(), seat.tree()?))
+            })
+            .collect()
+    }
 }

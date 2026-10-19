@@ -303,6 +303,7 @@ mod grip;
 mod held_keys;
 mod host_ids;
 mod inputs;
+mod inspect;
 mod layout;
 mod links;
 mod overlay;
