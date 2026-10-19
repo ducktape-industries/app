@@ -1,0 +1,35 @@
+# The app CI, minimal but mechanical (orthory, #engineering 912/913): rustfmt, the dependency
+# gate (tools/dep-gate.sh), clippy -D warnings on the workspace and with --features ax-door; no
+# tests, which wait for a release cut. gates.sh (GATES=check) from the forge repo tools at its
+# main head runs them in one pod, cloned from the forge this repository's own clone came from
+# (J-033).
+name = "gates"
+
+[on]
+push = ["dev", "main"]
+change = ["opened", "updated"]
+
+# #ci hears when a push's check ends failed or errored (orthory: not #engineering)
+[notify]
+channel = "ci"
+
+[[jobs]]
+id = "gates"
+runs-on = ["pods"]
+# What the pod asks: the quota queues a check that does not fit, and cargo runs as many jobs as
+# CPUs. The target dir is memory-backed scratch (gates.sh puts it at /var/tmp/target), so the
+# build never writes the node's disk; memory covers that target and the compile (a clippy-only
+# target, smaller than a test build's; trimmed once a check run is measured).
+cpu = "16"
+memory = "24Gi"
+scratch = ["/var/tmp/target"]
+image = "localhost:5000/toolchain:f8ff9f00de3f@sha256:bbdcb20bbddd8035fd9a9fc0acf03330e0b4f5d00b05292bed7fd8279306b25c"
+steps = [
+    "git config --global --add safe.directory '*'",
+    "git clone -q \"$(git remote get-url origin | sed 's#/forge/app$#/forge/tools#')\" /var/tmp/tools",
+    "sh /var/tmp/tools/gates.sh /work/app",
+]
+
+[jobs.env]
+GATES = "check"
+WORKSPACE_FEATURES = "ax-door"

@@ -27,6 +27,13 @@ Guidance for assistant sessions in this repository; `CLAUDE.md` links here.
   releases from those commits, and a ruleset refuses every other write to its
   `dev` and `main`. Nobody opens or merges a pull request there. Issues stay
   on GitHub.
+- Forge checks every change too: forge actions runs
+  `.forge/workflows/gates.toml` (fmt, `tools/dep-gate.sh` and clippy
+  `-D warnings`, with and without `ax-door`; no tests, which wait for a
+  release cut) in a pods pod on each change's Preview, the squash its merge
+  would land on `dev`'s head, and on each push to `dev` and `main`. Its
+  result is the commit's forge status `gates.toml#gates`; a red push is
+  posted to #ci.
 - Nobody pushes to forge's `dev` or `main`. Every piece of work, from anyone,
   lands through a forge change: push the work as a branch, open a change from
   that branch into `dev`, and merge the change. The merge's result is ONE
