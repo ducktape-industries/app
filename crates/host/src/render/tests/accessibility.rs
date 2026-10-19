@@ -464,3 +464,82 @@ fn a_rich_texts_ranges_are_links_a_press_reaches(cx: &mut gpui_kit::TestAppConte
         );
     });
 }
+
+#[gpui_kit::test]
+fn a_readers_click_on_a_covered_button_is_its_click_on_its_bounds(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
+    let pressable = |key: &str, name: &str, handler: u32, mut style: gpui_kit::Div| {
+        let mut node = container_with_style(key, style.style().clone(), []);
+        if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
+            let interactivity = interactivity.get_or_insert_default();
+            interactivity.role = Some(gpui_kit::Role::Button);
+            interactivity.aria.label = Some(name.into());
+            interactivity.on_click = Some(handler);
+        }
+        node
+    };
+    let root = container_with_style(
+        "page",
+        div().relative().size_full().style().clone(),
+        [
+            pressable("go", "Go", 71, div().w(px(80.)).h(px(24.)).mt(px(30.))),
+            pressable(
+                "cover",
+                "Cover",
+                99,
+                div().absolute().top_0().left_0().w(px(200.)).h(px(200.)),
+            ),
+        ],
+    );
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    let drawn = native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let target = window
+            .a11y_tree()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Go"))
+            .map(|(id, _)| *id)
+            .unwrap();
+        window.dispatch_a11y_action(
+            ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: target,
+                data: None,
+            },
+            cx,
+        );
+        window.find("go").bounds()
+    });
+    let clicks: Vec<_> = events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::Click { handler, event } => Some((*handler, event.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        clicks,
+        [(
+            71,
+            wire::click::Click::Keyboard {
+                button: wire::click::KeyboardButton::Enter,
+                bounds: drawn,
+            }
+        )]
+    );
+    tree.read_with(&native, |tree, _| {
+        assert!(tree.take_activation().is_some());
+    });
+}

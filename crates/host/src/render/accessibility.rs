@@ -381,11 +381,6 @@ impl ViewTree {
             tooltip_held,
             cx,
         );
-        // assistive technology's press is this click too: gpui-pre answers
-        // AccessKit's Click on an element with click listeners by running
-        // them (a keyboard click on its bounds), wherever it is drawn, so
-        // the reader's press is the node's, with the one activation a
-        // pointer's or Enter's has
         // a click the view consumes stops here, as gpui's
         // `cx.stop_propagation()` in the listener would: no element under
         // it hears the same press. The click is the release's bubble, and
@@ -393,6 +388,29 @@ impl ViewTree {
         // hearing that release, so the stop ends it first, as gpui-base's
         // own links do: else every move with no button held drags the
         // selection on, as if the button were still down
+        if let Some(handler) = interactivity.on_click
+            && !aria
+                .actions
+                .iter()
+                .any(|(action, _)| *action == gpui_kit::AccessibleAction::Click)
+        {
+            let at = PressedAt::default();
+            self.pressed_at = Some(at.clone());
+            let tree = cx.entity().downgrade();
+            element = element.on_a11y_action(gpui_kit::AccessibleAction::Click, move |_, _, cx| {
+                let click = gpui_kit::ClickEvent::Keyboard(gpui_kit::KeyboardClickEvent {
+                    button: gpui_kit::KeyboardButton::Enter,
+                    bounds: at.get(),
+                });
+                let _ = tree.update(cx, |this, cx| {
+                    this.activate();
+                    cx.emit(wire::Event::Click {
+                        handler,
+                        event: (&click).into(),
+                    });
+                });
+            });
+        }
         if let Some(handler) = interactivity.on_click {
             let consumes = interactivity.consumes_click;
             element = element.on_click(cx.listener(
@@ -463,3 +481,66 @@ impl ViewTree {
 
 #[cfg(test)]
 mod view_aria_tests;
+
+pub(super) type PressedAt = std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>;
+
+pub(super) struct Measured {
+    pub element: AnyElement,
+    pub at: PressedAt,
+}
+
+impl IntoElement for Measured {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Measured {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.element.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.at.set(bounds);
+        self.element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.element.paint(window, cx);
+    }
+}

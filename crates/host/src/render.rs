@@ -275,6 +275,7 @@ pub struct ViewTree {
     /// onto a node scrolls the plain scroller around it to it, once.
     claiming: std::collections::HashSet<AuthoredPath>,
     revealed: std::collections::HashSet<AuthoredPath>,
+    pressed_at: Option<accessibility::PressedAt>,
     uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
     variable_lists: HashMap<AuthoredPath, VariableList>,
 
@@ -368,6 +369,7 @@ impl ViewTree {
             sideways: Default::default(),
             claiming: Default::default(),
             revealed: Default::default(),
+            pressed_at: None,
             uniform_lists: HashMap::new(),
             variable_lists: HashMap::new(),
             drags: HashMap::new(),
@@ -471,6 +473,7 @@ impl ViewTree {
         // paragraph's place in the selection) survives both.
         let outer_index = entered_scope.then(|| std::mem::take(&mut self.render_index));
         let outer_unselected = self.unselected;
+        let outer_pressed_at = self.pressed_at.take();
         self.unselected |= node
             .interactivity()
             .and_then(|interactivity| interactivity.role)
@@ -501,6 +504,10 @@ impl ViewTree {
             Node::Camera { .. } => self.camera(node, cx),
             Node::Microphone { .. } => self.microphone(node, window, cx),
             Node::Remote { .. } => self.remote(node, cx),
+        };
+        let element = match std::mem::replace(&mut self.pressed_at, outer_pressed_at) {
+            Some(at) => accessibility::Measured { element, at }.into_any_element(),
+            None => element,
         };
         #[cfg(feature = "ax-door")]
         let element = match entered_scope && cx.has_global::<crate::ax::shown::Views>() {
