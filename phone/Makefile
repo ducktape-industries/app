@@ -5,6 +5,7 @@
 #   make android            the APK, x86_64 (the emulator); ANDROID_ABI=arm64-v8a for a phone
 #   make android-run        installs it and starts it (adb's one device)
 #   make ios-sim            the simulator app (on a Mac)
+#   make ios-driver         the mac service's XCUITest driver, built for testing after ios-sim (on a Mac)
 #   make ios-archive        the App Store archive, ad-hoc signed with its entitlements (on a Mac); BUILD=<n> is its CFBundleVersion
 #
 # FEATURES=ax-door (the default) is the gate build with the AX test door on
@@ -34,7 +35,7 @@ IOS_APP := $(ROOT)/phone/ios/build/derived/Build/Products/Debug-iphonesimulator/
 IOS_ARCHIVE := $(ROOT)/phone/ios/build/Ducktape.xcarchive
 BUILD ?= 1
 
-.PHONY: android android-run ios-sim ios-archive
+.PHONY: android android-run ios-sim ios-driver ios-archive
 
 android:
 	cd $(ROOT) && cargo ndk -t $(ANDROID_ABI) -P 26 rustc -p ducktape-phone --lib --profile phone $(CARGO_FEATURES) --crate-type cdylib
@@ -65,6 +66,15 @@ ios-sim:
 	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphonesimulator \
 		-configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath build/derived -jobs 4 -quiet build
 	@echo $(IOS_APP)
+
+# The XCUITest driver the mac service taps system UI with (ios/Driver), built for testing
+# beside the app ios-sim built; the last line is its .xctestrun, which `xcodebuild
+# test-without-building -xctestrun` runs.
+ios-driver:
+	cd $(ROOT)/phone/ios && xcodegen generate --quiet
+	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphonesimulator \
+		-configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath build/derived -jobs 4 -quiet build-for-testing
+	@ls -t $(ROOT)/phone/ios/build/derived/Build/Products/*.xctestrun | head -1
 
 # What ships to TestFlight (.github/workflows/testflight.yml): the phone's
 # library without the AX door, whatever FEATURES says, archived without a

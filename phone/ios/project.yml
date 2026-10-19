@@ -15,6 +15,10 @@ targets:
   Ducktape:
     type: application
     platform: iOS
+    # the mac service's XCUITest driver is this scheme's test target only: built for testing, never archived
+    scheme:
+      testTargets:
+        - DucktapeDriver
     sources:
       - App.swift
       - DeviceKeyStore.swift
@@ -42,4 +46,22 @@ targets:
         OTHER_LDFLAGS: $(inherited) -lducktape_phone $(RUST_NATIVE_LIBS)
         ENABLE_BITCODE: NO
         # the Rust library is built for the Apple-silicon simulator only
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  # the mac service's XCUITest driver (Driver/): `make ios-driver` builds it for testing
+  DucktapeDriver:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - Driver
+    dependencies:
+      - target: Ducktape
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: industries.ducktape.mobile.driver
+        # XCTest and XCUIAutomation are built for iOS 17; the driver runs on the simulator only, never ships
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TEST_TARGET_NAME: Ducktape
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64

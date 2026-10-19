@@ -3,6 +3,14 @@
 `crates/phone` (the shell) in the iOS launcher (`ios/`, XcodeGen) and the Android one (`android/`). How to build each:
 the head of `Makefile`.
 
+## The mac service's driver
+
+`ios/Driver/Driver.swift` is an XCUITest bundle (`DucktapeDriver`, the `Ducktape` scheme's test target, so never in the
+archive) through which the mac service (core `ops/mac/mac.py`) taps the system UI the app's AX door can't see: the photo
+picker, permission alerts. `make -C phone ios-driver`, after `ios-sim`, builds it for testing and prints its
+`.xctestrun`. The Mac runs that with `xcodebuild test-without-building`, and the driver takes `{tap, app, deadline_ms}`
+commands from the Mac at `TEST_RUNNER_DUCKTAPE_DRIVER`, tapping the first element of `app` whose label contains `tap`.
+
 ## How a build reaches TestFlight
 
 `.github/workflows/testflight.yml`, on each push to `dev` that changes what the phone is built from (`crates/`,
