@@ -112,11 +112,6 @@ impl Pump {
         self.lock().dying = dying;
     }
 
-    /// Drops every held answer: they never land.
-    pub fn drop_all(&self) -> usize {
-        std::mem::take(&mut self.lock().answers).len()
-    }
-
     /// Lands `landed`, from the instance whose page `dead` is (none for a
     /// seating), as the test says.
     fn land(&self, land: &Landing, landed: Landed, dead: Option<&Dead>) {
