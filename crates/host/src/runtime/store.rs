@@ -1,19 +1,28 @@
-//! `store.get` / `store.set`: what a view keeps on this device between runs.
+//! `store.get` / `store.set` / `store.list`: what a view keeps on this
+//! device between runs.
 //!
-//! One file per view per network, `<config>/store/<chain>/<program>.borsh`
-//! (a recipient's notifier's under its own store, `notifier::Recipient`):
-//! a borsh map of key → bytes, rewritten whole through
-//! `noded_client::fs::atomic_write`. A view names keys, never paths — the chain and the program come from the
-//! host — so no view reaches another view's file or another network's.
+//! One file per program per network per seated key,
+//! `<config>/store/<chain>/<key>/<program>.borsh`, `<key>` the session's
+//! `signer` (hex) as the view is handed it (`roster::props`); with no key
+//! seated, the device's own `<config>/store/<chain>/<program>.borsh` (a
+//! recipient's notifier's under its own store, `notifier::Recipient`): a
+//! borsh map of key → bytes, rewritten whole through
+//! `noded_client::fs::atomic_write`. A key's file that is not there yet
+//! starts as a copy of the device's, on the first request that reads it,
+//! so what was kept before files were per key stays. A view names keys,
+//! never paths — the chain, the seated key and the program come from the
+//! host — so no view reaches another view's file, another network's or
+//! another key's.
 //!
 //! The file is read and written off the window thread, one request after
 //! another in the order the view sent them (`kernel::in_order` under the
 //! file's path), so a `get` reads the `set` before it.
 //!
 //! The file is the program's, shared by every instance of it on the device
-//! (its panes, its notifier): `store.changes` tells each the keys another
-//! one set, once the value is in the file, so a `get` it asks then reads
-//! it. An instance never hears its own.
+//! running with the same key (its panes, its notifier): `store.changes`
+//! tells each the keys another one set, once the value is in the file, so
+//! a `get` it asks then reads it. An instance never hears its own, and it
+//! hears the file of the key it runs with now ([`follow`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -31,12 +40,14 @@ pub(super) fn answer(
     operation: &str,
     id: u64,
     payload: &[u8],
+    props: &Option<Vec<u8>>,
 ) -> bool {
     let method: Method = match (capability, operation) {
         (Capability::Store, "get") => ("io.store.get", get),
         (Capability::Store, "set") => (SET, set),
+        (Capability::Store, "list") => ("io.store.list", list),
         (Capability::Store, "changes") => {
-            match (payload.is_empty(), file(view)) {
+            match (payload.is_empty(), file(view, props)) {
                 (false, _) => view.reply(
                     id,
                     Err(refusal(
@@ -44,18 +55,30 @@ pub(super) fn answer(
                         "`store.changes` takes no payload",
                     )),
                 ),
-                (true, Ok(path)) => listen(view, id, path),
+                (true, Ok(file)) => listen(view, id, file),
                 (true, Err(refused)) => view.reply(id, Err(refused)),
             }
             return true;
         }
         _ => return false,
     };
-    match file(view) {
-        Ok(path) => ask(view, id, path, method, payload.to_vec()),
+    match file(view, props) {
+        Ok(file) => ask(view, id, file, method, payload.to_vec()),
         Err(refused) => view.reply(id, Err(refused)),
     }
     true
+}
+
+/// The file a request reads and writes, and what it is filed under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct File {
+    /// the file read and written
+    path: PathBuf,
+    /// the program's device file on this network: where a key's file
+    /// starts from, and what `store.changes` files its listeners under
+    device: PathBuf,
+    /// the seated key (hex) the file is kept for; empty for none
+    signer: String,
 }
 
 /// An instance of a program, as `store.changes` tells them apart: the
@@ -64,9 +87,17 @@ fn instance(view: &View) -> usize {
     std::sync::Arc::as_ptr(&view.alive) as usize
 }
 
-type Listeners = HashMap<PathBuf, Vec<(usize, tokio::sync::mpsc::UnboundedSender<String>)>>;
+/// One `store.changes` subscriber: the instance it is, the key it runs
+/// with now, and where its keys go.
+struct Listener {
+    instance: usize,
+    signer: String,
+    send: tokio::sync::mpsc::UnboundedSender<String>,
+}
 
-/// Each file's `store.changes` subscribers, by the instance each is.
+type Listeners = HashMap<PathBuf, Vec<Listener>>;
+
+/// Each device file's `store.changes` subscribers, every key's alike.
 fn listeners() -> std::sync::MutexGuard<'static, Listeners> {
     static LISTENERS: OnceLock<Mutex<Listeners>> = OnceLock::new();
     LISTENERS
@@ -75,13 +106,15 @@ fn listeners() -> std::sync::MutexGuard<'static, Listeners> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// `store.changes` on the file at `path`: each key another instance sets.
-fn listen(view: &mut View, id: u64, path: PathBuf) {
+/// `store.changes` on `file`: each key another instance sets in the file
+/// of the key this one runs with.
+fn listen(view: &mut View, id: u64, file: File) {
     let (send, mut keys) = tokio::sync::mpsc::unbounded_channel();
-    listeners()
-        .entry(path)
-        .or_default()
-        .push((instance(view), send));
+    listeners().entry(file.device).or_default().push(Listener {
+        instance: instance(view),
+        signer: file.signer,
+        send,
+    });
     spawn_host_subscription(view, id, move |mut items| async move {
         while let Some(key) = keys.recv().await {
             if !items.send(Ok(methods::encode(&key))).await {
@@ -91,16 +124,35 @@ fn listen(view: &mut View, id: u64, path: PathBuf) {
     });
 }
 
-/// `key` was set in the file at `path` by `writer`: every other instance
-/// listening hears it. One that stopped listening is let go.
-fn told(path: &Path, key: String, writer: usize) {
-    let mut listeners = listeners();
-    let Some(listening) = listeners.get_mut(path) else {
+/// The props `view` is handed now: its `store.changes` hear the file of
+/// the key they name from now on, as its requests read it. Props that do
+/// not read as a session move nothing.
+pub(super) fn follow(view: &View, props: &Option<Vec<u8>>) {
+    let Some(signer) = props.as_deref().and_then(signer_of) else {
         return;
     };
-    listening.retain(|(instance, send)| *instance == writer || send.send(key.clone()).is_ok());
+    let instance = instance(view);
+    for listener in listeners().values_mut().flatten() {
+        if listener.instance == instance && listener.signer != signer {
+            listener.signer.clone_from(&signer);
+        }
+    }
+}
+
+/// `key` was set in `file` by `writer`: every other instance listening
+/// with the same key hears it. One that stopped listening is let go.
+fn told(file: &File, key: String, writer: usize) {
+    let mut listeners = listeners();
+    let Some(listening) = listeners.get_mut(&file.device) else {
+        return;
+    };
+    listening.retain(|listener| {
+        listener.instance == writer
+            || listener.signer != file.signer
+            || listener.send.send(key.clone()).is_ok()
+    });
     if listening.is_empty() {
-        listeners.remove(path);
+        listeners.remove(&file.device);
     }
 }
 
@@ -110,10 +162,10 @@ type Method = (&'static str, fn(&Path, &[u8]) -> Answer);
 /// `store.set`'s perf timer, which is also how [`ask`] knows a set.
 const SET: &str = "io.store.set";
 
-/// `method` on the file at `path`, queued behind the view's earlier
-/// requests on it and answered as a reply. A `set` that kept its value is
-/// told to the program's other instances ([`told`]).
-fn ask(view: &mut View, id: u64, path: PathBuf, (stage, run): Method, payload: Vec<u8>) {
+/// `method` on `file`, queued behind the view's earlier requests on it and
+/// answered as a reply. A `set` that kept its value is told to the
+/// program's other instances ([`told`]).
+fn ask(view: &mut View, id: u64, file: File, (stage, run): Method, payload: Vec<u8>) {
     let (tell, answer) = tokio::sync::oneshot::channel();
     spawn_reply(view, id, async move {
         answer
@@ -122,27 +174,38 @@ fn ask(view: &mut View, id: u64, path: PathBuf, (stage, run): Method, payload: V
     });
     let writer = instance(view);
     // timed where it runs, on the blocking pool (docs/perf.md, question 7)
-    let name = path.to_string_lossy().into_owned();
+    let name = file.path.to_string_lossy().into_owned();
     in_order(&name, move || {
         let _timed = crate::perf::time(crate::perf::Key::Shell, stage);
-        let answered = run(&path, &payload);
+        let answered = adopt(&file).and_then(|()| run(&file.path, &payload));
         if stage == SET
             && answered.is_ok()
             && let Ok((key, _)) = methods::decode::<(String, Option<Vec<u8>>)>(&payload)
         {
-            told(&path, key, writer);
+            told(&file, key, writer);
         }
         let _ = tell.send(answered);
     });
 }
 
-/// This view's file on its own connection's network; a view from before
-/// the app's last (re)connect is refused, so it never writes into the next
-/// network's.
-fn file(view: &View) -> Result<PathBuf, wire::Error> {
-    let rev = super::connection().lock().expect("views rpc").rev;
+/// A key's file not there yet starts as a copy of the device's: what was
+/// kept before files were per key. Nothing to copy, nothing is written.
+fn adopt(file: &File) -> Result<(), wire::Error> {
+    if file.path == file.device || file.path.exists() || !file.device.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&file.device)
+        .map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
+    write(&file.path, &bytes)
+}
+
+/// This view's file on its own connection's network, for the key its
+/// props name; a view from before the app's last (re)connect, or of a
+/// followed set that left, is refused, so it never writes into the next
+/// network's or after the run in hand.
+fn file(view: &View, props: &Option<Vec<u8>>) -> Result<File, wire::Error> {
     let connection = &view.connection;
-    if connection.rev != rev {
+    if connection.stale() {
         return Err(wire::Error::new(
             methods::refusal::STALE_CONNECTION,
             "view belongs to a previous network connection",
@@ -154,17 +217,46 @@ fn file(view: &View) -> Result<PathBuf, wire::Error> {
             "not connected to a network",
         ));
     }
-    let store = match &view.recipient {
+    let store = store_of(view.recipient.as_deref());
+    let signer = props.as_deref().and_then(signer_of).unwrap_or_default();
+    Ok(located(&store, &connection.chain, &signer, view.program))
+}
+
+/// The seated key (hex) a session names; empty for none.
+fn signer_of(props: &[u8]) -> Option<String> {
+    methods::decode::<methods::Session>(props)
+        .ok()
+        .map(|session| session.signer)
+}
+
+/// Where `recipient`'s notifiers keep their files: its store, or the app's
+/// `<config>/store` for the person at this device, every network's run of
+/// a program alike (in hand or followed), so a switch finds its cursor.
+pub(super) fn store_of(recipient: Option<&super::notifier::Recipient>) -> PathBuf {
+    match recipient {
         Some(recipient) => recipient.store.clone(),
         None => crate::backend::dirs().config.join("store"),
-    };
-    Ok(path(&store, &connection.chain, view.program))
+    }
 }
 
 fn path(store: &Path, chain: &str, program: &str) -> PathBuf {
     store
         .join(escaped(chain))
         .join(format!("{}.borsh", escaped(program)))
+}
+
+/// `program`'s file on `chain` for `signer`, or the device's for none.
+fn located(store: &Path, chain: &str, signer: &str, program: &str) -> File {
+    let device = path(store, chain, program);
+    let keyed = match signer.is_empty() {
+        true => device.clone(),
+        false => path(&store.join(escaped(chain)), signer, program),
+    };
+    File {
+        path: keyed,
+        device,
+        signer: signer.to_owned(),
+    }
 }
 
 /// A name as one path segment, one-to-one: ASCII letters, digits and `-`
@@ -198,6 +290,16 @@ fn load(path: &Path) -> Result<Kept, wire::Error> {
         .map_err(|error| refusal(methods::refusal::HOST_FAULT, error))
 }
 
+fn write(path: &Path, bytes: &[u8]) -> Result<(), wire::Error> {
+    let write = || -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        noded_client::fs::atomic_write(path, bytes, false)
+    };
+    write().map_err(|error| refusal(methods::refusal::HOST_FAULT, error))
+}
+
 fn get(path: &Path, payload: &[u8]) -> Answer {
     let asked: String = methods::decode(payload)
         .map_err(|error| refusal(methods::refusal::MALFORMED_REQUEST, error))?;
@@ -214,214 +316,20 @@ fn set(path: &Path, payload: &[u8]) -> Answer {
         Some(value) => kept.insert(asked, value),
         None => kept.remove(&asked),
     };
-    let bytes = methods::encode(&kept);
-    let write = || -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        noded_client::fs::atomic_write(path, &bytes, false)
-    };
-    write().map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
+    write(path, &methods::encode(&kept))?;
     Ok(methods::encode(&()))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn scratch() -> PathBuf {
-        std::env::temp_dir().join(format!("ducktape-store-{}", rand::random::<u64>()))
-    }
-
-    fn put(path: &Path, key: &str, value: Option<&[u8]>) -> Answer {
-        set(
-            path,
-            &methods::encode(&(key.to_owned(), value.map(<[u8]>::to_vec))),
-        )
-    }
-
-    fn read(path: &Path, key: &str) -> Option<Vec<u8>> {
-        methods::decode(&get(path, &methods::encode(&key.to_owned())).unwrap()).unwrap()
-    }
-
-    /// Each view on each network has its own file, and a key kept by one is
-    /// absent to the others; a name never climbs out of the store.
-    #[test]
-    fn views_and_chains_keep_apart() {
-        let config = scratch();
-        let chat = path(&config, "dev#01", "chat");
-        let forge = path(&config, "dev#01", "forge");
-        let other = path(&config, "dev#02", "chat");
-        put(&chat, "reads", Some(b"mine")).unwrap();
-        assert_eq!(read(&chat, "reads").as_deref(), Some(&b"mine"[..]));
-        assert_eq!(read(&forge, "reads"), None);
-        assert_eq!(read(&other, "reads"), None);
-        assert_ne!(path(&config, "a#b", "chat"), path(&config, "a_23b", "chat"));
-        let sly = path(&config, "../..", "../x");
-        assert!(sly.starts_with(&config));
-        assert_eq!(sly.components().count(), config.components().count() + 2);
-        let _ = std::fs::remove_dir_all(config);
-    }
-
-    /// An empty key is refused; `None` drops a key; what was set is read
-    /// back from disk by a fresh read, as after a relaunch.
-    #[test]
-    fn keys_are_named_dropped_and_kept_across_a_reopen() {
-        let config = scratch();
-        let file = path(&config, "dev#01", "chat");
-        assert_eq!(
-            put(&file, "", Some(b"x")).unwrap_err().code,
-            methods::refusal::MALFORMED_REQUEST
-        );
-        assert!(get(&file, &methods::encode(&String::new())).is_err());
-        put(&file, "a", Some(b"1")).unwrap();
-        put(&file, "b", Some(b"2")).unwrap();
-        put(&file, "a", None).unwrap();
-        let reopened = load(&file).unwrap();
-        assert_eq!(reopened, Kept::from([("b".to_owned(), b"2".to_vec())]));
-        assert_eq!(read(&file, "a"), None);
-        assert_eq!(
-            std::fs::read_dir(file.parent().unwrap()).unwrap().count(),
-            1
-        );
-        let _ = std::fs::remove_dir_all(config);
-    }
-
-    /// A `set` and a `get` behind it, asked back to back: neither is
-    /// answered on the thread that asked (the window thread, in a redraw),
-    /// and the `get` reads what the `set` kept.
-    #[test]
-    fn a_get_behind_a_set_reads_it_off_the_window_thread() {
-        let config = scratch();
-        let file = path(&config, "dev#01", "chat");
-        let mut view = crate::runtime::kernel::tests::view();
-        for nth in 0..20u64 {
-            let value = nth.to_string().into_bytes();
-            let asked = methods::encode(&("reads".to_owned(), Some(value)));
-            ask(
-                &mut view,
-                2 * nth,
-                file.clone(),
-                ("io.store.set", set),
-                asked,
-            );
-            let asked = methods::encode(&"reads".to_owned());
-            ask(
-                &mut view,
-                2 * nth + 1,
-                file.clone(),
-                ("io.store.get", get),
-                asked,
-            );
-        }
-        assert!(
-            view.pending.is_empty(),
-            "answered on the window thread: {:?}",
-            view.pending
-        );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut answered = Vec::new();
-        while answered.len() < 40 && std::time::Instant::now() < deadline {
-            view.replies.drain_into(&mut answered);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let mut gets: Vec<(u64, Option<Vec<u8>>)> = answered
-            .into_iter()
-            .filter_map(|event| match event {
-                wire::Event::Response { id, result, .. } if id % 2 == 1 => {
-                    Some((id, methods::decode(&result.unwrap()).unwrap()))
-                }
-                _ => None,
-            })
-            .collect();
-        gets.sort();
-        let want: Vec<_> = (0..20u64)
-            .map(|nth| (2 * nth + 1, Some(nth.to_string().into_bytes())))
-            .collect();
-        assert_eq!(gets, want, "each get reads the set just before it");
-        let _ = std::fs::remove_dir_all(config);
-    }
-
-    /// A `set` that kept its value is told to every other instance of the
-    /// program listening on its file (`store.changes`), after the value is
-    /// in it; the instance that set it hears nothing of its own.
-    #[test]
-    fn a_set_is_told_to_the_programs_other_instances() {
-        let config = scratch();
-        let file = path(&config, "dev#01", "chat");
-        let mut pane = crate::runtime::kernel::tests::view();
-        let mut notifier = crate::runtime::kernel::tests::view();
-        listen(&mut pane, 1, file.clone());
-        listen(&mut notifier, 1, file.clone());
-        let asked = methods::encode(&("reads".to_owned(), Some(b"3".to_vec())));
-        ask(&mut pane, 2, file.clone(), (SET, set), asked);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut heard = Vec::new();
-        while heard.is_empty() && std::time::Instant::now() < deadline {
-            notifier.replies.drain_into(&mut heard);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let [
-            wire::Event::Response {
-                id: 1,
-                result: Ok(key),
-                done: false,
-            },
-        ] = heard.as_slice()
-        else {
-            panic!("{heard:?}");
-        };
-        assert_eq!(methods::decode::<String>(key).unwrap(), "reads");
-        assert_eq!(load(&file).unwrap()["reads"], b"3", "told once kept");
-        let mut own = Vec::new();
-        pane.replies.drain_into(&mut own);
-        assert!(
-            own.iter()
-                .all(|event| !matches!(event, wire::Event::Response { id: 1, .. })),
-            "the writer heard its own set: {own:?}"
-        );
-        let _ = std::fs::remove_dir_all(config);
-    }
-
-    /// A `set` a view sent right before the app quits is on disk once the
-    /// quit drain is done, though it was still queued when the drain began.
-    #[test]
-    fn the_quit_drain_waits_for_a_queued_set() {
-        let config = scratch();
-        let file = path(&config, "dev#01", "chat");
-        let mut view = crate::runtime::kernel::tests::view();
-        let release = crate::runtime::kernel::tests::held(&file.to_string_lossy());
-        let asked = methods::encode(&("last".to_owned(), Some(b"word".to_vec())));
-        ask(&mut view, 0, file.clone(), ("io.store.set", set), asked);
-        assert!(!file.exists(), "the set waits behind the held job");
-
-        let mut drained = std::pin::pin!(crate::runtime::kernel::drain());
-        assert!(
-            crate::runtime::kernel::tests::waiting(drained.as_mut()),
-            "the drain is done while the set is still queued"
-        );
-        release.send(()).unwrap();
-        futures::executor::block_on(drained);
-        assert_eq!(
-            load(&file).unwrap(),
-            Kept::from([("last".to_owned(), b"word".to_vec())])
-        );
-        let _ = std::fs::remove_dir_all(config);
-    }
-
-    /// A store file cut to nothing answers `None` to a view, not a host
-    /// fault: it is set aside as `.bad`, and the next `set` lands.
-    #[test]
-    fn a_cut_store_file_reads_as_empty_and_is_set_aside() {
-        let config = scratch();
-        let file = path(&config, "dev#01", "chat");
-        put(&file, "a", Some(b"1")).unwrap();
-        std::fs::write(&file, b"").unwrap();
-        assert_eq!(read(&file, "a"), None);
-        assert!(file.with_extension("borsh.bad").exists());
-        assert!(!file.exists());
-        put(&file, "a", Some(b"2")).unwrap();
-        assert_eq!(read(&file, "a").as_deref(), Some(&b"2"[..]));
-        let _ = std::fs::remove_dir_all(config);
-    }
+/// The keys kept under a prefix (empty: every key), in byte order.
+fn list(path: &Path, payload: &[u8]) -> Answer {
+    let prefix: String = methods::decode(payload)
+        .map_err(|error| refusal(methods::refusal::MALFORMED_REQUEST, error))?;
+    let keys: Vec<String> = load(path)?
+        .into_keys()
+        .filter(|key| key.starts_with(&prefix))
+        .collect();
+    Ok(methods::encode(&keys))
 }
+
+#[cfg(test)]
+mod tests;

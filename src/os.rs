@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 // Each platform module exposes `post(&Notice, click: Option<Click>) -> raised`,
-// `withdraw(tag)` and `withdraw_host()`. All block on OS calls; a view's run
+// `withdraw(chain, tag)` and `withdraw_host()`. All block on OS calls; a view's run
 // only through `notify::in_order` under the view's program, on the blocking
 // pool, and the host's on the thread that posts it. A click on a banner
 // goes to the host as `Signal::BannerClick(click)` through `Inbound`.
@@ -237,7 +237,7 @@ impl Banners for DesktopBanners {
         platform::post(notice, click)
     }
 
-    fn withdraw(&self, tag: &str) {
-        platform::withdraw(tag)
+    fn withdraw(&self, chain: &str, tag: &str) {
+        platform::withdraw(chain, tag)
     }
 }

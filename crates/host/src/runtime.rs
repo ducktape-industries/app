@@ -5,8 +5,8 @@
 //! developer's override directory (`Dirs::views_override`, the desktop's
 //! `DUCKTAPE_VIEWS_DIR`) is the one exception, and says so in app.log for
 //! every view it supplies. A view is
-//! ticked inside a fuel budget (`FUEL_PER_TICK`, the one ceiling on a
-//! call), and presented through native gpui-kit controls in its seat.
+//! ticked until its call returns, and presented through native gpui-kit
+//! controls in its seat.
 //!
 //! The app knows no program by name. The roster's order is the rail's, a
 //! view's manifest names its tab, and what a view asks of the app is the
@@ -37,9 +37,15 @@ pub mod web;
 #[cfg(feature = "call")]
 pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
-pub use kernel::{Answered, day, local_offset};
-// a host with no screen runs each program's notifier per account (`crates/pushd`)
-pub use notifier::{Carried, Recipient, Said, notify_for};
+pub use kernel::{Answered, day, local_offset, set_in_front};
+// a host with no screen runs each program's notifier per account (`crates/pushd`),
+// and the desktop every other listed network's (`follow`)
+#[cfg(any(test, feature = "test-support"))]
+pub use notifier::follow_for_test;
+pub use notifier::{
+    Carried, Followed, Recipient, STATUS_EVERY, Said, chain_of, follow, followed_url,
+    lock_followed, notify_for, take_up,
+};
 // the web view cleans a page's title as a window's (render/web.rs), the
 // av pieces a device's name (render/av.rs)
 #[cfg(any(feature = "web", feature = "av"))]
@@ -71,12 +77,14 @@ pub fn handle() -> tokio::runtime::Handle {
 }
 
 /// The app's quit hook (`shell::launch`, the one every quit path reaches):
-/// the notification log handed over, then a wait on every in-order queue
-/// (store files, the log, banners) and on the live session's close
-/// (`kernel::live::quit`), then `kept` dropped. The returned future is the
-/// wait; gpui gives it `SHUTDOWN_TIMEOUT` (200 ms).
+/// the notification logs handed over (the one in hand, each followed
+/// network's), then a wait on every in-order queue (store files, the logs,
+/// banners) and on the live session's close (`kernel::live::quit`), then
+/// `kept` dropped. The returned future is the wait; gpui gives it
+/// `SHUTDOWN_TIMEOUT` (200 ms).
 pub fn quitting(center: &notify::CenterHandle, kept: impl Sized) -> impl Future<Output = ()> {
     center.lock().flush();
+    notifier::flush_sets();
     let drained = kernel::drain();
     let live = kernel::live::quit();
     drop(kept);
@@ -101,7 +109,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::contract::{
-    CodeSource, FUEL_PER_TICK, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
+    Code, CodeSource, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
 };
 #[cfg(feature = "ui")]
 use gpui_kit::AppContext as _;
@@ -136,6 +144,7 @@ pub enum Intent {
     Title(String),
     /// `link.open`: a link it pressed.
     OpenLink(String),
+    OpenWindow(String),
     /// `host.show`: one of the host's own places, asked for by a press in
     /// the view; how it looks is each shell's (the desktop's account menu,
     /// the phone's account sheet).
@@ -235,7 +244,7 @@ pub mod pictures;
 /// What a view's manifest says, read before any of its code runs: the
 /// name, icon, tint and description the rail and Home list it by, the narrowest
 /// it is laid out, the width a desk window opens it at, the capabilities it
-/// declares, its targets, and the wire
+/// declares, and the wire
 /// it was built against (another than this app's runs all the same, and
 /// whatever then fails says so: `View::failure`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -247,7 +256,6 @@ pub struct Listing {
     pub min_width: u32,
     pub width: Option<u32>,
     pub capabilities: Vec<Capability>,
-    pub targets: Vec<String>,
     pub wire: String,
 }
 
@@ -263,7 +271,6 @@ fn manifest_of(bytes: &[u8]) -> Listing {
             min_width: manifest.min_width,
             width: manifest.width,
             capabilities: manifest.capabilities,
-            targets: manifest.targets,
             wire: manifest.wire_id,
         })
         .unwrap_or_default()
@@ -285,7 +292,6 @@ pub fn listing(program: &str) -> Option<Listing> {
                 min_width: $held.min_width,
                 width: $held.width,
                 capabilities: $held.capabilities.clone(),
-                targets: $held.targets.clone(),
                 wire: $held.wire.clone(),
             }
         };

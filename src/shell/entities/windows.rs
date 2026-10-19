@@ -6,10 +6,12 @@
 //! Top), move a pane between two desks (pop-out, pop-in), float a view's
 //! pane at its view's ask (`float`, `unfloat`), open links and
 //! programs on the console's desk (a program in a pop-out comes forward
-//! there), and resize the console as the launcher gives way to the desk
-//! and back. Notifies when the list, the front or the active program
-//! moved; a window's own entities notify on their own, and `Popped` (the
-//! pop-outs' windows, as the console's chrome lists them) when it moved.
+//! there) or, at a view's ask, a link in a pop-out of its own
+//! (`open_link_window`), and resize the console as the launcher gives way
+//! to the desk and back. Notifies when the list, the front or the active
+//! program moved; a window's own entities notify on their own, and
+//! `Popped` (the pop-outs' windows, as the console's chrome lists them)
+//! when it moved.
 //! Keep on Top moves only the macOS menu bar's check (`sync_menu`); Search
 //! reads it as it draws.
 //!
@@ -19,7 +21,9 @@
 //! (`swap_console`), the appearance chosen (`sync_appearance`), and each
 //! window's activation (`front`, a hold let go, the notification centre
 //! told). A link a banner's click or the passkey page asks for off the
-//! window thread comes over the `Posted` channel (`posted`).
+//! window thread comes over the `Posted` channel (`posted`); a banner of
+//! another listed network's switches to it first and opens its row there
+//! (`switching`).
 use super::{
     AccountEvent, Desk, DeskSeats, Entities, Front, Listed, Overlay, Overlays, Popped, Screen,
     SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
@@ -29,7 +33,8 @@ use crate::runtime::notify::{CenterHandle, Entry};
 use crate::shell::layers::{self, WindowRoot};
 use crate::shell::windows::{release_window_input, remove};
 use crate::shell::{WindowKind, theme, windows};
-use crate::ui::layout::{self, Layout};
+use crate::ui::layout::{self, Layout, Pane};
+use ducktape_host::runtime::Link;
 use ducktape_host::session::Opening;
 use futures::StreamExt as _;
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -69,6 +74,7 @@ pub(crate) struct Windows {
     /// Where each program's float was last, for its next float in this
     /// run. Not saved, as Keep on Top is not.
     left: BTreeMap<&'static str, Bounds<Pixels>>,
+    linked: BTreeMap<u64, (&'static str, Option<String>)>,
     /// The macOS Window menu's Keep on Top check, as last set: the front
     /// window's state (`sync_menu`).
     menu_on_top: bool,
@@ -88,6 +94,15 @@ pub(crate) struct Windows {
     subscriptions: Vec<Subscription>,
     /// Follows this list and every desk into the shared seats.
     desk_seats: Option<Entity<DeskSeats>>,
+    /// A banner of another listed network's, clicked: its chain, its row,
+    /// and whether the switch to it was asked; until the row opens
+    /// (`open_switched`) or the network goes elsewhere.
+    switching: Option<(String, u64, bool)>,
+    /// Starts the other listed networks' notifiers: while it has nodes
+    /// still to ask, a click of a network's banner with no node known
+    /// waits (a cold start). Set once at launch (`launch::run`); a test's
+    /// windows have none unless it gives them one.
+    follower: Option<Entity<crate::shell::follow::Follower>>,
 }
 
 /// A window a view floated its pane into: the program, whose next float
@@ -99,6 +114,12 @@ struct Floated {
     /// Keeps where the window is, for the next float (`watch_float`);
     /// it goes with the float.
     moves: Option<Subscription>,
+}
+
+#[derive(Clone, Copy)]
+enum Opens {
+    Desk(Option<(&'static str, u64)>),
+    Window,
 }
 
 impl Windows {
@@ -113,8 +134,12 @@ impl Windows {
                 |this, _, event: &SessionEvent, cx| match event {
                     SessionEvent::LeftNetwork => this.left_network(cx),
                     // the console comes forward, or opens, as the tray's Open
-                    SessionEvent::Connected => this.raise_console(cx),
-                    SessionEvent::Toast(_) => {}
+                    SessionEvent::Connected => {
+                        this.raise_console(cx);
+                        this.open_switched(cx);
+                    }
+                    // a switch a banner asked for did not land
+                    SessionEvent::Toast(_) => this.switching = None,
                 },
             ),
             cx.subscribe(
@@ -145,7 +170,10 @@ impl Windows {
                     crate::perf::mark("desk");
                 }
                 this.swap_console(cx);
+                this.open_switched(cx);
             }),
+            // the network listed its programs: a banner's row may open
+            cx.observe(&shared.rail, |this, _, cx| this.open_switched(cx)),
             cx.observe(&shared.prefs, |this, prefs, cx| {
                 let appearance = prefs.read(cx).get().appearance;
                 if appearance != this.appearance {
@@ -166,6 +194,7 @@ impl Windows {
             pending_on_top: BTreeMap::new(),
             floats: BTreeMap::new(),
             left: BTreeMap::new(),
+            linked: BTreeMap::new(),
             menu_on_top: false,
             popped: cx.new(|_| Slice::new(Popped::default())),
             active: None,
@@ -174,7 +203,21 @@ impl Windows {
             appearance,
             subscriptions,
             desk_seats: None,
+            switching: None,
+            follower: None,
         }
+    }
+
+    /// The other listed networks' notifiers are started by `follower`:
+    /// each set it starts may be the one a banner's switch waits for.
+    pub(crate) fn notified_by(
+        &mut self,
+        follower: Entity<crate::shell::follow::Follower>,
+        cx: &mut Context<Self>,
+    ) {
+        self.subscriptions
+            .push(cx.observe(&follower, |this, _, cx| this.open_switched(cx)));
+        self.follower = Some(follower);
     }
 
     /// Every entity, this one included: what a window's root is made over.
@@ -1019,6 +1062,24 @@ impl Windows {
         from: Option<(&'static str, u64)>,
         cx: &mut Context<Self>,
     ) {
+        self.open_link_into(link, Opens::Desk(from), cx);
+    }
+
+    pub(crate) fn open_link_window(
+        &mut self,
+        link: &str,
+        from: Option<(&'static str, u64)>,
+        cx: &mut Context<Self>,
+    ) {
+        let web = matches!(self.shared.rail.read(cx).parse_link(link), Link::Web(_));
+        let opens = match web {
+            true => Opens::Desk(from),
+            false => Opens::Window,
+        };
+        self.open_link_into(link, opens, cx);
+    }
+
+    fn open_link_into(&mut self, link: &str, opens: Opens, cx: &mut Context<Self>) {
         let _timed = timed();
         let chain = self.shared.session.read(cx).get().chain.clone();
         match self.shared.rail.read(cx).opening(link, &chain) {
@@ -1027,14 +1088,14 @@ impl Windows {
                 route,
                 notice,
             } => {
-                self.open_seat(program, route, from, cx);
+                self.seat_opens(program, route, opens, cx);
                 if let Some(said) = notice {
                     self.notice(said, cx);
                 }
             }
             // another chain's page is not this chain's to show
             Opening::Elsewhere { program, chain } => {
-                self.open_seat(program, None, from, cx);
+                self.seat_opens(program, None, opens, cx);
                 self.notice(
                     format!("That link is to {chain}, not this network; opened {program}."),
                     cx,
@@ -1056,6 +1117,70 @@ impl Windows {
             self.open_link(&entry.link, None, cx);
         } else if self.shared.rail.read(cx).lists(&entry.program) {
             self.open_seat(crate::runtime::intern(&entry.program), None, None, cx);
+        }
+    }
+
+    fn seat_opens(
+        &mut self,
+        program: &'static str,
+        route: Option<String>,
+        opens: Opens,
+        cx: &mut Context<Self>,
+    ) {
+        match opens {
+            Opens::Desk(from) => self.open_seat(program, route, from, cx),
+            Opens::Window => self.open_window_seat(program, route, cx),
+        }
+    }
+
+    fn open_window_seat(
+        &mut self,
+        program: &'static str,
+        route: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let popped: BTreeMap<u64, WindowKey> = self
+            .by_window
+            .iter()
+            .filter(|(key, _)| self.console != Some(**key))
+            .flat_map(|(key, own)| {
+                let layout = own.desk.read(cx).get();
+                layout
+                    .panes
+                    .iter()
+                    .map(|pane| (pane.instance, *key))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        self.linked
+            .retain(|instance, _| popped.contains_key(instance));
+        let open = self
+            .linked
+            .iter()
+            .filter(|(_, (linked, at))| *linked == program && *at == route)
+            .find_map(|(instance, _)| Some((*popped.get(instance)?, *instance)));
+        if self.active != Some(program) {
+            self.active = Some(program);
+            cx.notify();
+        }
+        let instance = match open {
+            Some((key, instance)) => {
+                self.raise(key, cx);
+                instance
+            }
+            None => {
+                let pane = Pane::new(program);
+                let instance = pane.instance;
+                let key = self.open(WindowKind::View { program }, None, None, cx);
+                self.by_window[&key]
+                    .desk
+                    .update(cx, |desk, cx| desk.popin(pane, cx));
+                self.linked.insert(instance, (program, route.clone()));
+                instance
+            }
+        };
+        if let Some(route) = route {
+            crate::runtime::route_to(program, instance, route);
         }
     }
 
@@ -1104,6 +1229,9 @@ impl Windows {
     /// program goes with them.
     fn left_network(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
+        // left for another chain than the banner's: its switch is over
+        let here = &self.shared.session.read(cx).get().chain;
+        self.switching.take_if(|(chain, _, _)| chain != here);
         if self.active.take().is_some() {
             cx.notify();
         }
@@ -1121,6 +1249,10 @@ impl Windows {
     /// the passkey page).
     pub(crate) fn posted(&mut self, posted: Posted, cx: &mut Context<Self>) {
         match posted {
+            Posted::Row { chain, row } => {
+                self.switching = Some((chain, row, false));
+                self.open_switched(cx);
+            }
             Posted::Link(url) => {
                 // the banner's row was read as it was clicked
                 self.shared
@@ -1137,6 +1269,60 @@ impl Windows {
                     .update(cx, |notifications, cx| notifications.refresh(cx));
                 cx.refresh_windows()
             }
+        }
+    }
+
+    /// The row a banner of another network's waits for, opened once the
+    /// network in hand is its chain, lists its programs and shows its desk
+    /// (after Unlock, or reading without the key); the centre took that
+    /// chain's log up as the switch landed. Before that, with no connect
+    /// out, the switch to the node following its chain (Touch ID or the
+    /// password, as any switch), asked once. No node follows it, and none
+    /// is left to ask: said, as a link to another chain is.
+    pub(crate) fn open_switched(&mut self, cx: &mut Context<Self>) {
+        let Some((chain, row, asked)) = self.switching.clone() else {
+            return;
+        };
+        let session = self.shared.session.read(cx).get();
+        if session.connecting {
+            return;
+        }
+        if session.chain != chain {
+            let following = self
+                .follower
+                .as_ref()
+                .is_none_or(|follower| follower.read(cx).asking(cx));
+            match crate::runtime::followed_url(&chain) {
+                Some(node) if !asked => {
+                    self.switching = Some((chain, row, true));
+                    self.shared
+                        .session
+                        .update(cx, |session, cx| session.switch(node, cx));
+                }
+                None if following && !asked => {}
+                _ => {
+                    self.switching = None;
+                    self.notice(
+                        format!("That notice is from {chain}, not this network."),
+                        cx,
+                    );
+                }
+            }
+            return;
+        }
+        let ready = session.connected
+            && !self.shared.rail.read(cx).rows().is_empty()
+            && *self.shared.screen.read(cx).get() == Screen::Desk;
+        if !ready {
+            return;
+        }
+        self.switching = None;
+        let opened = self
+            .shared
+            .notifications
+            .update(cx, |notifications, cx| notifications.open(row, cx));
+        if let Some(entry) = opened {
+            self.open_notice(&entry, cx);
         }
     }
 
@@ -1332,6 +1518,8 @@ async fn left_full_size(
 pub(crate) enum Posted {
     /// A link, for `Windows::open_link`.
     Link(String),
+    /// A row of another network's log, for `Windows::open_switched`.
+    Row { chain: String, row: u64 },
     /// A web page, for the system browser.
     Url(String),
     /// Settings › Updates, on the console: the update notice was clicked.
@@ -1366,6 +1554,7 @@ pub(crate) fn posted() -> UnboundedReceiver<Posted> {
 pub(crate) fn open_banner(opened: crate::runtime::notify::Opened) {
     post(match opened {
         crate::runtime::notify::Opened::Link(url) => Posted::Link(url),
+        crate::runtime::notify::Opened::Row { chain, row } => Posted::Row { chain, row },
         crate::runtime::notify::Opened::Updates => Posted::OpenUpdates,
     })
 }

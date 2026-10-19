@@ -168,6 +168,12 @@ pub(crate) fn open(keyring: &str, legacy: bool) -> Result<Option<ed25519::Privat
     open_in(keychain, entry, &file(keyring)?, legacy)
 }
 
+pub(crate) fn open_kept(keyring: &str) -> Result<Option<ed25519::PrivateKey>, String> {
+    let stores = stores(keyring)?;
+    let (keychain, entry) = split(&stores);
+    open_in(keychain, entry, &file(keyring)?, true)
+}
+
 /// The order: the data protection keychain's key (Touch ID); else the one
 /// the file keychain or the file keeps, moved into it once; else, unless a
 /// password-locked key waits, a new one kept there.

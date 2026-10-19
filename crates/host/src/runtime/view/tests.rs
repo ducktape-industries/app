@@ -412,7 +412,7 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
     let alive = old.alive.clone();
     let mounted = Mounted::seat();
     mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
-    let (code, prepared) = View::prepare(&**crate::contract::runner(), &bytes, "probe")
+    let (code, prepared) = View::prepare(&**crate::contract::runner(), Code::of(&bytes), "probe")
         .map_err(|f| f.to_string())
         .expect("compiles");
     let mut deployment = ViewCode::for_test("", "", 0);
@@ -802,12 +802,10 @@ fn turn_drawn(seat: &Mutex<Mounted>, after: Duration) -> u64 {
     old.ticks
 }
 
-/// The code a new deployment of a [`counting_code`] view prepares, its
-/// manifest naming `chat` as its target.
+/// The code a new deployment of a [`counting_code`] view prepares.
 fn counting_deployment(code: [u8; 32]) -> Box<ViewCode> {
     let mut view = ViewCode::for_test("", "", 320);
     view.hash = code;
-    view.targets = vec!["chat".into()];
     view
 }
 
@@ -847,11 +845,6 @@ fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
         count(seated),
         103,
         "with the state the drawn view held at the swap, ticked once"
-    );
-    assert_eq!(
-        seated.targets,
-        ["chat"],
-        "the manifest's targets are seated, so its node methods still reach the program"
     );
     assert!(locked.retry.is_none() && locked.swap.is_none() && !locked.owned);
 }

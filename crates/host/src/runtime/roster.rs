@@ -37,6 +37,33 @@ pub(super) struct Connection {
     /// The node's live session (`backend::live`), one per connection: the
     /// one before closes when its last holder lets go.
     pub(super) live: Option<Arc<dyn crate::backend::live::Session>>,
+    /// A connection apart from the views' (`None`: the views' own, the
+    /// network in hand): a followed set's, whose notifiers run on another
+    /// listed network ([`super::notifier::follow`]).
+    pub(super) apart: Option<Arc<Apart>>,
+}
+
+/// What a followed set's requests read where the views' read the app's:
+/// its own end and its own roster. Its queries are signed by the reader,
+/// never the seated key, which is another network's.
+#[derive(Default)]
+pub(super) struct Apart {
+    /// Its chain was taken up in hand ([`super::notifier::take_up`]) or the
+    /// set dropped: what is still out of it is refused, as a reconnect
+    /// refuses a view's.
+    pub(super) left: std::sync::atomic::AtomicBool,
+    pub(super) roster: Roster,
+}
+
+impl Connection {
+    /// Whether a request on it comes too late: its set left, or, the
+    /// views', the app (re)connected since.
+    pub(super) fn stale(&self) -> bool {
+        match &self.apart {
+            Some(apart) => apart.left.load(std::sync::atomic::Ordering::SeqCst),
+            None => connection().lock().expect("views rpc").rev != self.rev,
+        }
+    }
 }
 
 pub(super) fn connection() -> &'static Mutex<Connection> {
@@ -134,11 +161,6 @@ impl Roster {
     /// Whether it lists `program`: a link to anything else names nothing.
     pub fn lists(&self, program: &str) -> bool {
         self.code(program).is_some()
-    }
-
-    /// Whether it lists `code`: a listed program's, or a view-only entry's.
-    pub(super) fn names_code(&self, code: &abi::BlobId) -> bool {
-        self.lock().iter().any(|entry| entry.code == *code)
     }
 }
 
@@ -448,7 +470,11 @@ pub(super) fn read_roster(
 ) -> Option<Vec<crate::backend::views::Program>> {
     let client = asked_of.client.as_ref()?;
     let read = crate::perf::time(crate::perf::Key::Shell, "roster");
-    let programs = handle().block_on(crate::backend::views::programs(client, &asked_of.network));
+    let programs = handle().block_on(crate::backend::views::programs(
+        client,
+        &asked_of.network,
+        &*crate::backend::query_signer(),
+    ));
     drop(read);
     let programs = match programs {
         Ok(programs) => programs,
@@ -464,7 +490,11 @@ pub(super) fn read_roster(
     };
     let roles_due = roster.bound().asked_of != Some(asked_of.rev) || *roster.lock() != programs;
     let roles = if roles_due {
-        match handle().block_on(crate::backend::views::roles(client, &asked_of.network)) {
+        match handle().block_on(crate::backend::views::roles(
+            client,
+            &asked_of.network,
+            &*crate::backend::query_signer(),
+        )) {
             Ok(roles) => Some(roles),
             // nothing listed either: the next block reads both again
             Err(error) => {

@@ -24,6 +24,7 @@ pub mod words;
 
 use abi::{BlobId, Refusal};
 use borsh::{BorshDeserialize, BorshSerialize};
+use bytes::Bytes;
 use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
 use std::time::Duration;
@@ -234,6 +235,42 @@ impl Client {
         .await
     }
 
+    /// [`Client::blob`]'s framed bytes in the pieces they come in
+    /// ([`BlobStream::next`]), never held whole; `None` when the node holds
+    /// no such blob.
+    pub async fn blob_stream(&self, id: BlobId) -> Result<Option<BlobStream>> {
+        let mut response = sent(
+            self.reads
+                .post(self.url(route::BLOB_GET))
+                .body(abi::encode(&id)),
+        )
+        .await?;
+        // borsh's `Option<Vec<u8>>`: a tag, the length (u32 LE), the bytes;
+        // the head is cut off the first pieces, what follows it kept as it came
+        let mut head = Vec::new();
+        let mut first = Bytes::new();
+        while head.len() < 5 && head.first() != Some(&0) {
+            let Some(mut chunk) = response.chunk().await? else {
+                break;
+            };
+            let took = chunk.len().min(5 - head.len());
+            head.extend_from_slice(&chunk.split_to(took));
+            first = chunk;
+        }
+        match head[..] {
+            [0] => match response.chunk().await? {
+                None => Ok(None),
+                Some(_) => Err(undecoded("the blob answer runs past its end")),
+            },
+            [1, a, b, c, d, ..] => Ok(Some(BlobStream {
+                left: u32::from_le_bytes([a, b, c, d]) as usize,
+                first,
+                response,
+            })),
+            _ => Err(undecoded("the blob answer did not decode")),
+        }
+    }
+
     /// A blob upload: `frame`, a signed blobs-role `Put` naming each blob's
     /// id, length and kind, then each blob it names, framed
     /// (`kind len\0body`), in its order, sent as `blobs` yields them, so
@@ -267,15 +304,31 @@ impl Client {
         self.post(route::TX, ask).await
     }
 
+    /// Each block's writes to `program`, values and all.
     pub async fn changes(
         &self,
         program: &str,
     ) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
-        let url = format!(
-            "{}{}/{program}",
-            self.base.replacen("http", "ws", 1),
-            route::CHANGES
-        );
+        self.follow(format!("{}/{program}", route::CHANGES)).await
+    }
+
+    /// Each block's writes to `program`, the keys alone (`?keys`): every
+    /// value `None`. A node that does not know `?keys` sends the values
+    /// too, which a caller of this never reads.
+    pub async fn changed_keys(
+        &self,
+        program: &str,
+    ) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
+        self.follow(format!("{}/{program}?keys", route::CHANGES))
+            .await
+    }
+
+    /// The changes socket at `path`; the node's ping (for a block that wrote
+    /// nothing there, and for each epoch's last block) is answered as the
+    /// stream is read and skipped. A socket left unread for a whole epoch
+    /// answers none, and the node cuts it.
+    async fn follow(&self, path: String) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
+        let url = format!("{}{path}", self.base.replacen("http", "ws", 1));
         let unbounded = WebSocketConfig {
             max_message_size: None,
             max_frame_size: None,
@@ -315,10 +368,56 @@ impl Client {
     }
 }
 
+/// A blob read in pieces ([`Client::blob_stream`]).
+pub struct BlobStream {
+    response: reqwest::Response,
+    /// The bytes still to come, as the answer said.
+    left: usize,
+    /// What came with the answer's head.
+    first: Bytes,
+}
+
+impl BlobStream {
+    /// The next piece of the framed bytes, as the connection read it (a
+    /// piece is up to the connection's read buffer, ~400 KB, and a copy
+    /// would be a second one on the reader's thread); `None` once all of
+    /// them came. Fewer than the answer said, or more, fail as an answer
+    /// that does not decode.
+    pub async fn next(&mut self) -> Result<Option<Bytes>> {
+        let piece = match std::mem::take(&mut self.first) {
+            first if !first.is_empty() => first,
+            _ => match self.response.chunk().await? {
+                Some(chunk) => chunk,
+                None if self.left == 0 => return Ok(None),
+                None => return Err(undecoded("the blob ended before its length")),
+            },
+        };
+        self.left = self
+            .left
+            .checked_sub(piece.len())
+            .ok_or_else(|| undecoded("the blob runs past its length"))?;
+        Ok(Some(piece))
+    }
+}
+
+fn undecoded(sentence: &str) -> Error {
+    Error::Decode(Refusal::new(abi::reason::PROTOCOL, sentence))
+}
+
 /// `request`'s answer, read whole.
 async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder) -> Result<T> {
+    let body = sent(request).await?.bytes().await?;
+    abi::decode(&body).map_err(Error::Decode)
+}
+
+/// `request` sent: the answer, its body unread, when the node answered 200;
+/// else the node's refusal or failure.
+async fn sent(request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
     let response = request.send().await?;
     let status = response.status();
+    if status == StatusCode::OK {
+        return Ok(response);
+    }
     // A node's failure is its own sentence in plain text (noded answers `(status, sentence)`); whatever else answers
     // (a proxy's page, a redirect to https) is not a node's word, and its body never reaches a sentence.
     let plain = response
@@ -328,7 +427,6 @@ async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder) -> Resu
         .is_some_and(|value| value.starts_with("text/plain"));
     let body = response.bytes().await?;
     match status {
-        StatusCode::OK => abi::decode(&body).map_err(Error::Decode),
         StatusCode::BAD_REQUEST => Err(Error::Refused(abi::decode(&body).map_err(Error::Decode)?)),
         status => Err(Error::Failed {
             status: status.as_u16(),
@@ -474,6 +572,53 @@ mod tests {
         .await;
         let read = client.blob(BlobId::Sha256([0; 32])).await;
         assert_eq!(read.ok(), Some(Some(vec![7u8; 6])));
+    }
+
+    /// A blob streamed is the framed bytes as they come, in pieces; one
+    /// that ends before the length its answer gave fails, never reads as
+    /// whole.
+    #[tokio::test]
+    async fn a_blob_streams_in_pieces_and_a_short_one_fails() {
+        use tokio::io::AsyncWriteExt as _;
+        let answer = |sent: Vec<u8>| {
+            move |mut stream: tokio::net::TcpStream| async move {
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", sent.len());
+                stream.write_all(head.as_bytes()).await.unwrap();
+                for piece in sent.chunks(3) {
+                    stream.write_all(piece).await.unwrap();
+                    stream.flush().await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        };
+        let read = |client: Client| async move {
+            let mut stream = client.blob_stream(BlobId::Sha256([0; 32])).await?.unwrap();
+            let mut pieces = Vec::new();
+            while let Some(piece) = stream.next().await? {
+                pieces.push(piece);
+            }
+            Ok::<_, Error>(pieces)
+        };
+        let blob = b"program 9\0\0asm\x01\0\0\0!".to_vec();
+        let whole = abi::encode(&Some(blob.clone()));
+        let client = reading(Duration::from_secs(5), answer(whole.clone())).await;
+        let pieces = read(client).await.unwrap();
+        assert!(pieces.len() > 1, "{pieces:?}");
+        assert_eq!(pieces.concat(), blob);
+        let short = whole[..whole.len() - 2].to_vec();
+        let client = reading(Duration::from_secs(5), answer(short)).await;
+        assert!(matches!(read(client).await, Err(Error::Decode(_))));
+        let none = reading(
+            Duration::from_secs(5),
+            answer(abi::encode(&None::<Vec<u8>>)),
+        )
+        .await;
+        assert!(
+            none.blob_stream(BlobId::Sha256([0; 32]))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

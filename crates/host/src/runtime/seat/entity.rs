@@ -120,6 +120,7 @@ pub struct Seat {
     tree: Option<Entity<crate::render::ViewTree>>,
     _tree_events: Option<Subscription>,
     _tree_drawn: Option<Subscription>,
+    _tree_drops: Option<Subscription>,
     /// A tick the tree has not drawn yet: turns wait for that draw.
     holding: bool,
     /// A turn asked for while holding or while a tick is in flight; it runs
@@ -227,6 +228,7 @@ impl Seat {
             tree: None,
             _tree_events: None,
             _tree_drawn: None,
+            _tree_drops: None,
             holding: false,
             owed: false,
             in_flight: None,
@@ -976,6 +978,20 @@ impl Seat {
         });
         tree.update(cx, |tree, _| tree.set_pictures(pictures));
         let seat = self.mounted.clone();
+        let (drops, alive_drops) = (seat.clone(), alive.clone());
+        self._tree_drops = Some(cx.subscribe(
+            &tree,
+            move |_, _, dropped: &crate::render::Dropped, _| {
+                let mut locked = lock(&drops);
+                let Slot::Ready(view) = &mut locked.slot else {
+                    return;
+                };
+                if view.seated_generation() == generation && Arc::ptr_eq(&alive_drops, &view.alive)
+                {
+                    picker::dropped(view, dropped.handler, dropped.paths.clone());
+                }
+            },
+        ));
         self._tree_events = Some(
             cx.subscribe(&tree, move |this, _, event: &wire::Event, cx| {
                 let mut locked = lock(&seat);

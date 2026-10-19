@@ -61,7 +61,7 @@ identity.workspace = true
 blob.workspace = true
 # a notifier's answers and turn (`view_wire::notifier`); the tests' borsh too
 borsh.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "c272c4d643d0e92db766afc52c0e3be805a6e90a", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "b48bd10665913cd08f82e132f951e63d0ebeabfa", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -69,7 +69,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # A view SVG's own size, which sets the height gpui rasterises it at
 # (`render/svg_limits.rs`): gpui's own parser, already in the graph.
 usvg = { version = "0.46.0", default-features = false, optional = true }
-tokio = { version = "1", features = ["fs", "macros", "net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite.workspace = true
 # The live lane (`backend/live.rs`): QUIC to the UDP port the node's
 # `/v1/live/port` names, the node's key pinned by reading it out of its
@@ -88,6 +88,9 @@ abi.workspace = true
 ducklink.workspace = true
 wasmtime = { workspace = true, optional = true }
 wasmparser = "0.251"
+# a program's blob mapped from the cache's file (`backend::views::Blob`),
+# never read into the heap: fontdb's and xkbcommon's own, already in the graph
+memmap2 = "0.9"
 # `accepts`: the one rule every view runner applies before it compiles a
 # view (wasm-mobile SPEC §6.2), so wasmtime and JavaScriptCore take and
 # refuse the same views
@@ -112,9 +115,9 @@ tokio = { version = "1", features = ["test-util"] }
 # `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # the live tests' node: its key's verifier, as the handshake pins it
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "89f3cf55570df68f7f66f9b31814dcc555673abb", package = "keyscheme", features = ["testkit"] }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "b5f164664d555ff054cd32559879abf8104e1c4a", package = "keyscheme", features = ["testkit"] }
 # the consent card's words for a validators' vote
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "c272c4d643d0e92db766afc52c0e3be805a6e90a", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "b48bd10665913cd08f82e132f951e63d0ebeabfa", package = "valset" }
 # the tests' keys: commonware's ed25519, through noded-client's impl
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -123,9 +126,11 @@ noded-client = { path = "../noded-client", features = ["commonware"] }
 wat = "1"
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
+# what a test reads back of the warnings a cache problem logs (`runner/wasmtime.rs`)
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "c272c4d643d0e92db766afc52c0e3be805a6e90a", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "b48bd10665913cd08f82e132f951e63d0ebeabfa", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

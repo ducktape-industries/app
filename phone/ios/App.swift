@@ -224,7 +224,8 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     content.title = payload["title"] as? String ?? ""
     content.body = payload["body"] as? String ?? ""
     content.threadIdentifier = payload["tag"] as? String ?? ""
-    content.sound = .default
+    // the quack (`SOUND`, crates/host/src/runtime/notify.rs), bundled from assets/sounds (project.yml)
+    content.sound = UNNotificationSound(named: UNNotificationSoundName(rawValue: "quack.wav"))
     content.userInfo = payload
     let id = payload["id"] as? String ?? UUID().uuidString
     UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) {

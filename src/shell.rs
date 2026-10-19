@@ -26,6 +26,7 @@ mod live;
 pub(crate) use live::Live;
 pub(crate) mod entities;
 mod figure;
+pub(crate) mod follow;
 mod help;
 pub(crate) use help::chords;
 

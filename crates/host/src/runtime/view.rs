@@ -112,9 +112,6 @@ pub(super) struct View {
     /// The capabilities the manifest declares: a method whose capability is
     /// not among them is refused before it is routed.
     pub capabilities: Vec<Capability>,
-    /// The programs the manifest names as targets: a node method naming
-    /// another is refused before it is routed.
-    pub targets: Vec<String>,
     /// The manifest's `MIN_WINDOW_WIDTH`: the narrowest the view is laid
     /// out, and so the narrowest a window holding it is sized.
     pub min_width: u32,
@@ -199,6 +196,12 @@ pub(super) struct View {
     pub visible: bool,
     pub visibility_change: Option<bool>,
     pub visibility_subscriptions: Vec<u64>,
+    /// `visible`, for the kernel's tasks: a node subscription follows the
+    /// node only while its view is on screen (`kernel::node::Wanted`).
+    pub(crate) on_screen: tokio::sync::watch::Sender<bool>,
+    /// Whether the app is in front (`kernel::set_in_front`), as this
+    /// view's tasks read it.
+    pub(crate) in_front: tokio::sync::watch::Receiver<bool>,
     /// Where its pane is (`host.placement`), as the seat last placed it,
     /// the change not told yet, and the subscriptions that hear it.
     pub placement: wire::methods::Placement,
@@ -337,7 +340,7 @@ impl Drop for View {
             crate::perf::retire(self.program, self.instance);
         }
         if self.showing.is_some() {
-            kernel::screen::shown(self.program, self.instance, None);
+            kernel::screen::shown(&self.connection.chain, self.program, self.instance, None);
         }
     }
 }
@@ -365,7 +368,7 @@ pub fn prepared_on_for_test(
     let view_bytes =
         usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
     let prepared = runner
-        .prepare(hash, &code, view_bytes)
+        .prepare(hash, Code::of(&code), view_bytes)
         .expect("the test's code compiles");
     HELD.lock().unwrap().push(prepared.hold);
     hash

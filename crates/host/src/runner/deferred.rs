@@ -163,7 +163,7 @@ impl ViewRunner for DeferredRunner {
     fn prepare(
         &self,
         hash: [u8; 32],
-        code: &[u8],
+        code: crate::contract::Code<'_>,
         view_bytes: usize,
     ) -> Result<crate::contract::Prepared, crate::contract::Failure> {
         self.inner.prepare(hash, code, view_bytes)
@@ -189,7 +189,7 @@ impl ViewRunner for DeferredRunner {
     fn describe(
         &self,
         hash: [u8; 32],
-        module: &[u8],
+        module: crate::contract::Code<'_>,
         op: &[u8],
     ) -> Option<view_wire::methods::Description> {
         self.inner.describe(hash, module, op)

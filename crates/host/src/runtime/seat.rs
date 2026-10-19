@@ -252,8 +252,7 @@ pub(super) enum Slot {
 /// again), and what its manifest says: the name
 /// the rail lists it by, the icon its tab draws folded (empty: it declares
 /// none), the tint of its tile on a phone's Home, the narrowest it is laid
-/// out, the width a desk window opens it at, its capabilities and its
-/// targets.
+/// out, the width a desk window opens it at, and its capabilities.
 /// All a pane needs to start it, with nothing fetched or compiled again.
 #[derive(Clone)]
 pub(super) struct ViewCode {
@@ -269,7 +268,6 @@ pub(super) struct ViewCode {
     pub(super) min_width: u32,
     pub(super) width: Option<u32>,
     pub(super) capabilities: Vec<Capability>,
-    pub(super) targets: Vec<String>,
     pub(super) wire: String,
 }
 
@@ -290,7 +288,6 @@ impl ViewCode {
             min_width,
             width: None,
             capabilities: Vec::new(),
-            targets: Vec::new(),
             wire: view_wire::WIRE_ID.into(),
         })
     }
@@ -321,7 +318,7 @@ pub enum Failure {
     HashMismatch(String),
     /// This network's programs role does not list the view.
     NotListed(String),
-    /// The view ran out of fuel or trapped.
+    /// The view trapped.
     Trapped(String),
     /// Bytes this build does not run as a view, a load overtaken, or a
     /// loader that stopped.
@@ -412,7 +409,7 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
     let asked = snapshot.client.is_some() || view_override(program).is_some();
     // a seat preloaded only as far as compiled: this pane's load starts
     // it, right here when it holds the code the roster lists: an instance
-    // and its `init`, on the one tick's fuel every tick here runs on
+    // and its `init`
     let compiled = matches!(locked.slot, Slot::Compiled(_));
     let here = locked.slot.startable(code);
     // its preload still reading its bytes, in a roster read's read ahead
@@ -702,7 +699,7 @@ async fn read_bytes(load: &Load, timing: &mut LoadTiming) -> Read {
     timing.started = Some(Instant::now());
     timing.path = "read";
     let bytes = match crate::contract::os().bundled_view(&blob) {
-        Some(view) => Ok(Some((view, "bundle"))),
+        Some(view) => Ok(Some((view.into(), "bundle"))),
         None => {
             show(Slot::Fetching {
                 received: 0,

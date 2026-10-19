@@ -60,6 +60,7 @@ mod settings;
 mod tests;
 
 pub use center::{CenterHandle, Entry, HOST, Notice, NoticeKind, center, wall};
+pub(crate) use center::{Log, log_path as log_file};
 pub use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };
@@ -96,10 +97,24 @@ pub(super) fn answer(
     true
 }
 
+/// Whether `view`'s notices are too late for `center` (held locked, so a
+/// chain taken up in hand meanwhile waits for the answer): a view from
+/// before the app's last (re)connect or of a followed set that left, or,
+/// the person's, one of another chain than the centre holds (the chain
+/// just left, between the centre taking the next one up and the connect
+/// that stops its notifiers).
+fn stale(view: &View, center: &center::Center) -> bool {
+    view.connection.stale()
+        || (view.recipient.is_none() && center.network() != view.connection.chain)
+}
+
+const STALE: &str = "view belongs to another network connection than its centre's";
+
 /// `notify.post` into `center` (the view's, [`View::center`]): judged by
 /// the settings as last read ([`Settings::kept`]), not a prefs read per
 /// post, or by its recipient's; the log is written at the end of the
-/// redraw ([`center::Center::flush`]).
+/// redraw ([`center::Center::flush`]). Refused for a view too late for it
+/// ([`stale`]).
 fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
     let post = methods::decode::<Notification>(payload)
         .and_then(|post| checked(post).map_err(str::to_owned));
@@ -113,9 +128,14 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
     let settings = view
         .recipient
         .as_ref()
-        .map_or_else(Settings::kept, |recipient| recipient.settings.clone());
+        .and_then(|recipient| recipient.settings.clone())
+        .unwrap_or_else(Settings::kept);
     let (posted, banner, entry) = {
         let mut center = center.lock();
+        if stale(view, &center) {
+            drop(center);
+            return view.refuse(id, refusal::STALE_CONNECTION, STALE);
+        }
         let (posted, banner) = center.post(
             &settings,
             view.program,
@@ -139,7 +159,7 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
                 center.clone(),
                 view.recipient.clone(),
                 view.program,
-                notice.tag.clone(),
+                (notice.chain.clone(), notice.tag.clone()),
                 notice.until,
             );
         }
@@ -147,7 +167,11 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
         let recipient = view.recipient.clone();
         in_order(&queue_of(view.program, recipient.as_deref()), move || {
             let banners = banners_of(recipient.as_deref());
-            let _ = tell.send(banners.post(&notice, entry.map(Click::Row)));
+            let click = entry.map(|row| Click::Row {
+                chain: notice.chain.clone(),
+                row,
+            });
+            let _ = tell.send(banners.post(&notice, click));
         });
         told
     });
@@ -166,6 +190,7 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
 
 /// `notify.seen`: the view's rows under the tag read, and its standing
 /// banner under it down, queued behind the banners it already raised.
+/// Refused for a view too late for its centre ([`stale`]).
 fn seen(view: &mut View, id: u64, payload: &[u8]) {
     let tag = match methods::decode::<String>(payload) {
         Ok(tag) => tag,
@@ -174,37 +199,53 @@ fn seen(view: &mut View, id: u64, payload: &[u8]) {
             return;
         }
     };
-    if view.center().lock().read_tag(view.program, &tag) {
+    let read = {
+        let mut center = view.center().lock();
+        (!stale(view, &center)).then(|| center.read_tag(view.program, &tag))
+    };
+    let Some(read) = read else {
+        return view.refuse(id, refusal::STALE_CONNECTION, STALE);
+    };
+    if read {
         // the bell and the centre redraw
         view.intents.push(Intent::Notified);
     }
     if !tag.is_empty() {
         let tag = format!("{}/{tag}", view.program);
+        let chain = view.connection.chain.clone();
         let recipient = view.recipient.clone();
         in_order(&queue_of(view.program, recipient.as_deref()), move || {
-            banners_of(recipient.as_deref()).withdraw(&tag)
+            banners_of(recipient.as_deref()).withdraw(&chain, &tag)
         });
     }
     view.reply(id, Ok(methods::encode(&())));
 }
 
-/// The person declined the call raised under `tag` on its banner: the
-/// app's centre lets its program ring again ([`center::Center::declined`]).
-/// From the OS's own thread.
-pub fn declined(tag: &str) {
-    center().lock().declined(tag);
+/// The person declined the call raised under `tag` on `chain`'s banner:
+/// the centre holding that chain's log lets its program ring again
+/// ([`center::Center::declined`]). From the OS's own thread.
+pub fn declined(chain: &str, tag: &str) {
+    let held = match chain.is_empty() {
+        true => Some(center().clone()),
+        false => super::notifier::holding(chain),
+    };
+    if let Some(held) = held {
+        held.lock().declined(tag);
+    }
 }
 
-/// The banner raised under `tag` taken down at `until` (Unix seconds),
-/// from where it went (`recipient`'s channel, or the OS's), queued behind
-/// `program`'s other banners, unless a later one stands there by then or
-/// it was taken down already ([`Center::ring_over`]). A banner with no tag
-/// has nothing to take it down by: it stays.
-fn withdraw_at(
+/// The banner raised under `tag` on `chain` taken down at `until` (Unix
+/// seconds), from where it went (`recipient`'s channel, or the OS's),
+/// queued behind `program`'s other banners, unless a later one stands there
+/// by then or it was taken down already ([`Center::ring_over`]), asked of
+/// the centre that holds `chain`'s log THEN (a switch moves it; `center`,
+/// the one posted into, holds it on a host with no screen). A banner with
+/// no tag has nothing to take it down by: it stays.
+pub(super) fn withdraw_at(
     center: CenterHandle,
     recipient: Option<Arc<Recipient>>,
     program: &'static str,
-    tag: String,
+    (chain, tag): (String, String),
     until: u64,
 ) -> tokio::task::JoinHandle<()> {
     super::kernel::handle().spawn(async move {
@@ -217,19 +258,34 @@ fn withdraw_at(
         if let Ok(left) = at.duration_since(std::time::SystemTime::now()) {
             tokio::time::sleep(left).await;
         }
-        if !tag.is_empty() && center.lock().ring_over(&tag, until) {
+        // none holds the chain's log (parked as it left hand): no notifier
+        // of it runs, so nothing newer stands under the tag
+        let over = || match chain.is_empty() {
+            true => center.lock().ring_over(&tag, until),
+            false => super::notifier::holding(&chain)
+                .is_none_or(|held| held.lock().ring_over(&tag, until)),
+        };
+        if !tag.is_empty() && over() {
             in_order(&queue_of(program, recipient.as_deref()), move || {
-                banners_of(recipient.as_deref()).withdraw(&tag)
+                banners_of(recipient.as_deref()).withdraw(&chain, &tag)
             });
         }
     })
 }
 
+/// The sound an ordinary notice plays, by its file's name (a call keeps
+/// the ring its OS gives it): `assets/sounds/quack.wav`, which `quack.py`
+/// beside it makes. Each app carries it where its OS finds a notice's
+/// sound (the Mac and iPhone apps' resources, Android's `res/raw`, a file
+/// the Linux app keeps for its notification daemon), and pushd's alerts to
+/// an iPhone name it.
+pub const SOUND: &str = "quack.wav";
+
 /// What a click on a banner opens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Click {
-    /// A centre row, as if picked in the centre.
-    Row(u64),
+    /// A centre row, as if picked in the centre: `row` of `chain`'s log.
+    Row { chain: String, row: u64 },
     /// Settings › Updates: the host's own update notice.
     Updates,
 }
@@ -238,6 +294,9 @@ pub enum Click {
 pub enum Opened {
     /// A `duck://` link, for `Windows::open_link`.
     Link(String),
+    /// `row` of `chain`'s log, a network not in hand: the shell switches
+    /// to it first and opens the row there.
+    Row { chain: String, row: u64 },
     /// Settings › Updates.
     Updates,
 }
@@ -255,19 +314,12 @@ pub(crate) fn on_open(open: fn(Opened)) {
 /// A banner clicked: `start`'s drain calls this for each
 /// `Signal::BannerClick` the shell's `Banners` impl sends through
 /// `Inbound`. A row opens as if picked in the centre — read now, and its
-/// `duck://` link opened (the view's seat, when it carried none).
+/// `duck://` link opened (the view's seat, when it carried none). A row of
+/// another chain than the one in hand goes to the shell as it is, to
+/// switch first.
 pub(crate) fn clicked(click: Click) {
-    let opened = match click {
-        Click::Row(entry) => {
-            let Some(entry) = center().lock().open(entry) else {
-                return;
-            };
-            Opened::Link(match entry.link.is_empty() {
-                true => format!("duck://{}", entry.program),
-                false => entry.link,
-            })
-        }
-        Click::Updates => Opened::Updates,
+    let Some(opened) = opened(click) else {
+        return;
     };
     match OPEN.get() {
         Some(open) => open(opened),
@@ -277,21 +329,40 @@ pub(crate) fn clicked(click: Click) {
     }
 }
 
+/// What `click` opens: a row of the chain in hand read now, its link (or
+/// its view's seat); a row of another chain as it is; none for a row gone.
+fn opened(click: Click) -> Option<Opened> {
+    Some(match click {
+        Click::Row { chain, row } => {
+            let mut center = center().lock();
+            if !chain.is_empty() && center.network() != chain {
+                drop(center);
+                Opened::Row { chain, row }
+            } else {
+                let entry = center.open(row)?;
+                Opened::Link(match entry.link.is_empty() {
+                    true => format!("duck://{}", entry.program),
+                    false => entry.link,
+                })
+            }
+        }
+        Click::Updates => Opened::Updates,
+    })
+}
+
 /// The shell's banners (`OsServices::banners`).
 fn banners() -> &'static dyn crate::contract::Banners {
     crate::contract::os().banners()
 }
 
 /// The queue a program's banners run through in order, so a burst's "N
-/// more" never lands before the banners it counts: the program's for the
-/// person at this device, and one per recipient (named by its store, which
-/// is its own) for a host with no screen, where a post is a call to a push
-/// service and one account's slow call must hold up no other's.
-fn queue_of(program: &str, recipient: Option<&Recipient>) -> String {
-    match recipient {
-        Some(recipient) => format!("{program}@{}", recipient.store.display()),
-        None => program.to_owned(),
-    }
+/// more" never lands before the banners it counts: named by the program
+/// and the store its notifier keeps, so one per account on a host with no
+/// screen, where a post is a call to a push service and one account's slow
+/// call must hold up no other's, and one for the person at this device,
+/// whichever network runs the program (in hand, or followed).
+pub(super) fn queue_of(program: &str, recipient: Option<&Recipient>) -> String {
+    format!("{program}@{}", super::store::store_of(recipient).display())
 }
 
 /// Where a notice of `recipient`'s goes: its banners, or the shell's for

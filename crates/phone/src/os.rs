@@ -434,7 +434,8 @@ struct PhoneBanners;
 impl Banners for PhoneBanners {
     fn post(&self, notice: &Notice, click: Option<Click>) -> bool {
         let row = match click {
-            Some(Click::Row(id)) => Some(row_at(id)),
+            // the phone runs the notifiers of the chain in hand alone
+            Some(Click::Row { row, .. }) => Some(row_at(row)),
             _ => None,
         };
         let front = IN_FRONT.load(Ordering::Relaxed);
@@ -444,7 +445,7 @@ impl Banners for PhoneBanners {
         }
     }
 
-    fn withdraw(&self, tag: &str) {
+    fn withdraw(&self, _: &str, tag: &str) {
         withdraw_notice(tag);
     }
 }
@@ -719,7 +720,7 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
 }
 
 /// Keeps the system bars readable over the app's appearance (`dark`: the
-/// one App settings chose, or the system's): light content on dark (Expo
+/// one the Account tab chose, or the system's): light content on dark (Expo
 /// `app/_layout.tsx` `<StatusBar style={dark ? 'light' : 'dark'} />`). iOS:
 /// the status bar's style; Android: the status and navigation bars' icons
 /// (`MainActivity.systemBars`; the theme's `values-night` flip follows the
@@ -735,7 +736,7 @@ pub fn system_bars(dark: bool) {
     let _ = dark;
 }
 
-/// Puts the appearance App settings chose on the app's iOS windows
+/// Puts the appearance the Account tab chose on the app's iOS windows
 /// (`overrideUserInterfaceStyle`), so what UIKit draws for the app takes it
 /// too: the keyboard, its own alerts and sheets, and the trait collection
 /// gpui_ios reads `window.appearance()` from. System leaves them to the
@@ -828,7 +829,7 @@ pub const KEY_STORE: &str = if cfg!(target_os = "android") {
     "iOS Keychain"
 };
 
-/// This phone, as App settings names it (Expo `platform.phone`): the model
+/// This phone, as the Account tab names it (Expo `platform.phone`): the model
 /// and the system's version on Android; on iOS, where the Expo build read
 /// no model name, "iPhone" and the system's version (UIKit's
 /// `systemVersion`: major.minor, and the patch when there is one).

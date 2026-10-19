@@ -11,7 +11,7 @@
 //! The driver blocks its thread on each landing: it runs on a thread of its
 //! own, never the main thread (where JSC's answers land).
 
-use ducktape_host::contract::{Fault, Landed, Landing, SeatId, ViewInstance, ViewRunner};
+use ducktape_host::contract::{Code, Fault, Landed, Landing, SeatId, ViewInstance, ViewRunner};
 use sha2::Digest as _;
 use std::io::Read as _;
 use std::time::{Duration, Instant};
@@ -199,7 +199,7 @@ pub struct Ran {
 pub fn run(runner: &dyn ViewRunner, session: &Session) -> Result<Ran, String> {
     let hash = hash_of(&session.code);
     let _held = runner
-        .prepare(hash, &session.code, VIEW_BYTES)
+        .prepare(hash, Code::of(&session.code), VIEW_BYTES)
         .map_err(|failure| format!("prepare: {failure}"))?;
     let mut whole = seat(runner, hash, 1)?;
     whole.init()?;
@@ -278,7 +278,7 @@ pub fn revive(
 ) -> Result<Revived, String> {
     let hash = hash_of(&session.code);
     let held = runner
-        .prepare(hash, &session.code, VIEW_BYTES)
+        .prepare(hash, Code::of(&session.code), VIEW_BYTES)
         .map_err(|failure| format!("prepare: {failure}"))?;
     let k = session.snapshot_at;
     let last_kept = (k + 10).min(session.ticks.len() - 2);

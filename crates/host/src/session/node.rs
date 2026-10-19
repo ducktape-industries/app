@@ -26,8 +26,9 @@ use gpui_kit::{Context, Entity, EventEmitter, Task};
 use std::rc::Rc;
 use std::time::Duration;
 
-/// How often the node's status is asked for while connected.
-pub const STATUS_EVERY: Duration = Duration::from_secs(2);
+/// How often the node's status is asked for while connected; each other
+/// listed network's too (`runtime::follow`).
+pub use crate::runtime::STATUS_EVERY;
 
 /// The session's compared value.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -270,10 +271,7 @@ impl Session {
             Err(error) => return self.connect_failed(origin, error, cx),
         };
         let other_chain = keyring.other_chain;
-        // the chain id `duck://` links name: the network and its genesis
-        // salt; the name alone when the genesis yields none
-        let chain = ducklink::ChainId::of(&status.network, &status.genesis)
-            .map_or_else(|| status.network.clone(), |chain| chain.to_string());
+        let chain = crate::runtime::chain_of(&status);
         let network = status.network.clone();
         // the connection's one client: the views', the roster's and the
         // sign-in calls'
@@ -287,7 +285,6 @@ impl Session {
             founded: status.time,
             other_chain,
         });
-        self.center.lock().set_network(&chain);
         self.edit(
             |state| {
                 state.recent_endpoints = backend::recent_endpoints();
@@ -305,6 +302,10 @@ impl Session {
         if left {
             self.left_network(cx);
         }
+        // the centre takes the chain up (from its followed set, if one
+        // runs) only now, with the connect that stops the last chain's
+        // notifiers: one still posting meanwhile is refused (`notify`)
+        crate::runtime::take_up(&self.center, &chain);
         crate::runtime::connected(&client, &network, &chain);
         cx.emit(SessionEvent::Connected);
         self.account.update(cx, |account, cx| {
@@ -475,6 +476,9 @@ impl Session {
         });
         self.screen
             .update(cx, |screen, cx| screen.set(Screen::Connect, cx));
+        // no chain in hand: the one left parks its log for its own set
+        // (`runtime::follow`), and its notifiers' last posts are refused
+        crate::runtime::take_up(&self.center, "");
         self.left_network(cx);
     }
 
@@ -536,7 +540,7 @@ impl Session {
         chain: String,
         cx: &mut Context<Self>,
     ) {
-        self.center.lock().set_network(&chain);
+        crate::runtime::take_up(&self.center, &chain);
         self.edit(
             |state| {
                 state.endpoint = origin.clone();

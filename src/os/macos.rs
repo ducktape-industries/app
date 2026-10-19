@@ -3,7 +3,7 @@
 //! caller can catch, the process dies. `cargo test`, `cargo run` and any
 //! bare binary are exactly that process, so the identifier is read first.
 
-use ducktape_host::runtime::notify::{Click, Notice, NoticeKind};
+use ducktape_host::runtime::notify::{Click, Notice, NoticeKind, SOUND};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
@@ -20,6 +20,9 @@ use objc2_user_notifications::{
 /// row's id, or [`UPDATES`]): macOS does not hand `targetContentIdentifier`
 /// back in a click's response.
 const ROW: &str = "row";
+/// The userInfo key a banner carries its chain under: the row is that
+/// chain's, and a decline goes to that chain's centre.
+const CHAIN: &str = "chain";
 /// The `ROW` of the host's update notice.
 const UPDATES: &str = "updates";
 /// A call's category, and its two actions: Answer opens the row as a
@@ -71,26 +74,40 @@ declare_class!(
             done: &block2::Block<dyn Fn()>,
         ) {
             // SAFETY: reads off the response the framework hands in.
-            let (action, row, tag) = unsafe {
+            let (action, row, chain, tag) = unsafe {
                 let content = response.notification().request().content();
                 let info = content.userInfo();
                 let key = NSString::from_str(ROW);
-                // the row is only ever written as a string (`post`)
+                // the row and its chain are only ever written as strings (`post`)
                 let row = info
                     .objectForKey(AsRef::<AnyObject>::as_ref(&*key))
                     .map(|row| Retained::cast::<NSString>(row).to_string());
-                (response.actionIdentifier(), row, content.threadIdentifier().to_string())
+                let key = NSString::from_str(CHAIN);
+                let chain = info
+                    .objectForKey(AsRef::<AnyObject>::as_ref(&*key))
+                    .map(|chain| Retained::cast::<NSString>(chain).to_string());
+                (
+                    response.actionIdentifier(),
+                    row,
+                    chain.unwrap_or_default(),
+                    content.threadIdentifier().to_string(),
+                )
             };
             // SAFETY: a framework constant.
             let default = &*action == unsafe { UNNotificationDefaultActionIdentifier };
             let click = row.and_then(|row| match row.as_str() {
                 UPDATES => Some(Click::Updates),
-                row => row.parse::<u64>().ok().map(Click::Row),
+                row => row.parse::<u64>().ok().map(|row| Click::Row {
+                    chain: chain.clone(),
+                    row,
+                }),
             });
             let action = action.to_string();
             if action == DECLINE {
-                withdraw(&tag);
-                ducktape_host::runtime::notify::declined(&tag);
+                // the centre holding its chain's log hears it: the one in
+                // hand, or that network's followed set
+                withdraw(&chain, &tag);
+                ducktape_host::runtime::notify::declined(&chain, &tag);
             } else if let Some(click) = click.filter(|_| default || action == ANSWER) {
                 super::clicked(click);
             }
@@ -166,20 +183,27 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
         if !notice.tag.is_empty() {
             content.setThreadIdentifier(&NSString::from_str(&notice.tag));
         }
-        // what a click opens
-        if let Some(click) = click {
-            let opens = match click {
-                Click::Row(entry) => entry.to_string(),
-                Click::Updates => UPDATES.to_string(),
+        // what a click opens, and on which chain
+        if let Some(click) = &click {
+            let (opens, chain) = match click {
+                Click::Row { chain, row } => (row.to_string(), chain.as_str()),
+                Click::Updates => (UPDATES.to_string(), ""),
             };
             let row = NSDictionary::<NSString, NSString>::from_vec(
-                &[&*NSString::from_str(ROW)],
-                vec![NSString::from_str(&opens)],
+                &[&*NSString::from_str(ROW), &*NSString::from_str(CHAIN)],
+                vec![NSString::from_str(&opens), NSString::from_str(chain)],
             );
             // a dictionary of strings is a property list, as userInfo holds
             content.setUserInfo(&Retained::cast::<NSDictionary>(row));
         }
-        content.setSound(Some(&UNNotificationSound::defaultSound()));
+        // a notice quacks (the bundle's Resources, `bundle-app-macos.sh`;
+        // a name macOS does not find plays its default), a call keeps the
+        // default
+        let sound = match notice.kind {
+            NoticeKind::Call => UNNotificationSound::defaultSound(),
+            NoticeKind::Notice => UNNotificationSound::soundNamed(&NSString::from_str(SOUND)),
+        };
+        content.setSound(Some(&sound));
         if notice.kind == NoticeKind::Call {
             content.setCategoryIdentifier(&NSString::from_str(CALL));
         }
@@ -192,7 +216,7 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
         // it down or puts the next one in its place.
         // ponytail: two host notices added a moment apart would cancel
         // each other as above; one per staged release never comes close.
-        let host = click == Some(Click::Updates);
+        let host = matches!(click, Some(Click::Updates));
         let identifier = match host {
             true => HOST_NOTICE.to_string(),
             false => ducktape_host::runtime::notify::request_id(),
@@ -205,7 +229,10 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
             let standing = standing()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(notice.tag.clone(), identifier.clone());
+                .insert(
+                    (notice.chain.clone(), notice.tag.clone()),
+                    identifier.clone(),
+                );
             if let Some(standing) = standing {
                 let standing = NSArray::from_vec(vec![NSString::from_str(&standing)]);
                 centre.removePendingNotificationRequestsWithIdentifiers(&standing);
@@ -252,12 +279,12 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
         .unwrap_or(true)
 }
 
-/// The banner standing under `tag`, taken down.
-pub(super) fn withdraw(tag: &str) {
+/// The banner standing under `tag` on `chain`, taken down.
+pub(super) fn withdraw(chain: &str, tag: &str) {
     let standing = standing()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(tag);
+        .remove(&(chain.to_owned(), tag.to_owned()));
     let Some(standing) = standing.filter(|_| bundled()) else {
         return;
     };
@@ -287,10 +314,11 @@ pub(super) fn withdraw_host() {
     }
 }
 
-/// The banner each tag is standing under, by its request identifier.
-fn standing() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
-    static STANDING: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, String>>,
-    > = std::sync::OnceLock::new();
+/// The banner each chain's tag is standing under, by its request
+/// identifier: two networks' programs may share a tag, and each stands.
+type Standing = std::collections::HashMap<(String, String), String>;
+
+fn standing() -> &'static std::sync::Mutex<Standing> {
+    static STANDING: std::sync::OnceLock<std::sync::Mutex<Standing>> = std::sync::OnceLock::new();
     STANDING.get_or_init(Default::default)
 }

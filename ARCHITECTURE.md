@@ -91,7 +91,7 @@ the core free of every shell, OS and key crate.
 | `render/av.rs`, `crates/av` | the camera and microphone pieces. With feature `av` (on by default), a camera's pictures per `Node::Camera` and a microphone's level per `Node::Microphone`, recorded and played back (`crates/av` holds every device call and every OS's words, one module per OS: V4L2 on Linux, AVFoundation on macOS, Camera2 on Android, cpal for sound everywhere; `render/av.rs` maps the pieces onto it and answers `camera.devices`, `microphone.devices` and `microphone.chime`); without it each piece draws a line and the methods are refused `unknown_request` | window thread (each device on its own thread) |
 | `render/web.rs`, `crates/web` | the web piece. With feature `web`, a page per `Node::Web` through CEF off-screen rendering (`crates/web` holds every CEF name; `render/web.rs` maps the piece onto it and picks the view that declares `web` for an https link); without it the piece draws a line and links go to the system browser | window thread (CEF's pump turns there) |
 | `backend/` (core) | what crosses the process boundary on every host: `noded` client and signed `Frame`, `session` (the seated key, any `noded_client::Signer`), `views`, `prefs`, recent nodes, `identity`, `join` (another device), `live` (the live session with the node's relay over core's `live-wire`: QUIC on the node's live port, or the websocket `/v1/live`; one per connection, on `Connection.live`, closed at quit) | async, polled where the caller polls (see below) |
-| `src/os.rs`, `src/backend/` (desktop) | the desktop's `OsServices` (`app_dirs`, the freedesktop / macOS banners, `invite`), `device_key`, `key_dir`, `passkey` through `auth_page` and `loopback`, `recovery` | same |
+| `src/os.rs`, `src/backend/` (desktop) | the desktop's `OsServices` (`app_dirs`, the freedesktop / macOS banners, `invite`), `device_key`, `key_dir`, `passkey` through `auth_page` and `loopback`, `recovery`, `send` (`ducktape-app send`: one transaction from the terminal, signed with the device key) | same |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
 | `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
 | `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item (`Tray`, an entity observing `Session`, `Chain` and `Prefs`) | window thread |
@@ -131,7 +131,7 @@ quit) are `Windows`' methods.
 | **freedesktop listener** (non-macOS) | banner clicks off the session bus | `runtime/notify/freedesktop.rs` |
 | GPUI background executor | timers only (clock wake-ups, sensor delays, spin, the door's settle polls) | — |
 
-There is no wall-clock budget on a tick. Fuel is the one bound (see §8).
+There is no wall-clock or fuel budget on a tick: it runs until the view's call returns (see §8).
 
 ## 3. Life of a view
 
@@ -192,11 +192,10 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    read), and no instance exists and no `init` runs for a program nobody
    opened. The pane that claims it starts that code (`View::start`:
    instantiate and `init`, nothing fetched or compiled again) right in
-   `seat::mounted` on the window thread, where every tick runs on the same
-   fuel, when the blob is still the one the roster lists; any other claim
-   is queued as a load. A seat claimed while its preload is on the way gets
-   its load once the preload lands, and that load starts the code the same
-   way.
+   `seat::mounted` on the window thread, when the blob is still the one
+   the roster lists; any other claim is queued as a load. A seat claimed
+   while its preload is on the way gets its load once the preload lands,
+   and that load starts the code the same way.
    `View::instantiate` builds a store whose `ViewLimits`
    (`view/abi.rs`, a wasmtime `ResourceLimiter`) charges linear memory and
    table elements against the device's `memory.view_bytes` setting
@@ -230,7 +229,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    kernel `Replies`, fires due `clock.ticks`, syncs visibility, offset and
    route subscriptions, and — only if something is pending, the frame said
    `busy`, or there was never a first tree — calls `View::tick`: `arm`
-   refills `FUEL_PER_TICK`, `Exports::tick` runs the wasm with the encoded
+   starts the fuel count full, `Exports::tick` runs the wasm with the encoded
    events, `shape` decodes the returned `Frame` (`view_wire::decode`
    refuses one nested deeper than `view_wire::MAX_DEPTH`) and sanitizes it,
    taking the frame's style entries into the held table; a frame `shape`
@@ -265,7 +264,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    onto `view.pending` and turns. The listeners also stamp the tree's
    **transient activation** (`ViewTree::activate`: a press, a key but
    Escape, typing, an AT press), which the turn carries to
-   `view.activation`: `link.open` and
+   `view.activation`: `link.open`, `link.window` and
    `clipboard.read`/`write` need it fresh (5 s) and take it, one input
    admitting one call. Every focus-moving `host.widget` command and a
    dialog's auto-focus need the pane's keys free instead (`Seat::keys_free`),
@@ -324,7 +323,7 @@ the pane draws: the load's stage words while loading; the network's word
 for `Slot::Empty` ("This network has no `<program>` view. An admin can
 activate a deployment that ships one."); or a `Failure` with a
 title and Retry — `Unreachable` (node or blob), `HashMismatch`,
-`NotListed`, `Trapped` (fuel exhausted or a wasm trap, the panic message
+`NotListed`, `Trapped` (a wasm trap, the panic message
 from `HostState::panic` when there is one), `Refused` (bytes this build does
 not run, or a load overtaken), `Wire` (built against another wire than
 this app's). A failed candidate's code is held off (`seat::Retry`) until
@@ -355,7 +354,7 @@ its meaning; the host and the views name the const, never the string.
    tries `clipboard::answer`, `notify::answer`, `store::answer`, then its own
    arms: host methods (`host.visible`, `host.badge`, `host.title`,
    `host.route`, `host.showing`, `host.screen`, `host.offset`, `host.id`,
-   `link.open`, `clock.ticks`) are answered at once from app state
+   `link.open`, `link.window`, `clock.ticks`) are answered at once from app state
    (`host.screen` is a subscription to the routes the program's views show
    on screen, `kernel/screen.rs`); node methods are spawned. Three kinds
    never reach the kernel and are handled in `View::answer` after it
@@ -399,9 +398,11 @@ its meaning; the host and the views name the const, never the string.
    `view.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
 6. **Subscriptions.** `program.changes <program>` (`follow_changes`: one WebSocket
-   `/v1/changes/<program>` per subscription), `chain.heads` (`heads`: polls
+   `/v1/changes/<program>?keys` (the keys alone) per node and program, held while a follower's view
+   is on screen, a notifier's always, and the app in front; a follower back
+   is told to re-read first), `chain.heads` (`heads`: polls
    status at half the node's block time and reads the advance from
-   `/v1/blocks`), `live.publish`/`live.subscribe`/
+   `/v1/blocks`, on the same terms), `live.publish`/`live.subscribe`/
    `live.tracks` (`kernel/live.rs`: a request on the connection's live
    session, opened again on a lost session or a reconnect, its items the
    node's objects and announces), `clock.ticks`, `host.session`,
@@ -420,11 +421,8 @@ instance, caches every answer by (code id, op hash), and
 answers `None` on any failure but a transport one, which becomes
 `rpc_client`, the answer as for any node call.
 
-`blob.manifest` (`kernel/node.rs`) reads a code blob the same way: only
-one the programs role names (a listed program's, a view-only entry's, or
-one a scheduled change brings: the roster answers the first two, the
-scheduled list is read for the ask, never per block; any other id is
-refused `undeclared_target`, never fetched), through the seat path's cache
+`blob.manifest` (`kernel/node.rs`) reads any blob the same way, as
+`blob.get` reads any blob, through the seat path's cache
 (`views::program_bytes`), and answers the blob's size, whether it carries
 a view (its `ducktape.view` section, or the blob itself when it is a
 view-only entry, known by its manifest section) and that view's manifest
@@ -636,7 +634,7 @@ Connect ─► /v1/status ─► contract check ─► keyring::bind ─► devi
    `backend::seat_key` puts the key in the process-wide `SIGNER` and
    answers the public key (`signer_key`). No password, no phrase for a
    device key. The legacy file is opened once by `Account::unlock(password)`
-   and moved into the OS store (`device_key::save`, which keeps a key only
+   (`key_dir::open_password_locked`) and moved into the OS store (`device_key::save`, which keeps a key only
    where none is kept yet). `Account::lock` calls `lock_signer` and returns to
    `Screen::Unlock`; `browse_without_key` opens the desk read-only.
 3. **Account** (`backend/identity.rs` `account_of_key` →
@@ -740,9 +738,13 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 
 ## 8. Performance facts
 
-- **Fuel.** `FUEL_PER_TICK` (`runtime.rs`, 250M instructions) is armed by
-  `view::arm` before every entry into a view: `init`, `tick`, `snapshot`,
-  `restore`, and instantiate. There is no wall-clock or epoch budget.
+- **Fuel.** `arm` (`runner/wasmtime.rs`) starts the fuel count full
+  before every entry into a view: `init`, `tick`, `snapshot`, `restore`,
+  and instantiate. The count measures a call and stops none: a view's call
+  runs until it returns. There is no wall-clock or epoch budget either. A
+  view that never returns holds the window thread, so the app draws and
+  answers nothing until it is killed.
+  `program.describe` keeps its own fuel budget (`describe::host::FUEL`).
   `RUST_LOG=ducktape::perf=debug` logs fuel used per tick, and
   `DUCKTAPE_PERF=1` keeps the counters `GET /perf` reads (docs/perf.md).
 - **Memory settings** (`backend::memory_bounds`, `backend/prefs.rs`): three
@@ -849,7 +851,8 @@ House words, and where one word means several things.
   (`ViewTree::activate`; tooltips forward it to their source tree), carried
   to `view.activation` by the seat's turn, fresh for `ACTIVATION_EXPIRY`
   (5 s) and taken by the first gated call (`View::take_activation`):
-  `link.open` and the clipboard are refused `needs_gesture` without it.
+  `link.open`, `link.window` and the clipboard are refused `needs_gesture`
+  without it.
 - **widget command** — a `host.widget` request acting on a native control
   (focus, next/previous, scroll, cursor, a field's edit); its **target** is
   a whole authored path, as the view SDK names it from the frame it

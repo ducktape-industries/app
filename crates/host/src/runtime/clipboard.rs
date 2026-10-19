@@ -1,8 +1,13 @@
 //! The clipboard, read and written on the window thread for one view.
+//! `clipboard.files` reads what a paste would take: the files and
+//! pictures on it, held for the view as a pick's are (`picker`), and its
+//! text, in one answer, since the paste key is one activation.
 #[cfg(feature = "ui")]
 use super::Seat;
 use super::View;
 use super::wire::methods::{self, Capability, refusal};
+#[cfg(feature = "ui")]
+use super::{kernel, picker};
 #[cfg(feature = "ui")]
 use gpui_kit::{ClipboardEntry, Context};
 
@@ -13,6 +18,7 @@ pub(super) struct Clipboard {
 enum Request {
     Read,
     Write(String),
+    Files,
 }
 
 impl Clipboard {
@@ -31,6 +37,7 @@ pub(super) fn answer(
     let request = match (capability, operation) {
         (Capability::Clipboard, "read") => Ok(Request::Read),
         (Capability::Clipboard, "write") => methods::decode::<String>(payload).map(Request::Write),
+        (Capability::Clipboard, "files") => methods::decode::<()>(payload).map(|()| Request::Files),
         _ => return false,
     };
     // what the person copied elsewhere is read, and replaced, only on
@@ -66,6 +73,41 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
                 view.reply(id, Ok(Vec::new()));
             }
+            Request::Files => files(view, id, cx),
         }
     }
+}
+
+/// `clipboard.files`: the clipboard's text, and its files and pictures held
+/// for the view. A picture is held as its bytes, named `image.<ext>` by its
+/// format; a file is opened on a blocking thread, and one that cannot be
+/// refuses the whole ask by its name alone, as a pick does.
+#[cfg(feature = "ui")]
+fn files(view: &mut View, id: u64, cx: &mut Context<Seat>) {
+    let (mut text, mut paths, mut files) = (String::new(), Vec::new(), Vec::new());
+    if let Some(item) = cx.read_from_clipboard() {
+        for entry in item.entries() {
+            match entry {
+                ClipboardEntry::String(value) => text.push_str(value.text()),
+                ClipboardEntry::ExternalPaths(external) => {
+                    paths.extend_from_slice(external.paths())
+                }
+                ClipboardEntry::Image(image) => {
+                    let name = format!("image.{}", image.format.extension());
+                    files.push(picker::Opened::bytes(name, image.bytes.clone()));
+                }
+            }
+        }
+    }
+    let held = view.picker.held();
+    kernel::spawn_reply(view, id, async move {
+        if !paths.is_empty() {
+            let opened = tokio::task::spawn_blocking(move || picker::open_paths(paths))
+                .await
+                .unwrap_or_else(|error| Err(picker::fault(error.to_string())))?;
+            files.extend(opened);
+        }
+        let files = held.hold(files);
+        Ok(methods::encode(&methods::Pasted { files, text }))
+    });
 }

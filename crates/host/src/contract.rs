@@ -37,7 +37,7 @@ use crate::runtime::notify::Opened;
 use crate::runtime::notify::{Click, Notice};
 #[cfg(feature = "ui")]
 use gpui_kit::{AppLifecyclePhase, TextInputConfiguration, Window, WindowInsets};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 /// What a shell gives the host. One impl per shell.
@@ -188,10 +188,12 @@ impl KeyRefusal {
 /// their own.
 pub trait Banners: Send + Sync {
     /// Raises `notice`; a click on it comes back as `click` through
-    /// [`Signal::BannerClick`]. Whether it went up.
+    /// [`Signal::BannerClick`]. Whether it went up. A banner stands under
+    /// its chain and tag ([`Notice::chain`]): two listed networks'
+    /// programs may raise one tag.
     fn post(&self, notice: &Notice, click: Option<Click>) -> bool;
-    /// Takes down the banner standing under `tag`.
-    fn withdraw(&self, tag: &str);
+    /// Takes down the banner standing under `tag` on `chain`.
+    fn withdraw(&self, chain: &str, tag: &str);
 }
 
 /// The software keyboard a focused field wants. (The fork's
@@ -415,7 +417,12 @@ pub trait ViewRunner: Send + Sync + 'static {
     /// sha256 is `hash`, for a view whose linear memory may reach
     /// `view_bytes` (the `memory.view_bytes` setting). Nothing runs. The
     /// code stays prepared while the answer's hold is held.
-    fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure>;
+    fn prepare(
+        &self,
+        hash: [u8; 32],
+        code: Code<'_>,
+        view_bytes: usize,
+    ) -> Result<Prepared, Failure>;
     /// Seat the prepared code `hash` names: lands [`Landed::Seated`] (or a
     /// `Fault`) on `land`, which the instance keeps for every later answer.
     /// Code nothing holds any more lands a `Fault::Runner`. Right after a
@@ -423,15 +430,35 @@ pub trait ViewRunner: Send + Sync + 'static {
     /// dead-page rules).
     fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
     /// `program.describe`: run the import-free describe module `module`
-    /// (sha256 `hash`) on `op`, bounded by the same fuel, once
-    /// `view_meter::accepts` takes it as it would a view; `None` on any
-    /// failure.
+    /// (sha256 `hash`) on `op`, once `view_meter::accepts` takes it as it
+    /// would a view; `None` on any failure.
     fn describe(
         &self,
         hash: [u8; 32],
-        module: &[u8],
+        module: Code<'_>,
         op: &[u8],
     ) -> Option<view_wire::methods::Description>;
+}
+
+/// Code a runner prepares (a view's, a notifier's, a describe module's):
+/// its bytes, and where they lie in a file when they are a file's, as a
+/// section of a program's blob the cache keeps is. A compile apart
+/// ([`RunnerConfig::compile_apart`]) reads them there itself, so they are
+/// never copied through this process's heap on their way to it.
+#[derive(Clone, Copy, Debug)]
+pub struct Code<'a> {
+    /// The code.
+    pub bytes: &'a [u8],
+    /// The file `bytes` are, from this offset on; `None` for code held in
+    /// memory only.
+    pub file: Option<(&'a Path, u64)>,
+}
+
+impl<'a> Code<'a> {
+    /// Code held in memory only.
+    pub fn of(bytes: &'a [u8]) -> Self {
+        Self { bytes, file: None }
+    }
 }
 
 /// Where prepared code came from, for the load's log and counters.
@@ -474,7 +501,7 @@ pub struct Prepared {
 /// the answer lands on the seat's [`Landing`].
 ///
 /// A program's NOTIFIER (`runtime::notifier`) is seated the same way, on
-/// the same code path, budget and fuel: a module that exports `alloc`,
+/// the same code path and budget: a module that exports `alloc`,
 /// `init` and `tick` only (no state to hand over). Every runner seats a
 /// module without `snapshot` and `restore`, and a `begin_snapshot` or
 /// `begin_restore` on it lands `Fault::Trap("the view exports no …")`. Its
@@ -531,7 +558,7 @@ pub trait ViewInstance: Send {
     /// The `restore` export: lands `Restored`, `RestoreRefused` or a
     /// `Fault`.
     fn begin_restore(&mut self, snapshot: Vec<u8>);
-    /// The fuel the last landed call used, of [`FUEL_PER_TICK`].
+    /// The fuel the last landed call used.
     fn fuel_used(&self) -> u64;
     /// The view's linear memory, in bytes.
     fn memory_bytes(&self) -> usize;
@@ -624,8 +651,6 @@ pub enum Fault {
     /// The view panicked: the words its panic hook
     /// (`ducktape_view.panicked`) handed over before the trap.
     Panicked(String),
-    /// The call used all of [`FUEL_PER_TICK`].
-    OutOfFuel,
     /// A `memory.grow` or `table.grow` past the `memory.view_bytes`
     /// setting.
     Memory,
@@ -637,7 +662,6 @@ impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Trap(words) | Self::Panicked(words) | Self::Runner(words) => f.write_str(words),
-            Self::OutOfFuel => f.write_str("all fuel consumed by WebAssembly"),
             Self::Memory => f.write_str("the view is past the device's view memory setting"),
         }
     }
@@ -672,18 +696,14 @@ pub struct RunnerConfig {
     /// Where compiled code is kept across launches; `None` keeps none.
     pub cache_dir: Option<PathBuf>,
     /// This binary, run as a child ([`crate::runner::COMPILE_APART`]) for
-    /// each compile, which lands in `cache_dir` for this process to read:
-    /// a compile's peak (200-315 MB) then leaves with the child, where the
-    /// allocator would keep it here on loader threads that go idle. Needs
-    /// `cache_dir`. `None` compiles in this process (the phone, pushd).
+    /// each compile of code that lies in a file ([`Code::file`]): it reads
+    /// the code there and lands the compile in `cache_dir` for this process
+    /// to read. A compile's peak (200-315 MB) then leaves with the child,
+    /// where the allocator would keep it here on loader threads that go
+    /// idle. Needs `cache_dir`. `None` compiles in this process (the
+    /// phone), as does code held in memory only.
     pub compile_apart: Option<PathBuf>,
 }
-
-/// Instruction budget for one call into a view, on every runner: a ceiling
-/// that ends a runaway, not a cost. `RUST_LOG=ducktape::perf=debug` logs
-/// each tick's fuel; docs/perf.md §4.2 has the heaviest ticks measured and
-/// each view's budget, at most half of this ceiling.
-pub const FUEL_PER_TICK: u64 = 250_000_000;
 
 /// The shell's services, installed before the host reads anything
 /// (`start` installs its `Boot`'s; a shell that needs them earlier, or
@@ -810,6 +830,17 @@ pub mod testing {
             .clone()
     }
 
+    static WITHDRAWN: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+    /// Every banner the host took down so far, by every test: its chain
+    /// and tag.
+    pub fn banners_withdrawn() -> Vec<(String, String)> {
+        WITHDRAWN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     impl Banners for NoBanners {
         fn post(&self, notice: &Notice, _: Option<Click>) -> bool {
             ASKED
@@ -819,7 +850,12 @@ pub mod testing {
             false
         }
 
-        fn withdraw(&self, _: &str) {}
+        fn withdraw(&self, chain: &str, tag: &str) {
+            WITHDRAWN
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((chain.to_owned(), tag.to_owned()));
+        }
     }
 
     static OPENED: std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> =

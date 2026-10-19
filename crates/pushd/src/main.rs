@@ -96,6 +96,15 @@ fn devices_file(data: &Path, network: &str) -> PathBuf {
 }
 
 fn main() -> ExitCode {
+    // a notifier's compile, in a child so its memory leaves with it
+    let mut args = std::env::args_os().skip(1);
+    if args
+        .next()
+        .is_some_and(|arg| arg == ducktape_host::runner::COMPILE_APART)
+    {
+        let args: Vec<std::ffi::OsString> = args.collect();
+        std::process::exit(ducktape_host::runner::compile_child(&args));
+    }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -266,11 +275,17 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
     let home = data.join(&network.name);
     contract::install(Arc::new(Headless::new(&home)?));
     // the notifiers run on wasmtime, their compiled code kept across runs
+    // and compiled in a child of this binary, as the desktop's views are:
+    // a compile's peak, on wasmtime's thread per core, leaves with it
     contract::install_runner(Arc::new(ducktape_host::runner::WasmtimeRunner::new(
         contract::RunnerConfig {
             signals_based_traps: true,
             cache_dir: Some(home.join("cache").join("view-code")),
-            compile_apart: None,
+            // Linux: the running binary even once a deploy replaced its file
+            compile_apart: match cfg!(target_os = "linux") {
+                true => Some("/proc/self/exe".into()),
+                false => std::env::current_exe().ok(),
+            },
         },
     )));
     let client = backend::rpc_client(network.node_url.clone());
@@ -307,7 +322,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
                     .join(account.to_string())
                     .join("store"),
                 center: CenterHandle::default(),
-                settings: settings(),
+                settings: Some(settings()),
                 banners: Arc::new(Push::new(
                     Log {
                         network: network.name.clone(),
@@ -418,7 +433,7 @@ impl Banners for Log {
         true
     }
 
-    fn withdraw(&self, tag: &str) {
+    fn withdraw(&self, _: &str, tag: &str) {
         let withdrawn = serde_json::json!({
             "channel": "log",
             "network": self.network,
@@ -539,7 +554,7 @@ impl Banners for Nowhere {
         false
     }
 
-    fn withdraw(&self, _: &str) {}
+    fn withdraw(&self, _: &str, _: &str) {}
 }
 
 impl OsServices for Headless {

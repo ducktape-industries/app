@@ -71,8 +71,13 @@ impl View {
                 before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
             })?;
             let runner = crate::contract::runner();
+            // a compile apart reads the developer's file itself
+            let code = Code {
+                bytes: &bytes,
+                file: Some((&path, 0)),
+            };
             let (hash, prepared) =
-                Self::prepare(&**runner, &bytes, &shown).map_err(before_any_candidate)?;
+                Self::prepare(&**runner, code, &shown).map_err(before_any_candidate)?;
             let view = Box::new(view_code(
                 program,
                 runner,
@@ -111,7 +116,7 @@ impl View {
         let fetched = Instant::now();
         let bytes = match crate::contract::os().bundled_view(&blob) {
             // the app ships the view section this blob holds: no fetch
-            Some(view_bytes) => Ok(Some((view_bytes, "bundle"))),
+            Some(view_bytes) => Ok(Some((view_bytes.into(), "bundle"))),
             None => {
                 show(Slot::Fetching {
                     received: 0,
@@ -151,7 +156,7 @@ impl View {
         crate::perf::gauge(key, "view_bytes", view_bytes.len() as u64);
         let hash: [u8; 32] = {
             use sha2::Digest as _;
-            sha2::Sha256::digest(&view_bytes).into()
+            sha2::Sha256::digest(&*view_bytes).into()
         };
         let shown = shown_as(program, &hash);
         // the bytes are here: the rail and Home list the program by its
@@ -175,7 +180,7 @@ impl View {
             show(Slot::Compiling(Box::new(listing)));
             let compiled = Instant::now();
             let runner = crate::contract::runner();
-            let code = Self::prepare(&**runner, &view_bytes, &shown);
+            let code = Self::prepare(&**runner, view_bytes.code(), &shown);
             timing.compile = compiled.elapsed();
             crate::perf::record(key, "compile", timing.compile.as_micros() as u64);
             let (_, prepared) = code?;
@@ -300,7 +305,6 @@ impl View {
         fresh.tint = view.tint;
         fresh.description = view.description.clone();
         fresh.capabilities = view.capabilities.clone();
-        fresh.targets = view.targets.clone();
         fresh.min_width = view.min_width;
         fresh.width = view.width;
         fresh.wire = view.wire.clone();
@@ -650,7 +654,6 @@ impl View {
             tint,
             description,
             capabilities,
-            targets,
             min_width,
             width,
             wire,
@@ -688,6 +691,8 @@ impl View {
             visible: _,
             visibility_change: _,
             visibility_subscriptions: _,
+            on_screen: _,
+            in_front: _,
             placement: _,
             placement_change: _,
             placement_subscriptions: _,
@@ -716,7 +721,6 @@ impl View {
         sibling.tint = *tint;
         sibling.description = description.clone();
         sibling.capabilities = capabilities.clone();
-        sibling.targets = targets.clone();
         sibling.min_width = *min_width;
         sibling.width = *width;
         sibling.wire = wire.clone();
@@ -867,8 +871,8 @@ impl View {
     pub fn from_bytes(program: &'static str, bytes: &[u8], shown: &str) -> Result<Self, String> {
         let runner = crate::contract::runner();
         // held until the instance holds the code itself
-        let (code, _held) =
-            Self::prepare(&**runner, bytes, shown).map_err(|failure| failure.to_string())?;
+        let (code, _held) = Self::prepare(&**runner, Code::of(bytes), shown)
+            .map_err(|failure| failure.to_string())?;
         let mut view = Self::instantiate(program, runner, code, shown)?;
         let listing = manifest_of(bytes);
         view.name = listing.name;
@@ -876,7 +880,6 @@ impl View {
         view.tint = listing.tint;
         view.description = listing.description;
         view.capabilities = listing.capabilities;
-        view.targets = listing.targets;
         view.min_width = listing.min_width;
         view.width = listing.width;
         view.wire = listing.wire;
@@ -885,16 +888,17 @@ impl View {
         Ok(view)
     }
 
-    /// The view's bytes checked (its manifest read; a wire other than this
+    /// The view's code checked (its manifest read; a wire other than this
     /// app's only warned of) and prepared on `runner` — the compile stage
-    /// of a load, measured on its own: their sha256, which instances are
+    /// of a load, measured on its own: its sha256, which instances are
     /// seated by, and the runner's answer (`ViewRunner::prepare`), whose
     /// hold keeps the code prepared.
     pub fn prepare(
         runner: &dyn ViewRunner,
-        bytes: &[u8],
+        code: Code<'_>,
         shown: &str,
     ) -> Result<([u8; 32], Prepared), Failure> {
+        let bytes = code.bytes;
         // refused here, a manifest `manifest_of` would read as empty never
         // reaches a seat
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
@@ -911,7 +915,7 @@ impl View {
         let view_bytes =
             usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
         let prepared = runner
-            .prepare(hash, bytes, view_bytes)
+            .prepare(hash, code, view_bytes)
             .map_err(|failure| Failure::Refused(format!("{shown}: {failure}")))?;
         Ok((hash, prepared))
     }
@@ -959,7 +963,6 @@ impl View {
             tint: Tint::None,
             description: String::new(),
             capabilities: Vec::new(),
-            targets: Vec::new(),
             min_width: 0,
             width: None,
             // the manifest's, once `load` reads it
@@ -995,6 +998,8 @@ impl View {
             visible: false,
             visibility_change: None,
             visibility_subscriptions: Vec::new(),
+            on_screen: tokio::sync::watch::channel(false).0,
+            in_front: kernel::in_front(),
             placement: Default::default(),
             placement_change: None,
             placement_subscriptions: Vec::new(),
@@ -1022,6 +1027,8 @@ impl View {
     /// Hands the view the props the app holds, if they moved since the
     /// view last saw them. Before the view has subscribed they wait here.
     pub fn sync_props(&mut self, props: &Option<Vec<u8>>) {
+        // its `store.changes` follow the key the props seat
+        crate::runtime::store::follow(self, props);
         let Some(id) = self.props_subscription else {
             return;
         };
@@ -1034,6 +1041,8 @@ impl View {
     }
 
     pub fn set_visible(&mut self, visible: bool) {
+        self.on_screen
+            .send_if_modified(|shown| std::mem::replace(shown, visible) != visible);
         if self.visible == visible {
             return;
         }
@@ -1048,7 +1057,7 @@ impl View {
             .showing
             .clone()
             .filter(|route| self.visible && !route.is_empty());
-        kernel::screen::shown(self.program, self.instance, route);
+        kernel::screen::shown(&self.connection.chain, self.program, self.instance, route);
     }
 
     /// Where the seat placed the pane: told to the `host.placement`
@@ -1123,7 +1132,6 @@ fn view_code(
         min_width: listing.min_width,
         width: listing.width,
         capabilities: listing.capabilities,
-        targets: listing.targets,
         wire: listing.wire,
     }
 }

@@ -10,12 +10,12 @@
 //! up, a failed join's included, until its Back.
 //!
 //! On a network, the address screen is Switch network (the same Expo
-//! screen in its connected form), pushed from the Account tab or App
-//! settings: the node is reached through `Session::switch`, which leaves
-//! the network in hand only once the other answers.
+//! screen in its connected form), a sheet over the Account tab, which
+//! draws its title: the node is reached through `Session::switch`, which
+//! leaves the network in hand only once the other answers.
 
 use super::look::{self, Palette};
-use super::{about, settings};
+use super::{about, account};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::backend::join::JOIN_WAIT;
 use ducktape_host::contract::SoftKeyboard;
@@ -25,9 +25,9 @@ use gpui_kit::component::{Sizable as _, spinner::Spinner};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Autocapitalize, ClipboardItem, Context, Div, Entity,
     EventEmitter, Focusable as _, FontWeight, HighlightStyle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Role, SharedString, Stateful, StatefulInteractiveElement as _,
-    Styled as _, StyledText, Subscription, Task, TextInputConfiguration, VirtualKeyboard, Window,
-    div, px, svg,
+    ParentElement as _, Render, Role, ScrollHandle, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task,
+    TextInputConfiguration, VirtualKeyboard, Window, div, px, svg,
 };
 use std::time::{Duration, SystemTime};
 
@@ -77,13 +77,17 @@ pub struct Stayed;
 /// The join's screens.
 pub struct Join {
     shared: Shared,
-    node: Entity<InputState>,
+    /// The node's address, typed.
+    pub(super) node: Entity<InputState>,
     /// Why the switch did not happen, under the field on Switch network:
     /// the address refused, or the host's words for a node that did not
     /// answer (which the window hands here, [`Join::switch_failed`]).
     pub(super) refused: Option<String>,
     /// The new account's name, on the name step.
     name: Entity<InputState>,
+    /// Where the address screen is scrolled: on Switch network, a pull
+    /// down drags the sheet only from its top.
+    pub(super) scroll: ScrollHandle,
     /// The last code made and when (the wall clock, which runs on while the
     /// phone sleeps, as the relay's does): the countdown's start, and what a
     /// failed join shows faded. While it is set the code step shows: a
@@ -156,6 +160,7 @@ impl Join {
             node,
             refused: None,
             name,
+            scroll: ScrollHandle::new(),
             code: None,
             tick: None,
             _subscriptions: subscriptions,
@@ -189,9 +194,11 @@ impl Join {
     }
 
     /// Switch network opened (Expo mounts it afresh): the last node reached
-    /// in the field, nothing refused.
+    /// in the field, the keys in it, nothing refused, scrolled to its top
+    /// (the handle outlives the sheet, and the join's own screen shares it).
     pub fn open_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refused = None;
+        self.scroll.set_offset(Default::default());
         let last = self
             .shared
             .session
@@ -201,8 +208,10 @@ impl Join {
             .first()
             .map(|entry| entry.url.clone())
             .unwrap_or_default();
-        self.node
-            .update(cx, |node, cx| node.set_value(last, window, cx));
+        self.node.update(cx, |node, cx| {
+            node.set_value(last, window, cx);
+            node.focus(window, cx);
+        });
         cx.notify();
     }
 
@@ -340,7 +349,7 @@ impl Join {
     }
 
     /// Join a network (board 02), or on a network Switch network (Expo
-    /// `join/node.tsx` connected, under the window's Back header).
+    /// `join/node.tsx` connected, under the sheet's title).
     fn node_step(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let palette = look::palette(cx);
         let session = self.shared.session.read(cx).get().clone();
@@ -365,23 +374,21 @@ impl Join {
             None
         };
         let focused = self.node.read(cx).focus_handle(cx).is_focused(window);
-        let (title, said, above) = match switching {
+        let (title, said) = match switching {
             true => (
-                "Switch network",
+                None,
                 format!(
                     "This phone stays on {} until the switch is done. If the other network has \
                      no account for this phone yet, you can make a new one there, or approve this \
                      phone from a computer that is signed in.",
                     session.network
                 ),
-                0.,
             ),
             false => (
-                "Join a network",
+                Some("Join a network"),
                 "If the network has no account for this phone yet, you can make a new one here, \
                  or approve this phone from a computer that is signed in."
                     .to_owned(),
-                look::gap::XL,
             ),
         };
         let mut top = div()
@@ -389,11 +396,11 @@ impl Join {
             .flex()
             .flex_col()
             .gap(px(look::gap::LG))
-            .child(
+            .children(title.map(|title| {
                 look::text(look::BIG_TITLE, FontWeight::MEDIUM, palette.foreground())
-                    .mt(px(above))
-                    .child(title),
-            )
+                    .mt(px(look::gap::XL))
+                    .child(title)
+            }))
             .child(look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(said))
             .child(
                 field(
@@ -434,11 +441,14 @@ impl Join {
                 ),
             );
         }
+        // content-sized, growing to the screen it is on: the join fills the
+        // window, Switch network's sheet holds what it shows
         let mut body = div()
             .id("join")
-            .flex_1()
+            .flex_grow(1.)
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .child(top);
         if !session.recent_endpoints.is_empty() {
             body = body.child(
@@ -458,7 +468,7 @@ impl Join {
             body = body.child(self.recent(at, node, &session.connected_rpc, palette, cx));
         }
         div()
-            .flex_1()
+            .flex_grow(1.)
             .min_h_0()
             .w_full()
             .flex()
@@ -632,7 +642,7 @@ impl Join {
             ))
             .children(problem.map(|problem| notice("join/problem", problem, palette)))
             .child(create.w_full());
-        let add = settings::row(
+        let add = account::row(
             "join/add-phone",
             "icons/smartphone.svg",
             "Add this phone from another device",
@@ -640,7 +650,6 @@ impl Join {
             palette,
         )
         .control(Role::Button, "Add this phone from another device")
-        .debug_selector(|| "join/add-phone".to_owned())
         .active(|style| style.opacity(look::PRESSED))
         .child(
             svg()
@@ -668,9 +677,10 @@ impl Join {
             .child(body)
     }
 
-    /// This phone's code, waiting for consent (board 03): the code the
-    /// computer's "Add a device…" types, the key's fingerprint both screens
-    /// show, the time left; a failure says why, and New code starts over
+    /// This phone's code, waiting for consent (board 03): the code a
+    /// signed-in device's Add a device types (a computer's account menu, a
+    /// phone's Account tab), the key's fingerprint both screens show, the
+    /// time left; a failure says why, and New code starts over
     /// with the same key.
     fn code_step(&self, cx: &mut Context<Self>) -> Div {
         let palette = look::palette(cx);
@@ -690,16 +700,17 @@ impl Join {
             .map(|key| noded_client::join::fingerprint(&key))
             .unwrap_or_default();
         let header = header(session, palette, cx);
-        let said = "Open the account menu there, choose Add a device…, type this code, and \
-                    approve only if both screens show the same fingerprint.";
-        let named = said.find("Add a device…").unwrap_or(0);
-        let words = StyledText::new(said).with_highlights([(
-            named..named + "Add a device…".len(),
-            HighlightStyle {
-                font_weight: Some(FontWeight::MEDIUM),
-                ..HighlightStyle::default()
-            },
-        )]);
+        let said = "On a signed-in computer, open the account menu and choose Add a device…; on \
+                    a signed-in phone, Account › Add a device. Type this code there, and approve \
+                    only if both screens show the same fingerprint.";
+        let bold = HighlightStyle {
+            font_weight: Some(FontWeight::MEDIUM),
+            ..HighlightStyle::default()
+        };
+        let words = StyledText::new(said).with_highlights(
+            said.match_indices("Add a device")
+                .map(|(at, named)| (at..at + named.len(), bold)),
+        );
         let copy = {
             let code = code.clone();
             button(
@@ -770,7 +781,7 @@ impl Join {
             .p(px(look::GUTTER))
             .child(
                 look::text(look::BIG_TITLE, FontWeight::MEDIUM, palette.foreground())
-                    .child("Approve this phone from your computer"),
+                    .child("Approve this phone from another device"),
             )
             .child(look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(words))
             .child(boxed);
@@ -870,7 +881,7 @@ fn header(session: &SessionState, palette: Palette, cx: &Context<Join>) -> Div {
 /// A field (Expo `Field`): its label over the box (the edge 2 in the
 /// foreground focused, in danger with a problem), the text in the data
 /// face when `mono`; what goes under it is the caller's.
-fn field(
+pub(super) fn field(
     input: &Entity<InputState>,
     id: &'static str,
     label: &'static str,
@@ -936,7 +947,7 @@ fn under(problem: Option<String>, palette: Palette) -> Div {
 }
 
 /// A refusal (Expo `Notice`, danger): 13 in danger on `danger_soft`.
-fn notice(id: &'static str, said: String, palette: Palette) -> Stateful<Div> {
+pub(super) fn notice(id: &'static str, said: String, palette: Palette) -> Stateful<Div> {
     div()
         .id(id)
         .control(Role::Alert, said.clone())
@@ -947,7 +958,7 @@ fn notice(id: &'static str, said: String, palette: Palette) -> Stateful<Div> {
 }
 
 /// A button's kind (Expo `Button`).
-enum Kind {
+pub(super) enum Kind {
     /// 48, the primary's ground, body medium, the row's width.
     Primary,
     /// 36, a hairline, secondary medium.
@@ -959,7 +970,7 @@ enum Kind {
 /// An Expo `Button` named `label`, with `icon` before it (16 small, 18
 /// else), or a spinner while `busy` (a press box of at least 44: the small
 /// one's 36 reaches it unseen).
-fn button(
+pub(super) fn button(
     id: &'static str,
     label: String,
     kind: Kind,
@@ -1055,7 +1066,7 @@ fn name_keyboard() -> TextInputConfiguration {
 /// A field's keyboard up as `want` says, or down: gm is told (Android);
 /// gpui_ios raises its own with the focused field, from the field's
 /// `text_input`.
-fn keyboard(window: &mut Window, want: Option<TextInputConfiguration>) {
+pub(super) fn keyboard(window: &mut Window, want: Option<TextInputConfiguration>) {
     let want = match want {
         Some(config) => SoftKeyboard::Show(config),
         None => SoftKeyboard::Hide,

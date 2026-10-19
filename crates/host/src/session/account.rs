@@ -376,6 +376,11 @@ impl Account {
             },
             cx,
         );
+        // whose notices this network's notifiers run for while another is
+        // in hand (`runtime::follow`): the public half, no key store asked
+        if !self.keyring.is_empty() {
+            backend::note_device_key(&self.keyring, &self.state.signer_key);
+        }
         if self.screen(cx) != Screen::Connect {
             self.show(Screen::Unlock { awaiting: true }, cx);
         }

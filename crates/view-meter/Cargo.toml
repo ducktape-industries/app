@@ -33,6 +33,7 @@ wat = "1"
 # the recorded sessions are committed gzipped (`tests/sessions`)
 flate2 = "1"
 sha2.workspace = true
+describe = { workspace = true, features = ["host"] }
 
 [lints.rust]
 unsafe_code = "deny"

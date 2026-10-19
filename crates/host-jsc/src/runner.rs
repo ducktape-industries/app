@@ -19,8 +19,7 @@ use crate::ffi::Web;
 use crate::lock;
 use base64::Engine as _;
 use ducktape_host::contract::{
-    FUEL_PER_TICK, Failure, Fault, Landed, Landing, Prepared, RunnerConfig, SeatId, ViewInstance,
-    ViewRunner,
+    Failure, Fault, Landed, Landing, Prepared, RunnerConfig, SeatId, ViewInstance, ViewRunner,
 };
 use objc2::MainThreadMarker;
 use std::cell::RefCell;
@@ -163,10 +162,10 @@ fn seating(work: Work) {
 pub(crate) fn page_loaded(_: MainThreadMarker) {
     let booted = with_page(|page| {
         let life = page.calls.life();
-        page.web
-            .call(&format!("boot 0 - {FUEL_PER_TICK}"), move |answered| {
-                booted(life, answered)
-            });
+        page.web.call(
+            &format!("boot 0 {} {}", crate::VIEW_FUEL, crate::DESCRIBE_FUEL),
+            move |answered| booted(life, answered),
+        );
     });
     if booted.is_none() {
         tracing::warn!(target: "ducktape::jsc", "a page loaded with no runner");
@@ -407,13 +406,20 @@ impl JscRunner {
 }
 
 impl ViewRunner for JscRunner {
-    fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure> {
+    fn prepare(
+        &self,
+        hash: [u8; 32],
+        code: ducktape_host::contract::Code<'_>,
+        view_bytes: usize,
+    ) -> Result<Prepared, Failure> {
         self.wasm()?;
         let view_bytes = u64::try_from(view_bytes).unwrap_or(u64::MAX);
-        let (hold, source) =
-            self.shared
-                .code
-                .prepare(self.shared.cache.as_deref(), &hash, code, view_bytes)?;
+        let (hold, source) = self.shared.code.prepare(
+            self.shared.cache.as_deref(),
+            &hash,
+            code.bytes,
+            view_bytes,
+        )?;
         Ok(Prepared { source, hold })
     }
 
@@ -477,9 +483,10 @@ impl ViewRunner for JscRunner {
     fn describe(
         &self,
         hash: [u8; 32],
-        module: &[u8],
+        module: ducktape_host::contract::Code<'_>,
         op: &[u8],
     ) -> Option<view_wire::methods::Description> {
+        let module = module.bytes;
         // its answer comes on the main thread: waiting there never ends
         if MainThreadMarker::new().is_some() || self.wasm().is_err() {
             return None;
@@ -576,7 +583,7 @@ impl JscInstance {
                             export.landed(answer.outcome)
                         }
                         Err(why) => {
-                            stats.fuel.store(FUEL_PER_TICK, Ordering::Relaxed);
+                            stats.fuel.store(0, Ordering::Relaxed);
                             Landed::Fault(Fault::Runner(why))
                         }
                     };

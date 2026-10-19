@@ -17,7 +17,7 @@ pub(crate) fn keystore_root(keyring: &str) -> Result<PathBuf, String> {
 
 /// The key file a sign-in opens: `DUCKTAPE_USER_KEY`, else the keyring's
 /// active wallet.
-pub(crate) fn session_key_path(keyring: &str) -> Result<PathBuf, String> {
+fn session_key_path(keyring: &str) -> Result<PathBuf, String> {
     keystore::wallet::active_user_key(&keystore_root(keyring)?)
 }
 
@@ -33,4 +33,15 @@ pub(crate) fn key_exists(keyring: &str) -> bool {
         keystore::userkey::key_file_state(&path),
         keystore::userkey::KeyFileState::Absent
     )
+}
+
+pub(crate) fn open_password_locked(
+    keyring: &str,
+    password: &str,
+) -> Result<commonware_cryptography::ed25519::PrivateKey, String> {
+    let key = keystore::userkey::open_user_key_at(&session_key_path(keyring)?, password)?;
+    if let Err(error) = super::device_key::save(keyring, &key) {
+        tracing::info!(target: "ducktape::keys", %error, "password-locked key not moved into the OS");
+    }
+    Ok(key)
 }

@@ -121,9 +121,6 @@ pub fn page(
             false,
             palette,
         ));
-        if !listing.targets.is_empty() {
-            body = body.child(fact("Talks to", &listing.targets.join(", "), true, palette));
-        }
     }
     div()
         .flex_1()

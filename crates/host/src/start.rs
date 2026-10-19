@@ -83,9 +83,11 @@ fn drain(
             match signal {
                 Signal::Lifecycle(phase) => {
                     // seats stop turning in the background and turn again
-                    // in front (`Backgrounded`)
+                    // in front (`Backgrounded`); the node's sockets and polls
+                    // close there and open again in front (`set_in_front`)
                     let backgrounded = matches!(phase, gpui_kit::AppLifecyclePhase::Background);
                     cx.update(|cx| cx.set_global(crate::runtime::Backgrounded(backgrounded)));
+                    crate::runtime::set_in_front(!backgrounded);
                     if session
                         .update(cx, |session, cx| session.lifecycle(phase, cx))
                         .is_err()
@@ -114,12 +116,15 @@ mod tests {
     fn opened(opened: Opened) {
         OPENED.lock().unwrap().push(match opened {
             Opened::Link(_) => "link",
+            Opened::Row { .. } => "row",
             Opened::Updates => "updates",
         });
     }
 
     /// What `start` installs and spawns: a banner click opens through the
-    /// boot's opener, the lifecycle reaches the seats (`Backgrounded`), and
+    /// boot's opener (a row of a chain not in hand as that chain's, for the
+    /// shell to switch to it first), the lifecycle reaches the seats
+    /// (`Backgrounded`), and
     /// the signals the host does not consume go on to the shell, in order.
     /// (On wakes of the test's own: the process's consent and roster wakes
     /// are two other tests'.)
@@ -143,10 +148,14 @@ mod tests {
         };
         inbound.send(Signal::Back);
         inbound.send(Signal::BannerClick(Click::Updates));
+        inbound.send(Signal::BannerClick(Click::Row {
+            chain: "never-in-hand#01".into(),
+            row: 1,
+        }));
         inbound.send(Signal::Lifecycle(gpui_kit::AppLifecyclePhase::Background));
         inbound.send(Signal::MemoryWarning);
         cx.run_until_parked();
-        assert_eq!(*OPENED.lock().unwrap(), vec!["updates"]);
+        assert_eq!(*OPENED.lock().unwrap(), vec!["updates", "row"]);
         assert_eq!(backgrounded(cx), Some(true));
         assert!(matches!(host.signals.try_recv(), Ok(Signal::Back)));
         assert!(matches!(host.signals.try_recv(), Ok(Signal::MemoryWarning)));

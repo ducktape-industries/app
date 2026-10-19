@@ -22,7 +22,10 @@ pub(in crate::runtime) fn view() -> View {
     )
     .unwrap();
     view.capabilities = Capability::ALL.to_vec();
-    view.targets = vec!["programs".into()];
+    // on screen, of an app always in front: its node subscriptions follow
+    // at once, whatever another test does to the app's own
+    view.on_screen.send_replace(true);
+    view.in_front = tokio::sync::watch::channel(true).1;
     view
 }
 
@@ -111,6 +114,7 @@ pub(super) fn fake_node(routes: Vec<(&'static str, Mode)>) -> FakeNode {
     let node = node::Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = accepted.clone();
@@ -280,7 +284,7 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
 /// The roster's role bindings are the process's: a test that binds them
 /// (`acl_roles`), or whose requests read them (`invite.create`,
 /// `op.submit`), holds this for its whole run.
-fn roles_serial() -> std::sync::MutexGuard<'static, ()> {
+pub(in crate::runtime) fn roles_serial() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     SERIAL
         .lock()
@@ -357,8 +361,8 @@ fn invite_create_is_a_role_views_own() {
 /// node before it reads the request; chain kinds route there too, and
 /// invite's past its role gate (`invite_create_is_a_role_views_own`). What
 /// the request says is judged by `query` itself, below. The one exception
-/// is the envelope's target, read first (`targeted`): the manifest gate
-/// comes before the node, as the capability gate does.
+/// is the envelope, read first (`enveloped`): one that names no program
+/// is refused before the node, as an undeclared capability is.
 #[test]
 fn node_methods_answer_for_the_missing_node_first() {
     let to_programs = methods::encode(&methods::Call {
@@ -938,6 +942,52 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(view.intents.len(), 1);
 }
 
+#[test]
+fn link_window_asks_for_a_window_on_a_press_and_is_refused_without_one() {
+    let window = |id, link: &str| wire::Request {
+        id,
+        kind: "link.window".into(),
+        payload: methods::encode(&link.to_owned()),
+    };
+    let room = "duck://chat/room/7";
+    let mut view = view();
+    view.answer(window(1, room), &None);
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some(refusal::NEEDS_GESTURE)
+    );
+    assert!(view.intents.is_empty(), "a window opened with no press");
+    view.activation = Some(Instant::now());
+    view.answer(window(2, room), &None);
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(view.intents, [Intent::OpenWindow(room.into())]);
+    view.answer(window(3, room), &None);
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some(refusal::NEEDS_GESTURE),
+        "a second window on the same press"
+    );
+    for link in ["http://example.com", "javascript:alert(1)", "duck://", ""] {
+        view.activation = Some(Instant::now());
+        view.answer(window(4, link), &None);
+        assert_eq!(
+            refusal_code(&mut view).as_deref(),
+            Some(refusal::MALFORMED_REQUEST),
+            "{link}"
+        );
+    }
+    view.activation = Some(Instant::now());
+    view.answer(window(5, "https://example.com/a"), &None);
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(
+        view.intents,
+        [
+            Intent::OpenWindow(room.into()),
+            Intent::OpenWindow("https://example.com/a".into())
+        ]
+    );
+}
+
 /// Every link opened on its own activation goes through.
 #[test]
 fn link_open_admits_every_link_on_its_own_activation() {
@@ -1217,13 +1267,12 @@ fn routed_kind(line: &str) -> Option<String> {
     word(operation).then(|| format!("{}.{operation}", capability.as_str()))
 }
 
-/// A node method reaches only a program the view's manifest lists among
-/// its targets: `op.submit`, `program.query` and `program.changes` to any
-/// other are refused `undeclared_target` before anything is signed or
-/// subscribed; to a listed one they pass the gate (and meet the missing
-/// node next).
+/// A view's node methods reach any program, whatever its manifest says:
+/// `op.submit`, `program.query` and `program.changes` naming a program no
+/// manifest lists pass on to the node (here none, so `not_connected`),
+/// and one that names no program is malformed.
 #[test]
-fn a_node_method_reaches_only_a_declared_target() {
+fn a_node_method_reaches_any_program() {
     let _serial = roles_serial();
     let call = |target: &str| {
         methods::encode(&methods::Call {
@@ -1232,29 +1281,28 @@ fn a_node_method_reaches_only_a_declared_target() {
         })
     };
     let named = |program: &str| methods::encode(&program.to_owned());
-    for (kind, to_identity, to_chat) in [
-        ("op.submit", call("identity"), call("chat")),
-        ("program.query", call("identity"), call("chat")),
-        ("program.changes", named("identity"), named("chat")),
+    for (kind, to_any, to_none) in [
+        ("op.submit", call("anything"), call("")),
+        ("program.query", call("anything"), call("")),
+        ("program.changes", named("anything"), named("")),
     ] {
         let mut view = view();
-        view.targets = vec!["chat".into()];
         let request = |id, payload| wire::Request {
             id,
             kind: kind.into(),
             payload,
         };
-        view.answer(request(1, to_identity), &None);
-        assert_eq!(
-            refusal_code(&mut view).as_deref(),
-            Some(refusal::UNDECLARED_TARGET),
-            "{kind} to an unlisted program"
-        );
-        view.answer(request(2, to_chat), &None);
+        view.answer(request(1, to_any), &None);
         assert_eq!(
             refusal_code(&mut view).as_deref(),
             Some(refusal::NOT_CONNECTED),
-            "{kind} to a listed program passes the gate"
+            "{kind} to a program no manifest names reaches the node"
+        );
+        view.answer(request(2, to_none), &None);
+        assert_eq!(
+            refusal_code(&mut view).as_deref(),
+            Some(refusal::MALFORMED_REQUEST),
+            "{kind} naming no program"
         );
     }
 }
@@ -1308,7 +1356,6 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         payload: remove.clone(),
     };
     let mut view = view();
-    view.targets = vec![identity::PROGRAM.into()];
     // the card names the program, never the manifest's own word for itself
     view.name = "Chat".into();
     // no press behind it: refused before anything is asked, even locked
@@ -1340,6 +1387,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         chain: "test-network#1".into(),
         rev: view.connection.rev,
         live: None,
+        apart: None,
     };
     // the props say the seated key holds account 7, the one the op names
     let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
@@ -1447,7 +1495,6 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
     // a manifest name that reads as a role's: the card asks all the same,
     // naming the roster's program
     view.name = "acl-valset".into();
-    view.targets = vec!["acl-valset".into(), "acl-programs".into()];
     let node = fake_node(vec![(
         noded_client::wire::route::STATUS,
         Mode::Answer(b"not a status".to_vec()),
@@ -1458,6 +1505,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         chain: "test-network#1".into(),
         rev: view.connection.rev,
         live: None,
+        apart: None,
     };
     let submit = |view: &mut View, id: u64, target: &str| {
         view.activation = Some(Instant::now());

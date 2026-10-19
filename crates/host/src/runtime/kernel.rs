@@ -30,9 +30,11 @@
 //!   program show on screen, sorted, the first item at once (`screen`).
 //! - `host.badge` — the tab's unread count; `host.title` — the name of the
 //!   view's window, cleaned ([`shown_title`]); `host.id` — a minted id under a
-//!   prefix word; `link.open` — the one way out: a `duck://` link, or an
-//!   `https://` one for the system browser; `clock.ticks` — a periodic
-//!   empty item, at most one per redraw ([`ticked`]).
+//!   prefix word; `link.open` — a `duck://` link, or an `https://` one
+//!   for the system browser; `link.window` — the same, a `duck://` link's
+//!   view in a window of its own where the shell has windows (the
+//!   shell does it); `clock.ticks` — a periodic empty item, at most one
+//!   per redraw ([`ticked`]).
 //! - `camera.devices`, `microphone.devices` — the devices the system lists
 //!   now (`render/av.rs`), listed on a blocking thread; `microphone.chime`
 //!   — the test chime on a speaker, at a press or key, answered once it
@@ -60,8 +62,9 @@
 //!   person's name, through the node's blob upload: the host frames and
 //!   hashes each (a picked file's slice read where it is), signs the
 //!   blobs-role `Put` naming only ids, lengths and kinds, streams the bytes
-//!   after it, and answers the ids once the network holds the bundle
-//!   (`Held`). No card asks: the host builds the op itself.
+//!   after it. A subscription: `Sent` as the upload takes the bytes, then
+//!   the ids once the network holds the bundle (`Held`). No card asks: the
+//!   host builds the op itself.
 //! - `chain.status` — node status as `NodeStatus`.
 //! - `chain.blocks` `BlockPage` — finalized blocks, newest first, as the
 //!   node lists them (`/v1/blocks`): each transaction's size, its payload
@@ -75,13 +78,17 @@
 //!   describe module reads it, or `None` (`describe`).
 //! - `invite.create` `CreateInvite{ttl_days}` — `Invite{invite, notes}`. Node refusals retain their tokens.
 //! - `program.changes` `<program>` — a subscription that gets one item per
-//!   block that wrote to `program` (`/v1/changes/<program>`): the block's
+//!   block that wrote to `program` (`/v1/changes/<program>?keys`): the block's
 //!   height and the keys it wrote, as the node publishes them, so the view
-//!   re-reads what moved; `None` when the link was reopened and the view
-//!   should re-read everything.
+//!   re-reads what moved; `None` when the link was reopened, or the view
+//!   came back on screen or the app in front, and the view should re-read
+//!   everything. Only a view on screen (a notifier: always) of an app in
+//!   front holds the socket: off screen or behind another app it lets go,
+//!   and a socket no view holds closes.
 //! - `chain.heads` — a subscription that gets one `Head` per finalized block,
 //!   oldest first: the host reads the node's status at half its block
-//!   time and fills each advance from the block archive.
+//!   time and fills each advance from the block archive, while the view
+//!   is on screen and the app in front; back, it goes on from the tip.
 //!
 //! A connect inside the network opens both again on the new node
 //! (`reconnected`): neither ends on it.
@@ -93,15 +100,18 @@
 //! opens them again too.
 //!
 //! In a sibling module [`answer`] asks first:
-//! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
-//!   thread after the tick.
-//! - `file.pick` — `picker`: the system's picker opened on the window
-//!   thread after the tick, the files picked held open for `op.put`, which
-//!   reads them a slice at a time on a blocking thread.
+//! - `clipboard.read`, `clipboard.write`, `clipboard.files` — `clipboard`,
+//!   run on the window thread after the tick.
+//! - `file.pick`, `file.release`, `file.save` — `picker`: the system's
+//!   picker opened on the window thread after the tick, the files picked
+//!   held open for `op.put` until the view lets go of them, which reads
+//!   them a slice at a time on a blocking thread; the save dialog, the
+//!   blobs written from the node to the file chosen.
 //! - `notify.post`, `notify.seen` — `notify`, the notification centre.
-//! - `store.get`, `store.set` — `store`, the view's file on this device;
-//!   `store.changes` — a subscription to the keys another instance of the
-//!   program (a pane, its notifier) set in that file.
+//! - `store.get`, `store.set`, `store.list` — `store`, the view's file on
+//!   this device for the key seated in its props; `store.changes` — a
+//!   subscription to the keys another instance of the program (a pane, its
+//!   notifier) set in that file.
 //!
 //! Not the kernel's — `View::answer` (`view/requests.rs`) takes them once
 //! [`answer`] says `false`, since they read the view's own state:
@@ -118,7 +128,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::{Intent, View, wire};
 use crate::backend::{self, RpcClient, refused};
-use wire::methods::{self, Capability, refusal};
+use wire::methods::{self, Capability, Method as _, refusal};
 
 fn host_fault(error: impl std::fmt::Display) -> wire::Error {
     wire::Error::new(refusal::HOST_FAULT, error.to_string())
@@ -144,8 +154,28 @@ use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
     spawn_put, spawn_submit, status, tx,
 };
+#[cfg(feature = "ui")]
+pub(super) use node::{reaches_node, spawn_event, spawn_save};
 pub(super) use replies::Replies;
 use replies::{Claim, InFlight};
+
+/// Whether the app is in front of the person: a phone's lifecycle moves it
+/// (`set_in_front`), a desktop's app always is. Behind another app no view
+/// holds a socket or a poll of the node.
+fn front() -> &'static tokio::sync::watch::Sender<bool> {
+    static FRONT: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+    FRONT.get_or_init(|| tokio::sync::watch::channel(true).0)
+}
+
+/// The app went behind another (`false`) or came in front again.
+pub fn set_in_front(in_front: bool) {
+    front().send_if_modified(|front| std::mem::replace(front, in_front) != in_front);
+}
+
+/// Whether the app is in front, as a view's tasks read it.
+pub(super) fn in_front() -> tokio::sync::watch::Receiver<bool> {
+    front().subscribe()
+}
 
 /// The one current-thread tokio runtime every async I/O in the app runs
 /// on — node HTTP and websockets here, the shell's task stream, the loader
@@ -243,7 +273,7 @@ pub(super) fn answer(
     if super::clipboard::answer(view, capability, operation, id, payload)
         || super::picker::answer(view, capability, operation, id, payload)
         || super::notify::answer(view, capability, operation, id, payload)
-        || super::store::answer(view, capability, operation, id, payload)
+        || super::store::answer(view, capability, operation, id, payload, props)
     {
         return true;
     }
@@ -349,7 +379,7 @@ pub(super) fn answer(
             view.sync_route();
         }
         (Capability::Program, "query") => {
-            if node::targeted(view, id, payload, "program.query").is_some() {
+            if node::enveloped(view, id, payload).is_some() {
                 spawn_asked(view, id, payload, query, "host_call.program.query")
             }
         }
@@ -379,11 +409,11 @@ pub(super) fn answer(
             }
             spawn_asked(view, id, payload, invite, "host_call.invite.create")
         }
-        // a write: to a declared target, and after the person's native
-        // yes where the op removes or suspends a key or an agent, or is a
-        // view no vote reviewed writing to a role (`consent::needed`)
+        // a write: to any program, after the person's native yes where
+        // the op removes or suspends a key or an agent, or is a view no
+        // vote reviewed writing to a role (`consent::needed`)
         (Capability::Op, "submit") => {
-            let Some(call) = node::targeted(view, id, payload, "op.submit") else {
+            let Some(call) = node::enveloped(view, id, payload) else {
                 return true;
             };
             // the account the seated key holds, as the app resolved it
@@ -425,32 +455,16 @@ pub(super) fn answer(
         ),
         (Capability::Program, "changes") => changes(view, id, payload),
         (Capability::Chain, "heads") => heads(view, id, payload),
-        // the one way out: a `duck://` link, or an `https://` one for the
-        // system browser (and where they open, the two privacy settings
-        // pages a refused camera or microphone points at, `render/av.rs`);
-        // any other scheme is refused here, at the method.
-        // Only the person's activation opens one, taken by the ask: a view
-        // on a clock never opens a tab or reseats the desk
-        (Capability::Link, "open") => match methods::decode::<String>(payload) {
-            Ok(link) if openable(&link) => {
-                if !view.take_activation() {
-                    view.refuse(
-                        id,
-                        refusal::NEEDS_GESTURE,
-                        "`link.open` needs a press or key",
-                    );
-                    return true;
-                }
-                view.intents.push(Intent::OpenLink(link));
-                view.reply(id, Ok(Vec::new()));
-            }
-            Ok(_) => view.refuse(
-                id,
-                refusal::MALFORMED_REQUEST,
-                "`link.open` opens a duck:// or https:// link",
-            ),
-            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
-        },
+        (Capability::Link, "open") => {
+            open_link(view, id, payload, methods::LinkOpen::KIND, Intent::OpenLink)
+        }
+        (Capability::Link, "window") => open_link(
+            view,
+            id,
+            payload,
+            methods::LinkWindow::KIND,
+            Intent::OpenWindow,
+        ),
         // one of the host's own places, as a link: only the person's press
         // or key brings one up. The reader's account is shown only where
         // there is one (`roster::props`), a refused camera's or
@@ -597,6 +611,29 @@ pub fn plain(c: &char) -> bool {
 /// display it opens on.
 fn floatable(float: &methods::Float) -> bool {
     (1..=float.width).contains(&float.min_width) && (1..=float.height).contains(&float.min_height)
+}
+
+fn open_link(
+    view: &mut View,
+    id: u64,
+    payload: &[u8],
+    kind: &'static str,
+    opened: fn(String) -> Intent,
+) {
+    let link = match methods::decode::<String>(payload) {
+        Ok(link) => link,
+        Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
+    };
+    if !openable(&link) {
+        let refused = format!("`{kind}` opens a duck:// or https:// link");
+        return view.refuse(id, refusal::MALFORMED_REQUEST, refused);
+    }
+    if !view.take_activation() {
+        let refused = format!("`{kind}` needs a press or key");
+        return view.refuse(id, refusal::NEEDS_GESTURE, refused);
+    }
+    view.intents.push(opened(link));
+    view.reply(id, Ok(Vec::new()));
 }
 
 /// Whether `link.open` may open `link`: `duck://` or `https://` with

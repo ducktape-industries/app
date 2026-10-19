@@ -3,18 +3,14 @@
 //! wasmtime runner gives the same view's answers. The page holds no meaning
 //! of its own; this file is all of it, and builds and is tested everywhere.
 
+use crate::VIEW_FUEL;
 use base64::Engine as _;
-use ducktape_host::contract::{FUEL_PER_TICK, Fault, Landed};
+use ducktape_host::contract::{Fault, Landed};
 use view_meter::Stop;
 
 /// One call's answer, read.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Answer {
-    /// The fuel the call used, of [`FUEL_PER_TICK`]: a call that returned
-    /// used the budget less what it left, capped at the budget (a call can
-    /// run past it between two checks and return, as on wasmtime, whose
-    /// count then reads the whole budget); a call that failed reports the
-    /// whole budget.
     pub(crate) fuel_used: u64,
     /// The view's linear memory after the call, when the page said.
     pub(crate) memory: Option<usize>,
@@ -25,7 +21,7 @@ pub(crate) struct Answer {
 /// Reads the page's answer `text`.
 pub(crate) fn read(text: &str) -> Answer {
     let failed = |fault: Fault, memory: Option<usize>| Answer {
-        fuel_used: FUEL_PER_TICK,
+        fuel_used: 0,
         memory,
         outcome: Err(fault),
     };
@@ -44,9 +40,8 @@ pub(crate) fn read(text: &str) -> Answer {
             ) else {
                 return failed(Fault::Runner(format!("the page answered {text:.80}")), None);
             };
-            let left = u64::try_from(gas).unwrap_or(0).min(FUEL_PER_TICK);
             Answer {
-                fuel_used: FUEL_PER_TICK - left,
+                fuel_used: (VIEW_FUEL - gas.max(0)).unsigned_abs(),
                 memory: Some(memory),
                 outcome: Ok(bytes),
             }
@@ -62,9 +57,10 @@ pub(crate) fn read(text: &str) -> Answer {
                 return failed(Fault::Runner(format!("the page answered {text:.80}")), None);
             };
             let fault = match view_meter::stop(gas) {
-                Stop::OutOfFuel => Fault::OutOfFuel,
                 Stop::Memory => Fault::Memory,
-                Stop::Trap => Fault::Trap(fields.next().unwrap_or("trap").to_owned()),
+                Stop::OutOfFuel | Stop::Trap => {
+                    Fault::Trap(fields.next().unwrap_or("trap").to_owned())
+                }
             };
             failed(fault, Some(memory))
         }
@@ -136,13 +132,12 @@ mod tests {
     }
 
     #[test]
-    fn a_returned_call_used_the_budget_less_what_it_left_at_most_the_budget() {
-        let answer = read(&format!("R {} 65536 {}", FUEL_PER_TICK - 7, b64(b"frame")));
+    fn a_returned_call_used_the_full_count_less_what_it_left() {
+        let answer = read(&format!("R {} 65536 {}", VIEW_FUEL - 7, b64(b"frame")));
         assert_eq!(answer.fuel_used, 7);
         assert_eq!(answer.memory, Some(65_536));
         assert_eq!(answer.outcome, Ok(b"frame".to_vec()));
-        // past the budget between two checks, and returned: the whole budget
-        assert_eq!(read("R -12 0 ").fuel_used, FUEL_PER_TICK);
+        assert_eq!(read("R -12 0 ").fuel_used, VIEW_FUEL.unsigned_abs());
         assert_eq!(read("R -12 0 ").outcome, Ok(Vec::new()));
     }
 
@@ -150,18 +145,16 @@ mod tests {
     fn a_trap_is_read_off_gas_left_as_the_meter_leaves_it() {
         let trapped =
             |gas: i64| read(&format!("T {gas} 131072 RuntimeError: Out of bounds")).outcome;
-        assert_eq!(trapped(0), Err(Fault::OutOfFuel));
-        assert_eq!(trapped(-3), Err(Fault::OutOfFuel));
+        let out_of_bounds = Err(Fault::Trap("RuntimeError: Out of bounds".into()));
+        assert_eq!(trapped(0), out_of_bounds);
+        assert_eq!(trapped(-3), out_of_bounds);
         assert_eq!(trapped(view_meter::GROW_REFUSED), Err(Fault::Memory));
         assert_eq!(
             trapped(42),
             Err(Fault::Trap("RuntimeError: Out of bounds".into()))
         );
         let answer = read("T 42 131072 unreachable");
-        assert_eq!(
-            (answer.fuel_used, answer.memory),
-            (FUEL_PER_TICK, Some(131_072))
-        );
+        assert_eq!((answer.fuel_used, answer.memory), (0, Some(131_072)));
     }
 
     #[test]
@@ -212,8 +205,8 @@ mod tests {
             Landed::Frame(frame) if frame == b"frame"
         ));
         assert!(matches!(
-            Export::Init.landed(Err(Fault::OutOfFuel)),
-            Landed::Fault(Fault::OutOfFuel)
+            Export::Init.landed(Err(Fault::Memory)),
+            Landed::Fault(Fault::Memory)
         ));
     }
 }

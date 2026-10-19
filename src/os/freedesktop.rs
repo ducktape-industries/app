@@ -3,13 +3,57 @@
 //! each desktop answers through its own daemon. Pure Rust, and no new
 //! dependency — zbus is already in this binary's graph.
 
-use ducktape_host::runtime::notify::{Click, Notice, NoticeKind};
+use ducktape_host::runtime::notify::{Click, Notice, NoticeKind, SOUND};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 /// The desktop entry the banner is filed under (`packaging`), which
 /// is what gives it this app's icon and lets the desktop group it.
 const DESKTOP_ENTRY: &str = "dev.ducktape.app";
+
+/// The sound an ordinary notice plays ([`SOUND`]), carried in the binary:
+/// the Linux app is one file, with nothing installed beside it.
+const QUACK: &[u8] = include_bytes!("../../assets/sounds/quack.wav");
+
+/// The quack where the daemon can play it (the `sound-file` hint), kept
+/// in this user's cache; `None` when it cannot be kept there, and the
+/// notice goes up all the same with the daemon's own sound.
+fn sound_file() -> Option<String> {
+    let kept = crate::backend::cache_dir()
+        .map(|cache| cache.join("sounds"))
+        .and_then(|dir| {
+            kept_sound(&dir, QUACK).map_err(|error| format!("{}: {error}", dir.display()))
+        });
+    match kept {
+        Ok(file) => file.to_str().map(str::to_owned),
+        Err(error) => {
+            tracing::debug!(
+                target: "ducktape::app",
+                reason = "no_sound_file",
+                %error,
+                "a desktop notice goes without its quack"
+            );
+            None
+        }
+    }
+}
+
+/// `bytes` as [`SOUND`] in `dir`: left as it is when those bytes are there
+/// already, else written beside it and renamed into place, so none of this
+/// user's other processes plays it half written. Read at each notice, so
+/// a cache cleared under a running app is mended at its next one.
+fn kept_sound(dir: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    let file = dir.join(SOUND);
+    if std::fs::read(&file).is_ok_and(|kept| kept == bytes) {
+        return Ok(file);
+    }
+    std::fs::create_dir_all(dir)?;
+    let part = dir.join(format!("{SOUND}.{}", std::process::id()));
+    std::fs::write(&part, bytes)?;
+    std::fs::rename(&part, &file)?;
+    Ok(file)
+}
 
 /// One session-bus connection per process. A host with no session bus
 /// answers every banner the same way, and says so once.
@@ -30,10 +74,11 @@ fn session_bus() -> Option<&'static zbus::blocking::Connection> {
     .as_ref()
 }
 
-/// The banner a tag is standing under, so the next notice under that tag
-/// replaces it instead of stacking a second one.
-fn standing() -> &'static Mutex<HashMap<String, u32>> {
-    static STANDING: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+/// The banner a chain's tag is standing under, so the next notice under
+/// that tag replaces it instead of stacking a second one: two networks'
+/// programs may share a tag, and each stands.
+fn standing() -> &'static Mutex<HashMap<(String, String), u32>> {
+    static STANDING: OnceLock<Mutex<HashMap<(String, String), u32>>> = OnceLock::new();
     STANDING.get_or_init(Mutex::default)
 }
 
@@ -82,7 +127,7 @@ fn listen(bus: &'static zbus::blocking::Connection) {
                         .lock()
                         .expect("banner clicks")
                         .get(&banner)
-                        .copied();
+                        .cloned();
                     match (click, action.as_str()) {
                         // a call's Answer opens it as a click does
                         (Some(click), "default" | "answer") => super::clicked(click),
@@ -111,17 +156,16 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
     // the host's notice (a click opens Updates) replaces the one any of
     // this session's processes left standing
     let host = click == Some(Click::Updates);
-    let replaces = match (host, notice.tag.is_empty()) {
-        (true, _) => host_banner().unwrap_or(0),
-        (false, true) => 0,
-        (false, false) => standing.get(&notice.tag).copied().unwrap_or(0),
+    let replaces = match host {
+        true => host_banner().unwrap_or(0),
+        false => replaced(&standing, notice),
     };
     match notify(bus, notice, replaces, click.is_some()) {
         Ok(raised) => {
             if host {
                 keep_host_banner(Some(raised));
             } else if !notice.tag.is_empty() {
-                standing.insert(notice.tag.clone(), raised);
+                standing.insert((notice.chain.clone(), notice.tag.clone()), raised);
             }
             let mut clicks = clicks().lock().expect("banner clicks");
             match click {
@@ -142,24 +186,40 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
     }
 }
 
+/// The banner `notice` replaces: the one standing under its chain's tag;
+/// none (0) with no tag.
+fn replaced(standing: &HashMap<(String, String), u32>, notice: &Notice) -> u32 {
+    let under = (notice.chain.clone(), notice.tag.clone());
+    match notice.tag.is_empty() {
+        true => 0,
+        false => standing.get(&under).copied().unwrap_or(0),
+    }
+}
+
 /// A call's banner declined: no longer standing, and closed (a daemon
-/// that keeps a banner after its action would leave it up).
+/// that keeps a banner after its action would leave it up); the centre
+/// holding its chain's log hears it (the one in hand, or that network's
+/// followed set).
 fn declined(banner: u32) {
-    let tag = standing()
+    let under = standing()
         .lock()
         .expect("standing notices")
         .iter()
         .find(|(_, raised)| **raised == banner)
-        .map(|(tag, _)| tag.clone());
-    if let Some(tag) = tag {
-        withdraw(&tag);
-        ducktape_host::runtime::notify::declined(&tag);
+        .map(|(under, _)| under.clone());
+    if let Some((chain, tag)) = under {
+        withdraw(&chain, &tag);
+        ducktape_host::runtime::notify::declined(&chain, &tag);
     }
 }
 
-/// The banner standing under `tag`, closed (`CloseNotification`).
-pub(super) fn withdraw(tag: &str) {
-    let Some(banner) = standing().lock().expect("standing notices").remove(tag) else {
+/// The banner standing under `tag` on `chain`, closed (`CloseNotification`).
+pub(super) fn withdraw(chain: &str, tag: &str) {
+    let standing = standing()
+        .lock()
+        .expect("standing notices")
+        .remove(&(chain.to_owned(), tag.to_owned()));
+    let Some(banner) = standing else {
         return;
     };
     clicks().lock().expect("banner clicks").remove(&banner);
@@ -239,10 +299,13 @@ fn keep_host_banner(banner: Option<u32>) {
 /// hints, and how long it stays. A banner that opens something declares
 /// the default action, a click on it. A call's has Answer and Decline,
 /// rings with the theme's incoming-call sound and stays until the host
-/// takes it down (its `until`, or the view's `notify.seen`).
+/// takes it down (its `until`, or the view's `notify.seen`). Any other
+/// plays `sound`, the quack's file ([`sound_file`]), when there is one: the
+/// daemon decides whether it sounds (its do-not-disturb, its settings).
 fn request(
     notice: &Notice,
     clickable: bool,
+    sound: Option<String>,
 ) -> (
     Vec<&'static str>,
     HashMap<&'static str, zbus::zvariant::Value<'static>>,
@@ -258,6 +321,8 @@ fn request(
             "sound-name",
             zbus::zvariant::Value::from("phone-incoming-call"),
         );
+    } else if let Some(sound) = sound {
+        hints.insert("sound-file", zbus::zvariant::Value::from(sound));
     }
     let actions = match (clickable, call) {
         (true, true) => vec![
@@ -277,7 +342,10 @@ fn notify(
     replaces: u32,
     clickable: bool,
 ) -> zbus::Result<u32> {
-    let (actions, hints, timeout) = request(notice, clickable);
+    let sound = (notice.kind == NoticeKind::Notice)
+        .then(sound_file)
+        .flatten();
+    let (actions, hints, timeout) = request(notice, clickable, sound);
     let body = markup_escaped(&notice.body);
     let reply = bus.call_method(
         Some("org.freedesktop.Notifications"),
@@ -317,7 +385,8 @@ fn a_calls_banner_answers_declines_and_stays() {
         until: 1,
         ..Notice::default()
     };
-    let (actions, hints, timeout) = request(&call, true);
+    let quack = Some("/run/quack.wav".to_owned());
+    let (actions, hints, timeout) = request(&call, true, quack);
     assert_eq!(
         actions,
         [
@@ -330,11 +399,101 @@ fn a_calls_banner_answers_declines_and_stays() {
     );
     assert_eq!(hints["urgency"], zbus::zvariant::Value::U8(2));
     assert_eq!(timeout, 0);
+    assert!(!hints.contains_key("sound-file"), "a call quacked");
     let plain = Notice::default();
-    let (actions, hints, timeout) = request(&plain, true);
+    let (actions, hints, timeout) = request(&plain, true, None);
     assert_eq!(
         (actions, hints.len(), timeout),
         (vec!["default", "Open"], 1, -1)
     );
-    assert!(request(&plain, false).0.is_empty());
+    assert!(request(&plain, false, None).0.is_empty());
+}
+
+#[cfg(test)]
+/// A notice's banner plays the quack's file; a call's rings as it did and
+/// does not quack.
+#[test]
+fn a_notice_quacks_and_a_call_keeps_its_ring() {
+    let quack = "/home/ada/.cache/ducktape/sounds/quack.wav".to_owned();
+    let (_, hints, _) = request(&Notice::default(), false, Some(quack.clone()));
+    assert_eq!(
+        hints["sound-file"],
+        zbus::zvariant::Value::from(quack.clone())
+    );
+    assert!(!hints.contains_key("sound-name"));
+    let call = Notice {
+        kind: NoticeKind::Call,
+        ..Notice::default()
+    };
+    let (_, hints, _) = request(&call, false, Some(quack));
+    let ring = zbus::zvariant::Value::from("phone-incoming-call");
+    assert_eq!(hints["sound-name"], ring);
+    assert!(!hints.contains_key("sound-file"));
+}
+
+#[cfg(test)]
+/// The quack is kept once in its directory, written again over other
+/// bytes, and leaves no part file behind.
+#[test]
+fn the_quack_is_kept_once_and_mended() {
+    let dir = tempfile::tempdir().unwrap();
+    let sounds = dir.path().join("sounds");
+    let file = kept_sound(&sounds, QUACK).unwrap();
+    assert_eq!(file, sounds.join(SOUND));
+    assert_eq!(std::fs::read(&file).unwrap(), QUACK);
+    std::fs::write(&file, b"stale").unwrap();
+    assert_eq!(kept_sound(&sounds, QUACK).unwrap(), file);
+    assert_eq!(std::fs::read(&file).unwrap(), QUACK);
+    let names: Vec<String> = std::fs::read_dir(&sounds)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, [SOUND]);
+}
+
+#[cfg(test)]
+/// The quack is a sound every notifier plays: RIFF PCM, 16-bit, mono, one
+/// short quack of a second at most.
+#[test]
+fn the_quack_is_a_short_pcm_wave() {
+    let word = |at: usize| u16::from_le_bytes([QUACK[at], QUACK[at + 1]]);
+    let long =
+        |at: usize| u32::from_le_bytes([QUACK[at], QUACK[at + 1], QUACK[at + 2], QUACK[at + 3]]);
+    assert_eq!(&QUACK[..4], b"RIFF");
+    assert_eq!(&QUACK[8..16], b"WAVEfmt ");
+    assert_eq!(&QUACK[36..40], b"data");
+    // PCM, one channel, 16 bits
+    assert_eq!((word(20), word(22), word(34)), (1, 1, 16));
+    let (rate, bytes) = (long(24), long(40));
+    assert_eq!(QUACK.len(), 44 + bytes as usize);
+    assert!(
+        bytes <= rate * 2,
+        "{bytes} bytes at {rate} Hz: over a second"
+    );
+}
+
+#[cfg(test)]
+/// Two networks' programs raise one tag (garage's and duckpond's
+/// `chat/#general`): each banner stands, and a later one replaces only its
+/// own chain's.
+#[test]
+fn one_tag_on_two_chains_stands_twice() {
+    let on = |chain: &str| Notice {
+        title: "ada mentioned you".into(),
+        tag: "chat/#general".into(),
+        chain: chain.into(),
+        ..Notice::default()
+    };
+    let standing = HashMap::from([(("garage#01".into(), "chat/#general".into()), 5)]);
+    assert_eq!(
+        replaced(&standing, &on("duckpond#02")),
+        0,
+        "garage's was replaced"
+    );
+    assert_eq!(replaced(&standing, &on("garage#01")), 5);
+    let untagged = Notice {
+        tag: String::new(),
+        ..on("garage#01")
+    };
+    assert_eq!(replaced(&standing, &untagged), 0);
 }

@@ -392,7 +392,11 @@ impl ViewTree {
         // pointer's or Enter's has
         // a click the view consumes stops here, as gpui's
         // `cx.stop_propagation()` in the listener would: no element under
-        // it hears the same press
+        // it hears the same press. The click is the release's bubble, and
+        // gpui-base's window selection ends the press it began only on
+        // hearing that release, so the stop ends it first, as gpui-base's
+        // own links do: else every move with no button held drags the
+        // selection on, as if the button were still down
         if let Some(handler) = interactivity.on_click {
             let consumes = interactivity.consumes_click;
             element = element.on_click(cx.listener(
@@ -417,6 +421,7 @@ impl ViewTree {
                         event: event.into(),
                     });
                     if consumes {
+                        gpui_kit::base::TextSelection::end(window, cx);
                         cx.stop_propagation();
                     }
                 },

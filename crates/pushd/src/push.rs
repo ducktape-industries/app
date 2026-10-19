@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use ducktape_host::contract::Banners;
-use ducktape_host::runtime::notify::{Click, Notice, NoticeKind};
+use ducktape_host::runtime::notify::{Click, Notice, NoticeKind, SOUND};
 use ring::signature::{self, EcdsaKeyPair, RsaKeyPair};
 
 use crate::Log;
@@ -501,8 +501,10 @@ impl Push {
                     "alert": { "title": notice.title, "body": notice.body },
                     "thread-id": notice.tag,
                 });
+                // the app's quack (an iPhone app that does not carry it
+                // plays the default)
                 if !quiet {
-                    aps["sound"] = "default".into();
+                    aps["sound"] = SOUND.into();
                 }
                 let mut body = payload(notice);
                 body["aps"] = aps;
@@ -776,8 +778,9 @@ impl Banners for Push {
         taken
     }
 
-    fn withdraw(&self, tag: &str) {
-        self.log.withdraw(tag);
+    // the chain is this channel's own (`Push::new`)
+    fn withdraw(&self, chain: &str, tag: &str) {
+        self.log.withdraw(chain, tag);
         let until = self.standing().remove(tag);
         let now = now();
         // one past its until shows nowhere any more: nothing to take back
@@ -790,6 +793,9 @@ impl Banners for Push {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The chain the tests' channel carries notices of.
+    const CHAIN: &str = "testkit-0a1b2c3d";
     use ring::signature::KeyPair as _;
 
     /// Records each request and answers 200, the token endpoint with a token.
@@ -866,7 +872,7 @@ mod tests {
                 network: "testkit".into(),
                 account: 2,
             },
-            "testkit-0a1b2c3d".into(),
+            CHAIN.into(),
             2,
             registry,
             (Some(Arc::new(apns)), Some(Arc::new(fcm))),
@@ -885,6 +891,7 @@ mod tests {
             kind: NoticeKind::Call,
             until,
             end_link: "duck://testkit-0a1b2c3d/huddle/call/c1/leave".into(),
+            chain: CHAIN.into(),
         }
     }
 
@@ -904,7 +911,13 @@ mod tests {
     fn a_call_is_a_voip_push_and_a_high_priority_message() {
         let (push, http) = push(&[("voip", "ab12"), ("fcm", "fcm-token")]);
         let until = now() + 45;
-        assert!(push.post(&call(until), Some(Click::Row(1))));
+        assert!(push.post(
+            &call(until),
+            Some(Click::Row {
+                chain: CHAIN.into(),
+                row: 1
+            })
+        ));
         let sent = http.0.lock().unwrap().clone();
         // the access token first: it is asked for while the requests are made
         let [oauth, apns, fcm] = &sent[..] else {
@@ -1047,7 +1060,7 @@ mod tests {
         let (push, http) = push(&[("voip", "ab12"), ("apns", "cd34"), ("fcm", "fcm-token")]);
         push.post(&call(now() + 45), None);
         http.0.lock().unwrap().clear();
-        push.withdraw("huddle/call/c1");
+        push.withdraw(CHAIN, "huddle/call/c1");
         let sent = http.0.lock().unwrap().clone();
         let apns = &sent[0];
         assert_eq!(apns.url, "https://api.push.apple.com/3/device/cd34");
@@ -1071,10 +1084,10 @@ mod tests {
         );
 
         http.0.lock().unwrap().clear();
-        push.withdraw("huddle/call/c1");
+        push.withdraw(CHAIN, "huddle/call/c1");
         assert!(http.0.lock().unwrap().is_empty(), "withdrawn twice");
         push.post(&call(now() - 1), None);
-        push.withdraw("huddle/call/c1");
+        push.withdraw(CHAIN, "huddle/call/c1");
         assert!(
             http.0.lock().unwrap().is_empty(),
             "a call past its until rung or withdrawn"
@@ -1149,8 +1162,15 @@ mod tests {
             link: "duck://testkit-0a1b2c3d/chat/general/7".into(),
             until: 0,
             end_link: "duck://testkit-0a1b2c3d/chat/general/7/end".into(),
+            chain: CHAIN.into(),
         };
-        assert!(push.post(&notice, Some(Click::Row(1))));
+        assert!(push.post(
+            &notice,
+            Some(Click::Row {
+                chain: CHAIN.into(),
+                row: 1
+            })
+        ));
         let sent = http.0.lock().unwrap().clone();
         let apns: Vec<_> = sent
             .iter()
@@ -1166,7 +1186,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&apns[0].body).unwrap();
         assert_eq!(body["aps"]["alert"]["title"], "ada mentioned you");
         assert_eq!(body["aps"]["alert"]["body"], "hey @bob");
-        assert_eq!(body["aps"]["sound"], "default");
+        assert_eq!(body["aps"]["sound"], SOUND);
         assert_eq!(body["aps"]["thread-id"], "chat/#general");
         assert_eq!(body["kind"], "notice");
         assert_eq!(body["link"], "duck://testkit-0a1b2c3d/chat/general/7");
@@ -1200,7 +1220,7 @@ mod tests {
         assert_eq!(fcm["message"]["data"]["quiet"], "1");
 
         http.0.lock().unwrap().clear();
-        push.withdraw("chat/#general");
+        push.withdraw(CHAIN, "chat/#general");
         let sent = http.0.lock().unwrap().clone();
         let apns = sent
             .iter()
@@ -1242,6 +1262,7 @@ mod tests {
             link: format!("duck://testkit-0a1b2c3d/chat/general/{seq}"),
             until: 0,
             end_link: String::new(),
+            chain: CHAIN.into(),
         }
     }
 
@@ -1312,7 +1333,7 @@ mod tests {
                 "thread-id": "chat/#general",
             });
             if !quiet {
-                body["aps"]["sound"] = "default".into();
+                body["aps"]["sound"] = SOUND.into();
             }
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(&apns.body).unwrap(),
@@ -1396,7 +1417,7 @@ mod tests {
         push.post(&message(7), None);
         push.post(&message(8), None);
         http.0.lock().unwrap().clear();
-        push.withdraw("chat/#general");
+        push.withdraw(CHAIN, "chat/#general");
         let sent = std::mem::take(&mut *http.0.lock().unwrap());
         let [apns, fcm] = &sent[..] else {
             panic!("one push and one message: {sent:#?}");
@@ -1500,7 +1521,7 @@ mod tests {
         };
         assert_eq!(header(apns, "apns-priority"), "10");
         let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
-        assert_eq!(body["aps"]["sound"], "default");
+        assert_eq!(body["aps"]["sound"], SOUND);
     }
 
     /// A notice too long for APNs's 4 KB payload or FCM's 4 KB of data has
@@ -1519,7 +1540,7 @@ mod tests {
         let (apns, fcm) = sent(&http);
         let id = long.os_id();
         // the body twice in an alert: a char less is six bytes less
-        assert_eq!(apns.body.len(), 4091);
+        assert_eq!(apns.body.len(), 4093);
         let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
         let body = alert["body"].as_str().unwrap();
         assert!(body.ends_with('…'), "{body}");

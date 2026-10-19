@@ -15,11 +15,12 @@
 //! name, then view-only entries by name, as the programs role answers them) is the
 //! rail's order, the manifest inside the view names the tab.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use abi::BlobId;
 
 use super::RpcClient;
+use crate::contract::Code;
 use noded_client::wire::{Layer, unframe};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
@@ -71,11 +72,15 @@ impl std::fmt::Display for Fetch {
 /// wherever the app names it (the rail, a pane, the consent card's
 /// "Program <id>", which a newline would end before a "System asks" of its
 /// own). One left off is said in app.log, once while the same ids are.
-pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
+pub async fn programs(
+    client: &RpcClient,
+    network: &str,
+    signer: &dyn noded_client::Signer,
+) -> Result<Vec<Program>, Fetch> {
     use ::programs::{Query, Reply};
     let Reply::Roster {
         programs, views, ..
-    } = ask(client, network, Query::Roster).await?
+    } = ask(client, network, signer, Query::Roster).await?
     else {
         return Err(Fetch::Unreadable(
             "the programs role answered no roster".into(),
@@ -94,15 +99,21 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
     let (roster, misspelled): (Vec<Program>, Vec<Program>) = programs
         .chain(views)
         .partition(|program| program::is_name(&program.name));
-    misspelled_said(misspelled.into_iter().map(|program| program.name).collect());
+    misspelled_said(
+        network,
+        misspelled.into_iter().map(|program| program.name).collect(),
+    );
     Ok(roster)
 }
 
-/// Warns of the ids left off the roster, escaped (`{:?}`), when they are
-/// not the ones the last read left off: once, not every block.
-fn misspelled_said(ids: Vec<String>) {
-    static LAST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Warns of the ids left off `network`'s roster, escaped (`{:?}`), when
+/// they are not the ones its last read left off: once, not every block,
+/// with another listed network's roster read in turn.
+fn misspelled_said(network: &str, ids: Vec<String>) {
+    static LAST: std::sync::Mutex<std::collections::BTreeMap<String, Vec<String>>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
     let mut last = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let last = last.entry(network.to_owned()).or_default();
     if *last != ids {
         if !ids.is_empty() {
             tracing::warn!(
@@ -118,9 +129,13 @@ fn misspelled_said(ids: Vec<String>) {
 
 /// Which programs fill the roles the kernel calls, as genesis bound them
 /// and the programs role answers them.
-pub async fn roles(client: &RpcClient, network: &str) -> Result<abi::Roles, Fetch> {
+pub async fn roles(
+    client: &RpcClient,
+    network: &str,
+    signer: &dyn noded_client::Signer,
+) -> Result<abi::Roles, Fetch> {
     use ::programs::{Query, Reply};
-    match ask(client, network, Query::Roles).await? {
+    match ask(client, network, signer, Query::Roles).await? {
         Reply::Roles(roles) => Ok(roles),
         _ => Err(Fetch::Unreadable(
             "the programs role answered the roles question with another reply".into(),
@@ -128,45 +143,13 @@ pub async fn roles(client: &RpcClient, network: &str) -> Result<abi::Roles, Fetc
     }
 }
 
-/// The code every scheduled change brings (a program set, a view set), in
-/// the programs role's order, whatever height it lands at: what the
-/// network is about to run, so a view may ask about it (`blob.manifest`)
-/// before it does. Read for that ask, not per block. Empty from a programs
-/// role that predates the question.
-pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fetch> {
-    use ::programs::{PageRequest, Query, Reply};
-    let mut codes = Vec::new();
-    let mut after = None;
-    loop {
-        let page = PageRequest { after, limit: None };
-        let page = match ask(client, network, Query::Scheduled { page }).await {
-            Ok(Reply::Scheduled(page)) => page,
-            Ok(_) => {
-                return Err(Fetch::Unreadable(
-                    "the programs role answered the scheduled question with another reply".into(),
-                ));
-            }
-            Err(Fetch::Refused(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(error),
-        };
-        codes.extend(
-            page.items
-                .iter()
-                .filter_map(|pending| pending.change.code()),
-        );
-        let Some(next) = page.next else {
-            return Ok(codes);
-        };
-        after = Some(next);
-    }
-}
-
 async fn ask(
     client: &RpcClient,
     network: &str,
+    signer: &dyn noded_client::Signer,
     query: ::programs::Query,
 ) -> Result<::programs::Reply, Fetch> {
-    let frame = super::query_frame(network, ::programs::PROGRAM, abi::encode(&query))
+    let frame = super::query_frame(signer, network, ::programs::PROGRAM, abi::encode(&query))
         .await
         .map_err(|refusal| Fetch::Refused(refusal.message))?;
     let answer = client
@@ -184,68 +167,254 @@ pub async fn view_of(
     client: &RpcClient,
     code: &BlobId,
     bare: bool,
-) -> Result<Option<(Vec<u8>, &'static str)>, Fetch> {
-    let (bytes, source) = program_bytes(client, code).await?;
-    Ok(if bare {
-        Some((bytes, source))
-    } else {
-        view_section(&bytes).map(|view| (view, source))
+) -> Result<Option<(Blob, &'static str)>, Fetch> {
+    let (blob, source) = program_bytes(client, code).await?;
+    Ok(match bare {
+        true => Some((blob, source)),
+        false => blob
+            .part(|body| section(body, VIEW_SECTION))
+            .map(|view| (view, source)),
     })
 }
 
-/// A program's blob: the cache's copy, else the node's, which the cache
-/// keeps from then on. Only code the roster names is read here (a seat's,
-/// `program.describe`'s, `blob.manifest`'s), so the cache holds at most
-/// what the network runs or has scheduled.
+/// A program's blob, or a section of it, as this process holds it: the
+/// cache's file mapped, or bytes in memory (the node's, when the cache
+/// cannot keep them; a bundle's). A blob is megabytes. Read into the heap
+/// it is a block glibc keeps in a thread's arena once freed, and the free
+/// of a block that size raises glibc's thresholds for giving memory back
+/// (mmap's to the block's size, trim's to twice that) for the whole
+/// process, for good. A map is the file's own pages, given back whole when
+/// it goes.
+pub struct Blob {
+    held: Held,
+    /// Where in `held` this blob, or this part of one, lies.
+    range: std::ops::Range<usize>,
+}
+
+enum Held {
+    /// The cache's file at the path, mapped whole.
+    Mapped(memmap2::Mmap, PathBuf),
+    /// Bytes in memory.
+    Read(Vec<u8>),
+}
+
+impl Blob {
+    /// The file at `path`, mapped whole.
+    fn mapped(path: &Path) -> std::io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        // SAFETY: a map's bytes change under it only when its file is
+        // written in place, and the cache's files never are: `fetched`
+        // writes each one whole under a name of its own and renames it
+        // into place, and nothing writes it after. A rename over it or a
+        // removal leaves the map whole.
+        let map = unsafe { memmap2::Mmap::map(&file) }?;
+        Ok(Self {
+            range: 0..map.len(),
+            held: Held::Mapped(map, path.to_owned()),
+        })
+    }
+
+    /// The part of these bytes `part` reads out of them, as a blob of its
+    /// own: nothing is copied. `None` when it reads none, or answers bytes
+    /// that are not these.
+    pub fn part(self, part: impl FnOnce(&[u8]) -> Option<&[u8]>) -> Option<Self> {
+        let within = {
+            let bytes: &[u8] = &self;
+            let part = part(bytes)?;
+            let start = (part.as_ptr() as usize).wrapping_sub(bytes.as_ptr() as usize);
+            let end = start.checked_add(part.len())?;
+            (end <= bytes.len()).then_some(start..end)?
+        };
+        Some(Self {
+            range: self.range.start + within.start..self.range.start + within.end,
+            held: self.held,
+        })
+    }
+
+    /// The bytes as a runner takes them: with where they lie in the
+    /// cache's file when they are its, for a compile apart to read there.
+    pub fn code(&self) -> Code<'_> {
+        Code {
+            bytes: self,
+            file: match &self.held {
+                Held::Mapped(_, path) => Some((path, self.range.start as u64)),
+                Held::Read(_) => None,
+            },
+        }
+    }
+}
+
+impl From<Vec<u8>> for Blob {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self {
+            range: 0..bytes.len(),
+            held: Held::Read(bytes),
+        }
+    }
+}
+
+impl std::ops::Deref for Blob {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match &self.held {
+            Held::Mapped(map, _) => &map[self.range.clone()],
+            Held::Read(bytes) => &bytes[self.range.clone()],
+        }
+    }
+}
+
+/// A program's blob, its body what derefs: the cache's copy, else the
+/// node's, streamed into the cache ([`fetched`]) and mapped there, or read
+/// whole off the node when the cache cannot keep it (a full disk). Only
+/// code the roster names is read here (a seat's, `program.describe`'s,
+/// `blob.manifest`'s), so the cache holds at most what the network runs or
+/// has scheduled.
 pub async fn program_bytes(
     client: &RpcClient,
     code: &BlobId,
-) -> Result<(Vec<u8>, &'static str), Fetch> {
-    let cached = cache_path(code);
-    if let Some(path) = &cached
-        && let Ok(framed) = tokio::fs::read(path).await
-        && hashes_to(&framed, code)?
-        && let Some(body) = unframe(&framed)
-    {
-        return Ok((body.to_vec(), "disk"));
+) -> Result<(Blob, &'static str), Fetch> {
+    match cached(client, code).await {
+        Ok(cached) => cached,
+        Err(error) => {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "program_code_unkept",
+                %error,
+                "the cache could not keep a program's code; it is read whole from the node"
+            );
+            let framed = client
+                .blob(*code)
+                .await
+                .map_err(fetch_error)?
+                .ok_or(Fetch::NotHeld)?;
+            if !hashes_to(&framed, code)? {
+                return Err(Fetch::Corrupt);
+            }
+            let body = Blob::from(framed).part(unframe).ok_or_else(headless)?;
+            Ok((body, "node"))
+        }
     }
-    let framed = client
-        .blob(*code)
+}
+
+/// `code`'s blob in the cache, mapped, its body what derefs, and where it
+/// came from: the cache's copy when it hashes to `code` (`disk`), else the
+/// node's, streamed into the cache first ([`fetched`]; `node`). The outer
+/// error is the cache's (it could not keep the blob: a full disk), the
+/// inner one the node's or the blob's.
+async fn cached(
+    client: &RpcClient,
+    code: &BlobId,
+) -> std::io::Result<Result<(Blob, &'static str), Fetch>> {
+    let path = cache_path(code);
+    let kept = {
+        let (path, code) = (path.clone(), *code);
+        blocking(move || match Blob::mapped(&path) {
+            Ok(blob) => Ok(hashes_to(&blob, &code)?.then_some(blob)),
+            Err(_) => Ok(None),
+        })
         .await
-        .map_err(fetch_error)?
-        .ok_or(Fetch::NotHeld)?;
-    let body = unframe(&framed)
-        .ok_or_else(|| Fetch::Unreadable("the blob carries no git header".into()))?
-        .to_vec();
-    if !hashes_to(&framed, code)? {
-        return Err(Fetch::Corrupt);
+    };
+    match kept {
+        Ok(Some(blob)) => {
+            return Ok(blob
+                .part(unframe)
+                .map(|body| (body, "disk"))
+                .ok_or_else(headless));
+        }
+        Ok(None) => {}
+        Err(error) => return Ok(Err(error)),
     }
-    // written whole or not at all (a sibling of its own, renamed into
-    // place): a reader never meets half a blob
-    if let Some(path) = cached {
-        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let kept = path.with_extension(format!("{n}.partial"));
+    if let Err(error) = fetched(client, code, &path).await? {
+        return Ok(Err(error));
+    }
+    // hashed as it landed: mapped as it is
+    let landed = blocking(move || {
+        Blob::mapped(&path)
+            .map_err(|error| Fetch::Unreadable(format!("the program's code was not kept: {error}")))
+    })
+    .await;
+    Ok(landed
+        .and_then(|blob| blob.part(unframe).ok_or_else(headless))
+        .map(|body| (body, "node")))
+}
+
+/// `work` on tokio's blocking pool: a map's pages are read from the disk
+/// as they are first touched.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, Fetch> + Send + 'static,
+) -> Result<T, Fetch> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| Fetch::Unreadable(error.to_string()))?
+}
+
+fn headless() -> Fetch {
+    Fetch::Unreadable("the blob carries no git header".into())
+}
+
+/// `code`'s blob streamed off the node into the cache at `path`, hashed as
+/// it lands, never held whole: renamed into place once all of it came and
+/// it hashes to `code`. A short or bad stream leaves no file. The outer
+/// error is the cache's (it could not keep the blob: a full disk), the
+/// inner one the node's. The landing file is named by this process too,
+/// so another instance of the app landing the same code never truncates
+/// it. Each piece goes to the disk as the connection read it, never
+/// copied: a copy (tokio's file takes one of each write, up to 2 MB) is a
+/// second piece-sized block on the reading thread, which glibc keeps in
+/// that thread's arena once freed.
+async fn fetched(
+    client: &RpcClient,
+    code: &BlobId,
+    path: &Path,
+) -> std::io::Result<Result<(), Fetch>> {
+    use std::io::Write as _;
+    let mut blob = match client.blob_stream(*code).await {
+        Ok(Some(blob)) => blob,
+        Ok(None) => return Ok(Err(Fetch::NotHeld)),
+        Err(error) => return Ok(Err(fetch_error(error))),
+    };
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let landing = path.with_extension(format!("{}-{n}.partial", std::process::id()));
+    let landed = async {
         if let Some(parent) = path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
+            tokio::fs::create_dir_all(parent).await?;
         }
-        if tokio::fs::write(&kept, &framed).await.is_err()
-            || tokio::fs::rename(&kept, &path).await.is_err()
-        {
-            let _ = tokio::fs::remove_file(&kept).await;
+        let file = tokio::fs::File::create(&landing).await?.into_std().await;
+        let file = std::sync::Arc::new(file);
+        let mut hasher = blob::Hasher::new(code.kind());
+        loop {
+            let piece = match blob.next().await {
+                Ok(Some(piece)) => piece,
+                Ok(None) => break,
+                Err(error) => return Ok(Err(fetch_error(error))),
+            };
+            hasher.update(&piece);
+            let file = file.clone();
+            tokio::task::spawn_blocking(move || (&*file).write_all(&piece))
+                .await
+                .map_err(std::io::Error::other)??;
         }
+        Ok(match hasher.finish() {
+            Ok(landed) if landed == *code => Ok(tokio::fs::rename(&landing, path).await?),
+            Ok(_) => Err(Fetch::Corrupt),
+            Err(_) => Err(Fetch::Collision(*code)),
+        })
     }
-    Ok((body, "node"))
+    .await;
+    if !matches!(landed, Ok(Ok(()))) {
+        let _ = tokio::fs::remove_file(&landing).await;
+    }
+    landed
 }
 
 /// Where the cache keeps `code`'s framed bytes.
-pub(crate) fn cache_path(code: &BlobId) -> Option<PathBuf> {
-    Some(
-        super::dirs()
-            .cache
-            .join("programs")
-            .join(abi::hex(code.digest())),
-    )
+pub(crate) fn cache_path(code: &BlobId) -> PathBuf {
+    super::dirs()
+        .cache
+        .join("programs")
+        .join(abi::hex(code.digest()))
 }
 
 /// A blob id names the FRAMED bytes (`kind len\0body`), as git's does, and
@@ -256,16 +425,17 @@ fn hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
     Ok(hashed == *code)
 }
 
-/// The bytes of the [`VIEW_SECTION`] custom section ([`section`]).
-pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
-    section(bytes, VIEW_SECTION).map(<[u8]>::to_vec)
-}
-
 /// The notifier inside `code`'s blob, or `None` when the program ships
-/// none (a view-only entry never does).
-pub async fn notifier_of(client: &RpcClient, code: &BlobId) -> Result<Option<Vec<u8>>, Fetch> {
-    let (bytes, _) = program_bytes(client, code).await?;
-    Ok(section(&bytes, NOTIFY_SECTION).map(<[u8]>::to_vec))
+/// none (a view-only entry never does). Every listed program's blob is
+/// asked, to find the few that carry one, and a blob is megabytes, most of
+/// it the view: it is mapped from the cache ([`cached`]) and the notifier
+/// alone handed on, as a part of the map. A cache that cannot keep it (a
+/// full disk) fails the read: a notifier is not worth a whole blob held.
+pub async fn notifier_of(client: &RpcClient, code: &BlobId) -> Result<Option<Blob>, Fetch> {
+    let (blob, _) = cached(client, code).await.map_err(|error| {
+        Fetch::Unreadable(format!("the program's code could not be kept: {error}"))
+    })??;
+    Ok(blob.part(|body| section(body, NOTIFY_SECTION)))
 }
 
 /// The bytes of the custom section `name`, out of a core module or a
@@ -293,6 +463,60 @@ fn fetch_error(error: noded_client::Error) -> Fetch {
 mod tests {
     use super::*;
 
+    /// A section of a blob mapped from the cache is a part of the map,
+    /// nothing copied: it reads as the section's bytes, and the code it
+    /// hands a runner names the file and where in it the section starts,
+    /// for a compile apart to read there. Bytes in memory name no file;
+    /// a part read out of other bytes is none.
+    #[test]
+    fn a_section_of_a_mapped_blob_names_where_it_lies_in_the_file() {
+        fn leb(mut n: usize) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            loop {
+                let byte = (n & 0x7f) as u8;
+                n >>= 7;
+                if n == 0 {
+                    bytes.push(byte);
+                    return bytes;
+                }
+                bytes.push(byte | 0x80);
+            }
+        }
+        let custom = |name: &str, data: &[u8]| {
+            let mut content = leb(name.len());
+            content.extend_from_slice(name.as_bytes());
+            content.extend_from_slice(data);
+            [vec![0], leb(content.len()), content].concat()
+        };
+        // a type section, a view past one LEB byte, then the notifier
+        let body = [
+            b"\0asm\x01\0\0\0".to_vec(),
+            vec![1, 4, 1, 0x60, 0, 0],
+            custom(VIEW_SECTION, &[7; 300]),
+            custom(NOTIFY_SECTION, b"the notifier"),
+        ]
+        .concat();
+        let framed = [format!("program {}\0", body.len()).as_bytes(), &body].concat();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob");
+        std::fs::write(&path, &framed).unwrap();
+        let notifier = Blob::mapped(&path)
+            .unwrap()
+            .part(unframe)
+            .unwrap()
+            .part(|body| section(body, NOTIFY_SECTION))
+            .unwrap();
+        assert_eq!(&*notifier, b"the notifier");
+        let at = (framed.len() - b"the notifier".len()) as u64;
+        let code = notifier.code();
+        assert_eq!(code.bytes, b"the notifier");
+        assert_eq!(code.file, Some((path.as_path(), at)));
+        let read = Blob::from(framed.clone()).part(unframe).unwrap();
+        assert_eq!(&*read, &body[..]);
+        assert_eq!(read.code().file, None);
+        assert!(read.part(|_| Some(&b"elsewhere"[..])).is_none());
+    }
+
     #[test]
     fn the_view_section_is_read_out_of_a_core_module() {
         // a minimal core module: magic, version, one custom section
@@ -305,8 +529,8 @@ mod tests {
         module.push(0);
         module.push(section.len() as u8);
         module.extend_from_slice(&section);
-        assert_eq!(view_section(&module).as_deref(), Some(&body[..]));
-        assert_eq!(view_section(b"\0asm\x01\0\0\0"), None);
+        assert_eq!(super::section(&module, VIEW_SECTION), Some(&body[..]));
+        assert_eq!(super::section(b"\0asm\x01\0\0\0", VIEW_SECTION), None);
     }
 
     #[test]

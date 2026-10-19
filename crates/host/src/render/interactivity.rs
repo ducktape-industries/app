@@ -78,7 +78,7 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     }
     element = apply_mouse(element, interactivity, cx);
     element = apply_keyboard(element, interactivity, path, cx);
-    element = apply_misc(element, interactivity, cx);
+    element = apply_misc(element, interactivity, styles, cx);
     if let Some(tooltip) = &interactivity.tooltip
         && tooltip_held
     {
@@ -471,6 +471,7 @@ impl ViewTree {
 fn apply_misc<E: StatefulInteractiveElement>(
     mut element: E,
     interactivity: &wire::Interactivity,
+    styles: &wire::Styles,
     cx: &mut Context<ViewTree>,
 ) -> E {
     let tooltip_request = interactivity
@@ -506,6 +507,24 @@ fn apply_misc<E: StatefulInteractiveElement>(
         element = element.on_file_drop_exit(cx.listener(move |_, _, _, cx| {
             cx.emit(wire::Event::FileDropExit { handler });
         }));
+    }
+    // files the OS drags in arrive as gpui's `ExternalPaths` drag: a drop
+    // is the person's own gesture, and the seat opens the files for the
+    // view (`super::Dropped`)
+    if let Some(handler) = interactivity.on_file_drop {
+        element = element.on_drop(cx.listener(
+            move |this, paths: &gpui_kit::ExternalPaths, _, cx| {
+                this.activate();
+                cx.emit(super::Dropped {
+                    handler,
+                    paths: paths.paths().to_vec(),
+                });
+            },
+        ));
+    }
+    if let Some(style) = interactivity.file_drag_over {
+        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
+        element = element.drag_over::<gpui_kit::ExternalPaths>(move |_, _, _, _| style.clone());
     }
     if let Some(handler) = interactivity.on_aux_click {
         element = element.on_aux_click(cx.listener(

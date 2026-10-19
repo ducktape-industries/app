@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::kernel::tests::{Mode, fake_node, read_request, respond, view};
+use crate::runtime::kernel::tests::{Mode, fake_node, read_request, respond, roles_serial, view};
 
 /// The one refusal `id` got, as (code, message).
 fn refused(view: &mut View, id: u64) -> (String, String) {
@@ -35,6 +35,7 @@ async fn a_host_that_runs_no_node_mints_no_invite() {
     let node = Node {
         client: RpcClient::new("http://127.0.0.1:1"),
         network: "test-network".into(),
+        apart: None,
     };
     let ask = methods::encode(&methods::CreateInvite { ttl_days: 7 });
     let refusal = invite(node, ask).await.unwrap_err();
@@ -89,6 +90,7 @@ fn applying_node_with_a_lost_answer(lost: &'static str) -> (Node, Sent) {
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     let submits = Sent::default();
     let counted = submits.clone();
@@ -360,6 +362,7 @@ fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::Atomic
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     let applied_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = applied_count.clone();
@@ -445,6 +448,7 @@ fn counted_changes_node(
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     handle().spawn(async move {
         use futures::{SinkExt as _, StreamExt as _};
@@ -524,7 +528,6 @@ fn followers_of_one_programs_changes_share_one_socket() {
 #[test]
 fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
     let mut view = view();
-    view.targets = vec!["chat".into()];
     follow_changes(&mut view, 1, changes_node(&[]), "chat".into());
     spawn_reply(&mut view, 2, std::future::pending::<Answer>());
     let stalled = fake_node(vec![(noded::route::STATUS, Mode::Stall)]);
@@ -537,6 +540,7 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
         chain: String::new(),
         rev,
         live: None,
+        apart: None,
     });
     assert_eq!(refused(&mut view, 2).0, refusal::STALE_CONNECTION);
     assert_eq!(view.pending, [], "a subscription was refused");
@@ -600,6 +604,7 @@ fn connection_to(view: &View, node: Node) -> crate::runtime::Connection {
         chain: String::new(),
         rev: view.connection.rev + 1,
         live: None,
+        apart: None,
     }
 }
 
@@ -761,6 +766,7 @@ fn put_node(carried: Option<abi::Outcome>) -> PutNode {
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     let fake = PutNode {
         node,
@@ -948,7 +954,12 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
     ];
     let blobs = put_of(&view, blobs);
     let fake = put_node(bundle_five());
-    let mut answer = std::pin::pin!(put(fake.node.clone(), blobs));
+    let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sent = {
+        let told = told.clone();
+        move |bytes| told.lock().unwrap().push(bytes)
+    };
+    let mut answer = std::pin::pin!(put(fake.node.clone(), blobs, sent));
     let waited = tokio::time::timeout(std::time::Duration::from_millis(500), &mut answer).await;
     assert!(waited.is_err(), "answered before the bundle was held");
     assert!(fake.upload.lock().unwrap().is_some(), "the upload went in");
@@ -973,8 +984,13 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
         })
         .collect();
     assert_eq!(
-        methods::decode::<Vec<[u8; 32]>>(&answer.unwrap()).unwrap(),
-        ids
+        methods::decode::<methods::Putting>(&answer.unwrap()).unwrap(),
+        methods::Putting::Held(ids)
+    );
+    assert_eq!(
+        *told.lock().unwrap(),
+        [MOST, MOST + 5, MOST + 7],
+        "the bodies' bytes the upload took, as it took each"
     );
     let upload = fake.upload.lock().unwrap().take().unwrap();
     let len = u32::from_le_bytes(upload[..4].try_into().unwrap()) as usize;
@@ -1004,7 +1020,7 @@ async fn put_meeting(carried: Option<abi::Outcome>, seed: u64) -> Answer {
     .await;
     let blobs = put_of(&view(), vec![bytes("chunk", b"tape")]);
     let fake = put_node(carried);
-    let answer = put(fake.node.clone(), blobs);
+    let answer = put(fake.node.clone(), blobs, |_| {});
     tokio::time::timeout(std::time::Duration::from_secs(5), answer)
         .await
         .expect("answered")
@@ -1052,7 +1068,7 @@ fn a_put_of_no_blob_one_too_big_or_a_slice_of_no_pick_is_malformed() {
         (vec![picked(1, 0, MOST + 1)], "past"),
         (vec![picked(1, 2, 2)], "past"),
         (vec![picked(1, u64::MAX, 2)], "past"),
-        (vec![picked(2, 0, 1)], "not of the latest pick"),
+        (vec![picked(2, 0, 1)], "not one the view holds"),
         (vec![bytes("two words", b"x")], "one word"),
         (vec![bytes("", b"x")], "one word"),
     ];
@@ -1084,8 +1100,9 @@ async fn a_put_of_a_file_whose_size_changed_since_the_pick_is_a_host_fault() {
     let nowhere = Node {
         client: RpcClient::new("http://127.0.0.1:1"),
         network: "test-network".into(),
+        apart: None,
     };
-    let refusal = put(nowhere, blobs).await.unwrap_err();
+    let refusal = put(nowhere, blobs, |_| {}).await.unwrap_err();
     assert_eq!(refusal.code, refusal::HOST_FAULT);
     assert_eq!(refusal.message, "log.txt changed since it was picked");
 }
@@ -1107,7 +1124,7 @@ fn a_put_waiting_for_its_bundle_goes_with_the_view() {
     let mut changed = view.replies.changes();
     let node = fake.node.clone();
     start(&mut view, 1, None, Claim::default(), async move {
-        let answer = put(node, blobs).await;
+        let answer = put(node, blobs, |_| {}).await;
         replies.item(1, answer, true);
     });
     for _ in 0..200 {
@@ -1166,15 +1183,19 @@ async fn the_try_network_holds_a_put() {
     let node = Node {
         client: client.clone(),
         network: status.network.clone(),
+        apart: None,
     };
     let asked = std::time::Instant::now();
-    let ids: Vec<[u8; 32]> = methods::decode(&put(node, blobs).await.unwrap()).unwrap();
+    let held = methods::decode(&put(node, blobs, |_| {}).await.unwrap()).unwrap();
+    let methods::Putting::Held(ids) = held else {
+        panic!("{held:?}");
+    };
     eprintln!("held after {:?}", asked.elapsed());
     let target = status.roles.bound(abi::role::BLOBS).unwrap();
     for id in ids {
         let blob = abi::BlobId::Sha256(id);
         let ask = abi::encode(&blob::contract::Query::Held { blob });
-        let frame = backend::query_frame(&status.network, target, ask)
+        let frame = backend::query_frame(&*backend::query_signer(), &status.network, target, ask)
             .await
             .unwrap();
         let reply = client
@@ -1188,4 +1209,328 @@ async fn the_try_network_holds_a_put() {
             "{reply:?}"
         );
     }
+}
+
+/// A view whose manifest names no program queries one, follows its changes
+/// and writes to it, each through the node like any other request: the
+/// node's answer, its block and its receipt come back to the view.
+#[test]
+fn a_view_reaches_a_program_its_manifest_never_names() {
+    use commonware_cryptography::Signer as _;
+    let _roles = roles_serial();
+    let _seat = backend::seat_serial();
+    handle().block_on(backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
+    )));
+    let mut view = view();
+    let on = |view: &View, node: &Node| crate::runtime::Connection {
+        client: Some(node.client.clone()),
+        network: node.network.clone(),
+        chain: "test-network#1".into(),
+        rev: view.connection.rev,
+        live: None,
+        apart: None,
+    };
+    let answered = |view: &mut View, id: u64| {
+        for _ in 0..500 {
+            let mut events = Vec::new();
+            view.replies.drain_into(&mut events);
+            if let Some(event) = events
+                .into_iter()
+                .find(|event| matches!(event, wire::Event::Response { id: of, .. } if *of == id))
+            {
+                return event;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("request {id} got no answer");
+    };
+    let request = |id, kind: &str, payload| wire::Request {
+        id,
+        kind: kind.into(),
+        payload,
+    };
+    let to_chat = |body: Vec<u8>| {
+        methods::encode(&methods::Call {
+            target: "chat".into(),
+            body,
+        })
+    };
+
+    let queried = fake_node(vec![(
+        noded::route::QUERY,
+        Mode::Answer(abi::encode(&vec![7u8])),
+    )]);
+    view.connection = on(&view, &queried.node);
+    view.answer(request(1, "program.query", to_chat(Vec::new())), &None);
+    assert_eq!(
+        answered(&mut view, 1),
+        wire::Event::Response {
+            id: 1,
+            result: Ok(vec![7]),
+            done: true,
+        }
+    );
+
+    let followed = changes_node(&[5]);
+    view.connection = on(&view, &followed);
+    view.answer(
+        request(2, "program.changes", methods::encode(&"chat".to_owned())),
+        &None,
+    );
+    assert_eq!(
+        answered(&mut view, 2),
+        wire::Event::Response {
+            id: 2,
+            result: Ok(methods::encode(&Some(methods::Change {
+                height: 5,
+                keys: vec![b"row/5".to_vec()],
+            }))),
+            done: false,
+        }
+    );
+
+    let (written, applied) = node_refusing_duplicates();
+    view.connection = on(&view, &written);
+    view.answer(request(3, "op.submit", to_chat(vec![1, 2, 3])), &None);
+    match answered(&mut view, 3) {
+        wire::Event::Response {
+            result, done: true, ..
+        } => assert!(
+            matches!(decoded(result), methods::Submitted::Applied { .. }),
+            "the op was carried"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 1);
+    handle().block_on(backend::lock_signer());
+}
+
+/// A changes node that also counts its sockets: those it took, and those
+/// the client closed since.
+struct Watched {
+    node: Node,
+    opened: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// [`changes_node`], each socket counted when it opens and when the client
+/// closes it.
+fn watched_changes_node(heights: &'static [u64]) -> Watched {
+    let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (taken, gone) = (opened.clone(), closed.clone());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let node = Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+        apart: None,
+    };
+    handle().spawn(async move {
+        use futures::{SinkExt as _, StreamExt as _};
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        while let Ok((stream, _)) = listener.accept().await {
+            let (taken, gone) = (taken.clone(), gone.clone());
+            tokio::spawn(async move {
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                for &height in heights {
+                    let change = noded::Change {
+                        height,
+                        root: abi::Root([0; 32]),
+                        writes: vec![(format!("row/{height}").into_bytes(), None)],
+                    };
+                    let sent =
+                        tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change));
+                    socket.send(sent).await.unwrap();
+                }
+                while let Some(Ok(_)) = socket.next().await {}
+                gone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+    });
+    Watched {
+        node,
+        opened,
+        closed,
+    }
+}
+
+/// `count`'s value once it is `want`, waiting up to two seconds for it.
+fn counted(count: &std::sync::atomic::AtomicUsize, want: usize) -> usize {
+    for _ in 0..200 {
+        if count.load(std::sync::atomic::Ordering::SeqCst) == want {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    count.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// One `program.changes` item: the block at `height`, as the watched node
+/// writes it, or `None`.
+fn change_item(height: Option<u64>) -> wire::Event {
+    let change = height.map(|height| methods::Change {
+        height,
+        keys: vec![format!("row/{height}").into_bytes()],
+    });
+    wire::Event::Response {
+        id: 1,
+        result: Ok(methods::encode(&change)),
+        done: false,
+    }
+}
+
+/// A view off screen (a phone's seated pane on another tab) holds no
+/// socket, and the node is asked for none; on screen it opens the feed, is
+/// told first to re-read what moved while it was away (`None`), and hears
+/// the blocks; off screen again it lets go, and the socket no view holds
+/// closes. Before, every seated view held its program's socket whether or
+/// not anyone saw it: a phone on its Home tab followed every program on
+/// the network, about a megabyte a minute on duckpond.
+#[test]
+fn a_view_off_screen_holds_no_socket() {
+    let watched = watched_changes_node(&[5]);
+    let mut view = view();
+    view.set_visible(false);
+    follow_changes(&mut view, 1, watched.node.clone(), "chat".into());
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        counted(&watched.opened, 0),
+        0,
+        "a socket with no one to see it"
+    );
+    assert_eq!(drained(&view, 0), []);
+    view.set_visible(true);
+    assert_eq!(
+        drained(&view, 2),
+        [change_item(None), change_item(Some(5))],
+        "back on screen: re-read, then the blocks"
+    );
+    assert_eq!(counted(&watched.opened, 1), 1);
+    view.set_visible(false);
+    assert_eq!(
+        counted(&watched.closed, 1),
+        1,
+        "off screen, the socket closes"
+    );
+}
+
+/// Behind another app (a phone's lifecycle, `set_in_front`) no view holds
+/// a socket, its notifier neither, though a notifier follows with no
+/// screen: the socket closes, and in front again it opens and the follower
+/// re-reads first. Before, a phone in the background kept every socket,
+/// and the node queued each block's writes for it until it woke.
+#[test]
+fn an_app_behind_another_holds_no_socket() {
+    let watched = watched_changes_node(&[5]);
+    let (front, in_front) = tokio::sync::watch::channel(true);
+    let mut notifier = view();
+    notifier.notifier = true;
+    notifier.set_visible(false);
+    notifier.in_front = in_front;
+    follow_changes(&mut notifier, 1, watched.node.clone(), "chat".into());
+    assert_eq!(
+        drained(&notifier, 1),
+        [change_item(Some(5))],
+        "a notifier follows with no screen"
+    );
+    front.send_replace(false);
+    assert_eq!(counted(&watched.closed, 1), 1, "behind, the socket closes");
+    front.send_replace(true);
+    assert_eq!(
+        drained(&notifier, 2),
+        [change_item(None), change_item(Some(5))],
+        "in front again: re-read, then the blocks"
+    );
+    assert_eq!(counted(&watched.opened, 2), 2);
+}
+
+/// `chain.heads` asks the node nothing for a view off screen, and starts
+/// asking once it is on screen.
+#[test]
+fn heads_off_screen_ask_nothing() {
+    let stalled = fake_node(vec![(noded::route::STATUS, Mode::Stall)]);
+    let mut view = view();
+    view.set_visible(false);
+    follow_heads(&mut view, 1, stalled.node.clone());
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(counted(&stalled.accepted, 0), 0, "a status read for no one");
+    view.set_visible(true);
+    assert_eq!(counted(&stalled.accepted, 1), 1);
+}
+
+/// A followed set's request (`Connection::apart`) is asked of its own node,
+/// whatever the views' connection did since (a reconnect moves `rev`), and
+/// refused `stale_connection` only once its set left. A view's own is as
+/// before: refused once the app reconnected, asked otherwise.
+#[test]
+fn a_followed_request_is_stale_only_once_its_set_left() {
+    let mut view = view();
+    let rev = view.connection.rev;
+    let apart = std::sync::Arc::new(super::super::super::roster::Apart::default());
+    view.connection = crate::runtime::Connection {
+        client: Some(RpcClient::new("http://127.0.0.1:1")),
+        network: "other-network".into(),
+        chain: "other-network#1".into(),
+        // from before the views' last connect
+        rev: rev.wrapping_sub(1),
+        live: None,
+        apart: Some(apart.clone()),
+    };
+    let node = connected(&mut view, 1).expect("asked of its own node");
+    assert!(node.apart.is_some(), "its node reads its set's roster");
+    apart.left.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(connected(&mut view, 2).is_none());
+    assert_eq!(refused(&mut view, 2).0, refusal::STALE_CONNECTION);
+
+    view.connection.apart = None;
+    assert!(connected(&mut view, 3).is_none());
+    assert_eq!(refused(&mut view, 3).0, refusal::STALE_CONNECTION);
+    view.connection.rev = rev;
+    assert!(connected(&mut view, 4).is_some_and(|node| node.apart.is_none()));
+}
+
+/// A followed set's `program.query` goes out signed by the reader, never by
+/// the key seated for the network in hand (another network's); a view's
+/// own by the seated key.
+#[test]
+fn a_followed_query_is_signed_by_the_reader() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    let seated = commonware_cryptography::ed25519::PrivateKey::from_seed(61);
+    let seated_key = noded_client::Signer::public_key(&seated).to_vec();
+    handle().block_on(backend::seat_key(std::sync::Arc::new(seated)));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (heard, signed) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let (_, body) = read_request(&mut stream);
+            let query: noded::Query = abi::decode(&body).unwrap();
+            let frame: noded::Frame = abi::decode(&query.frame).unwrap();
+            let _ = heard.send(frame.body.signer);
+            respond(&mut stream, "200 OK", &abi::encode(&Vec::<u8>::new()));
+        }
+    });
+    let ask = methods::encode(&methods::Call {
+        target: "chat".into(),
+        body: Vec::new(),
+    });
+    let mut node = Node {
+        client: RpcClient::new(format!("http://{address}")),
+        network: "other-network".into(),
+        apart: None,
+    };
+    handle().block_on(query(node.clone(), ask.clone())).unwrap();
+    assert_eq!(signed.recv().unwrap(), seated_key, "the views' own");
+    node.apart = Some(Default::default());
+    handle().block_on(query(node, ask)).unwrap();
+    let reader = noded_client::Signer::public_key(&*crate::contract::os().reader()).to_vec();
+    assert_eq!(signed.recv().unwrap(), reader);
+    assert_ne!(reader, seated_key);
+    handle().block_on(backend::lock_signer());
 }

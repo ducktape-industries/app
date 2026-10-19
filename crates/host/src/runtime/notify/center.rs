@@ -37,6 +37,9 @@ pub struct Notice {
     /// program gave it; empty for none. Never for a decline, nor for an
     /// end made in the app or by the program.
     pub end_link: String,
+    /// The chain id (`<network>#<salt>`) whose centre let it through: two
+    /// listed networks' programs may raise one tag, and each stands.
+    pub chain: String,
 }
 
 impl Notice {
@@ -221,6 +224,7 @@ impl Center {
             kind,
             until,
             end_link: post.end_link.clone(),
+            chain: self.network.clone(),
         };
         let shown = self.log(program, view, post, wall);
         if shown || (until != 0 && until <= seconds) {
@@ -276,6 +280,7 @@ impl Center {
             tag: format!("more/{program}"),
             program: program.to_owned(),
             link: String::new(),
+            chain: self.network.clone(),
             ..Notice::default()
         };
         (Delivery::Logged, Some(more))
@@ -646,21 +651,53 @@ impl Center {
         }
     }
 
-    /// The network in hand: its log comes off disk, the policy starts over.
-    pub fn set_network(&mut self, network: &str) {
-        if self.network != network {
-            // the last network's rows go to its own file first
-            self.flush();
-            self.open_log(network, log_path(network));
-        }
+    /// The chain whose log this is; empty with none (the Connect screen, a
+    /// followed set whose chain was taken up in hand).
+    pub fn network(&self) -> &str {
+        &self.network
     }
 
-    /// `network` in hand with its log at `path`. A log that cannot be read
+    /// `network` in hand with its log at `path`, for a test (the app takes
+    /// a chain up through `notifier::take_up`). A log that cannot be read
     /// leaves the centre empty and with no `log`, so no save replaces it.
     /// The device's rows stay.
+    #[cfg(test)]
     pub(super) fn open_log(&mut self, network: &str, path: Option<PathBuf>) {
+        self.put_log(Log::read(network, path));
+    }
+
+    /// The chain's log taken out whole, handed to the disk first: this
+    /// centre holds none from then on, and a late flush (a left set's last
+    /// redraw) writes nothing over the file.
+    pub(crate) fn take_log(&mut self) -> Log {
+        self.flush();
+        let log = Log {
+            network: std::mem::take(&mut self.network),
+            log: self.log.take(),
+            entries: std::mem::take(&mut self.entries),
+            next: std::mem::take(&mut self.next),
+            carried: std::mem::take(&mut self.carried),
+            until: std::mem::take(&mut self.until),
+            calls: std::mem::take(&mut self.calls),
+        };
+        self.rev += 1;
+        self.saved = self.rev;
+        log
+    }
+
+    /// `log` in place of the chain's log this centre holds, which is handed
+    /// back (on its way to the disk): no file read. The device's rows and
+    /// the window in front stay; the policy starts over.
+    pub(crate) fn put_log(&mut self, log: Log) -> Log {
+        let left = self.take_log();
         *self = Center {
-            network: network.to_owned(),
+            network: log.network,
+            log: log.log,
+            entries: log.entries,
+            next: log.next,
+            carried: log.carried,
+            until: log.until,
+            calls: log.calls,
             front: self.front,
             rev: self.rev + 1,
             saved: self.rev + 1,
@@ -668,11 +705,7 @@ impl Center {
             device_log: self.device_log.take(),
             ..Center::default()
         };
-        if let Some((entries, path)) = path.and_then(|path| Some((opened(&path)?, path))) {
-            self.carried = opened(&carried_path(&path)).unwrap_or_default();
-            (self.entries, self.log) = (entries, Some(path));
-        }
-        self.next = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
+        left
     }
 
     /// The device's own rows off disk, as the host starts:
@@ -718,6 +751,49 @@ impl Center {
     }
 }
 
+/// One chain's log as a centre holds it, moved whole from one centre to
+/// another (`notifier::take_up`): its rows, where they are saved, the
+/// copies waiting beside them, and the rings standing under it (a timer at
+/// a call's `until` finds them in whichever centre holds the log then,
+/// `notify::withdraw_at`). Always handed over saved ([`Center::take_log`]).
+#[derive(Default)]
+pub(crate) struct Log {
+    network: String,
+    log: Option<PathBuf>,
+    entries: Vec<Entry>,
+    next: u64,
+    carried: Vec<Entry>,
+    until: HashMap<String, u64>,
+    calls: HashMap<String, String>,
+}
+
+impl Log {
+    /// `network`'s log off the disk: [`log_path`]'s file.
+    pub(crate) fn of(network: &str) -> Self {
+        Self::read(network, log_path(network))
+    }
+
+    /// `network`'s log from the file at `path`; one that cannot be read is
+    /// empty, with no file, so no save replaces it.
+    pub(crate) fn read(network: &str, path: Option<PathBuf>) -> Self {
+        let mut log = Log {
+            network: network.to_owned(),
+            ..Log::default()
+        };
+        if let Some((entries, path)) = path.and_then(|path| Some((opened(&path)?, path))) {
+            log.carried = opened(&carried_path(&path)).unwrap_or_default();
+            (log.entries, log.log) = (entries, Some(path));
+        }
+        log.next = log.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
+        log
+    }
+
+    /// The file it is saved to; none for no chain, or one unread.
+    pub(crate) fn file(&self) -> Option<&Path> {
+        self.log.as_deref()
+    }
+}
+
 /// `entries` written whole to `path` on the blocking pool, after every
 /// write to it queued before (`kernel::in_order` under the path).
 fn save(path: PathBuf, entries: Vec<Entry>) {
@@ -752,7 +828,7 @@ pub(super) fn read_log(path: &Path) -> std::io::Result<Vec<Entry>> {
 }
 
 /// `<config>/notifications/<chain>.json`, device-local beside the prefs.
-fn log_path(network: &str) -> Option<PathBuf> {
+pub(crate) fn log_path(network: &str) -> Option<PathBuf> {
     if network.is_empty() {
         return None;
     }

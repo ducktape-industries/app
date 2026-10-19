@@ -10,7 +10,7 @@
 //! kernel's runtime. It is a [`View`] with no tree (`View::notifier`),
 //! seated by the shell's runner as a view is (`contract::ViewInstance`: a
 //! module with no `snapshot`/`restore`, its tick answering a turn): a
-//! view's manifest, memory budget and fuel per tick, its requests routed as
+//! view's manifest and memory budget, its requests routed as
 //! a view's (`View::answer`, the kernel contract), its props the session
 //! every view gets. Its manifest may not declare what needs the person in
 //! front of it ([`UNATTENDED`]): it is refused before it starts.
@@ -32,10 +32,19 @@
 //! where the app's have the person's at this device. The program still
 //! decides every notice; the recipient only says whose they are and where
 //! they go.
+//!
+//! The desktop runs every other listed network's notifiers too, beside the
+//! network in hand's: a followed set per chain ([`follow`]).
 use super::*;
 use crate::backend::views::Program;
 use crate::contract::Banners;
 use notify::{CenterHandle, Permission, Settings};
+
+mod follow;
+#[cfg(any(test, feature = "test-support"))]
+pub use follow::follow_for_test;
+pub use follow::{Followed, STATUS_EVERY, chain_of, follow, followed_url, lock_followed, take_up};
+pub(super) use follow::{flush_sets, holding};
 
 /// The instance a notifier's requests and perf samples go under: no pane's.
 pub(crate) const INSTANCE: u64 = u64::MAX;
@@ -78,13 +87,15 @@ pub struct Recipient {
     /// [`props`](super::props) encodes it; the app's is the one `Seats`
     /// hands every pane.
     pub session: tokio::sync::watch::Sender<Option<Vec<u8>>>,
-    /// Where its notifiers' store files go, `<store>/<chain>/<program>.borsh`;
+    /// Where its notifiers' store files go, `<store>/<chain>/<key>/<program>.borsh`
+    /// for the key its session seats (`<store>/<chain>/<program>.borsh` for none);
     /// the app's are under `<config>/store`.
     pub store: PathBuf,
     /// Its notification centre: the fold by tag, the burst limit.
     pub center: CenterHandle,
-    /// Its word on notices, as the prefs hold the person's.
-    pub settings: Settings,
+    /// Its word on notices, as the prefs hold the person's; `None`: the
+    /// person's own, read as each notice is (a followed set's).
+    pub settings: Option<Settings>,
     /// Where a notice its centre lets through goes; the app's go to the OS.
     pub banners: Arc<dyn Banners>,
     /// What its notifiers ask the host to move (a badge), each with its
@@ -167,11 +178,13 @@ impl Notifiers {
     /// After a roster read on `asked_of`: one notifier for each of
     /// `programs` the person has not blocked, on that connection, running
     /// the code listed now. A program blocked or gone, a code moved and an
-    /// older connection stop theirs. A program that ships none has a thread
-    /// that reads its blob and ends.
+    /// older connection stop theirs. The ones to start are found one after
+    /// another on one thread ([`start`]): a program that ships none costs a
+    /// read of its blob and no thread.
     pub(super) fn reconcile(&self, asked_of: &Connection, programs: &[Program]) {
-        let blocked = match &self.recipient {
-            Some(recipient) => blocked_in(&recipient.settings),
+        let settings = self.recipient.as_ref().and_then(|r| r.settings.as_ref());
+        let blocked = match settings {
+            Some(settings) => blocked_in(settings),
             None => blocked(),
         };
         let wanted: HashMap<&'static str, abi::BlobId> = programs
@@ -183,11 +196,17 @@ impl Notifiers {
         running.retain(|program, run| {
             run.rev == asked_of.rev && wanted.get(program) == Some(&run.code)
         });
+        let mut starting = Vec::new();
         for (program, code) in wanted {
             if !running.contains_key(program) {
-                let recipient = self.recipient.clone();
-                running.insert(program, start(program, code, asked_of.clone(), recipient));
+                let (stop, stopped) = tokio::sync::watch::channel(false);
+                let rev = asked_of.rev;
+                running.insert(program, Running { code, rev, stop });
+                starting.push((program, code, stopped));
             }
+        }
+        if !starting.is_empty() {
+            start(starting, asked_of.clone(), self.recipient.clone());
         }
     }
 
@@ -230,75 +249,125 @@ pub(crate) fn disconnected() {
 }
 
 /// The person's word on `program`'s notices: blocked stops its notifier,
-/// anything else starts it if the network in hand lists the program.
+/// on every network, anything else starts it where a network lists the
+/// program (in hand, on the views' connection and roster; followed, on the
+/// set's own).
 pub(crate) fn permission_moved(program: &str, permission: Permission) {
     if permission == Permission::Block {
-        return notifiers().stop(program);
+        notifiers().stop(program);
+    } else {
+        let asked_of = connection().lock().expect("views rpc").clone();
+        if asked_of.client.is_some() {
+            let programs = roster().lock().clone();
+            notifiers().reconcile(&asked_of, &programs);
+        }
     }
-    let asked_of = connection().lock().expect("views rpc").clone();
-    if asked_of.client.is_some() {
-        let programs = roster().lock().clone();
-        notifiers().reconcile(&asked_of, &programs);
-    }
+    follow::permission_moved(program, permission);
 }
 
-/// `program`'s notifier out of `code`, for `recipient` (none: the person at
-/// this device), on a thread of its own, until its stop.
+/// Each of `programs`' notifiers out of its code, for `recipient` (none:
+/// the person at this device), each on a thread of its own until its stop.
+/// They are found and loaded one after another on one thread, so a set's
+/// first read holds one blob's pieces at a time, on one thread, whatever
+/// the roster lists.
 fn start(
-    program: &'static str,
-    code: abi::BlobId,
+    programs: Vec<(
+        &'static str,
+        abi::BlobId,
+        tokio::sync::watch::Receiver<bool>,
+    )>,
     asked_of: Connection,
     recipient: Option<Arc<Recipient>>,
-) -> Running {
-    let (stop, stopped) = tokio::sync::watch::channel(false);
-    let rev = asked_of.rev;
+) {
+    let loading = Loading::new();
     // a test's prefs are its own thread's (`backend::prefs`): the notifier
     // it starts reads the same
     #[cfg(any(test, feature = "test-support"))]
     let prefs = crate::backend::read_prefs().unwrap_or_default();
-    let spawned = std::thread::Builder::new()
-        .name(format!("notifier {program}"))
-        .spawn(move || {
-            #[cfg(any(test, feature = "test-support"))]
-            crate::backend::edit_prefs(|kept| *kept = prefs);
+    let found = move || {
+        #[cfg(any(test, feature = "test-support"))]
+        crate::backend::edit_prefs(|kept| *kept = prefs.clone());
+        for (program, code, stopped) in programs {
+            if *stopped.borrow() {
+                continue;
+            }
             let Some(mut notifier) = load(program, &code, &asked_of) else {
-                return;
+                continue;
             };
             let session = match &recipient {
                 Some(recipient) => recipient.session.subscribe(),
                 None => props().subscribe(),
             };
-            notifier.recipient = recipient;
-            drive(notifier, stopped, session);
-        });
-    if let Err(error) = spawned {
-        tracing::warn!(target: "ducktape::app", program, %error, "no thread to run the notifier on");
+            notifier.recipient = recipient.clone();
+            #[cfg(any(test, feature = "test-support"))]
+            let prefs = prefs.clone();
+            let spawned = std::thread::Builder::new()
+                .name(format!("notifier {program}"))
+                .spawn(move || {
+                    #[cfg(any(test, feature = "test-support"))]
+                    crate::backend::edit_prefs(|kept| *kept = prefs);
+                    drive(notifier, stopped, session);
+                });
+            if let Err(error) = spawned {
+                tracing::warn!(target: "ducktape::app", program, %error, "no thread to run the notifier on");
+            }
+        }
+        drop(loading);
+    };
+    if let Err(error) = std::thread::Builder::new()
+        .name("notifiers".into())
+        .spawn(found)
+    {
+        tracing::warn!(target: "ducktape::app", %error, "no thread to find the notifiers on");
     }
-    Running { code, rev, stop }
+}
+
+/// Notifier loads under way in the process, each a fetch and a compile:
+/// a followed set's first read waits for none to be left ([`follow`]), so
+/// sets started one after another never load at once.
+fn loads() -> &'static tokio::sync::watch::Sender<usize> {
+    static LOADS: OnceLock<tokio::sync::watch::Sender<usize>> = OnceLock::new();
+    LOADS.get_or_init(|| tokio::sync::watch::channel(0).0)
+}
+
+/// One load counted while it lives.
+struct Loading;
+
+impl Loading {
+    fn new() -> Self {
+        loads().send_modify(|loads| *loads += 1);
+        Loading
+    }
+}
+
+impl Drop for Loading {
+    fn drop(&mut self) {
+        loads().send_modify(|loads| *loads -= 1);
+    }
 }
 
 /// The notifier `code`'s blob carries, started (`init`): none when the
 /// blob carries none, or it does not load, which app.log says. One code
 /// loads at a time ([`loading`]): started for many recipients at once, it
 /// is fetched and compiled once, and the rest take it from the caches
-/// (`backend::views::program_bytes`, `view::compiled_view`).
+/// (`backend::views::notifier_of`, the runner's compiled code).
 fn load(program: &'static str, code: &abi::BlobId, asked_of: &Connection) -> Option<View> {
     let client = asked_of.client.as_ref()?;
     let gate = loading(code);
     let _loading = lock(&gate);
-    let bytes = handle().block_on(crate::backend::views::notifier_of(client, code));
+    let blob = handle().block_on(crate::backend::views::notifier_of(client, code));
     let refused = |reason: String| {
         tracing::warn!(target: "ducktape::app", program, reason = %reason, "notifier not started");
     };
-    let bytes = match bytes {
-        Ok(Some(bytes)) => bytes,
+    let blob = match blob {
+        Ok(Some(blob)) => blob,
         Ok(None) => return None,
         Err(error) => {
             refused(error.to_string());
             return None;
         }
     };
-    let notifier = handle().block_on(View::notifier(program, &bytes, asked_of));
+    let notifier = handle().block_on(View::notifier(program, blob.code(), asked_of));
     if let Err(reason) = &notifier {
         refused(reason.clone());
     }
@@ -326,11 +395,11 @@ impl View {
     /// `connection` and `init`ed.
     pub(super) async fn notifier(
         program: &'static str,
-        bytes: &[u8],
+        code: Code<'_>,
         connection: &Connection,
     ) -> Result<Self, String> {
         let shown = format!("{program} notifier");
-        let listing = manifest_of(bytes);
+        let listing = manifest_of(code.bytes);
         if let Some(capability) = listing
             .capabilities
             .iter()
@@ -344,7 +413,7 @@ impl View {
         let runner = crate::contract::runner();
         // held until the instance holds the code itself
         let (code, _held) =
-            Self::prepare(&**runner, bytes, &shown).map_err(|failure| failure.to_string())?;
+            Self::prepare(&**runner, code, &shown).map_err(|failure| failure.to_string())?;
         let mut notifier = Self::seated(program, INSTANCE, runner, code, &shown).await?;
         notifier.notifier = true;
         // nothing snapshots a notifier: no replay is kept for it
@@ -352,7 +421,6 @@ impl View {
         notifier.connection = connection.clone();
         notifier.name = listing.name;
         notifier.capabilities = listing.capabilities;
-        notifier.targets = listing.targets;
         notifier.wire = listing.wire;
         notifier.inited(&shown).await?;
         Ok(notifier)

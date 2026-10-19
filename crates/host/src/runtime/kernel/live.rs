@@ -217,10 +217,7 @@ fn went_live(view: &mut View) {
     if std::mem::replace(&mut view.tracks.told, true) {
         return;
     }
-    if crate::runtime::notify::center()
-        .lock()
-        .went_live(view.program)
-    {
+    if view.center().lock().went_live(view.program) {
         // the window's strip redraws with the line
         view.intents.push(Intent::Notified);
     }

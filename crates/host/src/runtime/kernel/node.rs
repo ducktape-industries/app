@@ -22,6 +22,27 @@ type NodeMethod = fn(Node, Vec<u8>) -> Answered;
 pub(super) struct Node {
     pub(super) client: RpcClient,
     pub(super) network: String,
+    /// A followed set's own (`Connection::apart`); `None` for the views'.
+    pub(super) apart: Option<std::sync::Arc<super::super::roster::Apart>>,
+}
+
+impl Node {
+    /// The roster the request reads: its set's, or the app's.
+    pub(super) fn roster(&self) -> &super::super::Roster {
+        match &self.apart {
+            Some(apart) => &apart.roster,
+            None => super::super::roster::roster(),
+        }
+    }
+
+    /// What signs its queries: a set's, the reader (the seated key is the
+    /// network in hand's); the views', the seated key or the reader.
+    pub(super) fn signer(&self) -> std::sync::Arc<dyn noded_client::Signer> {
+        match &self.apart {
+            Some(_) => crate::contract::os().reader(),
+            None => backend::query_signer(),
+        }
+    }
 }
 
 /// A refusal the transport produced, not the node's own word.
@@ -314,8 +335,7 @@ pub(in crate::runtime) fn spawn_reply(
 /// with the request REFUSED: `stale_connection` for a view from before the
 /// app's last (re)connect, `not_connected` without a node.
 pub(super) fn connected(view: &mut View, id: u64) -> Option<Node> {
-    let rev = super::super::connection().lock().expect("views rpc").rev;
-    if rev != view.connection.rev {
+    if view.connection.stale() {
         view.refuse(
             id,
             refusal::STALE_CONNECTION,
@@ -336,6 +356,7 @@ fn node_on(connection: &super::super::Connection) -> Option<Node> {
         (Some(client), network) if !network.is_empty() => Some(Node {
             client: client.clone(),
             network: network.clone(),
+            apart: connection.apart.clone(),
         }),
         _ => None,
     }
@@ -399,14 +420,6 @@ pub(super) fn changes(view: &mut View, id: u64, payload: &[u8]) {
         );
         return;
     }
-    if !view.targets.contains(&program) {
-        view.refuse(
-            id,
-            refusal::UNDECLARED_TARGET,
-            undeclared("program.changes", &program),
-        );
-        return;
-    }
     let Some(node) = connected(view, id) else {
         return;
     };
@@ -414,55 +427,133 @@ pub(super) fn changes(view: &mut View, id: u64, payload: &[u8]) {
 }
 
 /// Subscription `id`: `program.changes` of `program` on `node`, one
-/// follower of its [`Feed`]. A follower that falls more than
-/// [`FEED_BACKLOG`] items behind is told to re-read (`None`), as after a
-/// reopened socket, rather than holding the socket up for everyone.
+/// follower of its [`Feed`] while it is [`Wanted`]: off screen or behind
+/// another app it lets go of the feed (the last follower gone, the socket
+/// closes), and back it joins again and is told first to re-read
+/// (`None`), as after a reopened socket.
 fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
     let replies = view.replies.clone();
     let subscribed = (id, program.clone());
     let follows = Follow::Changes(program.clone());
-    let (feed, mut items) = feed(&node, &program);
+    let mut wanted = Wanted::of(view);
+    // joined before the socket can send anything, where it may join now
+    let mut joined = wanted.now().then(|| feed(&node, &program));
     let claim = Claim::default();
     let held = claim.clone();
     start(view, id, Some(follows), claim, async move {
-        use tokio::sync::broadcast::error::RecvError;
-        // held while the subscription runs: the last follower gone, the
-        // socket closes
-        let _feed = feed;
         let mut drained = replies.drains();
         loop {
-            let item = match items.recv().await {
-                Ok(item) => item,
-                Err(RecvError::Lagged(_)) => Ok(methods::encode(&None::<methods::Change>)),
-                Err(RecvError::Closed) => return,
+            let (feed, mut items) = match joined.take() {
+                Some(joined) => joined,
+                None => {
+                    wanted.until(true).await;
+                    let joined = feed(&node, &program);
+                    // what was written while it was away is not known
+                    let reread = Ok(methods::encode(&None::<methods::Change>));
+                    let told = tokio::select! {
+                        told = replies.subscription_item(&mut drained, &held, id, reread) => told,
+                        () = wanted.until(false) => continue,
+                    };
+                    if !told {
+                        return;
+                    }
+                    joined
+                }
             };
-            // a node that did not take the socket ends the subscription with why
-            if item.is_err() {
-                replies.answer(&held, id, item, true);
-                return;
-            }
-            if !replies
-                .subscription_item(&mut drained, &held, id, item)
-                .await
-            {
-                return;
+            // held while it is wanted: the last follower gone, the socket
+            // closes
+            let _feed = feed;
+            loop {
+                let item = tokio::select! {
+                    item = items.recv() => item,
+                    () = wanted.until(false) => break,
+                };
+                let Some(item) = item else {
+                    return;
+                };
+                // a node that did not take the socket ends the subscription with why
+                if item.is_err() {
+                    replies.answer(&held, id, item, true);
+                    return;
+                }
+                // a view that stops taking items (its app behind another)
+                // holds no socket while it does not: the item waits in its
+                // queue
+                let told = tokio::select! {
+                    told = replies.subscription_item(&mut drained, &held, id, item) => told,
+                    () = wanted.until(false) => break,
+                };
+                if !told {
+                    return;
+                }
             }
         }
     });
     view.live_subscriptions.push(subscribed);
 }
 
-/// Items a follower may fall behind its feed before it is told to re-read.
-const FEED_BACKLOG: usize = 256;
+/// When a view's node subscription holds its socket or its poll: while
+/// the app is in front of the person and the view on screen; a notifier,
+/// which is never on a screen, while the app is in front. A phone behind
+/// another app, or on a tab whose panes are seated but not shown, asks the
+/// node nothing for them: its notices come by push.
+struct Wanted {
+    front: tokio::sync::watch::Receiver<bool>,
+    on_screen: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl Wanted {
+    fn of(view: &View) -> Self {
+        Self {
+            front: view.in_front.clone(),
+            on_screen: (!view.notifier).then(|| view.on_screen.subscribe()),
+        }
+    }
+
+    fn now(&self) -> bool {
+        let shown = |on_screen: &tokio::sync::watch::Receiver<bool>| *on_screen.borrow();
+        *self.front.borrow() && self.on_screen.as_ref().is_none_or(shown)
+    }
+
+    /// Once it is wanted (`true`), or once it no longer is.
+    async fn until(&mut self, wanted: bool) {
+        while self.now() != wanted {
+            let Self { front, on_screen } = self;
+            // a value whose sender is gone moves no more
+            let front = async {
+                if front.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            };
+            let screen = async {
+                let moved = match on_screen {
+                    Some(shown) => shown.changed().await.is_ok(),
+                    None => false,
+                };
+                if !moved {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::select! {
+                () = front => {}
+                () = screen => {}
+            }
+        }
+    }
+}
 
 /// ONE `/v1/changes/<program>` socket per node and program, however many
-/// subscriptions follow it (a program's panes and its notifier; on a host
-/// with no screen, one notifier per account): each item goes to every
-/// follower. Opened by the first follower, closed with the last.
+/// subscriptions follow it (a program's panes on screen and its notifier;
+/// on a host with no screen, one notifier per account): each item goes to
+/// every follower, into its own queue, which holds what its view has not
+/// taken yet. Opened by the first follower, closed with the last.
 struct Feed {
-    items: tokio::sync::broadcast::Sender<Answer>,
+    followers: Followers,
     socket: tokio::task::JoinHandle<()>,
 }
+
+/// A feed's followers, each the queue of one subscription.
+type Followers = std::sync::Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Answer>>>>;
 
 impl Drop for Feed {
     fn drop(&mut self) {
@@ -473,13 +564,13 @@ impl Drop for Feed {
 type Feeds = HashMap<(String, String), std::sync::Weak<Feed>>;
 
 /// The feed of `program` on `node`, opened if none runs, and a follower's
-/// own place in it (made before the socket can send anything).
+/// own queue in it (made before the socket can send anything).
 fn feed(
     node: &Node,
     program: &str,
 ) -> (
     std::sync::Arc<Feed>,
-    tokio::sync::broadcast::Receiver<Answer>,
+    tokio::sync::mpsc::UnboundedReceiver<Answer>,
 ) {
     static FEEDS: OnceLock<Mutex<Feeds>> = OnceLock::new();
     let mut feeds = FEEDS
@@ -487,34 +578,45 @@ fn feed(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let key = (node.client.endpoint().to_owned(), program.to_owned());
+    let (follower, items) = tokio::sync::mpsc::unbounded_channel();
     // a feed whose node refused the socket has ended: the next follower opens another
     if let Some(feed) = feeds.get(&key).and_then(std::sync::Weak::upgrade)
         && !feed.socket.is_finished()
     {
-        let follower = feed.items.subscribe();
-        return (feed, follower);
+        feed.followers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(follower);
+        return (feed, items);
     }
     feeds.retain(|_, feed| feed.strong_count() > 0);
-    let (items, follower) = tokio::sync::broadcast::channel(FEED_BACKLOG);
+    let followers: Followers = std::sync::Arc::new(Mutex::new(vec![follower]));
     let socket = handle().spawn(socket(
         node.client.clone(),
         program.to_owned(),
-        items.clone(),
+        followers.clone(),
     ));
-    let feed = std::sync::Arc::new(Feed { items, socket });
+    let feed = std::sync::Arc::new(Feed { followers, socket });
     feeds.insert(key, std::sync::Arc::downgrade(&feed));
-    (feed, follower)
+    (feed, items)
 }
 
 /// A feed's socket: each change the node publishes, to every follower.
-async fn socket(client: RpcClient, program: String, items: tokio::sync::broadcast::Sender<Answer>) {
+async fn socket(client: RpcClient, program: String, followers: Followers) {
     use futures::StreamExt as _;
+    // to every follower still there; one that let go is dropped
+    let send = |item: Answer| {
+        followers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|follower| follower.send(item.clone()).is_ok());
+    };
     loop {
-        let mut changes = match client.changes(&program).await {
+        let mut changes = match client.changed_keys(&program).await {
             Ok(changes) => changes,
             Err(error) => {
                 tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
-                let _ = items.send(Err(refused(error)));
+                send(Err(refused(error)));
                 return;
             }
         };
@@ -528,12 +630,12 @@ async fn socket(client: RpcClient, program: String, items: tokio::sync::broadcas
                 })),
                 Err(_) => break,
             };
-            let _ = items.send(Ok(item));
+            send(Ok(item));
         }
         // the socket closed: the node restarted or the link dropped. Say so
         // once (each follower re-reads) and open it again; a node that does
         // not take it again ends every follower's subscription with why.
-        let _ = items.send(Ok(methods::encode(&None::<methods::Change>)));
+        send(Ok(methods::encode(&None::<methods::Change>)));
     }
 }
 
@@ -558,12 +660,19 @@ pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
     follow_heads(view, id, node);
 }
 
-/// Subscription `id`: `chain.heads` on `node`.
+/// Subscription `id`: `chain.heads` on `node`, read while it is
+/// [`Wanted`]: back on screen or in front, it goes on from the tip, as
+/// after a reconnect.
 fn follow_heads(view: &mut View, id: u64, node: Node) {
+    let mut wanted = Wanted::of(view);
     spawn_subscription(view, id, Follow::Heads, move |mut items| async move {
         let mut last: Option<u64> = None;
         let mut block_time_ms = None;
         loop {
+            if !wanted.now() {
+                wanted.until(true).await;
+                last = None;
+            }
             let read = next_heads(&node, last).await;
             let pace = match (read, block_time_ms) {
                 (Ok((heads, read_block_time_ms)), _) => {
@@ -658,8 +767,7 @@ impl Drop for NodeTask {
 }
 
 /// The envelope of a node method, its target checked: a program id
-/// (`program::is_name`, the rule a manifest's targets follow), not a
-/// path.
+/// (`program::is_name`), not a path.
 fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Error> {
     let call: methods::Call = methods::decode(ask).map_err(malformed)?;
     let target = call.target.trim();
@@ -672,43 +780,27 @@ fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Error> {
     }
 }
 
-fn undeclared(kind: &str, target: &str) -> String {
-    format!("`{kind}` names `{target}`, which this view's manifest does not list among its targets")
-}
-
-/// The envelope of `program.query` or `op.submit` (`kind`) from `view`, its
-/// target among the view's manifest targets; `None` with the request
-/// refused otherwise (`malformed_request`, `undeclared_target`). The task
+/// The envelope of `program.query` or `op.submit` from `view`; `None`
+/// with the request refused `malformed_request` when it names no
+/// program. Any program may be named: whether a view may read or write
+/// it is that program's to decide, never the view's manifest's. The task
 /// decodes the envelope again: a string and the bytes, cheaper than
 /// carrying it.
-pub(super) fn targeted(
-    view: &mut View,
-    id: u64,
-    payload: &[u8],
-    kind: &str,
-) -> Option<methods::Call> {
-    let call = match call_of(payload) {
-        Ok(call) => call,
+pub(super) fn enveloped(view: &mut View, id: u64, payload: &[u8]) -> Option<methods::Call> {
+    match call_of(payload) {
+        Ok(call) => Some(call),
         Err(refusal) => {
             view.reply(id, Err(refusal));
-            return None;
+            None
         }
-    };
-    if !view.targets.contains(&call.target) {
-        view.refuse(
-            id,
-            refusal::UNDECLARED_TARGET,
-            undeclared(kind, &call.target),
-        );
-        return None;
     }
-    Some(call)
 }
 
 pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
         let call = call_of(&ask)?;
-        let frame = backend::query_frame(&node.network, &call.target, call.body).await?;
+        let frame =
+            backend::query_frame(&*node.signer(), &node.network, &call.target, call.body).await?;
         node.client
             .query(backend::Layer::Preconfirmed, frame)
             .await
@@ -781,7 +873,7 @@ pub(super) struct Blob {
 
 enum Body {
     Bytes(Vec<u8>),
-    /// a slice of a file of the latest pick, within its size as picked
+    /// a slice of a file the view holds, within its size as held
     Picked {
         file: std::sync::Arc<picker::Picked>,
         offset: u64,
@@ -790,6 +882,14 @@ enum Body {
 }
 
 impl Blob {
+    /// The bytes of its body, as `op.put`'s `Sent` counts them.
+    fn len(&self) -> u64 {
+        match &self.body {
+            Body::Bytes(bytes) => bytes.len() as u64,
+            Body::Picked { len, .. } => *len,
+        }
+    }
+
     /// The blob framed (`kind len\0body`), a picked slice read on a
     /// blocking thread: a file whose size changed since the pick is
     /// refused `host_fault` (`picker::slice`).
@@ -811,7 +911,7 @@ impl Blob {
 
 /// `op.put`'s blobs, checked at the ask: no blob, one over
 /// [`methods::BLOB_MOST`], a kind the node does not take, or a slice of no
-/// file of the latest pick (or past its end) is `malformed_request`.
+/// file the view holds (or past its end) is `malformed_request`.
 fn blobs_of(view: &View, payload: &[u8]) -> Result<Vec<Blob>, wire::Error> {
     let put: methods::PutBlobs = methods::decode(payload).map_err(malformed)?;
     if put.blobs.is_empty() {
@@ -832,7 +932,7 @@ fn blobs_of(view: &View, payload: &[u8]) -> Result<Vec<Blob>, wire::Error> {
                 let picked = view
                     .picker
                     .picked(file)
-                    .ok_or_else(|| malformed(format!("file {file} is not of the latest pick")))?;
+                    .ok_or_else(|| malformed(format!("file {file} is not one the view holds")))?;
                 if offset.checked_add(len).is_none_or(|end| end > picked.size) {
                     return Err(malformed(format!(
                         "{len} bytes from {offset} run past file {file}'s {} bytes",
@@ -861,15 +961,127 @@ fn blobs_of(view: &View, payload: &[u8]) -> Result<Vec<Blob>, wire::Error> {
 }
 
 /// `op.put`: its blobs checked here ([`blobs_of`]), then put by its task
-/// ([`put`]), which goes with the view as every node task does.
+/// ([`put`]), which goes with the view as every node task does. A
+/// subscription: each `Sent` is an item as the upload takes the bytes (not
+/// parked for the redraw, which would hold the upload up while no window
+/// draws the view), then `Held` ends it. A reconnect refuses it
+/// `stale_connection`, as any request on the old node.
 pub(super) fn spawn_put(view: &mut View, id: u64, payload: &[u8]) {
     let blobs = match blobs_of(view, payload) {
         Ok(blobs) => blobs,
         Err(refusal) => return view.reply(id, Err(refusal)),
     };
-    // the blobs are taken: the payload is not carried again
-    let put = move |node, _, _| -> Answered { Box::pin(put(node, blobs)) };
-    spawn_method(view, id, &[], put, "host_call.op.put", None);
+    let Some(node) = connected(view, id) else {
+        return;
+    };
+    let replies = view.replies.clone();
+    let claim = Claim::default();
+    let held = claim.clone();
+    let key = view.perf_key();
+    let asked = crate::perf::on().then(std::time::Instant::now);
+    start(view, id, None, claim, async move {
+        let sent = {
+            let (replies, held) = (replies.clone(), held.clone());
+            move |bytes| {
+                let item = methods::encode(&methods::Putting::Sent(bytes));
+                replies.answer(&held, id, Ok(item), false);
+            }
+        };
+        let answer = put(node, blobs, sent).await;
+        if let Some(asked) = asked {
+            let micros = asked.elapsed().as_micros() as u64;
+            crate::perf::record(key, "host_call.op.put", micros);
+        }
+        replies.answer(&held, id, answer, true);
+    });
+}
+
+/// Whether the view's request `id` can reach the node now, refusing it
+/// when not ([`connected`]): asked before a dialog opens for it.
+#[cfg(feature = "ui")]
+pub(in crate::runtime) fn reaches_node(view: &mut View, id: u64) -> bool {
+    connected(view, id).is_some()
+}
+
+/// `file.save`: once `chosen` answers the file the person chose, its task
+/// ([`saved`]) writes the blobs into it, as a node task that goes with the
+/// view.
+#[cfg(feature = "ui")]
+pub(in crate::runtime) fn spawn_save(
+    view: &mut View,
+    id: u64,
+    save: methods::SaveFile,
+    chosen: impl std::future::Future<Output = Result<Option<std::path::PathBuf>, wire::Error>>
+    + Send
+    + 'static,
+) {
+    let save = move |node, _, _| -> Answered { Box::pin(saved(node, save, chosen)) };
+    spawn_method(view, id, &[], save, "host_call.file.save", None);
+}
+
+/// `file.save`'s task: the file the person chose (none: cancelled, `false`),
+/// and each blob of `save` read from the node in order and written to it on
+/// a blocking thread; `true` once every one is written. A blob the node
+/// does not hold is refused `node_failed`, a file that cannot be written
+/// `host_fault`, naming it by its name alone.
+#[cfg(feature = "ui")]
+async fn saved(
+    node: Node,
+    save: methods::SaveFile,
+    chosen: impl std::future::Future<Output = Result<Option<std::path::PathBuf>, wire::Error>>,
+) -> Answer {
+    let Some(path) = chosen.await? else {
+        return Ok(methods::encode(&false));
+    };
+    let methods::SaveFile { name, blobs } = save;
+    let named = move |error: std::io::Error| host_fault(format!("{name}: {error}"));
+    let file = tokio::task::spawn_blocking(move || std::fs::File::create(path))
+        .await
+        .map_err(host_fault)?
+        .map_err(named.clone())?;
+    let file = std::sync::Arc::new(Mutex::new(file));
+    for digest in blobs {
+        let Some(framed) = node
+            .client
+            .blob(abi::BlobId::Sha256(digest))
+            .await
+            .map_err(refused)?
+        else {
+            let hex = noded_client::hex::hex_encode(&digest);
+            let missing = format!("the node holds no blob sha256:{hex}");
+            return Err(wire::Error::new(refusal::NODE_FAILED, missing));
+        };
+        let body = noded_client::wire::unframe(&framed)
+            .ok_or_else(|| host_fault("blob has no header"))?
+            .to_vec();
+        let file = file.clone();
+        tokio::task::spawn_blocking(move || {
+            use std::io::Write as _;
+            file.lock().expect("a saved file").write_all(&body)
+        })
+        .await
+        .map_err(host_fault)?
+        .map_err(named.clone())?;
+    }
+    Ok(methods::encode(&true))
+}
+
+/// An event the host makes for the view on [`handle`], counted in flight
+/// until `event` answers: delivered at the view's next redraw, or nothing
+/// when it answers none.
+#[cfg(feature = "ui")]
+pub(in crate::runtime) fn spawn_event(
+    view: &View,
+    event: impl std::future::Future<Output = Option<wire::Event>> + Send + 'static,
+) {
+    let slot = view.replies.admit();
+    let replies = view.replies.clone();
+    handle().spawn(async move {
+        let _slot = slot;
+        if let Some(event) = event.await {
+            replies.event(event);
+        }
+    });
 }
 
 /// `op.put`'s task. A hash pass (each blob read, framed, hashed, dropped)
@@ -877,9 +1089,16 @@ pub(super) fn spawn_put(view: &mut View, id: u64, payload: &[u8]) {
 /// the node binds to the blobs role; a stream pass reads each blob again
 /// into the node's blob upload after it, so no pass holds the bundle
 /// whole. A file that changed between the passes no longer hashes to its
-/// id, and the node's refusal of it is the answer. The answer, each blob's
-/// sha256 digest in order, waits for the network to hold the bundle.
-pub(super) async fn put(node: Node, blobs: Vec<Blob>) -> Answer {
+/// id, and the node's refusal of it is the answer. `sent` hears the bytes
+/// of the blobs' bodies the upload has taken so far, each time it takes
+/// one, the last once the upload is done. The answer, `Held` with each
+/// blob's sha256 digest in order, waits for the network to hold the
+/// bundle.
+pub(super) async fn put(
+    node: Node,
+    blobs: Vec<Blob>,
+    sent: impl Fn(u64) + Send + Sync + 'static,
+) -> Answer {
     use futures::StreamExt as _;
     use sha2::Digest as _;
     let (mut ids, mut entries) = (Vec::with_capacity(blobs.len()), Vec::new());
@@ -905,24 +1124,35 @@ pub(super) async fn put(node: Node, blobs: Vec<Blob>) -> Answer {
     let mut blocks = node.client.changes(noded::RECENT).await.map_err(refused)?;
     let mut bundles = node.client.changes(&target).await.map_err(refused)?;
     let unread = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let sent = futures::stream::iter(blobs).then({
-        let unread = unread.clone();
+    let total: u64 = blobs.iter().map(Blob::len).sum();
+    let sent = std::sync::Arc::new(sent);
+    let taken = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let stream = futures::stream::iter(blobs).then({
+        let (unread, sent, taken) = (unread.clone(), sent.clone(), taken.clone());
         move |blob| {
-            let unread = unread.clone();
+            let (unread, sent, taken) = (unread.clone(), sent.clone(), taken.clone());
             async move {
-                blob.framed().await.map_err(|refusal| {
+                // asked for the next blob: the upload took the ones before
+                let before = taken.load(Ordering::SeqCst);
+                if before > 0 {
+                    sent(before);
+                }
+                let framed = blob.framed().await.map_err(|refusal| {
                     let error = std::io::Error::other(refusal.message.clone());
                     *unread.lock().expect("an unread blob") = Some(refusal);
                     error
-                })
+                })?;
+                taken.fetch_add(blob.len(), Ordering::SeqCst);
+                Ok(framed)
             }
         }
     });
-    if let Err(error) = node.client.put_blobs(frame.encode(), sent).await {
+    if let Err(error) = node.client.put_blobs(frame.encode(), stream).await {
         // a blob that could not be read again ended the upload: its refusal
         let unread = unread.lock().expect("an unread blob").take();
         return Err(unread.unwrap_or_else(|| refused(error)));
     }
+    sent(total);
     let bundle = landed(&node, &mut blocks, frame.body.id(), frame.body.until()).await?;
     drop(blocks);
     let key = blob::contract::bundle_key(bundle);
@@ -935,7 +1165,7 @@ pub(super) async fn put(node: Node, blobs: Vec<Blob>) -> Answer {
                 written == key && blob::contract::held_since(value.as_deref()).is_some()
             });
         if held {
-            return Ok(methods::encode(&ids));
+            return Ok(methods::encode(&methods::Putting::Held(ids)));
         }
     }
     Err(wire::Error::new(
@@ -1003,37 +1233,18 @@ fn blob_id(ask: &[u8]) -> Result<abi::BlobId, wire::Error> {
     })
 }
 
-/// `blob.manifest`: a blob the programs role names (a listed program's
-/// code, a view-only entry's, or one a scheduled change brings: the
-/// scheduled list is read for the ask, never per block), read as a seat
+/// `blob.manifest`: any blob, as `blob.get` reads any blob, read as a seat
 /// reads it (`views::program_bytes`, cached under its id); the view in its
 /// `ducktape.view` section or the blob itself for a view-only entry, and
 /// that view's manifest as `manifest_of` would read it. A blob is a view by
 /// its manifest section, read or not: one this host cannot read is a view
 /// with no manifest, never a program that draws nothing. The bytes stay on
-/// the host. An id the roster does not name is refused as
-/// `undeclared_target`, never fetched: `None` is the node's word that it
-/// holds no such blob, and a view asks the host only about code the chain
-/// names, as a node method names only a program its manifest declares.
+/// the host. `None` is the node's word that it holds no such blob.
 pub(super) fn blob_manifest(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
         use backend::views::{Fetch, VIEW_SECTION, program_bytes, section};
         use view_wire::manifest::{MANIFEST_SECTION, read_manifest};
         let id = blob_id(&ask)?;
-        let named = super::super::roster::roster().names_code(&id)
-            || match backend::views::coming(&node.client, &node.network).await {
-                Ok(coming) => coming.contains(&id),
-                Err(Fetch::Unreachable(reason)) => {
-                    return Err(wire::Error::new(refusal::RPC_CLIENT, reason));
-                }
-                Err(error) => return Err(host_fault(error)),
-            };
-        if !named {
-            return Err(wire::Error::new(
-                refusal::UNDECLARED_TARGET,
-                "the programs role names no such code",
-            ));
-        }
         let bytes = match program_bytes(&node.client, &id).await {
             Ok((bytes, _)) => bytes,
             Err(Fetch::NotHeld) => return Ok(methods::encode(&None::<methods::Manifested>)),
