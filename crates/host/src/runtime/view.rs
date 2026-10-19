@@ -193,6 +193,9 @@ pub(super) struct View {
     /// props it was last given on it.
     pub props_subscription: Option<u64>,
     pub props_sent: Option<Vec<u8>>,
+    /// The props its `store.changes` last followed (`store::follow`),
+    /// whether or not it subscribed to them.
+    pub props_followed: Option<Vec<u8>>,
     pub visible: bool,
     pub visibility_change: Option<bool>,
     pub visibility_subscriptions: Vec<u64>,

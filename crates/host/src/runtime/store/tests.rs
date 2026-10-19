@@ -4,19 +4,28 @@ fn scratch() -> PathBuf {
     std::env::temp_dir().join(format!("ducktape-store-{}", rand::random::<u64>()))
 }
 
+fn set(key: &str, value: Option<&[u8]>) -> Request {
+    Request::Set(key.to_owned(), value.map(<[u8]>::to_vec))
+}
+
 fn put(path: &Path, key: &str, value: Option<&[u8]>) -> Answer {
-    set(
-        path,
-        &methods::encode(&(key.to_owned(), value.map(<[u8]>::to_vec))),
-    )
+    run(path, &set(key, value))
 }
 
 fn read(path: &Path, key: &str) -> Option<Vec<u8>> {
-    methods::decode(&get(path, &methods::encode(&key.to_owned())).unwrap()).unwrap()
+    methods::decode(&run(path, &Request::Get(key.to_owned())).unwrap()).unwrap()
 }
 
 fn listed(path: &Path, prefix: &str) -> Vec<String> {
-    methods::decode(&list(path, &methods::encode(&prefix.to_owned())).unwrap()).unwrap()
+    methods::decode(&run(path, &Request::List(prefix.to_owned())).unwrap()).unwrap()
+}
+
+/// The code `operation` with `payload` is refused with.
+fn refused(operation: &str, payload: &[u8]) -> String {
+    Ask::read(Capability::Store, operation, payload)
+        .unwrap()
+        .unwrap_err()
+        .code
 }
 
 /// The device's file on `chain` for `program`: no key seated.
@@ -55,6 +64,66 @@ fn heard_keys(events: &[wire::Event], id: u64) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// Each ask reads as its request; an empty key, a payload that is not
+/// the method's or one given to `store.changes` is malformed; another
+/// operation is not the store's.
+#[test]
+fn asks_read_as_their_requests() {
+    let key = methods::encode(&"reads".to_owned());
+    let pair = methods::encode(&("reads".to_owned(), Some(b"1".to_vec())));
+    let file = |request| Some(Ok(Ask::File(request)));
+    assert_eq!(
+        Ask::read(Capability::Store, "get", &key),
+        file(Request::Get("reads".into()))
+    );
+    assert_eq!(
+        Ask::read(Capability::Store, "set", &pair),
+        file(set("reads", Some(b"1")))
+    );
+    assert_eq!(
+        Ask::read(Capability::Store, "list", &key),
+        file(Request::List("reads".into()))
+    );
+    assert_eq!(
+        Ask::read(Capability::Store, "changes", &[]),
+        Some(Ok(Ask::Changes))
+    );
+    assert_eq!(Ask::read(Capability::Store, "open", &key), None);
+    let malformed = methods::refusal::MALFORMED_REQUEST;
+    let empty = methods::encode(&String::new());
+    assert_eq!(refused("get", &empty), malformed);
+    let unnamed = methods::encode(&(String::new(), Some(b"x".to_vec())));
+    assert_eq!(refused("set", &unnamed), malformed);
+    assert_eq!(refused("list", &[1]), malformed);
+    assert_eq!(refused("changes", &key), malformed);
+}
+
+/// A request applied to the map: a `set` keeps or drops its key and is
+/// the one that hands a map back to write; a `get` and a `list` answer
+/// from it and write nothing.
+#[test]
+fn a_request_is_applied_to_the_map_alone() {
+    let kept = Kept::from([("a".to_owned(), b"1".to_vec())]);
+    let (answer, changed) = applied(kept.clone(), &set("b", Some(b"2")));
+    assert_eq!(answer, methods::encode(&()));
+    let both = Kept::from([
+        ("a".to_owned(), b"1".to_vec()),
+        ("b".to_owned(), b"2".to_vec()),
+    ]);
+    assert_eq!(changed, Some(both));
+    assert_eq!(applied(kept.clone(), &set("a", None)).1, Some(Kept::new()));
+    let (answer, changed) = applied(kept.clone(), &Request::Get("a".into()));
+    assert_eq!(
+        (answer, changed),
+        (methods::encode(&Some(b"1".to_vec())), None)
+    );
+    let (answer, changed) = applied(kept, &Request::List(String::new()));
+    assert_eq!(
+        (answer, changed),
+        (methods::encode(&vec!["a".to_owned()]), None)
+    );
 }
 
 /// Each view on each network has its own file, and a key kept by one is
@@ -100,26 +169,41 @@ fn keys_keep_apart() {
     let _ = std::fs::remove_dir_all(config);
 }
 
-/// A key's file not there yet starts as a copy of the device's, once: what
-/// the device keeps after that is not copied again, and with no device
-/// file nothing is written.
+/// A key's first requests read its own file, never the device's: a `get`
+/// and a `list` asked through `ask` with a key seated find nothing the
+/// device's file keeps (another key's cursors among it), and nothing is
+/// copied into the key's file.
 #[test]
-fn a_keys_first_open_copies_the_device_file() {
+fn a_keys_first_requests_read_nothing_of_the_device_file() {
     let config = scratch();
     let none = device(&config, "dev#01", "chat");
     let alice = located(&config, "dev#01", "aa01", "chat");
-    adopt(&alice).unwrap();
-    assert!(!alice.path.exists(), "nothing to copy");
-    put(&none.path, "reads", Some(b"1")).unwrap();
-    adopt(&alice).unwrap();
-    assert_eq!(read(&alice.path, "reads").as_deref(), Some(&b"1"[..]));
-    put(&none.path, "reads", Some(b"2")).unwrap();
-    put(&none.path, "emoji", Some(b"x")).unwrap();
-    adopt(&alice).unwrap();
-    assert_eq!(read(&alice.path, "reads").as_deref(), Some(&b"1"[..]));
-    assert_eq!(read(&alice.path, "emoji"), None);
-    adopt(&none).unwrap();
-    assert_eq!(read(&none.path, "reads").as_deref(), Some(&b"2"[..]));
+    put(&none.path, "reads/bb02", Some(b"7")).unwrap();
+    let mut view = crate::runtime::kernel::tests::view();
+    ask(
+        &mut view,
+        1,
+        alice.clone(),
+        Request::Get("reads/bb02".into()),
+    );
+    ask(&mut view, 2, alice.clone(), Request::List(String::new()));
+    let answered = replies(&mut view, |answered| answered.len() >= 2);
+    let mut answers: Vec<(u64, Vec<u8>)> = answered
+        .into_iter()
+        .filter_map(|event| match event {
+            wire::Event::Response { id, result, .. } => Some((id, result.unwrap())),
+            _ => None,
+        })
+        .collect();
+    answers.sort();
+    let nothing = methods::encode(&None::<Vec<u8>>);
+    let no_keys = methods::encode(&Vec::<String>::new());
+    assert_eq!(answers, [(1, nothing), (2, no_keys)]);
+    assert!(
+        !alice.path.exists(),
+        "nothing is copied into the key's file"
+    );
+    assert_eq!(read(&none.path, "reads/bb02").as_deref(), Some(&b"7"[..]));
     let _ = std::fs::remove_dir_all(config);
 }
 
@@ -139,24 +223,15 @@ fn list_answers_the_keys_under_a_prefix() {
         ["emoji", "rooms/all", "rooms/work", "roomsy"]
     );
     assert!(listed(&file, "zzz").is_empty());
-    assert_eq!(
-        list(&file, &[1]).unwrap_err().code,
-        methods::refusal::MALFORMED_REQUEST
-    );
     let _ = std::fs::remove_dir_all(config);
 }
 
-/// An empty key is refused; `None` drops a key; what was set is read
-/// back from disk by a fresh read, as after a relaunch.
+/// `None` drops a key; what was set is read back from disk by a fresh
+/// read, as after a relaunch.
 #[test]
-fn keys_are_named_dropped_and_kept_across_a_reopen() {
+fn keys_are_dropped_and_kept_across_a_reopen() {
     let config = scratch();
     let file = path(&config, "dev#01", "chat");
-    assert_eq!(
-        put(&file, "", Some(b"x")).unwrap_err().code,
-        methods::refusal::MALFORMED_REQUEST
-    );
-    assert!(get(&file, &methods::encode(&String::new())).is_err());
     put(&file, "a", Some(b"1")).unwrap();
     put(&file, "b", Some(b"2")).unwrap();
     put(&file, "a", None).unwrap();
@@ -180,22 +255,10 @@ fn a_get_behind_a_set_reads_it_off_the_window_thread() {
     let mut view = crate::runtime::kernel::tests::view();
     for nth in 0..20u64 {
         let value = nth.to_string().into_bytes();
-        let asked = methods::encode(&("reads".to_owned(), Some(value)));
-        ask(
-            &mut view,
-            2 * nth,
-            file.clone(),
-            ("io.store.set", set),
-            asked,
-        );
-        let asked = methods::encode(&"reads".to_owned());
-        ask(
-            &mut view,
-            2 * nth + 1,
-            file.clone(),
-            ("io.store.get", get),
-            asked,
-        );
+        let kept = Request::Set("reads".into(), Some(value));
+        ask(&mut view, 2 * nth, file.clone(), kept);
+        let asked = Request::Get("reads".into());
+        ask(&mut view, 2 * nth + 1, file.clone(), asked);
     }
     assert!(
         view.pending.is_empty(),
@@ -221,7 +284,7 @@ fn a_get_behind_a_set_reads_it_off_the_window_thread() {
 }
 
 /// A view's request reads the file of the key its props name: a `get` with
-/// a key seated reads that key's file, which starts from the device's.
+/// a key seated reads that key's file, never the device's.
 #[test]
 fn a_request_reads_the_file_of_the_key_its_props_name() {
     let mut view = crate::runtime::kernel::tests::view();
@@ -245,8 +308,7 @@ fn a_set_is_told_to_the_programs_other_instances() {
     let mut notifier = crate::runtime::kernel::tests::view();
     listen(&mut pane, 1, file.clone());
     listen(&mut notifier, 1, file.clone());
-    let asked = methods::encode(&("reads".to_owned(), Some(b"3".to_vec())));
-    ask(&mut pane, 2, file.clone(), (SET, set), asked);
+    ask(&mut pane, 2, file.clone(), set("reads", Some(b"3")));
     let heard = replies(&mut notifier, |heard| !heard.is_empty());
     let [
         wire::Event::Response {
@@ -284,8 +346,7 @@ fn a_set_is_told_only_to_the_same_keys_instances() {
     listen(&mut notifier, 1, alice.clone());
     listen(&mut other, 1, bob.clone());
     let set_reads = |pane: &mut View, id: u64, value: &[u8]| {
-        let asked = methods::encode(&("reads".to_owned(), Some(value.to_vec())));
-        ask(pane, id, alice.clone(), (SET, set), asked);
+        ask(pane, id, alice.clone(), set("reads", Some(value)));
     };
     set_reads(&mut pane, 2, b"1");
     let heard = replies(&mut notifier, |heard| !heard_keys(heard, 1).is_empty());
@@ -309,8 +370,7 @@ fn the_quit_drain_waits_for_a_queued_set() {
     let file = device(&config, "dev#01", "chat");
     let mut view = crate::runtime::kernel::tests::view();
     let release = crate::runtime::kernel::tests::held(&file.path.to_string_lossy());
-    let asked = methods::encode(&("last".to_owned(), Some(b"word".to_vec())));
-    ask(&mut view, 0, file.clone(), ("io.store.set", set), asked);
+    ask(&mut view, 0, file.clone(), set("last", Some(b"word")));
     assert!(!file.path.exists(), "the set waits behind the held job");
 
     let mut drained = std::pin::pin!(crate::runtime::kernel::drain());

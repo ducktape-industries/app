@@ -7,16 +7,17 @@
 //! seated, the device's own `<config>/store/<chain>/<program>.borsh` (a
 //! recipient's notifier's under its own store, `notifier::Recipient`): a
 //! borsh map of key → bytes, rewritten whole through
-//! `noded_client::fs::atomic_write`. A key's file that is not there yet
-//! starts as a copy of the device's, on the first request that reads it,
-//! so what was kept before files were per key stays. A view names keys,
-//! never paths — the chain, the seated key and the program come from the
-//! host — so no view reaches another view's file, another network's or
-//! another key's.
+//! `noded_client::fs::atomic_write`. A key's file starts empty: nothing
+//! the device's file or another key's keeps is copied into it. A view
+//! names keys, never paths — the chain, the seated key and the program
+//! come from the host — so no view reaches another view's file, another
+//! network's or another key's.
 //!
-//! The file is read and written off the window thread, one request after
-//! another in the order the view sent them (`kernel::in_order` under the
-//! file's path), so a `get` reads the `set` before it.
+//! [`answer`] reads the view's ask as a [`Request`] and routes it: each
+//! one but `store.changes` is [`applied`] to the file's map, a pure step,
+//! read and written off the window thread, one request after another in
+//! the order the view sent them (`kernel::in_order` under the file's
+//! path), so a `get` reads the `set` before it.
 //!
 //! The file is the program's, shared by every instance of it on the device
 //! running with the same key (its panes, its notifier): `store.changes`
@@ -34,6 +35,66 @@ use super::wire::{self, methods, methods::Capability};
 
 type Kept = BTreeMap<String, Vec<u8>>;
 
+/// A store method as the view asked it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Ask {
+    /// a request on the file
+    File(Request),
+    /// `store.changes`
+    Changes,
+}
+
+/// A request on the file, [`applied`] to its map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Request {
+    Get(String),
+    Set(String, Option<Vec<u8>>),
+    List(String),
+}
+
+impl Ask {
+    /// The ask `operation` of `capability` with `payload`; `None` for one
+    /// the store does not answer.
+    fn read(
+        capability: Capability,
+        operation: &str,
+        payload: &[u8],
+    ) -> Option<Result<Self, wire::Error>> {
+        let read = match (capability, operation) {
+            (Capability::Store, "get") => methods::decode(payload)
+                .map_err(malformed)
+                .and_then(|asked: String| key(&asked).map(|()| Request::Get(asked))),
+            (Capability::Store, "set") => methods::decode(payload).map_err(malformed).and_then(
+                |(asked, value): (String, Option<Vec<u8>>)| {
+                    key(&asked).map(|()| Request::Set(asked, value))
+                },
+            ),
+            (Capability::Store, "list") => methods::decode(payload)
+                .map_err(malformed)
+                .map(Request::List),
+            (Capability::Store, "changes") => {
+                return Some(match payload.is_empty() {
+                    true => Ok(Self::Changes),
+                    false => Err(malformed("`store.changes` takes no payload")),
+                });
+            }
+            _ => return None,
+        };
+        Some(read.map(Self::File))
+    }
+}
+
+impl Request {
+    /// Its perf timer.
+    fn stage(&self) -> &'static str {
+        match self {
+            Self::Get(_) => "io.store.get",
+            Self::Set(..) => "io.store.set",
+            Self::List(_) => "io.store.list",
+        }
+    }
+}
+
 pub(super) fn answer(
     view: &mut View,
     capability: Capability,
@@ -42,31 +103,48 @@ pub(super) fn answer(
     payload: &[u8],
     props: &Option<Vec<u8>>,
 ) -> bool {
-    let method: Method = match (capability, operation) {
-        (Capability::Store, "get") => ("io.store.get", get),
-        (Capability::Store, "set") => (SET, set),
-        (Capability::Store, "list") => ("io.store.list", list),
-        (Capability::Store, "changes") => {
-            match (payload.is_empty(), file(view, props)) {
-                (false, _) => view.reply(
-                    id,
-                    Err(refusal(
-                        methods::refusal::MALFORMED_REQUEST,
-                        "`store.changes` takes no payload",
-                    )),
-                ),
-                (true, Ok(file)) => listen(view, id, file),
-                (true, Err(refused)) => view.reply(id, Err(refused)),
-            }
-            return true;
-        }
-        _ => return false,
+    let Some(asked) = Ask::read(capability, operation, payload) else {
+        return false;
     };
-    match file(view, props) {
-        Ok(file) => ask(view, id, file, method, payload.to_vec()),
-        Err(refused) => view.reply(id, Err(refused)),
+    match (asked, file(view, props)) {
+        (Err(refused), _) | (Ok(_), Err(refused)) => view.reply(id, Err(refused)),
+        (Ok(Ask::Changes), Ok(file)) => listen(view, id, file),
+        (Ok(Ask::File(request)), Ok(file)) => ask(view, id, file, request),
     }
     true
+}
+
+/// What `request` does to `kept`, the file's map as read: its answer, and
+/// the map to write back when it changed (only a `set` changes it).
+fn applied(mut kept: Kept, request: &Request) -> (Vec<u8>, Option<Kept>) {
+    match request {
+        Request::Get(asked) => (methods::encode(&kept.remove(asked)), None),
+        Request::Set(asked, value) => {
+            match value {
+                Some(value) => kept.insert(asked.clone(), value.clone()),
+                None => kept.remove(asked),
+            };
+            (methods::encode(&()), Some(kept))
+        }
+        Request::List(prefix) => {
+            // the keys under a prefix (empty: every key), in byte order
+            let keys: Vec<String> = kept
+                .into_keys()
+                .filter(|key| key.starts_with(prefix.as_str()))
+                .collect();
+            (methods::encode(&keys), None)
+        }
+    }
+}
+
+/// `request` on the file at `path`: read, [`applied`], and written back
+/// when it changed.
+fn run(path: &Path, request: &Request) -> Answer {
+    let (answer, changed) = applied(load(path)?, request);
+    if let Some(kept) = changed {
+        write(path, &methods::encode(&kept))?;
+    }
+    Ok(answer)
 }
 
 /// The file a request reads and writes, and what it is filed under.
@@ -74,8 +152,8 @@ pub(super) fn answer(
 struct File {
     /// the file read and written
     path: PathBuf,
-    /// the program's device file on this network: where a key's file
-    /// starts from, and what `store.changes` files its listeners under
+    /// the program's device file on this network: what `store.changes`
+    /// files its listeners under
     device: PathBuf,
     /// the seated key (hex) the file is kept for; empty for none
     signer: String,
@@ -156,16 +234,10 @@ fn told(file: &File, key: String, writer: usize) {
     }
 }
 
-/// A store method: its perf timer, and what it does to the file.
-type Method = (&'static str, fn(&Path, &[u8]) -> Answer);
-
-/// `store.set`'s perf timer, which is also how [`ask`] knows a set.
-const SET: &str = "io.store.set";
-
-/// `method` on `file`, queued behind the view's earlier requests on it and
-/// answered as a reply. A `set` that kept its value is told to the
+/// `request` on `file`, queued behind the view's earlier requests on it
+/// and answered as a reply. A `set` that kept its value is told to the
 /// program's other instances ([`told`]).
-fn ask(view: &mut View, id: u64, file: File, (stage, run): Method, payload: Vec<u8>) {
+fn ask(view: &mut View, id: u64, file: File, request: Request) {
     let (tell, answer) = tokio::sync::oneshot::channel();
     spawn_reply(view, id, async move {
         answer
@@ -176,27 +248,13 @@ fn ask(view: &mut View, id: u64, file: File, (stage, run): Method, payload: Vec<
     // timed where it runs, on the blocking pool (docs/perf.md, question 7)
     let name = file.path.to_string_lossy().into_owned();
     in_order(&name, move || {
-        let _timed = crate::perf::time(crate::perf::Key::Shell, stage);
-        let answered = adopt(&file).and_then(|()| run(&file.path, &payload));
-        if stage == SET
-            && answered.is_ok()
-            && let Ok((key, _)) = methods::decode::<(String, Option<Vec<u8>>)>(&payload)
-        {
+        let _timed = crate::perf::time(crate::perf::Key::Shell, request.stage());
+        let answered = run(&file.path, &request);
+        if let (Ok(_), Request::Set(key, _)) = (&answered, request) {
             told(&file, key, writer);
         }
         let _ = tell.send(answered);
     });
-}
-
-/// A key's file not there yet starts as a copy of the device's: what was
-/// kept before files were per key. Nothing to copy, nothing is written.
-fn adopt(file: &File) -> Result<(), wire::Error> {
-    if file.path == file.device || file.path.exists() || !file.device.exists() {
-        return Ok(());
-    }
-    let bytes = std::fs::read(&file.device)
-        .map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
-    write(&file.path, &bytes)
 }
 
 /// This view's file on its own connection's network, for the key its
@@ -274,12 +332,13 @@ fn refusal(reason: &'static str, error: impl std::fmt::Display) -> wire::Error {
     wire::Error::new(reason, error.to_string())
 }
 
+fn malformed(error: impl std::fmt::Display) -> wire::Error {
+    refusal(methods::refusal::MALFORMED_REQUEST, error)
+}
+
 fn key(key: &str) -> Result<(), wire::Error> {
     match key.is_empty() {
-        true => Err(refusal(
-            methods::refusal::MALFORMED_REQUEST,
-            "a store key is not empty",
-        )),
+        true => Err(malformed("a store key is not empty")),
         false => Ok(()),
     }
 }
@@ -298,37 +357,6 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), wire::Error> {
         noded_client::fs::atomic_write(path, bytes, false)
     };
     write().map_err(|error| refusal(methods::refusal::HOST_FAULT, error))
-}
-
-fn get(path: &Path, payload: &[u8]) -> Answer {
-    let asked: String = methods::decode(payload)
-        .map_err(|error| refusal(methods::refusal::MALFORMED_REQUEST, error))?;
-    key(&asked)?;
-    Ok(methods::encode(&load(path)?.remove(&asked)))
-}
-
-fn set(path: &Path, payload: &[u8]) -> Answer {
-    let (asked, value): (String, Option<Vec<u8>>) = methods::decode(payload)
-        .map_err(|error| refusal(methods::refusal::MALFORMED_REQUEST, error))?;
-    key(&asked)?;
-    let mut kept = load(path)?;
-    match value {
-        Some(value) => kept.insert(asked, value),
-        None => kept.remove(&asked),
-    };
-    write(path, &methods::encode(&kept))?;
-    Ok(methods::encode(&()))
-}
-
-/// The keys kept under a prefix (empty: every key), in byte order.
-fn list(path: &Path, payload: &[u8]) -> Answer {
-    let prefix: String = methods::decode(payload)
-        .map_err(|error| refusal(methods::refusal::MALFORMED_REQUEST, error))?;
-    let keys: Vec<String> = load(path)?
-        .into_keys()
-        .filter(|key| key.starts_with(&prefix))
-        .collect();
-    Ok(methods::encode(&keys))
 }
 
 #[cfg(test)]

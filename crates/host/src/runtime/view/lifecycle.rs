@@ -688,6 +688,7 @@ impl View {
             pictures: _,
             props_subscription: _,
             props_sent: _,
+            props_followed: _,
             visible: _,
             visibility_change: _,
             visibility_subscriptions: _,
@@ -995,6 +996,7 @@ impl View {
             pictures: Pictures::default(),
             props_subscription: None,
             props_sent: None,
+            props_followed: None,
             visible: false,
             visibility_change: None,
             visibility_subscriptions: Vec::new(),
@@ -1027,8 +1029,12 @@ impl View {
     /// Hands the view the props the app holds, if they moved since the
     /// view last saw them. Before the view has subscribed they wait here.
     pub fn sync_props(&mut self, props: &Option<Vec<u8>>) {
-        // its `store.changes` follow the key the props seat
-        crate::runtime::store::follow(self, props);
+        // its `store.changes` follow the key the props seat, once they
+        // move: not a scan of every listener on each redraw
+        if *props != self.props_followed {
+            crate::runtime::store::follow(self, props);
+            self.props_followed.clone_from(props);
+        }
         let Some(id) = self.props_subscription else {
             return;
         };
