@@ -1,6 +1,6 @@
 use super::*;
 
-fn paragraph(key: &str, text: &str) -> wire::Node {
+pub(super) fn paragraph(key: &str, text: &str) -> wire::Node {
     wire::Node::RichText {
         id: Some(named_id(key)),
         style: crate::render::test_style(div().h(px(20.)).style().clone()),
@@ -75,8 +75,8 @@ fn panes() -> wire::Node {
     )
 }
 
-struct Window2 {
-    tree: Entity<ViewTree>,
+pub(super) struct Window2 {
+    pub(super) tree: Entity<ViewTree>,
 }
 impl Render for Window2 {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
