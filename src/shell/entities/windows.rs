@@ -99,6 +99,8 @@ pub(crate) struct Windows {
     /// and whether the switch to it was asked; until the row opens
     /// (`open_switched`) or the network goes elsewhere.
     switching: Option<(String, u64, bool)>,
+    held: Vec<String>,
+    starting: Option<String>,
     /// Starts the other listed networks' notifiers: while it has nodes
     /// still to ask, a click of a network's banner with no node known
     /// waits (a cold start). Set once at launch (`launch::run`); a test's
@@ -145,6 +147,7 @@ impl Windows {
                         }
                         this.raise_console(cx);
                         this.open_switched(cx);
+                        this.open_held(cx);
                     }
                     // a switch a banner asked for did not land
                     SessionEvent::Toast(_) => this.switching = None,
@@ -180,9 +183,13 @@ impl Windows {
                 }
                 this.swap_console(cx);
                 this.open_switched(cx);
+                this.open_held(cx);
             }),
             // the network listed its programs: a banner's row may open
-            cx.observe(&shared.rail, |this, _, cx| this.open_switched(cx)),
+            cx.observe(&shared.rail, |this, _, cx| {
+                this.open_switched(cx);
+                this.open_held(cx);
+            }),
             cx.observe(&shared.prefs, |this, prefs, cx| {
                 let appearance = prefs.read(cx).get().appearance;
                 if appearance != this.appearance {
@@ -217,6 +224,8 @@ impl Windows {
             subscriptions,
             desk_seats: None,
             switching: None,
+            held: Vec::new(),
+            starting: None,
             follower: None,
             kept: Keeper::load(),
             keeping: None,
@@ -513,6 +522,7 @@ impl Windows {
                         if let Some(on) = this.pending_on_top.remove(&key) {
                             this.set_on_top(key, on, cx);
                         }
+                        this.activate_starting(cx);
                         if this.floats.contains_key(&key) {
                             this.watch_float(key, handle.into(), cx);
                         }
@@ -1124,8 +1134,54 @@ impl Windows {
         self.open_link_into(link, opens, cx);
     }
 
+    pub(crate) fn started(&mut self, launch: crate::profile::Launch, cx: &mut Context<Self>) {
+        self.starting = launch.activation;
+        self.activate_starting(cx);
+        self.hold_links(launch.args, cx);
+    }
+
+    fn activate_starting(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.console.and_then(|key| self.handles.get(&key).copied()) else {
+            return;
+        };
+        let Some(token) = self.starting.take() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            let told = handle.update(cx, |_, window, _| windows::activate(window, Some(&token)));
+            if let Ok(Err(error)) = told {
+                tracing::warn!(target: "ducktape::app", reason = "activate_failed", %error, "the console did not end its launch's startup");
+            }
+        });
+    }
+
+    pub(crate) fn hold_links(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+        let links = args.into_iter().filter(|arg| arg.starts_with("duck:"));
+        self.held.extend(links);
+        self.open_held(cx);
+    }
+
+    fn open_held(&mut self, cx: &mut Context<Self>) {
+        if self.held.is_empty() {
+            return;
+        }
+        let session = self.shared.session.read(cx).get();
+        let ready = session.connected
+            && !session.connecting
+            && !self.shared.rail.read(cx).rows().is_empty()
+            && *self.shared.screen.read(cx).get() == Screen::Desk;
+        if !ready {
+            return;
+        }
+        for link in std::mem::take(&mut self.held) {
+            self.open_link(&link, None, cx);
+        }
+    }
+
     pub(crate) fn launched(&mut self, launch: crate::profile::Launch, cx: &mut Context<Self>) {
-        cx.activate(true);
+        if cfg!(target_os = "macos") {
+            cx.activate(true);
+        }
         self.raise_console(cx);
         if let Some(handle) = self.console.and_then(|key| self.handles.get(&key).copied()) {
             let token = launch.activation.clone();

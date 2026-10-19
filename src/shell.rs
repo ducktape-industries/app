@@ -40,6 +40,7 @@ pub(crate) fn kept_restore(
     layers::Kept::of(window, cx)
         .map(|kept| Box::new(move |cx: &mut gpui_kit::App| kept.restore(cx)) as crate::ax::Restore)
 }
+mod busy;
 mod ink;
 mod keys;
 mod launch;

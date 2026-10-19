@@ -1578,10 +1578,10 @@ fn a_link_a_later_launch_hands_over_reaches_its_pane_whole(cx: &mut TestAppConte
     let (app, console) = console(cx);
     listed(&app, &[PROGRAM], cx);
     let desk = desk_of(&app, console, cx);
-    let dir = tempfile::tempdir().unwrap();
+    let (dir, sockets) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let first = crate::profile::Launch::default();
     let crate::profile::Claim::Held(profile) =
-        crate::profile::claim_at(dir.path(), &first).unwrap()
+        crate::profile::claim_at(dir.path(), sockets.path(), &first).unwrap()
     else {
         panic!("the first launch holds the profile");
     };
@@ -1592,7 +1592,7 @@ fn a_link_a_later_launch_hands_over_reaches_its_pane_whole(cx: &mut TestAppConte
         args: vec![format!("duck://{PROGRAM}/channel-7/thread/42")],
         activation: Some(token.into()),
     };
-    let claim = crate::profile::claim_at(dir.path(), &later).unwrap();
+    let claim = crate::profile::claim_at(dir.path(), sockets.path(), &later).unwrap();
     assert!(matches!(claim, crate::profile::Claim::HandedOver));
     let launch = launches.recv().unwrap();
     assert_eq!(launch, later);
@@ -1610,5 +1610,74 @@ fn a_link_a_later_launch_hands_over_reaches_its_pane_whole(cx: &mut TestAppConte
     assert_eq!(
         crate::runtime::take_route(PROGRAM, pane.instance).as_deref(),
         Some("channel-7/thread/42")
+    );
+}
+
+#[gpui_kit::test]
+fn a_launch_that_becomes_the_app_opens_its_own_link_once_the_desk_is_up(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "own-launch-link";
+    let (app, console) = console(cx);
+    let desk = desk_of(&app, console, cx);
+    app.screen
+        .update(cx, |screen, cx| screen.set(super::Screen::Connect, cx));
+    let args = vec![
+        "--flag".to_string(),
+        format!("duck://{PROGRAM}/channel-7/thread/42"),
+    ];
+    app.windows
+        .update(cx, |windows, cx| windows.hold_links(args, cx));
+    cx.run_until_parked();
+    let shows = |cx: &TestAppContext| {
+        let layout = desk.read_with(cx, |desk, _| desk.get().clone());
+        layout.panes.iter().any(|pane| pane.program == PROGRAM)
+    };
+    assert!(!shows(cx), "opened before the network was in hand");
+    app.session.update(cx, |session, cx| {
+        let state = SessionState {
+            connected: true,
+            ..SessionState::default()
+        };
+        session.seed(state, cx)
+    });
+    listed(&app, &[PROGRAM], cx);
+    app.screen
+        .update(cx, |screen, cx| screen.set(super::Screen::Desk, cx));
+    cx.run_until_parked();
+    let layout = desk.read_with(cx, |desk, _| desk.get().clone());
+    let pane = &layout.panes[layout.focused];
+    assert_eq!(pane.program, PROGRAM, "the launch's own link did not open");
+    assert_eq!(
+        crate::runtime::take_route(PROGRAM, pane.instance).as_deref(),
+        Some("channel-7/thread/42")
+    );
+}
+
+#[gpui_kit::test]
+fn a_first_launch_ends_its_startup_as_its_console_maps(cx: &mut TestAppContext) {
+    let app = cx.update(|cx| {
+        gpui_kit::init(cx);
+        let app = entities(cx);
+        Windows::forget_closed(&app.windows, cx);
+        app
+    });
+    let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
+    let token = "first-1_TIME5";
+    app.windows.update(cx, |windows, cx| {
+        windows.open(WindowKind::Console, Some(at), None, cx);
+        let launch = crate::profile::Launch {
+            args: Vec::new(),
+            activation: Some(token.into()),
+        };
+        windows.started(launch, cx);
+    });
+    cx.run_until_parked();
+    let activated = crate::shell::windows::ACTIVATED.with_borrow(|told| told.clone());
+    assert_eq!(
+        activated
+            .iter()
+            .map(|(_, told)| told.as_deref())
+            .collect::<Vec<_>>(),
+        [Some(token)],
+        "the console did not end its launch's startup, once"
     );
 }

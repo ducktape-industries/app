@@ -89,25 +89,30 @@ fn main() {
     perf::start();
     install_log();
     perf::mark("log");
-    let profile = match profile::claim() {
+    let launch = profile::launch();
+    let claimed = profile::claim(&launch);
+    let start = match claimed {
         Ok(profile::Claim::HandedOver) => return,
-        Ok(profile::Claim::Held(profile)) => Some(profile),
+        Ok(profile::Claim::Held(profile)) => profile::Start::Now(Some(profile), launch),
+        Ok(profile::Claim::Busy(busy)) => profile::Start::WhenFree(busy, launch),
         Err(error) => {
             tracing::warn!(target: "ducktape::app", event = "profile_unlocked", %error, "going on with this profile unlocked");
-            None
+            profile::Start::Now(None, launch)
         }
     };
     // the self-update's boot step: flip to a staged release, or back from
     // one that never came up, and run the release that should run
-    update::boot();
+    if let profile::Start::Now(..) = start {
+        update::boot();
+    }
     raise_open_file_limit();
     #[cfg(debug_assertions)]
     if let Some(live) = live {
-        shell::run_live(live, os.clone(), profile);
+        shell::run_live(live, os.clone(), start);
         render::web::shutdown();
         return;
     }
-    shell::run(os, profile);
+    shell::run(os, start);
     render::web::shutdown();
 }
 
