@@ -288,7 +288,7 @@ impl ViewCode {
             min_width,
             width: None,
             capabilities: Vec::new(),
-            wire: view_wire::WIRE_ID.into(),
+            wire: view_wire::WIRE_LEVEL.to_string(),
         })
     }
 }

@@ -510,12 +510,47 @@ fn a_view_on_another_wire_runs_and_its_failure_names_the_node_and_both_wires() {
     assert_eq!(
         failure.to_string(),
         format!(
-            "{fault} (this view was built against wire 0; this app speaks {})",
-            wire::WIRE_ID
+            "{fault} (this view was built at wire level 0 (0); this app reads level {})",
+            wire::WIRE_LEVEL
         )
     );
-    view.wire = wire::WIRE_ID.into();
+    view.wire = wire::WIRE_LEVEL.to_string();
     assert_eq!(view.failure(fault.clone()), Failure::Trapped(fault));
+}
+
+// The host reads a manifest's line 6 as `Manifest::level` does: a level
+// in canonical decimal, else a view built before J-085, at 0.
+#[test]
+fn a_wire_level_reads_as_the_manifest_reads_it() {
+    for line in ["1", "7", "cd5911c62028048f", "01", "0123abcd", "0"] {
+        let manifest = wire::manifest::Manifest::parse(&format!(
+            "ducktape.view.manifest\nA\n\n\n480\n{line}\n\n\nnone\n"
+        ))
+        .unwrap();
+        assert_eq!(super::level(line), manifest.level(), "{line}");
+    }
+}
+
+// A node this app could not read is found wherever a frame carries one, by
+// what it was, so the view logs each once.
+#[test]
+fn a_frame_names_the_nodes_this_app_could_not_read() {
+    let unknown = |what: &str| wire::Node::Unknown { what: what.into() };
+    let frame = wire::Frame {
+        root: Some(wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: wire::StyleId(0),
+            interactivity: None,
+            children: vec![wire::Node::Space, unknown("Node: a")],
+        })),
+        patches: vec![wire::Patch::Insert {
+            path: Vec::new(),
+            index: 0,
+            node: unknown("Node: b"),
+        }],
+        ..Default::default()
+    };
+    assert_eq!(super::unknowns(&frame), ["Node: a", "Node: b"]);
 }
 
 /// A large state the swap tests carry over.

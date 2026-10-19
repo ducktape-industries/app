@@ -166,7 +166,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    override first (`seat::view_override`, unverified, logged), else the
    network's bytes. Either way `View::compile` reads the manifest
    (upstream `view_wire::manifest::read_manifest`), logs `view_wire_differs`
-   when its `wire_id` is not `view_wire::WIRE_ID` (the view runs all the
+   when its wire level (manifest line 6) is not `view_wire::WIRE_LEVEL` (the view runs all the
    same, and a failure of it says so: `View::failure`), then `compiled_view` compiles through the one
    `Engine` (`view::engine`: `consume_fuel(true)`, opt level Speed, a
    wasmtime disk cache under `cache_dir()/view-code`); `runtime::manifest_of`

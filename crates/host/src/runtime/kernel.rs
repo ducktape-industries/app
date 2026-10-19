@@ -144,6 +144,20 @@ fn malformed(error: impl std::fmt::Display) -> wire::Error {
 /// why not. Every method in this file hands back exactly this.
 pub(super) type Answer = Result<Vec<u8>, wire::Error>;
 
+// The kinds this host answers (`host.methods`): every method but those its
+// build or its platform has none of, the ones `answer` hands back as
+// unknown (`return false`) where they are.
+fn hosted(floats: bool) -> Vec<String> {
+    let floating = ["host.float", "host.unfloat", "host.placement"];
+    let captures = ["camera.devices", "microphone.devices", "microphone.chime"];
+    methods::ALL
+        .iter()
+        .filter(|kind| floats || !floating.contains(kind))
+        .filter(|kind| cfg!(feature = "av") || !captures.contains(kind))
+        .map(|kind| (*kind).to_owned())
+        .collect()
+}
+
 mod describe;
 pub(super) mod live;
 mod node;
@@ -299,6 +313,13 @@ pub(super) fn answer(
         // a host with no window to float a pane into (a phone's) knows
         // none of the three
         (Capability::Host, "float" | "unfloat" | "placement") if !view.floats => return false,
+        (Capability::Host, "methods") => {
+            let hosted = methods::Hosted {
+                level: wire::WIRE_LEVEL,
+                kinds: hosted(view.floats),
+            };
+            view.reply(id, Ok(methods::HostMethods::encode_reply(&hosted)));
+        }
         (Capability::Host, "placement") => {
             if !payload.is_empty() {
                 view.refuse(

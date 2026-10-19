@@ -475,7 +475,8 @@ impl ViewTree {
             Node::Text(view_wire::TextNode { .. }) => self.text(node),
             Node::Space => div().into_any_element(),
             // a node a later view-wire wrote, which this build cannot read:
-            // drawn as nothing (view-wire's `Node::Unknown` contract)
+            // drawn as nothing (view-wire's `Node::Unknown` contract); the
+            // view logs each once when its frame lands (`runtime::view::unknowns`)
             Node::Unknown { .. } => div().into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, window, cx),

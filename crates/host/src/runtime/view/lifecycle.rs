@@ -662,6 +662,7 @@ impl View {
             connection: _,
             activation: _,
             undeclared_logged: _,
+            unknown_logged: _,
             running,
             runner,
             landing: _,
@@ -902,9 +903,16 @@ impl View {
         let bytes = code.bytes;
         // refused here, a manifest `manifest_of` would read as empty never
         // reaches a seat
-        let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
-            Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
-        })?;
+        let (manifest, unknown) =
+            view_wire::manifest::read_manifest_noting(bytes).ok_or_else(|| {
+                Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
+            })?;
+        if !unknown.is_empty() {
+            // a later build's capability grants nothing here: the view runs
+            // without it, and its methods answer `unknown_request`
+            tracing::warn!(target: "ducktape::app", reason = "capability_unknown",
+                "{shown}: the view declares {unknown:?}, which this app does not know");
+        }
         if let Some(wire) = foreign_wire(&manifest.wire_id) {
             // run all the same: what fails names the wire and the node
             tracing::warn!(target: "ducktape::app", reason = "view_wire_differs", "{shown}: {wire}");
@@ -967,9 +975,10 @@ impl View {
             min_width: 0,
             width: None,
             // the manifest's, once `load` reads it
-            wire: wire::WIRE_ID.into(),
+            wire: wire::WIRE_LEVEL.to_string(),
             code: None,
             undeclared_logged: Vec::new(),
+            unknown_logged: Vec::new(),
             running,
             runner: runner.clone(),
             landing,

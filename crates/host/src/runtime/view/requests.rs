@@ -216,7 +216,9 @@ impl View {
         };
         // A view is untrusted code: it reaches only the methods its manifest
         // declares. Consent (media, notifications) is asked on top of this.
-        if !self.capabilities.contains(&capability) {
+        // `host.methods` grants nothing: every view may ask it
+        let asks_methods = kind == <wire::methods::HostMethods as wire::methods::Method>::KIND;
+        if !self.capabilities.contains(&capability) && !asks_methods {
             let name = capability.as_str();
             if !self.undeclared_logged.contains(&capability) {
                 self.undeclared_logged.push(capability);
@@ -414,7 +416,12 @@ impl View {
     /// and [`Self::tick_landed`] takes it.
     pub fn begin_tick(&mut self) {
         let key = self.perf_key();
-        let events = std::mem::take(&mut self.pending);
+        // a view reads the events its wire level knows: one built before
+        // J-085 fails on any other, so an event a later level added is
+        // never sent it
+        let level = super::level(&self.wire);
+        let mut events = std::mem::take(&mut self.pending);
+        events.retain(|event| event.level() <= level);
         #[cfg(any(test, feature = "test-support"))]
         self.ticked_with.push(events.clone());
         let bytes = match self.notifier {
@@ -470,6 +477,14 @@ impl View {
         });
         match outcome {
             Ok((mut frame, mut reports)) => {
+                for what in super::unknowns(&frame) {
+                    if !self.unknown_logged.iter().any(|logged| logged == what) {
+                        tracing::warn!(target: "ducktape::app", program = self.program,
+                            reason = "node_unknown", what,
+                            "the view drew a node this app cannot read: it draws nothing");
+                        self.unknown_logged.push(what.to_owned());
+                    }
+                }
                 let kind = match (frame.root.is_some(), frame.unchanged) {
                     (true, _) => "frame.full",
                     (false, true) => "frame.unchanged",

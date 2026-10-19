@@ -33,7 +33,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One whose manifest's wire_id is not `view_wire::WIRE_ID` runs all the same, and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
+# --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One built at another wire level runs all the same (J-085: each side reads what the other appended; the host sends a view only the events its level reads), and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
 abi = { git = "https://github.com/ducktape-industries/programs", rev = "d07fcd03c678a0f9444fc36ad08070b984cd63f5", package = "abi" }
 view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "d07fcd03c678a0f9444fc36ad08070b984cd63f5", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id

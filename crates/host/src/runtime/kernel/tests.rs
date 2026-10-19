@@ -206,6 +206,11 @@ fn a_method_is_reached_only_through_its_declared_capability() {
     let _serial = roles_serial();
     let _roles = acl_roles();
     for kind in methods::ALL {
+        // answered to every view, whatever it declares
+        // (`every_view_asks_what_this_host_answers`)
+        if *kind == "host.methods" {
+            continue;
+        }
         let family = Capability::of_kind(kind).unwrap().0;
         let others: Vec<Capability> = Capability::ALL
             .into_iter()
@@ -239,6 +244,63 @@ fn a_method_is_reached_only_through_its_declared_capability() {
     assert_eq!(
         refused_with(&[], "chat.props").as_deref(),
         Some(refusal::UNKNOWN_REQUEST)
+    );
+}
+
+// `host.methods` says what this host answers, to a view that declares
+// nothing: every method but those this build or platform has none of
+// (J-085).
+#[test]
+fn every_view_asks_what_this_host_answers() {
+    for floats in [true, false] {
+        let mut view = view();
+        view.capabilities = Vec::new();
+        view.floats = floats;
+        let asked = wire::Request {
+            id: 1,
+            kind: "host.methods".into(),
+            payload: methods::encode(&()),
+        };
+        view.answer(asked, &None);
+        let Some(wire::Event::Response {
+            result: Ok(bytes),
+            done: true,
+            ..
+        }) = view.pending.pop()
+        else {
+            panic!("host.methods answers once");
+        };
+        let hosted: methods::Hosted = methods::decode(&bytes).unwrap();
+        assert_eq!(hosted.level, wire::WIRE_LEVEL);
+        assert!(hosted.has("link.window") && hosted.has("host.methods"));
+        assert_eq!(hosted.has("host.float"), floats);
+        assert_eq!(hosted.has("camera.devices"), cfg!(feature = "av"));
+        assert!(
+            hosted
+                .kinds
+                .iter()
+                .all(|kind| methods::ALL.contains(&kind.as_str()))
+        );
+    }
+}
+
+// A view built before J-085 fails on an event it does not know, so it is
+// sent only those its wire level reads; an event this app could not read
+// itself is sent to none.
+#[test]
+fn a_view_is_sent_only_the_events_its_wire_level_reads() {
+    let mut view = view();
+    view.wire = "cd5911c62028048f".into();
+    view.pending = vec![
+        wire::Event::Unknown {
+            what: "Event: later".into(),
+        },
+        wire::Event::Theme { dark: true },
+    ];
+    view.tick();
+    assert_eq!(
+        view.ticked_with.last().unwrap(),
+        &[wire::Event::Theme { dark: true }]
     );
 }
 

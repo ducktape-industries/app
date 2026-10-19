@@ -128,6 +128,9 @@ pub(super) struct View {
     pub(super) code: Option<Box<ViewCode>>,
     /// The undeclared capabilities already logged, so each is logged once.
     pub undeclared_logged: Vec<Capability>,
+    // What this view's frames carried that this app could not read
+    // (`unknowns`), each logged once.
+    pub unknown_logged: Vec<String>,
     /// The running instance (`contract::ViewInstance`), and the runner that
     /// seated it: a sibling (a fresh start after a failed restore) is
     /// seated by the same one.
@@ -421,15 +424,56 @@ pub(super) fn shape(
     Ok((frame, cuts))
 }
 
-/// A view built against another wire than this app's, as the words its
-/// failures carry; `None` for one built against this app's.
+// The wire level a manifest's line 6 says (`view_wire::manifest::Manifest::level`):
+// its level in canonical decimal, or 0 for a view built before J-085, which
+// wrote its `WIRE_ID` there.
+pub(super) fn level(wire: &str) -> u32 {
+    wire.parse::<u32>()
+        .ok()
+        .filter(|level| level.to_string() == wire)
+        .unwrap_or(0)
+}
+
+/// A view built at another wire level than this app's, as the words its
+/// failures carry; `None` for one built at this app's.
 pub(super) fn foreign_wire(id: &str) -> Option<String> {
-    (id != wire::WIRE_ID).then(|| {
+    (level(id) != wire::WIRE_LEVEL).then(|| {
         format!(
-            "this view was built against wire {id}; this app speaks {}",
-            wire::WIRE_ID
+            "this view was built at wire level {} ({id}); this app reads level {}",
+            level(id),
+            wire::WIRE_LEVEL
         )
     })
+}
+
+// What a frame carries that this app could not read (`wire::Node::Unknown`):
+// each node a later build added, or that holds a value this build does not
+// know, by what it was.
+pub(super) fn unknowns(frame: &wire::Frame) -> Vec<&str> {
+    fn walk<'a>(node: &'a wire::Node, out: &mut Vec<&'a str>) {
+        if let wire::Node::Unknown { what } = node {
+            out.push(what);
+        }
+        node.children().iter().for_each(|child| walk(child, out));
+    }
+    let mut out = Vec::new();
+    let patched = frame.patches.iter().filter_map(|patch| match patch {
+        wire::Patch::Replace { node, .. }
+        | wire::Patch::Props { node, .. }
+        | wire::Patch::Insert { node, .. } => Some(node),
+        wire::Patch::Remove { .. } | wire::Patch::Move { .. } => None,
+    });
+    let tooltips = frame
+        .tooltip_responses
+        .iter()
+        .filter_map(|response| response.content.as_deref());
+    frame
+        .root
+        .iter()
+        .chain(patched)
+        .chain(tooltips)
+        .for_each(|node| walk(node, &mut out));
+    out
 }
 
 #[cfg(test)]
