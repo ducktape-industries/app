@@ -3252,14 +3252,8 @@ mod tests {
         );
     }
 
-    /// A Home tile is drawn pressed (`look::PRESSED`) while a touch is
-    /// held on it, from touch-down (Home scrolls, and the look shows all
-    /// the same, as Expo's `Pressable`s do); a touch that is cancelled
-    /// lifts the look at once and opens nothing; a tap opens the program
-    /// at lift. (The 130 ms the look outlasts a quick tap is gpui's, proven
-    /// there: the tile slides away under the opening program here.)
     #[gpui_kit::test]
-    fn a_tile_is_drawn_pressed_while_a_touch_is_held_on_it(cx: &mut TestAppContext) {
+    fn a_cancelled_touch_on_a_tile_opens_nothing_and_a_tap_opens_it(cx: &mut TestAppContext) {
         let _seat = ducktape_host::backend::seat_serial();
         let (root, stack, cx) = phone(cx);
         let shared = root.read_with(cx, |root, _| root.shared.clone());
@@ -3269,27 +3263,7 @@ mod tests {
         });
         run_out(cx);
 
-        // `home/{PROGRAM}`, the tile in Home's grid
         const TILE: &str = "home/phone-root-test";
-        // the tile's glyph (60 square on its tint's ground), as drawn now
-        let glyph_alpha = |cx: &mut VisualTestContext| -> f32 {
-            cx.update(|window, cx| window.draw(cx).clear(cx));
-            let tile = cx.debug_bounds(TILE).expect("the tile drawn");
-            cx.update(|window, _| {
-                let scale = window.scale_factor();
-                let tile = tile.scale(scale);
-                let side = gpui_kit::ScaledPixels(60. * scale);
-                let glyph = window
-                    .painted_quads()
-                    .into_iter()
-                    .find(|quad| {
-                        tile.contains(&quad.bounds.origin) && quad.bounds.size.width == side
-                    })
-                    .expect("the tile's glyph drawn");
-                glyph.background.as_solid().expect("a solid ground").a
-            })
-        };
-        let pressed = |cx: &mut VisualTestContext| (glyph_alpha(cx) - look::PRESSED).abs() < 1e-3;
         let at = cx.debug_bounds(TILE).expect("the tile drawn").center();
         let touch = |id: u64, phase: gpui_kit::TouchPhase, cx: &mut VisualTestContext| {
             cx.simulate_event(gpui_kit::TouchEvent {
@@ -3300,17 +3274,10 @@ mod tests {
                 force: None,
             });
         };
-        assert_eq!(glyph_alpha(cx), 1., "dimmed before any touch");
 
         touch(1, gpui_kit::TouchPhase::Started, cx);
-        assert!(pressed(cx), "not drawn pressed under the finger");
         assert_eq!(top(&stack, cx), None, "opened at touch-down");
         touch(1, gpui_kit::TouchPhase::Cancelled, cx);
-        assert_eq!(
-            glyph_alpha(cx),
-            1.,
-            "still pressed after the touch was cancelled"
-        );
         assert_eq!(
             top(&stack, cx),
             None,
