@@ -22,6 +22,7 @@ pub(super) fn build(
         .unwrap_or_default();
     let child = cx.new(|_| {
         let mut child = ViewTree::new(content);
+        child.portal = None;
         child.set_pictures(pictures);
         child.images = images;
         child

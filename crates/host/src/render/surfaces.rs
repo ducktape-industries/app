@@ -34,6 +34,12 @@ impl ViewTree {
                 modal => modal,
             };
             let anchored = matches!(shown, wire::Node::Anchored { .. });
+            let portal = match modal {
+                wire::Node::Deferred { priority, .. } => {
+                    self.portal.take().map(|portal| (portal, *priority))
+                }
+                _ => None,
+            };
             let shade = shades(anchored, &style).then(|| {
                 div()
                     .id(host_id("backdrop"))
@@ -70,6 +76,9 @@ impl ViewTree {
                 )
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(self.node(modal, window, cx));
+            if let Some((portal, _)) = &portal {
+                self.portal = Some(portal.clone());
+            }
             let layer = self.dialog(
                 path,
                 named,
@@ -80,6 +89,12 @@ impl ViewTree {
                 window,
                 cx,
             );
+            let layer = match portal {
+                Some((portal, priority)) => {
+                    super::deferred::deferred(layer, priority, &portal).into_any_element()
+                }
+                None => layer,
+            };
             element = element.children(shade).child(layer);
         }
         element.into_any_element()

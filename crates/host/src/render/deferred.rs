@@ -1,23 +1,15 @@
-//! A view's layer: its deferred draws and its tooltips, drawn among the
-//! window's deferred draws at a view priority and inside its pane.
-//! GPUI's generic Deferred intentionally passes no mask; that behavior would
-//! let view overlays draw above host chrome after the slot has been painted.
-//!
-//! [`Layer`] sets the pane's [`TooltipLayer`] around a view's tree: gpui
-//! draws every tooltip registered inside it at [`VIEW_CEILING`], fitted
-//! and clipped to the pane, and a view `Deferred` takes the same mask. A
-//! masked deferred draw paints and takes clicks only inside its mask
-//! (gpui-pre `window.rs`, `prepaint_deferred_draws`, `Frame::hit_test`).
-//!
-//! A view `Deferred` met inside another draws in place, so the depth
-//! stays one whatever the view nests (gpui asserts it under ten).
+//! A view's layer and a desk window's. A view's deferred draws are drawn by
+//! its portal, the last child of its pane's clip, by priority: over the view,
+//! under the pane above it and under every host layer. Desk windows draw masked.
 use super::*;
-use gpui_kit::TooltipLayer;
+use gpui_kit::{AvailableSpace, TooltipLayer};
 use std::cell::{Cell, RefCell};
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 type Scopes = Rc<RefCell<Option<Vec<super::pointer::ScopeKey>>>>;
 type Mask = Rc<Cell<Option<gpui_kit::ContentMask<Pixels>>>>;
+pub(super) type Portal = Rc<RefCell<Vec<Placed>>>;
 
 /// The host's band, over every window's rank and every priority a view
 /// asks for: each window draws at its rank (`PaneLayer`), and a view's
@@ -30,6 +22,13 @@ pub(super) const VIEW_CEILING: usize = 16;
 
 thread_local! {
     static INSIDE: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(super) struct Placed {
+    key: u64,
+    priority: usize,
+    bounds: Bounds<Pixels>,
+    element: AnyElement,
 }
 
 impl ViewTree {
@@ -45,16 +44,20 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        deferred(self.node(content, window, cx), *priority).into_any_element()
+        let Some(portal) = self.portal.clone() else {
+            return self.node(content, window, cx);
+        };
+        deferred(self.node(content, window, cx), *priority, &portal).into_any_element()
     }
 }
 
-pub(super) fn deferred(child: AnyElement, priority: usize) -> SlotDeferred {
+pub(super) fn deferred(child: AnyElement, priority: usize, portal: &Portal) -> SlotDeferred {
     let scopes = Scopes::default();
     SlotDeferred {
         child: Some(Inside(child, scopes.clone()).into_any_element()),
         priority: priority.min(VIEW_CEILING),
         scopes,
+        portal: portal.clone(),
     }
 }
 
@@ -62,6 +65,15 @@ pub(super) struct SlotDeferred {
     child: Option<AnyElement>,
     priority: usize,
     scopes: Scopes,
+    portal: Portal,
+}
+
+fn filling() -> gpui_kit::Style {
+    gpui_kit::Style {
+        position: gpui_kit::Position::Absolute,
+        inset: gpui_kit::Edges::all(gpui_kit::Length::Definite(px(0.).into())),
+        ..Default::default()
+    }
 }
 
 impl IntoElement for SlotDeferred {
@@ -72,7 +84,7 @@ impl IntoElement for SlotDeferred {
 }
 
 impl Element for SlotDeferred {
-    type RequestLayoutState = ();
+    type RequestLayoutState = bool;
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -88,14 +100,89 @@ impl Element for SlotDeferred {
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (
+    ) -> (LayoutId, bool) {
+        let child = self.child.as_mut().expect("deferred child before prepaint");
+        if INSIDE.get() {
+            return (child.request_layout(window, cx), true);
+        }
+        (window.request_layout(filling(), None, cx), false)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        in_place: &mut bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if *in_place {
             self.child
                 .as_mut()
                 .expect("deferred child before prepaint")
-                .request_layout(window, cx),
-            (),
-        )
+                .prepaint(window, cx);
+            return;
+        }
+        let element = self.child.take().expect("deferred child is drawn once");
+        *self.scopes.borrow_mut() = super::pointer::stack(window, cx);
+        let key = window.with_global_id(ElementId::Name("deferred".into()), |id, _| {
+            let mut hasher = std::hash::DefaultHasher::new();
+            id.hash(&mut hasher);
+            hasher.finish()
+        });
+        self.portal.borrow_mut().push(Placed {
+            key,
+            priority: self.priority,
+            bounds,
+            element,
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _in_place: &mut bool,
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(child) = &mut self.child {
+            child.paint(window, cx);
+        }
+    }
+}
+
+pub(super) struct Portaled(pub(super) Portal);
+
+impl IntoElement for Portaled {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Portaled {
+    type RequestLayoutState = ();
+    type PrepaintState = Vec<AnyElement>;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (window.request_layout(filling(), None, cx), ())
     }
 
     fn prepaint(
@@ -106,21 +193,34 @@ impl Element for SlotDeferred {
         _request_layout: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
-        if INSIDE.get() {
-            self.child
-                .as_mut()
-                .expect("deferred child before prepaint")
-                .prepaint(window, cx);
-            return;
-        }
-        let child = self.child.take().expect("deferred child is drawn once");
-        *self.scopes.borrow_mut() = super::pointer::stack(window, cx);
-        let pane = window
-            .tooltip_layer()
-            .expect("a view deferral draws inside its view's layer")
-            .mask;
-        window.defer_draw(child, window.element_offset(), self.priority, Some(pane));
+    ) -> Vec<AnyElement> {
+        let mut placed = std::mem::take(&mut *self.0.borrow_mut());
+        placed.sort_by_key(|placed| placed.priority);
+        let mut seen = std::collections::HashMap::<u64, u64>::new();
+        inside(|| {
+            placed
+                .into_iter()
+                .map(|placed| {
+                    let nth = seen.entry(placed.key).or_default();
+                    let mut hasher = std::hash::DefaultHasher::new();
+                    (placed.key, *nth).hash(&mut hasher);
+                    *nth += 1;
+                    let mut element = div()
+                        .id(ElementId::Integer(hasher.finish()))
+                        .w(placed.bounds.size.width)
+                        .h(placed.bounds.size.height)
+                        .child(placed.element)
+                        .into_any_element();
+                    element.prepaint_as_root(
+                        placed.bounds.origin,
+                        placed.bounds.size.map(AvailableSpace::Definite),
+                        window,
+                        cx,
+                    );
+                    element
+                })
+                .collect()
+        })
     }
 
     fn paint(
@@ -129,12 +229,12 @@ impl Element for SlotDeferred {
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut (),
-        _prepaint: &mut (),
+        drawn: &mut Vec<AnyElement>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        if let Some(child) = &mut self.child {
-            child.paint(window, cx);
+        for element in drawn {
+            element.paint(window, cx);
         }
     }
 }
@@ -424,29 +524,30 @@ impl Element for Inside {
 mod tests {
     use super::*;
 
-    struct Clipped;
+    struct Clipped(Portal);
     impl Render for Clipped {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div().size(px(40.)).overflow_hidden().child(Layer(
-                deferred(
-                    div()
-                        .absolute()
-                        .left(px(30.))
-                        .size(px(100.))
-                        .bg(rgb(0xff00ff))
-                        .into_any_element(),
-                    usize::MAX,
-                )
-                .into_any_element(),
-                None,
-            ))
+            let overlay = div()
+                .absolute()
+                .left(px(30.))
+                .size(px(100.))
+                .bg(rgb(0xff00ff))
+                .into_any_element();
+            div()
+                .size(px(40.))
+                .overflow_hidden()
+                .child(Layer(
+                    deferred(overlay, usize::MAX, &self.0).into_any_element(),
+                    None,
+                ))
+                .child(Portaled(self.0.clone()))
         }
     }
 
     #[gpui_kit::test]
     fn deferred_view_paint_keeps_slot_mask(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Clipped);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Clipped(Portal::default()));
         cx.update_window(window.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
             let quads: Vec<_> = window
@@ -641,6 +742,177 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    const BELOW: u32 = 0xff00ff;
+    const ABOVE: u32 = 0x00ff00;
+
+    fn boxed(
+        id: &str,
+        style: gpui_kit::StyleRefinement,
+        interactivity: Option<Box<wire::Interactivity>>,
+        children: Vec<wire::Node>,
+    ) -> wire::Node {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name(id.to_owned().into())),
+            style: crate::render::test_style(style),
+            interactivity,
+            children,
+        })
+    }
+
+    fn overlay(style: gpui_kit::StyleRefinement) -> wire::Node {
+        let clicks = wire::Interactivity {
+            on_click: Some(1),
+            occlude: true,
+            ..Default::default()
+        };
+        wire::Node::Deferred {
+            priority: 16,
+            content: Box::new(boxed(
+                "overlay",
+                style.bg(rgb(BELOW)),
+                Some(Box::new(clicks)),
+                Vec::new(),
+            )),
+        }
+    }
+
+    fn order(window: &mut Window, color: u32) -> gpui_kit::DrawOrder {
+        window
+            .painted_quads()
+            .into_iter()
+            .find(|quad| quad.background.as_solid() == Some(rgb(color).into()))
+            .unwrap_or_else(|| panic!("{color:06x} paints"))
+            .order
+    }
+
+    struct Desk {
+        below: Entity<ViewTree>,
+        log: Rc<RefCell<Vec<&'static str>>>,
+    }
+    impl Render for Desk {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            use gpui_kit::StatefulInteractiveElement as _;
+            let log = self.log.clone();
+            let below = div().absolute().size(px(100.)).child(
+                gpui_kit::AnyView::from(self.below.clone())
+                    .cached(gpui_kit::StyleRefinement::default().size_full()),
+            );
+            let above = div()
+                .id("above")
+                .absolute()
+                .left(px(50.))
+                .size(px(100.))
+                .bg(rgb(ABOVE))
+                .occlude()
+                .on_click(move |_, _, _| log.borrow_mut().push("above"));
+            div()
+                .relative()
+                .size(px(200.))
+                .child(clipped(below.into_any_element(), 0))
+                .child(clipped(above.into_any_element(), 1))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_views_overlay_stays_under_the_pane_above_its_pane(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let root = boxed(
+            "slot",
+            gpui_kit::StyleRefinement::default().relative().size_full(),
+            None,
+            vec![overlay(
+                gpui_kit::StyleRefinement::default().absolute().inset_0(),
+            )],
+        );
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let window = cx.open_window(size(px(200.), px(200.)), {
+            let log = log.clone();
+            move |_, cx| Desk {
+                below: cx.new(|_| ViewTree::new(root)),
+                log,
+            }
+        });
+        let below = window
+            .root(cx)
+            .unwrap()
+            .read_with(cx, |desk, _| desk.below.clone());
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let (events, _subscription) = crate::render::tests::emitted(&below, &mut native);
+        for pass in ["drawn", "replayed from the view's cache"] {
+            native.update(|window, cx| {
+                window.refresh();
+                crate::render::draw_frame(window, cx);
+                let (below, above) = (order(window, BELOW), order(window, ABOVE));
+                assert!(
+                    below < above,
+                    "{pass}: the overlay {below} over the pane above {above}"
+                );
+            });
+            native.simulate_click(point(px(75.), px(50.)), Default::default());
+            native.simulate_click(point(px(25.), px(50.)), Default::default());
+            let clicks = events
+                .borrow_mut()
+                .drain(..)
+                .filter(|event| matches!(event, wire::Event::Click { handler: 1, .. }))
+                .count();
+            let heard: Vec<_> = log.borrow_mut().drain(..).collect();
+            assert_eq!((heard, clicks), (vec!["above"], 1), "{pass}");
+        }
+    }
+
+    struct Pane(Entity<ViewTree>);
+    impl Render for Pane {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size(px(60.)).overflow_hidden().child(self.0.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_views_overlay_leaves_its_clip_at_its_place_and_stays_in_its_pane(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let inner = boxed(
+            "inner",
+            gpui_kit::StyleRefinement::default()
+                .relative()
+                .left(px(5.))
+                .size(px(20.))
+                .overflow_hidden(),
+            None,
+            vec![overlay(
+                gpui_kit::StyleRefinement::default()
+                    .absolute()
+                    .left(px(10.))
+                    .size(px(100.)),
+            )],
+        );
+        let root = boxed(
+            "page",
+            gpui_kit::StyleRefinement::default().size_full(),
+            None,
+            vec![inner],
+        );
+        let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| {
+            Pane(cx.new(|_| ViewTree::new(root)))
+        });
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            crate::render::draw_frame(window, cx);
+            let scale = window.scale_factor();
+            let quad = window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| quad.background.as_solid() == Some(rgb(BELOW).into()))
+                .expect("the overlay paints");
+            assert_eq!(quad.bounds.origin.x.0, 15. * scale, "{:?}", quad.bounds);
+            let mask = quad.content_mask.bounds;
+            let right = (mask.origin.x + mask.size.width).0;
+            assert!(right > 25. * scale, "kept in the inner clip: {mask:?}");
+            assert!(right <= 60. * scale, "out of its pane: {mask:?}");
+        });
     }
 
     #[test]

@@ -348,6 +348,7 @@ pub struct ViewTree {
     /// their time and gpui's passes over what they build (`deferred::Layer`)
     /// are counted there (docs/perf.md).
     perf_key: Option<crate::perf::Key>,
+    portal: Option<deferred::Portal>,
     #[cfg(test)]
     renders: u64,
 }
@@ -430,6 +431,7 @@ impl ViewTree {
             unselected: false,
             text_scale: None,
             perf_key: None,
+            portal: Some(Default::default()),
             #[cfg(test)]
             renders: 0,
         }
@@ -644,6 +646,9 @@ impl Render for ViewTree {
         self.render_index = 0;
         self.text_scale = crate::session::text_scale(cx);
         self.sideways.clear();
+        if let Some(portal) = &self.portal {
+            portal.borrow_mut().clear();
+        }
         cx.emit(Drawn);
         // a linked text the last render did not draw is gone
         self.links
@@ -696,6 +701,7 @@ impl Render for ViewTree {
             ))
             // over the whole body, in the view's layer like the rest
             .children(sheet.map(|sheet| deferred::Layer(sheet, None)))
+            .children(self.portal.clone().map(deferred::Portaled))
     }
 }
 
