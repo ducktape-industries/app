@@ -186,6 +186,9 @@ zbus = "5"
 # XCB connection. Already in the graph under gpui-pre-linux, with this feature.
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+wayland-backend = { version = "0.3.15", features = ["client_system"] }
+wayland-client = "0.31.11"
+wayland-protocols = { version = "0.32.9", features = ["client", "staging"] }
 # feature `call`: Cisco serves its OpenH264 binary bzip2-packed (pure
 # Rust, libbz2-rs-sys)
 bzip2 = { version = "0.6", optional = true }

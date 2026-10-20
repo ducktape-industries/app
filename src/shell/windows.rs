@@ -184,6 +184,10 @@ pub(in crate::shell) fn activate(
     if let raw_window_handle::RawWindowHandle::Xcb(handle) = raw {
         return x11_activate(window, handle.window.get(), token);
     }
+    #[cfg(target_os = "linux")]
+    if let (raw_window_handle::RawWindowHandle::Wayland(handle), Some(token)) = (raw, token) {
+        return wayland_activate(window, handle.surface, token);
+    }
     let _ = (raw, token);
     Ok(())
 }
@@ -626,6 +630,63 @@ x11rb::atom_manager! {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+fn wayland_activate(
+    window: &gpui_kit::Window,
+    surface: std::ptr::NonNull<std::ffi::c_void>,
+    token: &str,
+) -> Result<(), String> {
+    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    use wayland_backend::client::{Backend, ObjectId};
+    use wayland_client::Proxy as _;
+    use wayland_client::protocol::wl_surface::WlSurface;
+    use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
+    let said = |error: &dyn std::fmt::Display| error.to_string();
+    let display = HasDisplayHandle::display_handle(window).map_err(|error| said(&error))?;
+    let RawDisplayHandle::Wayland(display) = display.as_raw() else {
+        return Err("not a Wayland display".to_owned());
+    };
+    let backend = unsafe { Backend::from_foreign_display(display.display.as_ptr().cast()) };
+    let connection = wayland_client::Connection::from_backend(backend);
+    let (globals, queue) = wayland_client::globals::registry_queue_init::<Activating>(&connection)
+        .map_err(|error| said(&error))?;
+    let activation: XdgActivationV1 = globals
+        .bind(&queue.handle(), 1..=1, ())
+        .map_err(|error| said(&error))?;
+    let id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.as_ptr().cast()) }
+        .map_err(|error| said(&error))?;
+    let surface = WlSurface::from_id(&connection, id).map_err(|error| said(&error))?;
+    activation.activate(token.to_owned(), &surface);
+    activation.destroy();
+    connection.flush().map_err(|error| said(&error))
+}
+
+#[cfg(target_os = "linux")]
+struct Activating;
+
+#[cfg(target_os = "linux")]
+impl
+    wayland_client::Dispatch<
+        wayland_client::protocol::wl_registry::WlRegistry,
+        wayland_client::globals::GlobalListContents,
+    > for Activating
+{
+    fn event(
+        _: &mut Self,
+        _: &wayland_client::protocol::wl_registry::WlRegistry,
+        _: wayland_client::protocol::wl_registry::Event,
+        _: &wayland_client::globals::GlobalListContents,
+        _: &wayland_client::Connection,
+        _: &wayland_client::QueueHandle<Self>,
+    ) {
+    }
+}
+
+#[cfg(target_os = "linux")]
+wayland_client::delegate_noop!(
+    Activating: ignore wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1
+);
+
 fn x11_activate(window: &gpui_kit::Window, id: u32, token: Option<&str>) -> Result<(), String> {
     use x11rb::protocol::xproto::EventMask;
     x11_send(window, |xcb| {
