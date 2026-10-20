@@ -33,3 +33,4 @@ steps = [
 [jobs.env]
 GATES = "check"
 WORKSPACE_FEATURES = "ax-door"
+AGENTS_LINT = "1"
