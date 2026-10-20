@@ -14,6 +14,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use view_wire as wire;
 
+fn drawn(styles: &wire::Styles, id: wire::StyleId, cx: &App) -> gpui_kit::StyleRefinement {
+    let scale = crate::session::text_scale(cx);
+    Arc::unwrap_or_clone(super::scaled(super::drawn_style(styles, id), scale))
+}
+
 pub(super) fn apply<E: StatefulInteractiveElement>(
     mut element: E,
     interactivity: &wire::Interactivity,
@@ -36,15 +41,15 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
         element = element.track_focus(handle);
     }
     if let Some(style) = interactivity.focus {
-        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
+        let style = drawn(styles, style, cx);
         element = element.focus(move |_| style);
     }
     if let Some(style) = interactivity.in_focus {
-        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
+        let style = drawn(styles, style, cx);
         element = element.in_focus(move |_| style);
     }
     if let Some(style) = interactivity.focus_visible {
-        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
+        let style = drawn(styles, style, cx);
         element = element.focus_visible(move |_| style);
     }
     if let Some(group) = &interactivity.group {
@@ -55,19 +60,19 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     // there (its pressed look, `active`, is)
     let hovers = !crate::contract::os().facts().touch_first;
     if let Some(style) = interactivity.hover.filter(|_| hovers) {
-        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
+        let style = drawn(styles, style, cx);
         element = element.hover(move |_| style);
     }
     if let Some(style) = interactivity.active {
-        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
+        let style = drawn(styles, style, cx);
         element = element.active(move |_| style);
     }
     if let Some(group) = interactivity.group_hover.as_ref().filter(|_| hovers) {
-        let style = Arc::unwrap_or_clone(super::drawn_style(styles, group.style));
+        let style = drawn(styles, group.style, cx);
         element = element.group_hover(group.group.clone(), move |_| style);
     }
     if let Some(group) = &interactivity.group_active {
-        let style = Arc::unwrap_or_clone(super::drawn_style(styles, group.style));
+        let style = drawn(styles, group.style, cx);
         element = element.group_active(group.group.clone(), move |_| style);
     }
     if interactivity.occlude {
@@ -523,7 +528,7 @@ fn apply_misc<E: StatefulInteractiveElement>(
         ));
     }
     if let Some(style) = interactivity.file_drag_over {
-        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
+        let style = drawn(styles, style, cx);
         element = element.drag_over::<gpui_kit::ExternalPaths>(move |_, _, _, _| style.clone());
     }
     if let Some(handler) = interactivity.on_aux_click {

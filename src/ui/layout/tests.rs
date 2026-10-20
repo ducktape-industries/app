@@ -533,3 +533,42 @@ fn a_hold_ends_when_another_window_comes_to_the_front() {
     layout.settle();
     assert_eq!(layout.held, None);
 }
+
+#[test]
+fn a_snapped_window_takes_its_half_of_the_desk_and_leaves_fill() {
+    let mut layout = Layout::default();
+    layout.split("chat");
+    layout.measure(DESK);
+    layout.place(DESK);
+    layout.toggle_fill();
+    let (w, h) = (DESK.0 - 2. * INSET, DESK.1 - 2. * INSET);
+    for (side, want) in [
+        (Side::Left, part(INSET, INSET, w / 2., h)),
+        (Side::Right, part(INSET + w / 2., INSET, w / 2., h)),
+        (Side::Top, part(INSET, INSET, w, h / 2.)),
+        (Side::Bottom, part(INSET, INSET + h / 2., w, h / 2.)),
+    ] {
+        layout.snap(side);
+        assert_eq!(layout.panes[0].frame, want, "{side:?}");
+        assert!(!layout.filled, "{side:?}");
+        assert!(layout.panes[0].by_hand, "{side:?}");
+    }
+}
+
+#[test]
+fn a_half_narrower_than_the_window_allows_stays_on_the_desk() {
+    let narrow = (500., 400.);
+    let mut layout = Layout::default();
+    layout.split("chat");
+    layout.measure(narrow);
+    layout.place(narrow);
+    for side in [Side::Left, Side::Right] {
+        layout.snap(side);
+        let frame = layout.panes[0].frame.unwrap();
+        assert_eq!(frame.w, MIN_WIDTH, "{side:?}");
+        assert!(
+            frame.x >= 0. && frame.x + frame.w <= narrow.0,
+            "{side:?}: {frame:?}"
+        );
+    }
+}

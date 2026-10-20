@@ -324,3 +324,45 @@ mod snap;
 mod svg_real;
 mod uniform_list;
 mod variable_list;
+
+#[test]
+fn a_text_size_scales_the_font_and_a_set_line_height_and_nothing_else() {
+    use gpui_kit::{AbsoluteLength, DefiniteLength};
+    let set = Arc::new(
+        div()
+            .w(px(80.))
+            .p(px(4.))
+            .text_size(px(14.))
+            .line_height(px(20.))
+            .style()
+            .clone(),
+    );
+    let by = 19. / 17.;
+    let drawn = super::scaled(set.clone(), Some(by));
+    assert_eq!(
+        drawn.text.font_size,
+        Some(AbsoluteLength::Pixels(px(14. * by)))
+    );
+    assert_eq!(
+        drawn.text.line_height,
+        Some(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(
+            20. * by
+        ))))
+    );
+    assert_eq!(drawn.size.width, set.size.width);
+    assert_eq!(drawn.padding.top, set.padding.top);
+    assert!(
+        Arc::ptr_eq(&super::scaled(set.clone(), None), &set),
+        "the default draws as sent"
+    );
+    let relative = Arc::new(div().line_height(gpui_kit::relative(1.5)).style().clone());
+    assert!(Arc::ptr_eq(
+        &super::scaled(relative.clone(), Some(by)),
+        &relative
+    ));
+    let rems = Arc::new(div().text_size(gpui_kit::rems(1.)).style().clone());
+    assert_eq!(
+        super::scaled(rems, Some(2.)).text.font_size,
+        Some(AbsoluteLength::Rems(gpui_kit::rems(2.)))
+    );
+}

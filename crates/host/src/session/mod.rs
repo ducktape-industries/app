@@ -25,7 +25,7 @@ pub use chain::Chain;
 pub use node::{STATUS_EVERY, StatusSource};
 pub use node::{Session, SessionEvent, SessionState};
 pub use notifications::{Notifications, permission};
-pub use prefs::Prefs;
+pub use prefs::{DYNAMIC_TYPE_BODY, Prefs, TextSize, text_scale};
 pub use rail::{Opening, Rail};
 pub use screen::{AccountStep, Screen};
 pub use seats::{Place, Seats, SeatsEvent};
@@ -67,6 +67,8 @@ impl Shared {
         let chain = cx.new(|_| Chain::default());
         let screen = cx.new(|_| Slice::new(Screen::Connect));
         let prefs = cx.new(|_| Slice::new(Prefs::load()));
+        let text_size = prefs.read(cx).get().text_size;
+        cx.set_global(text_size);
         let account = cx.new(|_| Account::new(screen.clone(), prefs.clone()));
         let session = {
             let (chain, account, screen) = (chain.clone(), account.clone(), screen.clone());

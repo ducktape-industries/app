@@ -441,3 +441,53 @@ fn a_fill_run_from_a_drawn_search_leaves_the_keys_in_front(cx: &mut TestAppConte
         "the window in front has the keys"
     );
 }
+
+#[gpui_kit::test]
+fn the_snap_chords_put_the_window_in_front_on_its_half_of_the_desk(cx: &mut TestAppContext) {
+    use crate::ui::layout::{INSET, Side};
+    let (_, _, view, mut native) = desk_of_two(cx);
+    stroke(&mut native, "secondary-shift-enter");
+    assert!(filled(&mut native, &view));
+    let desk = native.update(|_, cx| view.read(cx).layout(cx).desk());
+    for (chord, side) in super::keys::snap_keys() {
+        stroke(&mut native, chord);
+        let at = frame(&mut native, &view, 1);
+        assert!(!filled(&mut native, &view), "{chord}");
+        assert_eq!(panes(&mut native, &view), (2, 1), "{chord}");
+        match side {
+            Side::Left => assert_eq!((at.x, at.y, at.h), (INSET, INSET, desk.1 - 2. * INSET)),
+            Side::Right => assert_eq!((at.x + at.w, at.y), (desk.0 - INSET, INSET)),
+            Side::Top => assert_eq!((at.x, at.y, at.w), (INSET, INSET, desk.0 - 2. * INSET)),
+            Side::Bottom => assert_eq!((at.y + at.h, at.x), (desk.1 - INSET, INSET)),
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn the_text_size_keys_step_the_size_and_keep_it_in_the_prefs(cx: &mut TestAppContext) {
+    use ducktape_host::session::TextSize;
+    let (app, _, _, mut native) = desk_of_two(cx);
+    let size = |native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            (
+                app.prefs.read(cx).get().text_size.points(),
+                cx.try_global::<TextSize>()
+                    .copied()
+                    .unwrap_or_default()
+                    .points(),
+                ducktape_host::backend::load_text_size(),
+            )
+        })
+    };
+    assert_eq!(size(&mut native), (17, 17, None));
+    stroke(&mut native, "secondary-=");
+    assert_eq!(size(&mut native), (19, 19, Some(19)));
+    stroke(&mut native, "secondary-+");
+    assert_eq!(size(&mut native), (21, 21, Some(21)));
+    for _ in 0..4 {
+        stroke(&mut native, "secondary--");
+    }
+    assert_eq!(size(&mut native), (15, 15, Some(15)));
+    stroke(&mut native, "secondary-0");
+    assert_eq!(size(&mut native), (17, 17, None));
+}

@@ -31,8 +31,8 @@ pub use noded_client::wire::{Layer, Status as NodeStatus};
 pub use prefs::prefs_reads;
 pub use prefs::{
     Appearance, Layout, device_key_of, edit_prefs, load_appearance, load_debug, load_layout,
-    load_motion, memory_bounds, note_device_key, read_prefs, save_appearance, save_debug,
-    save_layout, save_motion,
+    load_motion, load_text_size, memory_bounds, note_device_key, read_prefs, save_appearance,
+    save_debug, save_layout, save_motion, save_text_size,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use session::seat_serial;

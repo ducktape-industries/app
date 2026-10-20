@@ -138,6 +138,21 @@ pub fn save_debug(on: bool) -> bool {
     edit_prefs(|prefs| prefs["debug"] = serde_json::json!(on))
 }
 
+pub fn load_text_size() -> Option<u64> {
+    read_prefs().unwrap_or_default()["text_size"].as_u64()
+}
+
+pub fn save_text_size(points: Option<u64>) -> bool {
+    edit_prefs(|prefs| match points {
+        None => {
+            if let Some(prefs) = prefs.as_object_mut() {
+                prefs.remove("text_size");
+            }
+        }
+        Some(points) => prefs["text_size"] = serde_json::json!(points),
+    })
+}
+
 /// This device's public key on the network `keyring` names, hex, as last
 /// seated there (`Account::unlocked`): whose notices that network's
 /// notifiers run for while another is in hand (`runtime::follow`), no key
@@ -219,6 +234,16 @@ mod tests {
         assert!(load_debug());
         assert!(save_debug(false));
         assert!(!load_debug());
+    }
+
+    #[test]
+    fn the_text_size_reads_back_as_saved_and_the_default_is_no_key() {
+        assert_eq!(load_text_size(), None);
+        assert!(save_text_size(Some(21)));
+        assert_eq!(load_text_size(), Some(21));
+        assert!(save_text_size(None));
+        assert_eq!(load_text_size(), None);
+        assert!(read_prefs().unwrap().get("text_size").is_none());
     }
 
     #[test]

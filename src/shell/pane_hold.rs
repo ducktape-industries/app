@@ -56,6 +56,21 @@ impl WindowRoot {
         self.pane_message(PaneMessage::Fill, window, cx);
     }
 
+    pub(super) fn snap_pane(
+        &mut self,
+        side: layout::Side,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.desk_pane(cx).is_none() {
+            return;
+        }
+        if self.layout(cx).held.is_some() {
+            self.hold_message(PaneMessage::Release { keep: true }, cx);
+        }
+        self.pane_message(PaneMessage::Snap(side), window, cx);
+    }
+
     pub(super) fn hold_pane(&mut self, cx: &mut Context<Self>) {
         if let Some(index) = self.desk_pane(cx) {
             self.hold_message(PaneMessage::Hold(index), cx);

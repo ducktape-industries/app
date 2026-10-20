@@ -133,6 +133,15 @@ pub(crate) enum PaneMessage {
         keep: bool,
     },
     Frame(usize, Frame),
+    Snap(Side),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
 impl Layout {
@@ -393,6 +402,44 @@ impl Layout {
                 true
             }
             _ => false,
+        }
+    }
+
+    pub(crate) fn snap(&mut self, side: Side) {
+        let (desk, index) = (self.desk(), self.focused);
+        let (w, h) = (desk.0 - 2. * INSET, desk.1 - 2. * INSET);
+        if w <= 0. || h <= 0. {
+            return;
+        }
+        let (half_w, half_h) = ((w / 2.).round(), (h / 2.).round());
+        let frame = match side {
+            Side::Left => Frame {
+                x: INSET,
+                y: INSET,
+                w: half_w,
+                h,
+            },
+            Side::Right => Frame {
+                x: INSET + half_w,
+                y: INSET,
+                w: w - half_w,
+                h,
+            },
+            Side::Top => Frame {
+                x: INSET,
+                y: INSET,
+                w,
+                h: half_h,
+            },
+            Side::Bottom => Frame {
+                x: INSET,
+                y: INSET + half_h,
+                w,
+                h: h - half_h,
+            },
+        };
+        if self.set_frame(index, frame, desk) {
+            self.filled = false;
         }
     }
 

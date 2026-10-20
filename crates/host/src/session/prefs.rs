@@ -23,6 +23,56 @@ pub struct Prefs {
     /// (`perf::switch`) and what each program costs shown. The shell
     /// switches the counters on at launch when it is.
     pub debug: bool,
+    pub text_size: TextSize,
+}
+
+pub const DYNAMIC_TYPE_BODY: [u64; 12] = [14, 15, 16, 17, 19, 21, 23, 28, 33, 40, 47, 53];
+
+const DYNAMIC_TYPE_DEFAULT: usize = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextSize(usize);
+
+impl Default for TextSize {
+    fn default() -> Self {
+        Self(DYNAMIC_TYPE_DEFAULT)
+    }
+}
+
+impl gpui_kit::Global for TextSize {}
+
+impl TextSize {
+    pub fn of_points(points: Option<u64>) -> Self {
+        points
+            .and_then(|points| DYNAMIC_TYPE_BODY.iter().position(|body| *body == points))
+            .map_or_else(Self::default, Self)
+    }
+
+    pub fn points(self) -> u64 {
+        DYNAMIC_TYPE_BODY[self.0]
+    }
+
+    pub fn larger(self) -> Self {
+        Self((self.0 + 1).min(DYNAMIC_TYPE_BODY.len() - 1))
+    }
+
+    pub fn smaller(self) -> Self {
+        Self(self.0.saturating_sub(1))
+    }
+
+    pub fn is_default(self) -> bool {
+        self.0 == DYNAMIC_TYPE_DEFAULT
+    }
+
+    pub fn scale(self) -> f32 {
+        self.points() as f32 / DYNAMIC_TYPE_BODY[DYNAMIC_TYPE_DEFAULT] as f32
+    }
+}
+
+pub fn text_scale(cx: &gpui_kit::App) -> Option<f32> {
+    cx.try_global::<TextSize>()
+        .filter(|size| !size.is_default())
+        .map(|size| size.scale())
 }
 
 impl Prefs {
@@ -36,6 +86,7 @@ impl Prefs {
             layout: backend::load_layout(),
             notify: notify::Settings::load(),
             debug: backend::load_debug(),
+            text_size: TextSize::of_points(backend::load_text_size()),
         }
     }
 
@@ -85,6 +136,14 @@ impl Slice<Prefs> {
         self.edit(|prefs| prefs.debug = on, cx);
     }
 
+    pub fn set_text_size(&mut self, size: TextSize, cx: &mut Context<Self>) {
+        let _timed = timed();
+        backend::save_text_size((!size.is_default()).then(|| size.points()));
+        cx.set_global(size);
+        cx.refresh_windows();
+        self.edit(|prefs| prefs.text_size = size, cx);
+    }
+
     /// What the theme says the OS is: written by whoever syncs the theme.
     pub fn set_system_dark(&mut self, dark: bool, cx: &mut Context<Self>) {
         self.edit(|prefs| prefs.system_dark = dark, cx);
@@ -128,8 +187,37 @@ impl Slice<Prefs> {
                 prefs.layout = loaded.layout;
                 prefs.notify = loaded.notify;
                 prefs.debug = loaded.debug;
+                prefs.text_size = loaded.text_size;
             },
             cx,
         );
+        cx.set_global(loaded.text_size);
+        cx.refresh_windows();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_text_size_steps_through_dynamic_type_and_stops_at_its_ends() {
+        let default = TextSize::default();
+        assert_eq!((default.points(), default.scale()), (17, 1.));
+        assert_eq!(default.larger().points(), 19);
+        assert_eq!(default.smaller().points(), 16);
+        let mut top = default;
+        for _ in 0..DYNAMIC_TYPE_BODY.len() {
+            top = top.larger();
+        }
+        assert_eq!(top.points(), 53);
+        let mut bottom = default;
+        for _ in 0..DYNAMIC_TYPE_BODY.len() {
+            bottom = bottom.smaller();
+        }
+        assert_eq!(bottom.points(), 14);
+        assert_eq!(TextSize::of_points(Some(28)).points(), 28);
+        assert_eq!(TextSize::of_points(Some(18)), default, "not a step");
+        assert_eq!(TextSize::of_points(None), default);
     }
 }

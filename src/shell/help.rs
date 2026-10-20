@@ -102,6 +102,11 @@ pub(super) fn help_view(
             }
         ),
         format!(
+            "{} snaps the window you are in to the left, right, top or bottom \
+                 half of the desk.",
+            snap_label()
+        ),
+        format!(
             "While Fill is on, whichever window comes forward fills the desk; \
                  Restore or {} puts every window back.",
             chord_label("⇧↩")
@@ -157,6 +162,11 @@ pub(super) fn help_view(
         Some((chord_label("1–9"), "A window by its place")),
         Some((chord_label("⇧↩"), "Fill the desk with this window")),
         Some((chord_label("⇧M"), "Move this window with the arrows")),
+        Some((snap_label(), "Snap this window to half the desk")),
+        Some((
+            text_size_label(),
+            "Larger text, smaller, or back to the default",
+        )),
         on_top.then(|| (chord_label("⇧T"), "Keep this window above other apps")),
         Some((chord_label("/"), "This help")),
         Some(("Esc".to_owned(), "Close search, a menu or settings")),
@@ -223,4 +233,18 @@ pub(super) fn help_view(
                 .children(keys),
         )
         .into_any_element()
+}
+
+fn snap_label() -> String {
+    match cfg!(target_os = "macos") {
+        true => "⌘⇧←→↑↓".to_owned(),
+        false => "Ctrl Alt H L K J".to_owned(),
+    }
+}
+
+fn text_size_label() -> String {
+    match cfg!(target_os = "macos") {
+        true => "⌘= ⌘- ⌘0".to_owned(),
+        false => "Ctrl = - 0".to_owned(),
+    }
 }

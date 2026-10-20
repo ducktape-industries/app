@@ -199,6 +199,27 @@ fn drawn_style(styles: &wire::Styles, id: wire::StyleId) -> Arc<gpui_kit::StyleR
     Arc::new(style)
 }
 
+fn scaled(
+    style: Arc<gpui_kit::StyleRefinement>,
+    scale: Option<f32>,
+) -> Arc<gpui_kit::StyleRefinement> {
+    use gpui_kit::{AbsoluteLength, DefiniteLength};
+    let times = |length: AbsoluteLength, by: f32| match length {
+        AbsoluteLength::Pixels(pixels) => AbsoluteLength::Pixels(pixels * by),
+        AbsoluteLength::Rems(rems) => AbsoluteLength::Rems(gpui_kit::rems(rems.0 * by)),
+    };
+    let set_line = matches!(style.text.line_height, Some(DefiniteLength::Absolute(_)));
+    let Some(by) = scale.filter(|_| style.text.font_size.is_some() || set_line) else {
+        return style;
+    };
+    let mut style = Arc::unwrap_or_clone(style);
+    style.text.font_size = style.text.font_size.map(|size| times(size, by));
+    if let Some(DefiniteLength::Absolute(length)) = style.text.line_height {
+        style.text.line_height = Some(DefiniteLength::Absolute(times(length, by)));
+    }
+    Arc::new(style)
+}
+
 /// The gpui entity that draws one view's wire tree and keeps the
 /// native state that outlives a frame, keyed by [`AuthoredPath`]. `replace`
 /// adopts each new root and retains every map to the paths it still mounts.
@@ -228,6 +249,7 @@ pub struct ViewTree {
     /// (`keeps_words_unselected`): its words are a label or a marker, not
     /// text to read, and stay out of the window's text selection.
     unselected: bool,
+    text_scale: Option<f32>,
 
     // Native widgets, one per mounted node.
     fields: HashMap<AuthoredPath, Field>,
@@ -406,6 +428,7 @@ impl ViewTree {
             row: None,
             selection_order: Default::default(),
             unselected: false,
+            text_scale: None,
             perf_key: None,
             #[cfg(test)]
             renders: 0,
@@ -453,7 +476,7 @@ impl ViewTree {
     /// The style `id` names in the table of the tree being drawn, shared:
     /// the walk borrows the tree for everything else.
     fn style(&self, id: wire::StyleId) -> Arc<gpui_kit::StyleRefinement> {
-        drawn_style(&self.styles, id)
+        scaled(drawn_style(&self.styles, id), self.text_scale)
     }
 
     fn node(
@@ -619,6 +642,7 @@ impl Render for ViewTree {
         });
         self.authored_path.clear();
         self.render_index = 0;
+        self.text_scale = crate::session::text_scale(cx);
         self.sideways.clear();
         cx.emit(Drawn);
         // a linked text the last render did not draw is gone

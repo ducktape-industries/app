@@ -16,6 +16,8 @@
 
 use super::entities::{Overlay, Popover};
 use super::*;
+use crate::ui::layout::Side;
+use ducktape_host::session::TextSize;
 use gpui_kit::{Action, Context, KeyBinding, KeyContext, Menu, MenuItem};
 
 gpui_kit::actions!(
@@ -36,12 +38,42 @@ gpui_kit::actions!(
         CloseOverlay,
         MenuTab,
         MenuTabBack,
+        TextLarger,
+        TextSmaller,
+        TextReset,
     ]
 );
 
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = desk, no_json)]
 pub(crate) struct FocusPane(pub(crate) usize);
+
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = desk, no_json)]
+pub(crate) struct SnapPane(pub(crate) Side);
+
+pub(super) const SNAP_CMD: [(&str, Side); 4] = [
+    ("cmd-shift-left", Side::Left),
+    ("cmd-shift-right", Side::Right),
+    ("cmd-shift-up", Side::Top),
+    ("cmd-shift-down", Side::Bottom),
+];
+
+pub(super) const SNAP_CTRL_ALT: [(&str, Side); 4] = [
+    ("ctrl-alt-h", Side::Left),
+    ("ctrl-alt-l", Side::Right),
+    ("ctrl-alt-k", Side::Top),
+    ("ctrl-alt-j", Side::Bottom),
+];
+
+pub(super) const FILL_CTRL_ALT: &str = "ctrl-alt-enter";
+
+pub(super) fn snap_keys() -> [(&'static str, Side); 4] {
+    match cfg!(target_os = "macos") {
+        true => SNAP_CMD,
+        false => SNAP_CTRL_ALT,
+    }
+}
 
 pub(super) const CONTEXT: &str = "Ducktape";
 
@@ -67,7 +99,17 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("escape", CloseOverlay, Some("Ducktape && overlay")),
         KeyBinding::new("tab", MenuTab, Some(MENU)),
         KeyBinding::new("shift-tab", MenuTabBack, Some(MENU)),
+        KeyBinding::new("secondary-=", TextLarger, None),
+        KeyBinding::new("secondary-+", TextLarger, None),
+        KeyBinding::new("secondary--", TextSmaller, None),
+        KeyBinding::new("secondary-0", TextReset, None),
     ];
+    for (stroke, side) in snap_keys() {
+        bindings.push(KeyBinding::new(stroke, SnapPane(side), DESK));
+    }
+    if !cfg!(target_os = "macos") {
+        bindings.push(KeyBinding::new(FILL_CTRL_ALT, FillPane, DESK));
+    }
     if super::windows::can_keep_above(cx) {
         bindings.push(KeyBinding::new(
             "secondary-shift-t",
@@ -106,12 +148,22 @@ fn menu_bar(on_top: bool) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Quit Ducktape", Quit),
         ]),
-        Menu::new("View").items([MenuItem::action("Search", ToggleSpotlight)]),
+        Menu::new("View").items([
+            MenuItem::action("Search", ToggleSpotlight),
+            MenuItem::separator(),
+            MenuItem::action("Larger Text", TextLarger),
+            MenuItem::action("Smaller Text", TextSmaller),
+            MenuItem::action("Default Text Size", TextReset),
+        ]),
         Menu::new("Window").items([
             MenuItem::action("New Window", NewWindow),
             MenuItem::action("Close", CloseWindow),
             MenuItem::separator(),
             MenuItem::action("Fill", FillPane),
+            MenuItem::action("Left Half", SnapPane(Side::Left)),
+            MenuItem::action("Right Half", SnapPane(Side::Right)),
+            MenuItem::action("Top Half", SnapPane(Side::Top)),
+            MenuItem::action("Bottom Half", SnapPane(Side::Bottom)),
             MenuItem::action("Move or Size", HoldPane),
             MenuItem::action("Keep on Top", KeepOnTop).checked(on_top),
             MenuItem::separator(),
@@ -123,6 +175,13 @@ fn menu_bar(on_top: bool) -> Vec<Menu> {
 }
 
 impl WindowRoot {
+    fn text_size(&self, step: fn(TextSize) -> TextSize, cx: &mut Context<Self>) {
+        self.app.prefs.update(cx, |prefs, cx| {
+            let size = step(prefs.get().text_size);
+            prefs.set_text_size(size, cx);
+        });
+    }
+
     pub(super) fn key_context(&self, cx: &gpui_kit::App) -> KeyContext {
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
@@ -162,6 +221,20 @@ impl WindowRoot {
             }))
             .on_action(cx.listener(|this, _: &FillPane, window, cx| this.fill_pane(window, cx)))
             .on_action(cx.listener(|this, _: &HoldPane, _, cx| this.hold_pane(cx)))
+            .on_action(cx.listener(|this, SnapPane(side): &SnapPane, window, cx| {
+                this.snap_pane(*side, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &TextLarger, _, cx| this.text_size(TextSize::larger, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &TextSmaller, _, cx| this.text_size(TextSize::smaller, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &TextReset, _, cx| {
+                    this.text_size(|_| TextSize::default(), cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &KeepOnTop, _, cx| {
                 let key = this.key;
                 this.app
@@ -307,6 +380,86 @@ mod tests {
             resolve("secondary-shift-m", &[desk, "hold"], cx).as_deref(),
             Some("desk::HoldPane")
         );
+    }
+
+    #[gpui_kit::test]
+    fn the_snap_chords_answer_on_the_desk_only(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(bind);
+        let desk = "Ducktape console on_desk desk";
+        for (stroke, side) in snap_keys() {
+            assert_eq!(
+                resolve(stroke, &[desk], cx).as_deref(),
+                Some("desk::SnapPane"),
+                "{stroke}: {side:?}"
+            );
+            assert_eq!(resolve(stroke, &["Ducktape console"], cx), None);
+            assert_eq!(
+                resolve(stroke, &["Ducktape console on_desk overlay"], cx),
+                None,
+                "an overlay keeps its keys"
+            );
+        }
+        if !cfg!(target_os = "macos") {
+            assert_eq!(
+                resolve(FILL_CTRL_ALT, &[desk], cx).as_deref(),
+                Some("desk::FillPane")
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    fn no_desk_chord_takes_a_key_gnome_or_text_editing_owns(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(bind);
+        let desk = "Ducktape console on_desk desk";
+        let mut owned = vec![
+            "ctrl-alt-tab".to_owned(),
+            "ctrl-alt-shift-tab".to_owned(),
+            "ctrl-alt-escape".to_owned(),
+            "ctrl-alt-shift-escape".to_owned(),
+            "ctrl-alt-delete".to_owned(),
+            "ctrl-alt-shift-r".to_owned(),
+        ];
+        for arrow in ["left", "right", "up", "down"] {
+            for held in ["ctrl", "ctrl-shift", "ctrl-alt", "ctrl-alt-shift"] {
+                owned.push(format!("{held}-{arrow}"));
+            }
+        }
+        for nth in 1..=12 {
+            owned.push(format!("ctrl-alt-f{nth}"));
+        }
+        for nth in 1..=9 {
+            owned.push(format!("ctrl-super-{nth}"));
+        }
+        for stroke in &owned {
+            assert_eq!(resolve(stroke, &[desk], cx), None, "{stroke}");
+        }
+        for (stroke, _) in SNAP_CTRL_ALT {
+            assert!(!owned.iter().any(|it| it == stroke), "{stroke}");
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_text_size_keys_answer_on_every_screen(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(bind);
+        for context in [
+            "Ducktape console",
+            "Ducktape console on_desk desk",
+            "Ducktape console on_desk overlay",
+            "Ducktape",
+        ] {
+            for (stroke, action) in [
+                ("secondary-=", "desk::TextLarger"),
+                ("secondary-+", "desk::TextLarger"),
+                ("secondary--", "desk::TextSmaller"),
+                ("secondary-0", "desk::TextReset"),
+            ] {
+                assert_eq!(
+                    resolve(stroke, &[context], cx).as_deref(),
+                    Some(action),
+                    "{stroke} in {context}"
+                );
+            }
+        }
     }
 
     #[gpui_kit::test]

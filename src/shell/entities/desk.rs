@@ -5,7 +5,7 @@
 //! that changes nothing notifies nobody. What crosses windows (a pane
 //! popped out or back in, a pop-out closing with its pane) is `Windows`'.
 use super::Slice;
-use crate::ui::layout::{Frame, Layout, Pane, PaneMessage};
+use crate::ui::layout::{Frame, Layout, Pane, PaneMessage, Side};
 use gpui_kit::Context;
 
 pub(crate) struct Desk(Slice<Layout>);
@@ -79,6 +79,10 @@ impl Desk {
 
     pub(crate) fn fill(&mut self, cx: &mut Context<Self>) {
         self.moved(Layout::toggle_fill, cx);
+    }
+
+    pub(crate) fn snap(&mut self, side: Side, cx: &mut Context<Self>) {
+        self.moved(|layout| layout.snap(side), cx);
     }
 
     pub(crate) fn set_frame(&mut self, index: usize, frame: Frame, cx: &mut Context<Self>) {
@@ -171,6 +175,7 @@ impl Desk {
             PaneMessage::Focus(index) => self.focus(index, cx),
             PaneMessage::Cycle { forward } => self.cycle(forward, cx),
             PaneMessage::Fill => self.fill(cx),
+            PaneMessage::Snap(side) => self.snap(side, cx),
             PaneMessage::Frame(index, frame) => self.set_frame(index, frame, cx),
             PaneMessage::Hold(index) => self.hold(index, cx),
             PaneMessage::Release { keep } => self.release(keep, cx),
