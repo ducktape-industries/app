@@ -119,6 +119,7 @@ fn typing_reaches_the_view_as_its_text(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
+#[cfg(feature = "ax-door")]
 #[gpui_kit::test]
 fn the_listeners_at_a_point_are_the_nodes_drawn_there_innermost_first(
     cx: &mut gpui_kit::TestAppContext,
