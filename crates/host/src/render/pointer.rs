@@ -105,7 +105,12 @@ impl ViewTree {
     }
 }
 
-pub(super) fn holds_long_press(hitbox: &Hitbox, window: &mut Window, cx: &mut App) {
+pub(super) fn holds_long_press(
+    hitbox: &Hitbox,
+    spans: Option<(TextLayout, Vec<Range<usize>>)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(router) = router(window, cx).filter(|router| !router.borrow().covering) else {
         return;
     };
@@ -117,6 +122,7 @@ pub(super) fn holds_long_press(hitbox: &Hitbox, window: &mut Window, cx: &mut Ap
     let fresh = || Hold {
         order,
         hitbox: hitbox.clone(),
+        spans: spans.clone(),
     };
     let (hold, new) = kept("long-press-hold".into(), window, fresh);
     *hold.borrow_mut() = fresh();
@@ -167,6 +173,7 @@ struct Surface {
 struct Hold {
     order: u64,
     hitbox: Hitbox,
+    spans: Option<(TextLayout, Vec<Range<usize>>)>,
 }
 
 #[derive(Clone)]
@@ -503,7 +510,12 @@ impl Router {
             .filter_map(Weak::upgrade)
             .filter_map(|hold| {
                 let hold = hold.borrow();
-                hold.hitbox.is_hovered(window).then_some(hold.order)
+                let on_tip_span = hold.spans.as_ref().is_some_and(|(layout, spans)| {
+                    let index = layout.index_for_position(window.mouse_position());
+                    index.is_ok_and(|index| spans.iter().any(|span| span.contains(&index)))
+                });
+                let holds = hold.hitbox.is_hovered(window) && !on_tip_span;
+                holds.then_some(hold.order)
             })
             .max()
     }

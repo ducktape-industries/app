@@ -514,7 +514,7 @@ pub(super) fn long_press(
     gpui_kit::canvas(
         |bounds, window, cx| {
             let hitbox = window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal);
-            super::pointer::holds_long_press(&hitbox, window, cx);
+            super::pointer::holds_long_press(&hitbox, None, window, cx);
             hitbox
         },
         move |_, hitbox, window, _| {

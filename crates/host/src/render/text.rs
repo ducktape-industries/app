@@ -67,6 +67,7 @@ pub(super) struct RichParagraph {
     pub(super) selection: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
     pub(super) order: std::rc::Rc<std::cell::Cell<u64>>,
     pub(super) participant: Option<u64>,
+    pub(super) tip_spans: Vec<std::ops::Range<usize>>,
 }
 
 impl IntoElement for RichParagraph {
@@ -120,6 +121,10 @@ impl Element for RichParagraph {
         if self.participant.is_some() {
             return (hitbox, clip);
         }
+        let spans = (self.layout.clone(), std::mem::take(&mut self.tip_spans));
+        window.with_global_id(self.id.clone(), |_, window| {
+            super::pointer::holds_long_press(&hitbox, Some(spans), window, cx)
+        });
         let joins = joins_drag(DRAG_CLIP.get(), clip);
         let text = self.text.clone();
         let layout_bounds = self.layout.bounds();
@@ -344,6 +349,7 @@ impl ViewTree {
         if unselected {
             return element.into_any_element();
         }
+        let tip_spans = Vec::new();
         RichParagraph {
             id: native_id,
             content: element.into_any_element(),
@@ -353,6 +359,7 @@ impl ViewTree {
             selection: selection_range,
             order: self.selection_order.clone(),
             participant: None,
+            tip_spans,
         }
         .into_any_element()
     }
@@ -475,6 +482,10 @@ impl ViewTree {
         if self.unselected {
             return content;
         }
+        let tip_spans = match tooltip {
+            Some(_) => clickable_ranges.clone(),
+            None => Vec::new(),
+        };
         RichParagraph {
             id: native_id,
             content,
@@ -484,6 +495,7 @@ impl ViewTree {
             selection: selection_range,
             order: self.selection_order.clone(),
             participant: None,
+            tip_spans,
         }
         .into_any_element()
     }

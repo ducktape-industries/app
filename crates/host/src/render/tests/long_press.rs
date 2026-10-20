@@ -1,6 +1,6 @@
 //! A finger held on a node that hears aux clicks: gpui-pre recognizes the
-//! long press, the host hands it to the node as its aux click. A finger held
-//! on a tooltip's source shows the tooltip until it lifts; a tap shows none.
+//! long press, the host hands it to the node as its aux click. On a tooltip's
+//! source a held finger shows the tooltip until it lifts, unless it holds words.
 use super::*;
 
 /// `node` hearing clicks on `click` and aux clicks on `aux`.
@@ -296,6 +296,7 @@ impl Render for Phone {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
+            .child(gpui_kit::base::TextSelectionLayer)
             .child(crate::render::pointer::TipLayer)
             .child(self.0.clone())
     }
@@ -416,4 +417,155 @@ fn a_long_press_on_a_tooltip_source_inside_an_aux_node_shows_its_tooltip(
         !tip_shown(&mut native),
         "beside the chip, the row's own tooltip took its aux click's long press"
     );
+}
+
+#[gpui_kit::test]
+fn a_long_press_on_text_inside_a_tooltip_source_selects_the_text(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let source_style = sized_style(Some(fixed(100.)), Some(fixed(40.)));
+    let words = super::selection::paragraph("alpha", "alpha");
+    let source = tipped(container_with_style("source", source_style, [words]), 71);
+    let (mut native, _) = on_phone(source, 71, cx);
+    native.update(crate::render::draw_frame);
+    let selected = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            gpui_kit::base::TextSelection::selected_text(window, cx).to_string()
+        })
+    };
+    let on_text = point(px(5.), px(10.));
+    held_past_long_press(&mut native, on_text);
+    assert!(
+        !tip_shown(&mut native),
+        "the source's tooltip took the long press on its text"
+    );
+    finger(&mut native, gpui_kit::TouchPhase::Ended, on_text);
+    assert_eq!(selected(&mut native), "alpha", "the held text is selected");
+    let under_text = point(px(50.), px(30.));
+    held_past_long_press(&mut native, under_text);
+    assert!(
+        tip_shown(&mut native),
+        "off the text, the source's tooltip shows"
+    );
+    finger(&mut native, gpui_kit::TouchPhase::Ended, under_text);
+}
+
+fn mentioned(tooltip: u32) -> wire::Node {
+    let mut style = div().size(px(100.)).text_size(px(10.)).line_height(px(20.));
+    wire::Node::RichText {
+        id: Some(named_id("mentioned")),
+        style: crate::render::test_style(style.style().clone()),
+        text: "beta\nalpha".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: vec![0..4],
+        on_click: Some(9),
+        on_hover: None,
+        tooltip: Some(tooltip),
+    }
+}
+
+#[gpui_kit::test]
+fn a_long_press_on_a_mention_shows_its_tip_and_on_the_words_beside_it_selects(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let (mut native, tree) = on_phone(mentioned(71), 71, cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(crate::render::draw_frame);
+    let selected = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            gpui_kit::base::TextSelection::selected_text(window, cx).to_string()
+        })
+    };
+    let on_mention = point(px(2.), px(10.));
+    held_past_long_press(&mut native, on_mention);
+    let asked = events.borrow().iter().find_map(|event| match event {
+        wire::Event::TooltipRequest {
+            request: 71,
+            character_index,
+        } => *character_index,
+        _ => None,
+    });
+    assert_eq!(
+        asked,
+        Some(0),
+        "the long press on the mention asks for its tip"
+    );
+    let tip_style = div().size(px(20.)).bg(rgb(TIP)).style().clone();
+    let tip = container_with_style("mention-tip", tip_style, []);
+    native.update(|_, cx| {
+        tree.update(cx, |tree, cx| {
+            let answer = wire::TooltipResponse {
+                request: 71,
+                character_index: asked,
+                content: Some(Box::new(tip)),
+            };
+            tree.tooltip_responses(answered([answer]), cx)
+        })
+    });
+    assert!(tip_shown(&mut native), "the mention's tip shows while held");
+    finger(&mut native, gpui_kit::TouchPhase::Ended, on_mention);
+    assert!(!tip_shown(&mut native), "it closes as the touch ends");
+    assert_eq!(
+        selected(&mut native),
+        "",
+        "the mention's long press selected"
+    );
+    let on_words = point(px(2.), px(30.));
+    held_past_long_press(&mut native, on_words);
+    assert!(
+        !tip_shown(&mut native),
+        "the words beside the mention opened its tip"
+    );
+    finger(&mut native, gpui_kit::TouchPhase::Ended, on_words);
+    assert_eq!(
+        selected(&mut native),
+        "alpha",
+        "the held words are selected"
+    );
+}
+
+#[gpui_kit::test]
+fn on_a_desktop_touch_screen_a_long_press_on_words_in_a_tooltip_source_shows_its_tip(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    struct Desktop(Entity<ViewTree>);
+    impl Render for Desktop {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(gpui_kit::base::TextSelectionLayer)
+                .child(routed(self.0.clone()))
+        }
+    }
+    cx.update(gpui_kit::init);
+    let source_style = sized_style(Some(fixed(100.)), Some(fixed(40.)));
+    let words = super::selection::paragraph("alpha", "alpha");
+    let source = tipped(container_with_style("source", source_style, [words]), 71);
+    let tip_style = div().size(px(20.)).bg(rgb(TIP)).style().clone();
+    let tip = container_with_style("tip", tip_style, []);
+    let window = cx.open_window(size(px(120.), px(80.)), move |_, cx| {
+        let tree = cx.new(|_| ViewTree::new(source));
+        tree.update(cx, |tree, cx| {
+            let answer = wire::TooltipResponse {
+                request: 71,
+                character_index: None,
+                content: Some(Box::new(tip)),
+            };
+            tree.tooltip_responses(answered([answer]), cx)
+        });
+        Desktop(tree)
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(crate::render::draw_frame);
+    let on_text = point(px(5.), px(10.));
+    held_past_long_press(&mut native, on_text);
+    assert!(
+        tip_shown(&mut native),
+        "a held finger on words in the source showed no tip"
+    );
+    finger(&mut native, gpui_kit::TouchPhase::Ended, on_text);
+    assert!(!tip_shown(&mut native), "it closes as the touch ends");
 }
