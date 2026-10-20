@@ -38,7 +38,7 @@ pub mod web;
 #[cfg(feature = "call")]
 pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
-pub use kernel::{Answered, day, local_offset, set_in_front};
+pub use kernel::{Answered, artifact, day, local_offset, set_in_front};
 // a host with no screen runs each program's notifier per account (`crates/pushd`),
 // and the desktop every other listed network's (`follow`)
 #[cfg(any(test, feature = "test-support"))]
@@ -342,6 +342,7 @@ pub fn allows(capability: Capability) -> &'static str {
         Capability::File => {
             "lets you pick files on this device: it sees their names and sizes, never where they are"
         }
+        Capability::Artifact => "shows pages kept on the network, which the app draws",
     }
 }
 

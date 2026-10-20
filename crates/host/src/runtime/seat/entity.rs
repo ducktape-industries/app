@@ -137,6 +137,7 @@ pub struct Seat {
     tree: Option<Entity<crate::render::ViewTree>>,
     _tree_events: Option<Subscription>,
     _tree_drawn: Option<Subscription>,
+    _tree_opened: Option<Subscription>,
     _tree_drops: Option<Subscription>,
     /// A tick the tree has not drawn yet: turns wait for that draw.
     holding: bool,
@@ -246,6 +247,7 @@ impl Seat {
             tree: None,
             _tree_events: None,
             _tree_drawn: None,
+            _tree_opened: None,
             _tree_drops: None,
             holding: false,
             owed: false,
@@ -1038,6 +1040,12 @@ impl Seat {
                 }
             }),
         );
+        self._tree_opened = Some(cx.subscribe(
+            &tree,
+            |_, _, opened: &crate::render::web::Opened, cx| {
+                cx.emit(Intent::OpenLink(opened.0.clone()))
+            },
+        ));
         // the tree replaced closes its devices before the new one's open
         if let Some(old) = &self.tree {
             old.update(cx, |old, _| old.release_media());

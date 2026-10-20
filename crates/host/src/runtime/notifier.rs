@@ -53,13 +53,14 @@ pub(crate) const INSTANCE: u64 = u64::MAX;
 
 /// What a notifier may not declare: it runs with no one in front of it, so
 /// nothing a person's press or yes admits (`link.open`, the clipboard, an
-/// op, an invite), and it draws nothing (`web`).
-const UNATTENDED: [Capability; 5] = [
+/// op, an invite), and it draws nothing (`web`, `artifact`).
+const UNATTENDED: [Capability; 6] = [
     Capability::Op,
     Capability::Invite,
     Capability::Link,
     Capability::Clipboard,
     Capability::Web,
+    Capability::Artifact,
 ];
 
 /// A busy notifier's next turn, as a busy view's (`seat/entity.rs`).

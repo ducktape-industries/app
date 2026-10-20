@@ -23,6 +23,8 @@
 //!   frame, its state and its browser after the work returns.
 //! - every page loads only what [`loadable`] allows, its own navigations
 //!   included; popups, downloads and permission prompts are refused.
+//! - a `duck://` address is answered by what the app hands [`serve`]
+//!   (`scheme.rs`), never by the web.
 //! - [`shutdown`] after gpui returns: browsers closed, then CEF.
 //!
 //! Without feature `cef` the crate is empty (`Cargo.toml` says why).
@@ -38,8 +40,10 @@ mod keys;
 mod mac;
 mod menu;
 mod page;
+mod scheme;
 
-pub use page::{Page, PageState};
+pub use page::{Leave, Page, PageState};
+pub use scheme::{Answer, Network, SCHEME, Served, serve};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -70,7 +74,7 @@ pub fn origin(address: &str) -> Option<String> {
         .then(|| format!("{}/", origin.ascii_serialization()))
 }
 
-/// Whether a page may load `address`: `https://` with a host, or `http://`
+/// Whether a page may load `address`: `https://` or `duck://` with a host, or `http://`
 /// on this machine (`localhost`, a loopback address), never with a user
 /// name or password, no control characters.
 /// Read with the WHATWG parser, as Chromium reads it, so the host checked
@@ -88,6 +92,7 @@ pub fn loadable(address: &str) -> bool {
     }
     match (url.scheme(), url.host()) {
         ("https", Some(_)) => true,
+        ("duck", Some(url::Host::Domain(name))) => !name.is_empty() && url.port().is_none(),
         ("http", Some(url::Host::Domain(name))) => name == "localhost",
         ("http", Some(url::Host::Ipv4(ip))) => ip.is_loopback(),
         ("http", Some(url::Host::Ipv6(ip))) => ip.is_loopback(),
@@ -348,6 +353,8 @@ mod tests {
             "http://[::1]:8000/",
             // `\` is `/` in an http address: this is localhost's path
             "http://localhost\\@evil.com/",
+            "duck://duckpond-725bcad1/files/shared/plan.html",
+            "duck://duckpond-725bcad1/blobs/00ff",
         ] {
             assert!(loadable(address), "{address}");
         }
@@ -388,6 +395,9 @@ mod tests {
             "chrome://settings",
             "ftp://localhost/",
             "https://example.com/\n",
+            "duck:///files/plan.html",
+            "duck://user@duckpond-725bcad1/files/plan.html",
+            "duck://duckpond-725bcad1:80/files/plan.html",
         ] {
             assert!(!loadable(address), "{address}");
         }

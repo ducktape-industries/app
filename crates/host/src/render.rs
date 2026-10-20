@@ -512,6 +512,7 @@ impl ViewTree {
             Node::Camera { .. } => self.camera(node, cx),
             Node::Microphone { .. } => self.microphone(node, window, cx),
             Node::Remote { .. } => self.remote(node, cx),
+            Node::Artifact { .. } => self.artifact(node, window, cx),
         };
         let element = match std::mem::replace(&mut self.pressed_at, outer_pressed_at) {
             Some(at) => accessibility::Measured { element, at }.into_any_element(),

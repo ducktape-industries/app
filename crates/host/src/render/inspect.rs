@@ -101,6 +101,7 @@ fn kind(node: &wire::Node) -> &'static str {
         Node::Camera { .. } => "camera",
         Node::Microphone { .. } => "microphone",
         Node::Remote { .. } => "remote",
+        Node::Artifact { .. } => "artifact",
         Node::Anchored { .. } => "anchored",
         Node::Deferred { .. } => "deferred",
         Node::Canvas { .. } => "canvas",

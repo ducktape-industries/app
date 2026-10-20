@@ -1036,6 +1036,14 @@ fn a_piece_from_a_view_without_its_capability_ends_the_view() {
             },
         ),
         (
+            Capability::Artifact,
+            wire::Node::Artifact {
+                id: wire::ElementIdWire::Name("plan".into()),
+                link: "duck://duckpond-725bcad1/files/shared/plan.html".into(),
+                style,
+            },
+        ),
+        (
             Capability::Camera,
             wire::Node::Camera {
                 id: wire::ElementIdWire::Name("camera".into()),

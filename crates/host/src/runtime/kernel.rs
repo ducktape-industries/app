@@ -161,7 +161,7 @@ fn hosted(floats: bool) -> Vec<String> {
 mod describe;
 pub(super) mod live;
 mod node;
-pub use node::Answered;
+pub use node::{Answered, artifact};
 mod replies;
 pub(super) mod screen;
 

@@ -22,7 +22,10 @@ pub struct PageState {
     pub loading: bool,
     pub can_go_back: bool,
     pub can_go_forward: bool,
+    pub height: Option<u32>,
 }
+
+pub struct Leave(pub String);
 
 /// What a page's CEF callbacks (main thread, inside `do_message_loop_work`)
 /// leave for the gpui side, and what the gpui side tells them back.
@@ -55,6 +58,7 @@ pub(crate) struct Shared {
     pub(crate) refused: RefCell<Option<String>>,
     /// A popup's or a new tab's address, opened here instead.
     pub(crate) redirect: RefCell<Option<String>>,
+    pub(crate) leave: RefCell<Option<String>>,
     /// The page's accessibility tree, while the app's accessibility is on.
     pub(crate) a11y: crate::a11y::Accessibility,
 }
@@ -143,6 +147,8 @@ pub struct Page {
 
 impl EventEmitter<PageState> for Page {}
 
+impl EventEmitter<Leave> for Page {}
+
 impl Page {
     /// A page opening `url`, its cookies and cache in `profile`. Every
     /// profile directory sits in one parent, CEF's root cache, which the
@@ -168,6 +174,7 @@ impl Page {
             state: RefCell::default(),
             refused: RefCell::default(),
             redirect: RefCell::default(),
+            leave: RefCell::default(),
             a11y: Default::default(),
         });
         if unavailable.is_none() {
@@ -262,12 +269,20 @@ impl Page {
         &self.told
     }
 
+    pub fn unavailable(&self) -> bool {
+        self.unavailable.is_some()
+    }
+
     /// After a pump: a popup's address opened here, the state emitted if
     /// it moved, a redraw if CEF painted.
     pub(crate) fn pumped(&mut self, cx: &mut Context<Self>) {
         let redirect = self.shared.redirect.borrow_mut().take();
         if let Some(url) = redirect {
             self.load(&url, cx);
+        }
+        let leave = self.shared.leave.borrow_mut().take();
+        if let Some(url) = leave {
+            cx.emit(Leave(url));
         }
         let state = self.shared.state.borrow().clone();
         if state != self.told {

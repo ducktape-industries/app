@@ -67,7 +67,13 @@ pub(crate) fn context(profile: &Path) -> Option<RequestContext> {
         cache_path: profile.to_string_lossy().as_ref().into(),
         ..Default::default()
     };
-    request_context_create_context(Some(&settings), None)
+    let context = request_context_create_context(Some(&settings), None)?;
+    context.register_scheme_handler_factory(
+        Some(&crate::scheme::SCHEME.into()),
+        None,
+        Some(&mut crate::scheme::factory()),
+    );
+    Some(context)
 }
 
 /// Asks CEF for the page's browser, in `context` (its profile); the
@@ -89,7 +95,7 @@ pub(crate) fn create(shared: &Rc<Shared>, url: &str, context: Option<RequestCont
         PageFocus::new(shared.clone()),
         PageLoad::new(shared.clone()),
         PageRequest::new(shared.clone()),
-        crate::menu::PageMenu::new(shared.clone()),
+        shared.clone(),
     );
     let mut context = context;
     browser_host_create_browser(
@@ -175,6 +181,16 @@ wrap_app! {
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
             Some(WebProcess::new())
+        }
+
+        fn render_process_handler(&self) -> Option<RenderProcessHandler> {
+            Some(crate::scheme::script())
+        }
+
+        fn on_register_custom_schemes(&self, registrar: Option<&mut SchemeRegistrar>) {
+            if let Some(registrar) = registrar {
+                crate::scheme::register(registrar);
+            }
         }
     }
 }
@@ -396,6 +412,11 @@ wrap_request_handler! {
                 return 0;
             }
             let url = address(request);
+            if crate::scheme::leaves(&url) {
+                *self.shared.leave.borrow_mut() = Some(url);
+                self.shared.dirty.set(true);
+                return 1;
+            }
             if crate::loadable(&url) {
                 return 0;
             }
@@ -479,10 +500,31 @@ wrap_client! {
         focus: FocusHandler,
         load: LoadHandler,
         request: RequestHandler,
-        menu: ContextMenuHandler,
+        shared: Rc<Shared>,
     }
 
     impl Client {
+        fn on_process_message_received(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _source_process: ProcessId,
+            message: Option<&mut ProcessMessage>,
+        ) -> c_int {
+            let Some(message) = message else {
+                return 0;
+            };
+            if CefString::from(&message.name()).to_string() != crate::scheme::HEIGHT {
+                return 0;
+            }
+            let Some(arguments) = message.argument_list() else {
+                return 0;
+            };
+            self.shared.state.borrow_mut().height = u32::try_from(arguments.int(0)).ok();
+            self.shared.dirty.set(true);
+            1
+        }
+
         fn render_handler(&self) -> Option<RenderHandler> {
             Some(self.render.clone())
         }
@@ -508,7 +550,7 @@ wrap_client! {
         }
 
         fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
-            Some(self.menu.clone())
+            Some(crate::menu::PageMenu::new(self.shared.clone()))
         }
 
         fn download_handler(&self) -> Option<DownloadHandler> {

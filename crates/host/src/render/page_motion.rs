@@ -126,7 +126,8 @@ impl ViewTree {
         root.for_each_mut(&mut |node| {
             if let wire::Node::Camera { id, style, .. }
             | wire::Node::Microphone { id, style, .. }
-            | wire::Node::Web { id, style, .. } = node
+            | wire::Node::Web { id, style, .. }
+            | wire::Node::Artifact { id, style, .. } = node
             {
                 *node = wire::Node::Container(view_wire::ContainerNode {
                     id: Some(id.clone()),

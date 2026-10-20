@@ -11,6 +11,8 @@ use super::*;
 use noded_client::wire as noded;
 use view_wire::methods::Method as _;
 
+pub mod artifact;
+
 pub type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
 /// One node-backed method: the node to ask and the request's payload in,
 /// the answer out. Not a [`methods::Call`], which is `program.query`'s and

@@ -1,12 +1,12 @@
-//! The web piece (`wire::Node::Web`) on this host, and every call the rest
-//! of the app makes into the web feature. With feature `web` a piece is a
-//! `ducktape_web::Page` (crates/web, where all of CEF lives), one per node,
-//! kept by the node's authored path from the frame that first has it to the
-//! frame that no longer does; without it the piece says the build has no
-//! web view and every https link goes to the system browser. Callers need
+//! The web pieces (`wire::Node::Web`, `Node::Artifact`) on this host, and every
+//! call the rest of the app makes into the web feature. With feature `web` a
+//! piece is a `ducktape_web::Page` (crates/web, where all of CEF lives), one
+//! per node, kept by the node's authored path from the frame that first has it
+//! to the frame that no longer does; without it a piece is its address as a
+//! link and every https link goes to the system browser. Callers need
 //! no `cfg`:
 //! - `main`: [`subprocess`] first, [`shutdown`] after the app returns;
-//! - the tree: [`ViewTree::web`] draws a piece, [`Pages::retain`] keeps a
+//! - the tree: [`ViewTree::web`] and [`ViewTree::artifact`] draw a piece, [`Pages::retain`] keeps a
 //!   frame's pages;
 //! - a view's manifest: [`seen`] records whose declares `web` (a frame
 //!   with a web piece from any other is refused where every piece's
@@ -14,6 +14,7 @@
 //! - a link: [`view_for`] names the view an https link opens in.
 
 use super::*;
+use crate::a11y::Control as _;
 
 /// A CEF child process (this binary started with `--type=...`) runs CEF
 /// and exits here; the app's own process returns at once.
@@ -34,6 +35,10 @@ pub fn shutdown() {
 // it lands, a manifest as it is read); the links follow it here
 pub use crate::runtime::web::{seen, view_for};
 
+pub struct Opened(pub String);
+
+impl EventEmitter<Opened> for ViewTree {}
+
 /// The pages of a tree's web pieces, by authored path.
 #[derive(Default)]
 pub(super) struct Pages {
@@ -48,7 +53,10 @@ struct Piece {
     page: Entity<ducktape_web::Page>,
     revision: u64,
     on_state: std::rc::Rc<std::cell::Cell<Option<u32>>>,
+    height: std::rc::Rc<std::cell::Cell<Option<u32>>>,
     _state: Subscription,
+    _leave: Subscription,
+    _follow: Option<(crate::runtime::artifact::Following, gpui_kit::Task<()>)>,
 }
 
 impl Pages {
@@ -58,7 +66,7 @@ impl Pages {
         if !self.pages.is_empty() {
             let mut kept = std::collections::HashSet::new();
             commands::walk_authored_paths(root, None, &mut Vec::new(), &mut |node, path| {
-                if matches!(node, wire::Node::Web { .. }) {
+                if matches!(node, wire::Node::Web { .. } | wire::Node::Artifact { .. }) {
                     kept.insert(path.clone());
                 }
             });
@@ -69,92 +77,184 @@ impl Pages {
 }
 
 impl ViewTree {
-    /// A web piece: its page in the node's box, or the line that says this
-    /// build has none.
     pub(super) fn web(
         &mut self,
         node: &wire::Node,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let wire::Node::Web { id, style, .. } = node else {
-            unreachable!()
-        };
-        let element = div()
-            .refine_style(&self.style(*style))
-            .id(native_id(id))
-            .overflow_hidden();
-        #[cfg(feature = "web")]
-        let element = element.child(self.page(node, window, cx));
-        #[cfg(not(feature = "web"))]
-        let element = {
-            let _ = (window, cx);
-            element
-                .flex()
-                .items_center()
-                .justify_center()
-                .child("This build has no web view")
-        };
-        element.into_any_element()
-    }
-
-    /// The node's page: made the first time its path is drawn, then handed
-    /// the commands of each revision it has not seen.
-    #[cfg(feature = "web")]
-    fn page(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<ducktape_web::Page> {
         let wire::Node::Web {
+            id,
             url,
+            style,
             revision,
             commands,
             on_state,
-            ..
         } = node
         else {
             unreachable!()
         };
+        #[cfg(feature = "web")]
+        {
+            let piece = self.page(url, *on_state, false, window, cx);
+            if piece.revision != *revision {
+                piece.revision = *revision;
+                piece.page.update(cx, |page, cx| {
+                    for command in commands {
+                        match command {
+                            wire::WebCommand::Load(url) => page.load(url, cx),
+                            wire::WebCommand::Back => page.back(),
+                            wire::WebCommand::Forward => page.forward(),
+                            wire::WebCommand::Reload => page.reload(),
+                            wire::WebCommand::Stop => page.stop(),
+                        }
+                    }
+                });
+            }
+            let page = piece.page.clone();
+            if !page.read(cx).unavailable() {
+                return div()
+                    .refine_style(&self.style(*style))
+                    .id(native_id(id))
+                    .overflow_hidden()
+                    .child(page)
+                    .into_any_element();
+            }
+        }
+        let _ = (window, style, revision, commands, on_state);
+        link_line(id, url, cx)
+    }
+
+    pub(super) fn artifact(
+        &mut self,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let wire::Node::Artifact { id, link, style } = node else {
+            unreachable!()
+        };
+        #[cfg(feature = "web")]
+        if crate::runtime::artifact::serves(link) {
+            let piece = self.page(link, None, true, window, cx);
+            let (page, height) = (piece.page.clone(), piece.height.get());
+            if !page.read(cx).unavailable() {
+                let height =
+                    height.map_or(window.viewport_size().height, |height| px(height as f32));
+                return div()
+                    .refine_style(&self.style(*style))
+                    .id(native_id(id))
+                    .overflow_hidden()
+                    .h(height)
+                    .child(page)
+                    .into_any_element();
+            }
+        }
+        let _ = (window, style);
+        link_line(id, link, cx)
+    }
+
+    #[cfg(feature = "web")]
+    fn page(
+        &mut self,
+        address: &str,
+        on_state: Option<u32>,
+        follows: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> &mut Piece {
         let path = self.authored_path.clone();
         if !self.webs.pages.contains_key(&path) {
-            let profile = profile(self.perf_key);
-            let page = cx.new(|cx| ducktape_web::Page::new(url, profile, window, cx));
-            let route = std::rc::Rc::new(std::cell::Cell::new(*on_state));
-            let heard = route.clone();
-            let state = cx.subscribe(&page, move |_, _, state: &ducktape_web::PageState, cx| {
-                if let Some(handler) = heard.get() {
-                    let state = told(state);
-                    cx.emit(wire::Event::Web { handler, state });
-                }
-            });
-            let piece = Piece {
-                page,
-                revision: 0,
-                on_state: route,
-                _state: state,
-            };
+            let piece = open(address, on_state, follows, self.perf_key, window, cx);
             self.webs.pages.insert(path.clone(), piece);
         }
         let piece = self.webs.pages.get_mut(&path).expect("made above");
-        piece.on_state.set(*on_state);
-        if piece.revision != *revision {
-            piece.revision = *revision;
-            piece.page.update(cx, |page, cx| {
-                for command in commands {
-                    match command {
-                        wire::WebCommand::Load(url) => page.load(url, cx),
-                        wire::WebCommand::Back => page.back(),
-                        wire::WebCommand::Forward => page.forward(),
-                        wire::WebCommand::Reload => page.reload(),
-                        wire::WebCommand::Stop => page.stop(),
+        piece.on_state.set(on_state);
+        piece
+    }
+}
+
+#[cfg(feature = "web")]
+fn open(
+    address: &str,
+    on_state: Option<u32>,
+    follows: bool,
+    key: Option<crate::perf::Key>,
+    window: &mut Window,
+    cx: &mut Context<ViewTree>,
+) -> Piece {
+    use futures::StreamExt as _;
+    ducktape_web::serve(ducktape_web::Network {
+        read: Box::new(|address, answer| {
+            crate::runtime::artifact::spawn_read(address, move |read| {
+                answer(ducktape_web::Served {
+                    status: read.status,
+                    mime: read.mime.to_owned(),
+                    body: read.body,
+                })
+            })
+        }),
+        serves: crate::runtime::artifact::serves,
+    });
+    let page = cx.new(|cx| ducktape_web::Page::new(address, profile(key), window, cx));
+    let route = std::rc::Rc::new(std::cell::Cell::new(on_state));
+    let height = std::rc::Rc::new(std::cell::Cell::new(None));
+    let (heard, measured) = (route.clone(), height.clone());
+    let state = cx.subscribe(&page, move |_, _, state: &ducktape_web::PageState, cx| {
+        if measured.replace(state.height) != state.height {
+            cx.notify();
+        }
+        if let Some(handler) = heard.get() {
+            let state = told(state);
+            cx.emit(wire::Event::Web { handler, state });
+        }
+    });
+    let leave = cx.subscribe(&page, |_, _, leave: &ducktape_web::Leave, cx| {
+        cx.emit(Opened(leave.0.clone()))
+    });
+    let follow = follows
+        .then(|| crate::runtime::artifact::follow(address))
+        .flatten()
+        .map(|(following, mut changed)| {
+            let shown = page.downgrade();
+            let reloads = cx.spawn(async move |_, cx| {
+                while changed.next().await.is_some() {
+                    if shown.update(cx, |page, _| page.reload()).is_err() {
+                        return;
                     }
                 }
             });
-        }
-        piece.page.clone()
+            (following, reloads)
+        });
+    Piece {
+        page,
+        revision: 0,
+        on_state: route,
+        height,
+        _state: state,
+        _leave: leave,
+        _follow: follow,
     }
+}
+
+fn link_line(id: &wire::ElementIdWire, link: &str, cx: &mut Context<ViewTree>) -> AnyElement {
+    let opened = link.to_owned();
+    crate::a11y::keyboard(
+        div()
+            .id(native_id(id))
+            .control(gpui_kit::Role::Link, link.to_owned())
+            .w_full()
+            .min_w_0()
+            .truncate()
+            .cursor_pointer()
+            .text_color(crate::theme::hsla(crate::theme::palette(cx).link))
+            .on_click(cx.listener(move |_, _: &gpui_kit::ClickEvent, _, cx| {
+                cx.emit(Opened(opened.clone()))
+            }))
+            .child(link.to_owned()),
+        crate::a11y::ink(cx),
+    )
+    .into_any_element()
 }
 
 /// What a view hears of its page. The page writes its address and title
@@ -196,6 +296,7 @@ fn profile(key: Option<crate::perf::Key>) -> std::path::PathBuf {
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "web"))]
     fn web() -> wire::Node {
         wire::Node::Web {
             id: wire::ElementIdWire::Name("page".into()),
@@ -207,6 +308,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "web"))]
     fn holder(children: Vec<wire::Node>) -> wire::Node {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("root".into())),
@@ -248,19 +350,80 @@ mod tests {
         assert_eq!(title.chars().count(), 500);
     }
 
-    /// A build without the web view draws a web piece as its line, and a
-    /// frame without the piece leaves nothing behind.
+    const PLAN: &str = "duck://duckpond-725bcad1/files/shared/plan.html";
+
+    #[cfg(not(feature = "web"))]
+    fn artifact() -> wire::Node {
+        wire::Node::Artifact {
+            id: wire::ElementIdWire::Name("plan".into()),
+            link: PLAN.into(),
+            style: crate::render::plain_style(),
+        }
+    }
+
     #[cfg(not(feature = "web"))]
     #[gpui_kit::test]
-    fn a_build_without_the_web_view_draws_the_piece_as_a_line(cx: &mut gpui_kit::TestAppContext) {
+    fn without_the_web_view_a_piece_is_its_link_which_a_key_opens(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
         use gpui_kit::px;
         cx.update(gpui_kit::init);
-        let window = cx.open_window(gpui_kit::size(px(200.), px(100.)), |_, _| {
-            ViewTree::new(holder(vec![web()]))
-        });
-        cx.update_window(window.into(), |_, window, cx| {
-            window.draw(cx).clear(cx);
-        })
-        .unwrap();
+        for (node, link) in [(artifact(), PLAN), (web(), "https://example.com")] {
+            let window = cx.open_window(gpui_kit::size(px(400.), px(300.)), |_, _| {
+                ViewTree::new(holder(vec![node]))
+            });
+            let tree = window.root(cx).unwrap();
+            let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let _opened = native.update(|_, cx| {
+                let heard = heard.clone();
+                cx.subscribe(&tree, move |_, opened: &Opened, _| {
+                    heard.borrow_mut().push(opened.0.clone())
+                })
+            });
+            let focused = native.update(|window, cx| {
+                window.activate_a11y();
+                crate::render::draw_frame(window, cx);
+                window.focus_next(cx);
+                crate::render::draw_frame(window, cx);
+                let tree = window.a11y_tree().unwrap();
+                tree.nodes
+                    .iter()
+                    .find(|(id, _)| *id == tree.focus)
+                    .map(|(_, node)| (node.role(), node.label().map(str::to_owned)))
+            });
+            assert_eq!(
+                focused,
+                Some((gpui_kit::accesskit::Role::Link, Some(link.to_owned())))
+            );
+            let keystroke = gpui_kit::Keystroke::parse("enter").unwrap();
+            native.simulate_event(gpui_kit::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            native.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+            assert_eq!(*heard.borrow(), [link]);
+        }
+    }
+
+    #[test]
+    fn an_artifact_is_a_file_or_a_blob_of_a_network() {
+        use crate::runtime::artifact::serves;
+        assert!(serves(PLAN));
+        assert!(serves(&format!("{PLAN}?v=2")));
+        assert!(serves(&format!(
+            "duck://duckpond-725bcad1/blobs/{}",
+            "ab".repeat(32)
+        )));
+        for address in [
+            "duck://duckpond-725bcad1/chat/general",
+            "duck://duckpond-725bcad1/files",
+            "duck://duckpond-725bcad1/blobs/ab",
+            "duck://chat",
+            "https://example.com/plan.html",
+        ] {
+            assert!(!serves(address), "{address}");
+        }
     }
 }
