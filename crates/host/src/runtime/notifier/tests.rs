@@ -182,10 +182,7 @@ fn a_notice_with_no_pane_open_is_one_row_and_one_banner() {
 /// replaces it, and the program leaving the roster stops it.
 #[test]
 fn one_notifier_runs_per_program_until_its_code_moves() {
-    let _serial = serial();
     let program = "notifier-tests-one";
-    allow(program);
-    in_hand();
     let first = blob_carrying(&notifier_posting("One", "notify,", &mention()));
     let next = blob_carrying(&notifier_posting("One v2", "notify,", &mention()));
     let entry = |blob: &[u8]| ::programs::Entry {
@@ -198,22 +195,39 @@ fn one_notifier_runs_per_program_until_its_code_moves() {
         Vec::new(),
         vec![first.clone(), next.clone()],
     );
-    let notifiers = Notifiers::default();
+    let store = tempfile::tempdir().unwrap();
+    let raised = Arc::new(Raised::default());
+    let recipient = Arc::new(recipient(2, store.path().to_owned(), raised.clone()));
+    let rows = || {
+        recipient
+            .center
+            .lock()
+            .entries()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let notifiers = Notifiers {
+        running: Mutex::default(),
+        recipient: Some(recipient.clone()),
+    };
     notifiers.reconcile(&node.asked_of, &[listed(program, &first)]);
-    eventually("the notifier posted", || !rows(program).is_empty());
+    raised.wait_for(1);
+    let first_run = lock(&notifiers.running)[program].stop.clone();
     // the reads that follow, one a block, find it running
     for _ in 0..2 {
         notifiers.reconcile(&node.asked_of, &[listed(program, &first)]);
+        assert!(first_run.same_channel(&lock(&notifiers.running)[program].stop));
     }
-    std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(rows(program)[0].count, 1, "one notifier, one post");
+    assert_eq!(rows()[0].count, 1, "one notifier, one post");
     assert_eq!(notifiers.running(), [program]);
 
     // a new deployment: the new code's notifier posts under the same tag
     notifiers.reconcile(&node.asked_of, &[listed(program, &next)]);
-    eventually("the new notifier posted", || {
-        rows(program)[0].view == "One v2"
-    });
+    raised.wait_for(2);
+    assert_eq!(rows()[0].view, "One v2");
+    assert_eq!(rows()[0].count, 2);
+    assert!(*first_run.borrow(), "the old notifier stopped");
+    assert!(!first_run.same_channel(&lock(&notifiers.running)[program].stop));
     assert_eq!(notifiers.running(), [program]);
 
     notifiers.reconcile(&node.asked_of, &[]);
@@ -289,11 +303,27 @@ fn a_notifier_declaring_what_needs_a_person_is_refused() {
 
 /// Banners a test reads back: each notice raised, as a channel sends it.
 #[derive(Default)]
-struct Raised(Mutex<Vec<notify::Notice>>);
+struct Raised {
+    notices: Mutex<Vec<notify::Notice>>,
+    posted: std::sync::Condvar,
+}
+
+impl Raised {
+    fn wait_for(&self, count: usize) {
+        drop(
+            self.posted
+                .wait_while(self.notices.lock().unwrap(), |notices| {
+                    notices.len() < count
+                })
+                .unwrap(),
+        );
+    }
+}
 
 impl crate::contract::Banners for Raised {
     fn post(&self, notice: &notify::Notice, _: Option<notify::Click>) -> bool {
-        self.0.lock().unwrap().push(notice.clone());
+        self.notices.lock().unwrap().push(notice.clone());
+        self.posted.notify_all();
         true
     }
 
@@ -372,9 +402,9 @@ fn each_recipient_has_its_own_notices_and_store() {
             .join("ab")
             .join(format!("{program}.borsh"));
         eventually("each account's notifier posted and kept", || {
-            !raised.0.lock().unwrap().is_empty() && file.exists()
+            !raised.notices.lock().unwrap().is_empty() && file.exists()
         });
-        let raised = raised.0.lock().unwrap();
+        let raised = raised.notices.lock().unwrap();
         assert_eq!(raised.len(), 1, "{raised:?}");
         assert_eq!(
             (

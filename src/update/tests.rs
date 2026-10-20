@@ -270,21 +270,31 @@ fn release_of(exe: Vec<u8>) -> Vec<Item> {
 #[test]
 fn the_restart_waiter_waits_until_the_install_is_let_go() {
     use std::os::unix::io::AsRawFd as _;
-    use std::time::Duration;
     let (_root, layout) = rig();
     std::fs::create_dir_all(&layout.updates).unwrap();
     let old = std::fs::File::create(layout.updates.join("lock")).unwrap();
     // SAFETY: an open descriptor and a flag constant.
     assert_eq!(unsafe { libc::flock(old.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let (starting, started) = std::sync::mpsc::channel();
     let (done, waited) = std::sync::mpsc::channel();
     let waiting = layout.clone();
-    std::thread::spawn(move || done.send(super::await_install(&waiting).is_ok()).unwrap());
+    let waiter = std::thread::spawn(move || {
+        starting.send(()).unwrap();
+        done.send(super::await_install(&waiting)).unwrap();
+    });
+    started.recv().unwrap();
     assert!(
-        waited.recv_timeout(Duration::from_millis(300)).is_err(),
+        matches!(waited.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
         "it waits while the old process holds the install"
     );
     drop(old);
-    assert!(waited.recv_timeout(Duration::from_secs(10)).unwrap());
+    let acquired = waited.recv().unwrap().unwrap();
+    assert!(
+        !super::hold_install(&layout).unwrap(),
+        "the waiter hands over the held lock"
+    );
+    drop(acquired);
+    waiter.join().unwrap();
     assert!(
         super::hold_install(&layout).unwrap(),
         "the next start takes it"

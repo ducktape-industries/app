@@ -1352,7 +1352,16 @@ fn a_seat_let_go_steps_back_to_its_code_and_stays_listed() {
     let (roster, seats) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &seats);
     let seat = lock(&seats)[&(PROGRAM, 0)].clone();
-    eventually("the preload landed", || !lock(&seat).slot.loading());
+    let mut loaded = lock(&seat).wake.subscribe();
+    futures::executor::block_on(async {
+        loop {
+            loaded.borrow_and_update();
+            if !lock(&seat).slot.loading() {
+                break;
+            }
+            loaded.changed().await.expect("the preload landed");
+        }
+    });
     drop(node);
     super::super::roster::roster()
         .lock()

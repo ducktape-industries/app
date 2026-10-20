@@ -40,14 +40,19 @@ fn seated(signer: &str) -> Option<Vec<u8>> {
     ))
 }
 
-/// Every reply `view` has had within ten seconds, until `enough` says so.
+/// Every reply `view` has had, waiting on its answer wake until `enough`.
 fn replies(view: &mut View, enough: impl Fn(&[wire::Event]) -> bool) -> Vec<wire::Event> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut changed = view.replies.changes();
     let mut heard = Vec::new();
-    while !enough(&heard) && std::time::Instant::now() < deadline {
-        view.replies.drain_into(&mut heard);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    futures::executor::block_on(async {
+        while !enough(&heard) {
+            changed.borrow_and_update();
+            view.replies.drain_into(&mut heard);
+            if !enough(&heard) {
+                changed.changed().await.expect("the store replied");
+            }
+        }
+    });
     heard
 }
 

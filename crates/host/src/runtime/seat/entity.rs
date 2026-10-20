@@ -48,7 +48,22 @@ type ToStart = (Arc<Mutex<Mounted>>, &'static str);
 
 /// The window thread's end of the parked starts, installed by `start`
 /// ([`serve_starts`]).
+#[cfg(not(any(test, feature = "test-support")))]
 static STARTS: OnceLock<async_channel::Sender<ToStart>> = OnceLock::new();
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    // Each test's host and scheduler belong to its thread. A load on
+    // another thread must not wake it; tests start their seats by hand.
+    static STARTS: OnceLock<async_channel::Sender<ToStart>> = const { OnceLock::new() };
+}
+
+fn start_channel<R>(read: impl FnOnce(&OnceLock<async_channel::Sender<ToStart>>) -> R) -> R {
+    #[cfg(not(any(test, feature = "test-support")))]
+    return read(&STARTS);
+    #[cfg(any(test, feature = "test-support"))]
+    STARTS.with(read)
+}
 
 /// Runs every start a load parks (`seat::start_in`) on this, the window
 /// thread, whether or not a pane holds the seat: a seat `Preload::Seat`
@@ -58,7 +73,7 @@ static STARTS: OnceLock<async_channel::Sender<ToStart>> = OnceLock::new();
 /// process, by `start`.
 pub fn serve_starts(cx: &mut App) {
     let (send, starts) = async_channel::unbounded();
-    if STARTS.set(send).is_err() {
+    if start_channel(|starts| starts.set(send)).is_err() {
         return;
     }
     cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
@@ -76,9 +91,11 @@ pub fn serve_starts(cx: &mut App) {
 /// `mounted` ([`serve_starts`]); a test with no host started has its
 /// pane's turn start it, or starts it by hand.
 pub(in crate::runtime) fn begin_start(mounted: Arc<Mutex<Mounted>>, program: &'static str) {
-    if let Some(starts) = STARTS.get() {
-        let _ = starts.try_send((mounted, program));
-    }
+    start_channel(|starts| {
+        if let Some(starts) = starts.get() {
+            let _ = starts.try_send((mounted, program));
+        }
+    });
 }
 
 /// The start parked on `mounted`, run here on the window thread: polled at

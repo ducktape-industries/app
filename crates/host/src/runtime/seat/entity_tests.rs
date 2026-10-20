@@ -1279,6 +1279,20 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
     assert!(woken() > 0, "a changed roster told the rail nothing");
 }
 
+/// A parked start from another test must never wake this test's window
+/// thread. Park the receiver before sending so the wake is exercised.
+#[gpui_kit::test]
+fn a_parked_start_does_not_wake_another_tests_window_thread(cx: &mut TestAppContext) {
+    cx.update(serve_starts);
+    cx.run_until_parked();
+    std::thread::spawn(|| {
+        entity::begin_start(Mounted::seat(), "another-tests-start");
+    })
+    .join()
+    .unwrap();
+    cx.run_until_parked();
+}
+
 // ---------- the landed-later gate (SPEC §13.3) ----------
 //
 // The seat's one path for a tick that lands later than its turn, run on
