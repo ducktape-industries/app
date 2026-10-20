@@ -7,18 +7,6 @@ use crate::render::native_id;
 
 pub(super) mod links;
 
-fn rich_tooltip_content(
-    tooltips: &HashMap<u32, TooltipContent>,
-    request: u32,
-    character_index: u32,
-) -> Option<Tree> {
-    let held = tooltips.get(&request)?;
-    (held.character_index == Some(character_index)).then(|| Tree {
-        root: (*held.content).clone(),
-        styles: held.styles.clone(),
-    })
-}
-
 thread_local! {
     static DRAG_CLIP: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
     static PRESS: std::cell::Cell<Option<Point<Pixels>>> = const { std::cell::Cell::new(None) };
@@ -438,53 +426,28 @@ impl ViewTree {
             }
             _ => None,
         };
-        let hover_handler = *on_hover;
-        let tooltip_request = *tooltip;
-        if hover_handler.is_some() || tooltip_request.is_some() {
+        if let Some(handler) = *on_hover {
             let view = cx.entity().downgrade();
             interactive = interactive.on_hover(move |index, event, _, cx| {
-                let character_index = index.and_then(|index| u32::try_from(index).ok());
+                let index = index.and_then(|index| u32::try_from(index).ok());
                 let _ = view.update(cx, |_, cx| {
-                    if let Some(handler) = hover_handler {
-                        cx.emit(wire::Event::RichTextHover {
-                            handler,
-                            event: wire::RichTextHover {
-                                index: character_index,
-                                position: event.position,
-                                pressed_button: event.pressed_button.map(Into::into),
-                                modifiers: event.modifiers,
-                            },
-                        });
-                    }
-                    if let (Some(request), Some(character_index)) =
-                        (tooltip_request, character_index)
-                    {
-                        cx.emit(wire::Event::TooltipRequest {
-                            request,
-                            character_index: Some(character_index),
-                        });
-                    }
+                    cx.emit(wire::Event::RichTextHover {
+                        handler,
+                        event: wire::RichTextHover {
+                            index,
+                            position: event.position,
+                            pressed_button: event.pressed_button.map(Into::into),
+                            modifiers: event.modifiers,
+                        },
+                    });
                 });
             });
         }
         if let Some(request) = *tooltip {
-            let parent = cx.entity().downgrade();
-            interactive = interactive.tooltip(move |index, _, cx| {
-                let character_index = u32::try_from(index).ok()?;
-                let content = parent
-                    .update(cx, |this, cx| {
-                        let content =
-                            rich_tooltip_content(&this.tooltips, request, character_index);
-                        cx.emit(wire::Event::TooltipRequest {
-                            request,
-                            character_index: Some(character_index),
-                        });
-                        content
-                    })
-                    .ok()
-                    .flatten();
-                content
-                    .map(|content| super::tooltip_containment::build(parent.clone(), content, cx))
+            self.tip_source = Some(super::pointer::TipSpec {
+                request,
+                hoverable: false,
+                text: Some(layout.clone()),
             });
         }
         let picked = linked

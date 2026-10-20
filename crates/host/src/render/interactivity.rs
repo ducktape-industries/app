@@ -1,17 +1,15 @@
-//! A node's `wire::Interactivity` onto a gpui element: focus and tab
-//! order, tooltips, one listener per handler the view set, each emitting
-//! the matching `wire::Event`, the keys the view consumes, the `KeyUp` owed
-//! to a node the keyboard left with a key down in it, and a long press.
+//! A node's `wire::Interactivity` onto a gpui element: focus and tab order, one
+//! listener per handler the view set emitting its `wire::Event`, the keys the view
+//! consumes, the `KeyUp` owed to a node the keyboard left, and a long press.
 
-use super::{AuthoredPath, Tree, ViewTree};
+use super::{AuthoredPath, ViewTree};
 use gpui_kit::{
-    App, AppContext as _, Context, DispatchPhase, FocusHandle, IntoElement, KeyDownEvent,
-    KeyUpEvent, Keystroke, LongPressEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseExitEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent, PinchEvent, ScrollWheelEvent,
+    App, Context, DispatchPhase, FocusHandle, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke,
+    LongPressEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent,
+    MouseMoveEvent, MousePressureEvent, MouseUpEvent, PinchEvent, ScrollWheelEvent,
     StatefulInteractiveElement, Subscription, TouchPhase, Window,
 };
 use std::sync::Arc;
-use std::time::Duration;
 use view_wire as wire;
 
 fn drawn(styles: &wire::Styles, id: wire::StyleId, cx: &App) -> gpui_kit::StyleRefinement {
@@ -25,7 +23,6 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     styles: &wire::Styles,
     focus_handle: Option<FocusHandle>,
     path: Option<&AuthoredPath>,
-    tooltip_held: bool,
     cx: &mut Context<ViewTree>,
 ) -> E {
     if let Some(value) = interactivity.tab_stop {
@@ -84,36 +81,6 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     element = apply_mouse(element, interactivity, cx);
     element = apply_keyboard(element, interactivity, path, cx);
     element = apply_misc(element, interactivity, styles, cx);
-    if let Some(tooltip) = &interactivity.tooltip
-        && tooltip_held
-    {
-        let (parent, request) = (cx.entity().downgrade(), tooltip.request);
-        let delay = Duration::from_millis(tooltip.delay_ms);
-        element = element.tooltip_show_delay(delay);
-        // what the tree holds for the route when gpui shows the tooltip, not
-        // when this frame drew: gpui keeps the builder of the frame the hover
-        // began in, and the view's answer to that hover lands in the delay.
-        // The content is drawn with the table it came with.
-        let build = move |cx: &mut App| {
-            let held = parent.upgrade().and_then(|tree| {
-                let held = tree.read(cx).tooltips.get(&request)?;
-                Some(Tree {
-                    root: (*held.content).clone(),
-                    styles: held.styles.clone(),
-                })
-            });
-            match held {
-                Some(tree) => super::tooltip_containment::build(parent.clone(), tree, cx),
-                // the view took it back during the delay
-                None => cx.new(|_| gpui_kit::Empty).into(),
-            }
-        };
-        if tooltip.hoverable {
-            element = element.hoverable_tooltip(move |_, cx| build(cx));
-        } else {
-            element = element.tooltip(move |_, cx| build(cx));
-        }
-    }
     element
 }
 
@@ -479,25 +446,12 @@ fn apply_misc<E: StatefulInteractiveElement>(
     styles: &wire::Styles,
     cx: &mut Context<ViewTree>,
 ) -> E {
-    let tooltip_request = interactivity
-        .tooltip
-        .as_ref()
-        .map(|tooltip| tooltip.request);
-    if interactivity.on_hover.is_some() || tooltip_request.is_some() {
-        let handler = interactivity.on_hover;
+    if let Some(handler) = interactivity.on_hover {
         element = element.on_hover(cx.listener(move |_, hovered, _, cx| {
-            if let Some(handler) = handler {
-                cx.emit(wire::Event::Hover {
-                    handler,
-                    hovered: *hovered,
-                });
-            }
-            if *hovered && let Some(request) = tooltip_request {
-                cx.emit(wire::Event::TooltipRequest {
-                    request,
-                    character_index: None,
-                });
-            }
+            cx.emit(wire::Event::Hover {
+                handler,
+                hovered: *hovered,
+            });
         }));
     }
     element = element.hover_listener_mode(match interactivity.hover_listener_mode {
@@ -558,7 +512,11 @@ pub(super) fn long_press(
     use gpui_kit::Styled as _;
     let view = cx.entity().downgrade();
     gpui_kit::canvas(
-        |bounds, window, _| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
+        |bounds, window, cx| {
+            let hitbox = window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal);
+            super::pointer::holds_long_press(&hitbox, window, cx);
+            hitbox
+        },
         move |_, hitbox, window, _| {
             window.on_mouse_event(move |event: &LongPressEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {

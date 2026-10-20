@@ -127,16 +127,13 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use gpui_kit::{ScrollDelta, ScrollWheelEvent};
-    use std::time::Duration;
     const MAGENTA: u32 = 0xff00ff;
     struct Pane {
         tree: Entity<ViewTree>,
     }
     impl Render for Pane {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .child(div().size(px(200.)).child(self.tree.clone()))
+            routed(div().size(px(200.)).child(self.tree.clone()))
         }
     }
     fn container(
@@ -224,7 +221,6 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
         });
         native.update(crate::render::draw_frame);
         native.simulate_mouse_move(point(px(20.), px(90.)), None, Default::default());
-        native.executor().advance_clock(Duration::from_millis(11));
         native.run_until_parked();
         native.update(|window, cx| {
             crate::render::draw_frame(window, cx);

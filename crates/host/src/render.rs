@@ -48,6 +48,7 @@ mod surfaces;
 mod svg_check;
 mod svg_limits;
 mod text;
+mod tips;
 mod tooltip_containment;
 mod uniform;
 mod variable_list;
@@ -323,6 +324,7 @@ pub struct ViewTree {
     /// it came up if the keyboard leaves the node first (`interactivity`).
     held_keys: Vec<interactivity::HeldKey>,
     long_pressed: Option<interactivity::Pressed>,
+    tip_source: Option<pointer::TipSpec>,
 
     // Pictures by the view's content hash: the seat's bytes, which a node
     // that names a hash alone draws from, and the rasters decoded from them.
@@ -349,6 +351,7 @@ pub struct ViewTree {
     /// are counted there (docs/perf.md).
     perf_key: Option<crate::perf::Key>,
     portal: Option<deferred::Portal>,
+    tip: Option<tips::Tip>,
     #[cfg(test)]
     renders: u64,
 }
@@ -415,6 +418,7 @@ impl ViewTree {
             opener: None,
             held_keys: Vec::new(),
             long_pressed: None,
+            tip_source: None,
             sensors: HashMap::new(),
             webs: Default::default(),
             media: Default::default(),
@@ -432,6 +436,7 @@ impl ViewTree {
             text_scale: None,
             perf_key: None,
             portal: Some(Default::default()),
+            tip: None,
             #[cfg(test)]
             renders: 0,
         }
@@ -507,6 +512,7 @@ impl ViewTree {
         let outer_index = entered_scope.then(|| std::mem::take(&mut self.render_index));
         let outer_unselected = self.unselected;
         let outer_pressed_at = self.pressed_at.take();
+        let outer_tip_source = self.tip_source.take();
         self.unselected |= node
             .interactivity()
             .and_then(|interactivity| interactivity.role)
@@ -541,6 +547,10 @@ impl ViewTree {
         };
         let element = match std::mem::replace(&mut self.pressed_at, outer_pressed_at) {
             Some(at) => accessibility::Measured { element, at }.into_any_element(),
+            None => element,
+        };
+        let element = match std::mem::replace(&mut self.tip_source, outer_tip_source) {
+            Some(spec) => self.tipped(spec, entered_scope, place, element, cx),
             None => element,
         };
         let element = self.marked(node, entered_scope, place, element, cx);
@@ -686,6 +696,7 @@ impl Render for ViewTree {
                 let _ = tree.update(cx, |tree, _| tree.presentation = Default::default());
             });
         }
+        let tip = self.tip_element(cx);
         // Host-owned clip box around the view root (view style never
         // reaches it): the pane's mask, which the view's layer (its
         // tooltips and deferred draws) is fitted and clipped to.
@@ -701,7 +712,11 @@ impl Render for ViewTree {
             ))
             // over the whole body, in the view's layer like the rest
             .children(sheet.map(|sheet| deferred::Layer(sheet, None)))
-            .children(self.portal.clone().map(deferred::Portaled))
+            .children(
+                self.portal
+                    .clone()
+                    .map(|portal| deferred::Portaled(portal, tip)),
+            )
     }
 }
 

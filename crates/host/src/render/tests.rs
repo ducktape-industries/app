@@ -291,6 +291,13 @@ pub(super) fn emitted(
     (events, subscription)
 }
 
+pub(super) fn routed(pane: impl IntoElement) -> Div {
+    div()
+        .size_full()
+        .child(crate::render::pointer::Layer)
+        .child(pane)
+}
+
 mod accessibility;
 mod dialog_focus;
 mod element_cost;

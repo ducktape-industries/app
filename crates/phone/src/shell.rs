@@ -2130,6 +2130,7 @@ impl Render for Root {
             }
             (None, None) => None,
         };
+        root = root.child(ducktape_host::render::pointer::TipLayer);
         root = match moving {
             None => root.child(layer),
             Some((left, left_over, placed)) => {

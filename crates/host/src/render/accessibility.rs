@@ -327,8 +327,13 @@ impl ViewTree {
                 .or_insert_with(|| cx.focus_handle());
             tabbed(handle.clone(), interactivity)
         });
-        let tooltip_held = (interactivity.tooltip.as_ref())
-            .is_some_and(|tooltip| self.tooltips.contains_key(&tooltip.request));
+        if let Some(tooltip) = &interactivity.tooltip {
+            self.tip_source = Some(super::pointer::TipSpec {
+                request: tooltip.request,
+                hoverable: tooltip.hoverable,
+                text: None,
+            });
+        }
         let path = node.identity().is_some().then_some(&self.authored_path);
         element = super::interactivity::apply(
             element,
@@ -336,7 +341,6 @@ impl ViewTree {
             &self.styles,
             focus_handle,
             path,
-            tooltip_held,
             cx,
         );
         if let Some(handler) = interactivity.on_click
