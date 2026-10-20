@@ -120,3 +120,44 @@ fn the_launcher_is_fixed_and_the_desk_resizes(cx: &mut TestAppContext) {
         assert_eq!(resizable(&mut native), Some(expected), "{screen:?}");
     }
 }
+
+#[gpui_kit::test]
+fn a_size_the_compositor_gave_the_console_stays_across_the_crossing(cx: &mut TestAppContext) {
+    use crate::shell::entities::Screen;
+    let given = size(px(1000.), px(700.));
+    for compositor_sizes in [false, true] {
+        let (view, mut native) = open(Seed::boot(), cx);
+        let app = entities(&view, &mut native);
+        if compositor_sizes {
+            native.update(|_, cx| {
+                app.windows
+                    .update(cx, |windows, _| windows.compositor_sizes_for_test())
+            });
+        }
+        native.simulate_resize(given);
+        native.run_until_parked();
+        set_screen(&view, Screen::Desk, &mut native);
+        native.run_until_parked();
+        let (id, drawn) = native.update(|window, cx| {
+            draw(window, cx);
+            (window.window_handle().window_id(), window.viewport_size())
+        });
+        let asked = crate::shell::windows::BOUNDED.with_borrow(|told| {
+            told.iter()
+                .rev()
+                .find(|(at, _)| *at == id)
+                .map(|(_, asked)| *asked)
+        });
+        match compositor_sizes {
+            false => assert_eq!(
+                asked,
+                Some(size(px(1280.), px(800.))),
+                "the desk takes its own size where the app sizes it"
+            ),
+            true => {
+                assert_eq!(asked, None, "the compositor's size was asked over");
+                assert_eq!(drawn, given, "the desk lays out to the size it was given");
+            }
+        }
+    }
+}
