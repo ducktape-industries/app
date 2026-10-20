@@ -305,7 +305,45 @@ async fn cached(
     client: &RpcClient,
     code: &BlobId,
 ) -> std::io::Result<Result<(Blob, &'static str), Fetch>> {
-    let path = cache_path(code);
+    let (client, code) = (client.clone(), *code);
+    cached_at(&code, cache_path(&code), move |path| async move {
+        fetched(&client, &code, &path).await
+    })
+    .await
+}
+
+async fn cached_at<F: Future<Output = std::io::Result<Result<(), Fetch>>> + Send + 'static>(
+    code: &BlobId,
+    path: PathBuf,
+    fetch: impl FnOnce(PathBuf) -> F + Send + 'static,
+) -> std::io::Result<Result<(Blob, &'static str), Fetch>> {
+    use futures::FutureExt as _;
+    use futures::future::{BoxFuture, WeakShared};
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    type Pending = BoxFuture<'static, Result<Result<(), Fetch>, Arc<std::io::Error>>>;
+    static FETCHES: Mutex<BTreeMap<PathBuf, WeakShared<Pending>>> = Mutex::new(BTreeMap::new());
+    // Join before the disk lookup: a miss that finishes after another
+    // caller's fetch must still share that fetch, including its error.
+    // Weak entries keep neither completed reads nor failures cached.
+    let fetch = {
+        let mut fetches = FETCHES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        fetches.retain(|_, fetch| fetch.upgrade().is_some());
+        match fetches.get(&path).and_then(WeakShared::upgrade) {
+            Some(fetch) => fetch,
+            None => {
+                let landing = path.clone();
+                let fetch = async move { fetch(landing).await.map_err(Arc::new) }
+                    .boxed()
+                    .shared();
+                fetches.insert(path.clone(), fetch.downgrade().expect("an unpolled fetch"));
+                fetch
+            }
+        }
+    };
     let kept = {
         let (path, code) = (path.clone(), *code);
         blocking(move || match Blob::mapped(&path) {
@@ -324,7 +362,10 @@ async fn cached(
         Ok(None) => {}
         Err(error) => return Ok(Err(error)),
     }
-    if let Err(error) = fetched(client, code, &path).await? {
+    if let Err(error) = fetch
+        .await
+        .map_err(|error| std::io::Error::new(error.kind(), error))?
+    {
         return Ok(Err(error));
     }
     let landed = blocking(move || {
@@ -474,6 +515,148 @@ fn fetch_error(error: noded_client::Error) -> Fetch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
+
+    struct BlobNode {
+        requests: AtomicUsize,
+        started: tokio::sync::Notify,
+        release: tokio::sync::Semaphore,
+        answer: Result<Vec<u8>, Fetch>,
+    }
+
+    impl BlobNode {
+        fn new(answer: Result<Vec<u8>, Fetch>) -> Arc<Self> {
+            Arc::new(Self {
+                requests: AtomicUsize::new(0),
+                started: tokio::sync::Notify::new(),
+                release: tokio::sync::Semaphore::new(0),
+                answer,
+            })
+        }
+
+        async fn fetch(&self, code: BlobId, path: PathBuf) -> std::io::Result<Result<(), Fetch>> {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            self.release.acquire().await.unwrap().forget();
+            let framed = match &self.answer {
+                Ok(framed) => framed,
+                Err(error) => return Ok(Err(error.clone())),
+            };
+            if !framed_blob_hash_matches(framed, &code).unwrap() {
+                return Ok(Err(Fetch::Corrupt));
+            }
+            let mut landing = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+            std::io::Write::write_all(&mut landing, framed)?;
+            landing.persist(path).map_err(|error| error.error)?;
+            Ok(Ok(()))
+        }
+    }
+
+    async fn read_from(
+        node: Arc<BlobNode>,
+        code: BlobId,
+        path: PathBuf,
+    ) -> std::io::Result<Result<(Blob, &'static str), Fetch>> {
+        cached_at(&code, path, move |path| async move {
+            node.fetch(code, path).await
+        })
+        .await
+    }
+
+    async fn read_together(
+        node: &Arc<BlobNode>,
+        code: BlobId,
+        path: &Path,
+    ) -> [std::io::Result<Result<(Blob, &'static str), Fetch>>; 2] {
+        let mut first = Box::pin(read_from(node.clone(), code, path.to_owned()));
+        let mut second = Box::pin(read_from(node.clone(), code, path.to_owned()));
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        let release = async {
+            node.started.notified().await;
+            // Let duplicate requests finish too, so a regression fails
+            // the count instead of hanging the test.
+            node.release.add_permits(2);
+        };
+        let (first, second, ()) = tokio::join!(first, second, release);
+        [first, second]
+    }
+
+    #[tokio::test]
+    async fn concurrent_cache_reads_fetch_once_and_later_reads_use_disk() {
+        let framed = b"blob 6\0hello\n";
+        let code = blob::id_of(abi::HashKind::Sha256, framed).unwrap();
+        let node = BlobNode::new(Ok(framed.to_vec()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob");
+        for read in read_together(&node, code, &path).await {
+            let (bytes, _) = read.unwrap().unwrap();
+            assert_eq!(&*bytes, b"hello\n");
+            assert!(bytes.code().file.is_some());
+        }
+        assert_eq!(node.requests.load(Ordering::SeqCst), 1);
+        let (bytes, source) = read_from(node.clone(), code, path).await.unwrap().unwrap();
+        assert_eq!(&*bytes, b"hello\n");
+        assert_eq!(source, "disk");
+        assert_eq!(node.requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_cache_reads_share_fetch_errors_but_later_reads_retry() {
+        let code = BlobId::Sha256([18; 32]);
+        for error in [
+            Fetch::NotHeld,
+            Fetch::Unreachable("the connection broke".into()),
+            Fetch::Corrupt,
+        ] {
+            let node = BlobNode::new(Err(error.clone()));
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("blob");
+            for read in read_together(&node, code, &path).await {
+                assert_eq!(read.unwrap().err().unwrap(), error);
+            }
+            assert_eq!(node.requests.load(Ordering::SeqCst), 1);
+            let read = read_from(node.clone(), code, path).await;
+            assert_eq!(read.unwrap().err().unwrap(), error);
+            assert_eq!(node.requests.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_cache_reads_share_cache_io_errors() {
+        let framed = b"blob 6\0hello\n";
+        let code = blob::id_of(abi::HashKind::Sha256, framed).unwrap();
+        let node = BlobNode::new(Ok(framed.to_vec()));
+        let dir = tempfile::tempdir().unwrap();
+        // A directory cannot be the published blob file.
+        let [first, second] = read_together(&node, code, dir.path()).await;
+        let first = first.err().unwrap();
+        let second = second.err().unwrap();
+        assert_eq!(first.kind(), second.kind());
+        assert_eq!(first.to_string(), second.to_string());
+        assert_eq!(node.requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_first_cache_reader_keeps_the_fetch_for_its_waiter() {
+        let framed = b"blob 6\0hello\n";
+        let code = blob::id_of(abi::HashKind::Sha256, framed).unwrap();
+        let node = BlobNode::new(Ok(framed.to_vec()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob");
+        let mut first = Box::pin(read_from(node.clone(), code, path.clone()));
+        tokio::select! {
+            _ = &mut first => panic!("the fake node has not answered"),
+            () = node.started.notified() => {}
+        }
+        let mut second = Box::pin(read_from(node.clone(), code, path));
+        assert!(futures::poll!(&mut second).is_pending());
+        drop(first);
+        node.release.add_permits(1);
+        let (bytes, _) = second.await.unwrap().unwrap();
+        assert_eq!(&*bytes, b"hello\n");
+        assert_eq!(node.requests.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn a_section_of_a_mapped_blob_names_where_it_lies_in_the_file() {
