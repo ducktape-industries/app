@@ -1,0 +1,22 @@
+# ducktape-rt: the process's runtime where targets differ, the one place a runtime target cfg lives:
+# the future and stream a client hands on (`Fut`, `BoxStream`, `MaybeSend`) and time (`time`), tokio's
+# natively and the page's in a browser.
+
+[package]
+name = "ducktape-rt"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+futures.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = "1"
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "test-util"] }

@@ -78,7 +78,7 @@ pub fn bind(remotes: &Path, network: &str, founded: u64) -> Result<Keyring, Stri
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
 

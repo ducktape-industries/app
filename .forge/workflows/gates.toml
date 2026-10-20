@@ -1,5 +1,6 @@
 # The app CI, minimal but mechanical (orthory, #engineering 912/913): rustfmt, the dependency
-# gate (tools/dep-gate.sh), clippy -D warnings on the workspace and with --features ax-door; no
+# gate (tools/dep-gate.sh), clippy -D warnings on the workspace and with --features ax-door, and
+# clippy -D warnings for wasm32 on the crates the web build has so far (J-137); no
 # tests, which wait for a release cut. gates.sh (GATES=check) from the forge repo tools at its
 # main head runs them in one pod, cloned from the forge this repository's own clone came from
 # (J-033).
@@ -28,6 +29,7 @@ steps = [
     "git config --global --add safe.directory '*'",
     "git clone -q \"$(git remote get-url origin | sed 's#/forge/app$#/forge/tools#')\" /var/tmp/tools",
     "sh /var/tmp/tools/gates.sh /work/app",
+    "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-rt -p noded-client -- -D warnings",
 ]
 
 [jobs.env]

@@ -13,9 +13,9 @@ pub const ENDPOINT_REFUSAL: &str = "A node address is a host and an optional por
 pub fn endpoint_origin(url: &str) -> Option<String> {
     let url = url.trim();
     let url = match url.contains("://") {
-        true => reqwest::Url::parse(url).ok()?,
+        true => url::Url::parse(url).ok()?,
         false => {
-            let http = reqwest::Url::parse(&format!("http://{url}")).ok()?;
+            let http = url::Url::parse(&format!("http://{url}")).ok()?;
             let hosted = http.port().is_none()
                 && http.host_str().is_some_and(|host| {
                     host != "localhost"
@@ -23,7 +23,7 @@ pub fn endpoint_origin(url: &str) -> Option<String> {
                         && host.parse::<std::net::IpAddr>().is_err()
                 });
             match hosted {
-                true => reqwest::Url::parse(&format!("https://{url}")).ok()?,
+                true => url::Url::parse(&format!("https://{url}")).ok()?,
                 false => http,
             }
         }

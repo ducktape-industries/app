@@ -45,7 +45,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
 

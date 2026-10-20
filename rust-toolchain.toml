@@ -2,7 +2,7 @@
 # programs repository's. `targets`: aarch64-unknown-linux-musl because
 # ops/macos-preflight.sh, the node's preflight, checks for it; the phone's
 # (`crates/phone`): Android phones and the x86_64 emulator, iOS phones and
-# the Apple-silicon simulator.
+# the Apple-silicon simulator; the web's (J-137): wasm32-unknown-unknown.
 [toolchain]
 channel = "1.96.1"
 components = ["rustfmt", "clippy"]
@@ -12,4 +12,5 @@ targets = [
     "x86_64-linux-android",
     "aarch64-apple-ios",
     "aarch64-apple-ios-sim",
+    "wasm32-unknown-unknown",
 ]

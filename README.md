@@ -151,7 +151,8 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 | Path | What |
 |---|---|
-| `crates/noded-client` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch, and the flows onto an account; shared with the phone |
+| `crates/noded-client` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch, and the flows onto an account; shared with the phone; its transport (`src/net/`) is reqwest and tokio-tungstenite in a process, the page's fetch and WebSocket in a browser, tested there against `tests/web_node.py` (`src/net/web/tests.rs`) |
+| `crates/rt` | the runtime where targets differ, the one place a runtime target cfg lives: `Fut`, `BoxStream`, `MaybeSend`, and time (`sleep`, `timeout`, `Instant`) |
 | `crates/host` | the blind host core the desktop shell and the phone shell share; `src/contract.rs` is the one interface a shell implements (directories, the reader key, banners, OS facts, invite minting) |
 | `crates/host/src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `crates/host/src/backend/session.rs` | the seated key (any `noded_client::Signer`), its frames, preferences |
