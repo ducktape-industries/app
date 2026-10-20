@@ -18,6 +18,8 @@
 use std::path::{Path, PathBuf};
 
 use abi::BlobId;
+use futures::FutureExt as _;
+use futures::future::{BoxFuture, Shared, WeakShared};
 
 use super::RpcClient;
 use crate::contract::Code;
@@ -217,46 +219,88 @@ pub async fn programs_bytes(
             Err(error) => each(*code, Err(error)),
         }
     }
-    if asked.is_empty() {
-        return;
-    }
-    let mut blobs = match client.blobs_stream(&asked).await {
-        Ok(blobs) => blobs,
-        Err(error) => {
-            let failure = fetch_error(error);
-            for code in asked {
-                each(code, Err(failure.clone()));
+    let (mut streamed, mut sharing) = (Vec::new(), Vec::new());
+    for code in asked {
+        let mut told = None;
+        let fetch = joined(&cache_path(&code), || {
+            let (tell, heard) = futures::channel::oneshot::channel();
+            told = Some(tell);
+            async move {
+                heard.await.unwrap_or_else(|_| {
+                    Ok(Err(Fetch::Unreachable(
+                        "the read bringing the program's code stopped before it came".into(),
+                    )))
+                })
             }
-            return;
-        }
-    };
-    let mut codes = asked.into_iter();
-    let mut cut = None;
-    for code in codes.by_ref() {
-        match arrived(&mut blobs, &code).await {
-            Ok(bytes) => each(code, bytes),
-            Err(failure) => {
-                each(code, Err(failure.clone()));
-                cut = Some(failure);
-                break;
-            }
+            .boxed()
+        });
+        match told {
+            Some(tell) => streamed.push((code, tell, fetch)),
+            None => sharing.push(async move {
+                let _joined = fetch;
+                (code, program_bytes(client, &code).await)
+            }),
         }
     }
-    if let Some(cut) = cut {
-        for code in codes {
-            each(code, Err(cut.clone()));
-        }
+    let ((), shared) = futures::join!(
+        stream_into(client, streamed, &mut each),
+        futures::future::join_all(sharing),
+    );
+    for (code, bytes) in shared {
+        each(code, bytes);
     }
 }
 
-async fn arrived(
-    blobs: &mut noded_client::BlobsStream,
-    code: &BlobId,
-) -> Result<Result<(Blob, &'static str), Fetch>, Fetch> {
+async fn stream_into(
+    client: &RpcClient,
+    streamed: Vec<(
+        BlobId,
+        futures::channel::oneshot::Sender<Outcome>,
+        Shared<Pending>,
+    )>,
+    each: &mut impl FnMut(BlobId, Result<(Blob, &'static str), Fetch>),
+) {
+    if streamed.is_empty() {
+        return;
+    }
+    let codes: Vec<BlobId> = streamed.iter().map(|(code, ..)| *code).collect();
+    let mut blobs = client.blobs_stream(&codes).await.map_err(fetch_error);
+    for (code, tell, _joined) in streamed {
+        let landed = match &mut blobs {
+            Ok(stream) => arrived(stream, &code).await,
+            Err(cut) => Err(cut.clone()),
+        };
+        let (outcome, bytes) = match landed {
+            Ok(Arrived::Kept(path)) => (Ok(Ok(())), mapped_code(path).await),
+            Ok(Arrived::Unkept(whole, error)) => {
+                let body = Blob::from(whole).part(unframe).ok_or_else(headless);
+                (
+                    Err(std::sync::Arc::new(error)),
+                    body.map(|body| (body, "node")),
+                )
+            }
+            Ok(Arrived::Failed(failure)) => (Ok(Err(failure.clone())), Err(failure)),
+            Err(cut) => {
+                blobs = Err(cut.clone());
+                (Ok(Err(cut.clone())), Err(cut))
+            }
+        };
+        let _ = tell.send(outcome);
+        each(code, bytes);
+    }
+}
+
+enum Arrived {
+    Kept(PathBuf),
+    Unkept(Vec<u8>, std::io::Error),
+    Failed(Fetch),
+}
+
+async fn arrived(blobs: &mut noded_client::BlobsStream, code: &BlobId) -> Result<Arrived, Fetch> {
     use std::io::Write as _;
     match blobs.next_blob().await.map_err(fetch_error)? {
         Some(true) => {}
-        Some(false) => return Ok(Err(Fetch::NotHeld)),
+        Some(false) => return Ok(Arrived::Failed(Fetch::NotHeld)),
         None => {
             return Err(Fetch::Unreadable(
                 "the node's answer ended before every blob it was asked for".into(),
@@ -265,8 +309,8 @@ async fn arrived(
     }
     let path = cache_path(code);
     let landing = landing_beside(&path);
-    let file = match opened(&path, &landing).await {
-        Ok(file) => Some(file),
+    let (file, unkept) = match opened(&path, &landing).await {
+        Ok(file) => (Some(file), None),
         Err(error) => {
             tracing::warn!(
                 target: "ducktape::app",
@@ -274,7 +318,7 @@ async fn arrived(
                 %error,
                 "the cache could not keep a program's code; it is read whole from the node"
             );
-            None
+            (None, Some(error))
         }
     };
     let mut hasher = blob::Hasher::new(code.kind());
@@ -315,26 +359,18 @@ async fn arrived(
     });
     if let Some(failure) = failed {
         let _ = tokio::fs::remove_file(&landing).await;
-        return Ok(Err(failure));
+        return Ok(Arrived::Failed(failure));
     }
-    if file.is_none() {
-        let body = Blob::from(whole).part(unframe).ok_or_else(headless);
-        return Ok(body.map(|body| (body, "node")));
+    if let Some(error) = unkept {
+        return Ok(Arrived::Unkept(whole, error));
     }
     if let Err(error) = tokio::fs::rename(&landing, &path).await {
         let _ = tokio::fs::remove_file(&landing).await;
-        return Ok(Err(Fetch::Unreadable(format!(
+        return Ok(Arrived::Failed(Fetch::Unreadable(format!(
             "the program's code was not kept: {error}"
         ))));
     }
-    let landed = blocking(move || {
-        Blob::mapped(&path)
-            .map_err(|error| Fetch::Unreadable(format!("the program's code was not kept: {error}")))
-    })
-    .await;
-    Ok(landed
-        .and_then(|blob| blob.part(unframe).ok_or_else(headless))
-        .map(|body| (body, "node")))
+    Ok(Arrived::Kept(path))
 }
 
 /// A program's blob, or a section of it, as this process holds it: the
@@ -475,38 +511,40 @@ async fn cached(
     .await
 }
 
+type Outcome = Result<Result<(), Fetch>, std::sync::Arc<std::io::Error>>;
+type Pending = BoxFuture<'static, Outcome>;
+
+static FETCHES: std::sync::Mutex<std::collections::BTreeMap<PathBuf, WeakShared<Pending>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn joined(path: &Path, start: impl FnOnce() -> Pending) -> Shared<Pending> {
+    let mut fetches = FETCHES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    fetches.retain(|_, fetch| fetch.upgrade().is_some());
+    if let Some(fetch) = fetches.get(path).and_then(WeakShared::upgrade) {
+        return fetch;
+    }
+    let fetch = start().shared();
+    fetches.insert(
+        path.to_owned(),
+        fetch.downgrade().expect("an unpolled fetch"),
+    );
+    fetch
+}
+
 async fn cached_at<F: Future<Output = std::io::Result<Result<(), Fetch>>> + Send + 'static>(
     code: &BlobId,
     path: PathBuf,
     fetch: impl FnOnce(PathBuf) -> F + Send + 'static,
 ) -> std::io::Result<Result<(Blob, &'static str), Fetch>> {
-    use futures::FutureExt as _;
-    use futures::future::{BoxFuture, WeakShared};
-    use std::collections::BTreeMap;
-    use std::sync::{Arc, Mutex};
-
-    type Pending = BoxFuture<'static, Result<Result<(), Fetch>, Arc<std::io::Error>>>;
-    static FETCHES: Mutex<BTreeMap<PathBuf, WeakShared<Pending>>> = Mutex::new(BTreeMap::new());
     // Join before the disk lookup: a miss that finishes after another
     // caller's fetch must still share that fetch, including its error.
     // Weak entries keep neither completed reads nor failures cached.
-    let fetch = {
-        let mut fetches = FETCHES
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        fetches.retain(|_, fetch| fetch.upgrade().is_some());
-        match fetches.get(&path).and_then(WeakShared::upgrade) {
-            Some(fetch) => fetch,
-            None => {
-                let landing = path.clone();
-                let fetch = async move { fetch(landing).await.map_err(Arc::new) }
-                    .boxed()
-                    .shared();
-                fetches.insert(path.clone(), fetch.downgrade().expect("an unpolled fetch"));
-                fetch
-            }
-        }
-    };
+    let fetch = joined(&path, || {
+        let landing = path.clone();
+        async move { fetch(landing).await.map_err(std::sync::Arc::new) }.boxed()
+    });
     match kept(path.clone(), code).await {
         Ok(Some(body)) => return Ok(Ok((body, "disk"))),
         Ok(None) => {}
@@ -518,14 +556,18 @@ async fn cached_at<F: Future<Output = std::io::Result<Result<(), Fetch>>> + Send
     {
         return Ok(Err(error));
     }
+    Ok(mapped_code(path).await)
+}
+
+async fn mapped_code(path: PathBuf) -> Result<(Blob, &'static str), Fetch> {
     let landed = blocking(move || {
         Blob::mapped(&path)
             .map_err(|error| Fetch::Unreadable(format!("the program's code was not kept: {error}")))
     })
     .await;
-    Ok(landed
+    landed
         .and_then(|blob| blob.part(unframe).ok_or_else(headless))
-        .map(|body| (body, "node")))
+        .map(|body| (body, "node"))
 }
 
 async fn kept(path: PathBuf, code: &BlobId) -> Result<Option<Blob>, Fetch> {
@@ -824,6 +866,213 @@ mod tests {
         let (bytes, _) = second.await.unwrap().unwrap();
         assert_eq!(&*bytes, b"hello\n");
         assert_eq!(node.requests.load(Ordering::SeqCst), 1);
+    }
+
+    struct Served {
+        blobs: Vec<(BlobId, Vec<u8>)>,
+        hold: (&'static str, BlobId),
+        cut: bool,
+        holding: tokio::sync::Notify,
+        streamed: tokio::sync::Notify,
+        release: tokio::sync::Semaphore,
+        asked: std::sync::Mutex<Vec<(&'static str, Vec<BlobId>)>>,
+    }
+
+    impl Served {
+        async fn serving(
+            blobs: &[(BlobId, Vec<u8>)],
+            hold: (&'static str, BlobId),
+            cut: bool,
+        ) -> (Arc<Self>, RpcClient) {
+            let served = Arc::new(Self {
+                blobs: blobs.to_vec(),
+                hold,
+                cut,
+                holding: tokio::sync::Notify::new(),
+                streamed: tokio::sync::Notify::new(),
+                release: tokio::sync::Semaphore::new(0),
+                asked: std::sync::Mutex::new(Vec::new()),
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let client = RpcClient::new(format!("http://{}", listener.local_addr().unwrap()));
+            let answering = served.clone();
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    tokio::spawn(answering.clone().answer(stream));
+                }
+            });
+            (served, client)
+        }
+
+        async fn answer(self: Arc<Self>, mut stream: tokio::net::TcpStream) {
+            use noded_client::wire::route;
+            use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
+            let (mut line, mut body) = (String::new(), Vec::new());
+            {
+                let mut reader = tokio::io::BufReader::new(&mut stream);
+                reader.read_line(&mut line).await.unwrap();
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).await.unwrap();
+                    if header == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        body.resize(value.trim().parse().unwrap(), 0);
+                    }
+                }
+                reader.read_exact(&mut body).await.unwrap();
+            }
+            let streams = line.split(' ').nth(1) == Some(route::BLOBS);
+            let (route, ids): (&'static str, Vec<BlobId>) = match streams {
+                true => (route::BLOBS, abi::decode(&body).unwrap()),
+                false => (route::BLOB_GET, vec![abi::decode(&body).unwrap()]),
+            };
+            self.asked.lock().unwrap().push((route, ids.clone()));
+            let items: Vec<Vec<u8>> = ids
+                .iter()
+                .map(|id| {
+                    let held = self.blobs.iter().find(|(blob, _)| blob == id);
+                    abi::encode(&held.map(|(_, framed)| framed.clone()))
+                })
+                .collect();
+            let head = match streams {
+                true => {
+                    self.streamed.notify_one();
+                    let count = (ids.len() as u32).to_le_bytes();
+                    [&b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"[..], &count].concat()
+                }
+                false => format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    items[0].len()
+                )
+                .into_bytes(),
+            };
+            if stream.write_all(&head).await.is_err() {
+                return;
+            }
+            for (id, item) in ids.into_iter().zip(items) {
+                if (route, id) == self.hold {
+                    self.holding.notify_one();
+                    self.release.acquire().await.unwrap().forget();
+                    if self.cut {
+                        return;
+                    }
+                }
+                if stream.write_all(&item).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn framed(body: &str) -> (BlobId, Vec<u8>) {
+        let framed = format!("blob {}\0{body}", body.len()).into_bytes();
+        (blob::id_of(abi::HashKind::Sha256, &framed).unwrap(), framed)
+    }
+
+    async fn read_stream(
+        client: &RpcClient,
+        codes: &[BlobId],
+    ) -> Vec<(BlobId, Result<Vec<u8>, Fetch>)> {
+        let mut read = Vec::new();
+        programs_bytes(client, codes, |code, bytes| {
+            read.push((code, bytes.map(|(blob, _)| blob.to_vec())));
+        })
+        .await;
+        read
+    }
+
+    #[tokio::test]
+    async fn a_pane_opened_while_the_stream_brings_its_code_joins_that_fetch() {
+        use noded_client::wire::route;
+        let (first, second) = (framed("first\n"), framed("second\n"));
+        let blobs = [first.clone(), second.clone()];
+        let (node, client) = Served::serving(&blobs, (route::BLOBS, second.0), false).await;
+        let codes = [first.0, second.0];
+        let mut stream = Box::pin(read_stream(&client, &codes));
+        tokio::select! {
+            _ = &mut stream => panic!("the fake node holds the second blob"),
+            () = node.holding.notified() => {}
+        }
+        let mut pane = Box::pin(program_bytes(&client, &second.0));
+        assert!(futures::poll!(&mut pane).is_pending());
+        node.release.add_permits(1);
+        let (read, pane) = tokio::join!(stream, pane);
+        assert_eq!(
+            read,
+            [
+                (first.0, Ok(b"first\n".to_vec())),
+                (second.0, Ok(b"second\n".to_vec()))
+            ]
+        );
+        assert_eq!(&*pane.unwrap().0, b"second\n");
+        assert_eq!(
+            *node.asked.lock().unwrap(),
+            [(route::BLOBS, codes.to_vec())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cut_stream_fails_the_pane_that_joined_it_and_never_a_blob_that_came() {
+        use noded_client::wire::route;
+        let (first, second) = (framed("first\n"), framed("second\n"));
+        let blobs = [first.clone(), second.clone()];
+        let (node, client) = Served::serving(&blobs, (route::BLOBS, second.0), true).await;
+        let codes = [first.0, second.0];
+        let mut stream = Box::pin(read_stream(&client, &codes));
+        tokio::select! {
+            _ = &mut stream => panic!("the fake node holds the second blob"),
+            () = node.holding.notified() => {}
+        }
+        let mut pane = Box::pin(program_bytes(&client, &second.0));
+        assert!(futures::poll!(&mut pane).is_pending());
+        node.release.add_permits(1);
+        let (read, pane) = tokio::join!(stream, pane);
+        assert_eq!(read[0], (first.0, Ok(b"first\n".to_vec())));
+        let cut = read[1].1.clone().unwrap_err();
+        assert!(matches!(cut, Fetch::Unreadable(_)), "{cut:?}");
+        assert_eq!(pane.err(), Some(cut));
+        assert_eq!(
+            *node.asked.lock().unwrap(),
+            [(route::BLOBS, codes.to_vec())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fetch_already_on_its_way_is_left_out_of_the_stream_and_shared() {
+        use noded_client::wire::route;
+        let (first, second) = (framed("first\n"), framed("second\n"));
+        let blobs = [first.clone(), second.clone()];
+        let (node, client) = Served::serving(&blobs, (route::BLOB_GET, second.0), false).await;
+        let mut pane = Box::pin(program_bytes(&client, &second.0));
+        tokio::select! {
+            _ = &mut pane => panic!("the fake node holds the second blob"),
+            () = node.holding.notified() => {}
+        }
+        let release = async {
+            node.streamed.notified().await;
+            node.release.add_permits(1);
+        };
+        let codes = [first.0, second.0];
+        let (read, pane, ()) = tokio::join!(read_stream(&client, &codes), pane, release);
+        assert_eq!(
+            read,
+            [
+                (first.0, Ok(b"first\n".to_vec())),
+                (second.0, Ok(b"second\n".to_vec()))
+            ]
+        );
+        assert_eq!(&*pane.unwrap().0, b"second\n");
+        assert_eq!(
+            *node.asked.lock().unwrap(),
+            [
+                (route::BLOB_GET, vec![second.0]),
+                (route::BLOBS, vec![first.0])
+            ]
+        );
     }
 
     #[test]
