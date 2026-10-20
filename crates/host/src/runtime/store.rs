@@ -7,8 +7,10 @@
 //! seated, the device's own `<config>/store/<chain>/<program>.borsh` (a
 //! recipient's notifier's under its own store, `notifier::Recipient`): a
 //! borsh map of key → bytes, rewritten whole through
-//! `noded_client::fs::atomic_write`. A key's file starts empty: nothing
-//! the device's file or another key's keeps is copied into it. A view
+//! `noded_client::fs::atomic_write`. A key's file, made on its first
+//! open, takes the device file's entries whose key has that key as one of
+//! its `/` parts (`reads/<key>`, as hosts before per-key files kept them);
+//! nothing of another key's is copied into it. A view
 //! names keys, never paths — the chain, the seated key and the program
 //! come from the host — so no view reaches another view's file, another
 //! network's or another key's.
@@ -135,6 +137,20 @@ fn run(path: &Path, request: &Request) -> Answer {
     Ok(answer)
 }
 
+fn adopt(file: &File) -> Result<(), wire::Error> {
+    if file.signer.is_empty() || file.path.exists() || !file.device.exists() {
+        return Ok(());
+    }
+    let own: Kept = load(&file.device)?
+        .into_iter()
+        .filter(|(key, _)| key.split('/').any(|part| part == file.signer))
+        .collect();
+    match own.is_empty() {
+        true => Ok(()),
+        false => write(&file.path, &methods::encode(&own)),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct File {
     path: PathBuf,
@@ -216,7 +232,7 @@ fn ask(view: &mut View, id: u64, file: File, request: Request) {
     let name = file.path.to_string_lossy().into_owned();
     in_order(&name, move || {
         let _timed = crate::perf::time(crate::perf::Key::Shell, request.stage());
-        let answered = run(&file.path, &request);
+        let answered = adopt(&file).and_then(|()| run(&file.path, &request));
         if let (Ok(_), Request::Set(key, _)) = (&answered, request) {
             told(&file, key, writer);
         }

@@ -212,6 +212,74 @@ fn a_keys_first_requests_read_nothing_of_the_device_file() {
     let _ = std::fs::remove_dir_all(config);
 }
 
+#[test]
+fn a_keys_first_open_takes_its_own_entries_of_the_device_file_alone() {
+    let config = scratch();
+    let none = device(&config, "dev#01", "chat");
+    let alice = located(&config, "dev#01", "aa01", "chat");
+    let bob = located(&config, "dev#01", "bb02", "chat");
+    let kept: [(&str, &[u8]); 6] = [
+        ("reads/aa01", b"7"),
+        ("reads/aa01/opened", b"r"),
+        ("notified/aa01", b"9"),
+        ("reads/aa010", b"x"),
+        ("reads/bb02", b"3"),
+        ("emoji", b"e"),
+    ];
+    for (key, value) in kept {
+        put(&none.path, key, Some(value)).unwrap();
+    }
+    let mut view = crate::runtime::kernel::tests::view();
+    ask(
+        &mut view,
+        1,
+        alice.clone(),
+        Request::Get("reads/aa01".into()),
+    );
+    ask(&mut view, 2, alice.clone(), Request::List(String::new()));
+    ask(&mut view, 3, bob.clone(), Request::Get("reads/aa01".into()));
+    ask(&mut view, 4, bob.clone(), Request::List(String::new()));
+    ask(&mut view, 5, alice.clone(), set("reads/aa01", None));
+    ask(
+        &mut view,
+        6,
+        alice.clone(),
+        Request::Get("reads/aa01".into()),
+    );
+    let mut answers: Vec<(u64, Vec<u8>)> = replies(&mut view, |answered| answered.len() >= 6)
+        .into_iter()
+        .filter_map(|event| match event {
+            wire::Event::Response { id, result, .. } => Some((id, result.unwrap())),
+            _ => None,
+        })
+        .collect();
+    answers.sort();
+    let keys = |keys: &[&str]| {
+        methods::encode(&keys.iter().map(|key| key.to_string()).collect::<Vec<_>>())
+    };
+    let nothing = methods::encode(&None::<Vec<u8>>);
+    assert_eq!(
+        answers,
+        [
+            (1, methods::encode(&Some(b"7".to_vec()))),
+            (
+                2,
+                keys(&["notified/aa01", "reads/aa01", "reads/aa01/opened"])
+            ),
+            (3, nothing.clone()),
+            (4, keys(&["reads/bb02"])),
+            (5, methods::encode(&())),
+            (6, nothing),
+        ]
+    );
+    assert_eq!(
+        load(&none.path).unwrap().len(),
+        kept.len(),
+        "the device file stays whole"
+    );
+    let _ = std::fs::remove_dir_all(config);
+}
+
 /// `list` answers the keys under a prefix in byte order, every key for an
 /// empty one, and none for a file not there.
 #[test]
