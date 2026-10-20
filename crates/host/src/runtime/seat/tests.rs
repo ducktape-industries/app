@@ -179,10 +179,10 @@ fn a_roster_read_reads_every_program_before_it_prepares_any() {
     read_roster(node.asked_of.clone(), &roster, &registry);
     let seat = |program| lock(&registry)[&(program, 0)].clone();
     let (view, none, held) = (seat("ahead-view"), seat("ahead-none"), seat("ahead-held"));
-    eventually("the two served read", || {
-        lock(&view).prep() == Prep::Waiting && lock(&none).prep() == Prep::Waiting
-    });
-    eventually("the third asked of the node", || node.held().0 == 1);
+    for seat in [&view, &none] {
+        wait_for_seat(seat, |seat| seat.prep() == Prep::Waiting);
+    }
+    node.wait_for_held(|held| held == 1);
     assert!(
         matches!(lock(&view).slot, Slot::Fetching { .. }),
         "shown or prepared before every program was read"
@@ -194,18 +194,23 @@ fn a_roster_read_reads_every_program_before_it_prepares_any() {
     assert_eq!(lock(&held).prep(), Prep::Reading);
     // the node lets the third go unanswered, under the rail's lock
     let answers = node.held.clone();
+    let changed = node.changed.clone();
     let rail = lock(super::registry());
     drop(node);
-    eventually("the third answered", || answers.lock().unwrap().now == 0);
+    drop(
+        changed
+            .wait_while(answers.lock().unwrap(), |held| held.now != 0)
+            .unwrap(),
+    );
     std::thread::sleep(Duration::from_millis(100));
     assert!(
         matches!(lock(&view).slot, Slot::Fetching { .. }),
         "shown while the rail's lock was held"
     );
     drop(rail);
-    eventually("all landed", || {
-        !lock(&view).slot.loading() && !lock(&none).slot.loading() && !lock(&held).slot.loading()
-    });
+    for seat in [&view, &none, &held] {
+        wait_for_seat(seat, |seat| !seat.slot.loading());
+    }
     assert!(matches!(&lock(&view).slot, Slot::Compiled(code) if code.name == "Alpha"));
     assert!(matches!(lock(&none).slot, Slot::Empty));
     assert!(matches!(lock(&held).slot, Slot::Failed(_)));
@@ -231,15 +236,12 @@ fn a_seat_claimed_mid_read_is_loaded_while_another_read_hangs() {
     let (roster, registry) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &registry);
     let seat = lock(&registry)[&(PROGRAM, 0)].clone();
-    eventually("its bytes read and the other's hanging", || {
-        lock(&seat).prep() == Prep::Waiting && node.held().0 == 1
-    });
+    wait_for_seat(&seat, |seat| seat.prep() == Prep::Waiting);
+    node.wait_for_held(|held| held == 1);
     lock(super::registry()).insert((PROGRAM, 0), seat);
     let opened = mounted(PROGRAM, 7401);
     // with no node in a test, the pane's own load fails, offering Retry
-    eventually("the pane's own load ran", || {
-        matches!(lock(&opened).slot, Slot::Failed(_))
-    });
+    wait_for_seat(&opened, |seat| matches!(seat.slot, Slot::Failed(_)));
     assert_eq!(node.held().0, 1, "the other read stopped hanging");
     lock(super::registry()).remove(&(PROGRAM, 7401));
 }
@@ -263,9 +265,9 @@ fn a_read_that_panics_lands_failed_and_the_batch_flips() {
     read_roster(node.asked_of.clone(), &roster, &registry);
     let seat = |program| lock(&registry)[&(program, 0)].clone();
     let (panics, beside) = (seat(PANICS_READING), seat("seat-tests-beside-a-panic"));
-    eventually("the read ahead flipped", || {
-        !lock(&panics).slot.loading() && !lock(&beside).slot.loading()
-    });
+    for seat in [&panics, &beside] {
+        wait_for_seat(seat, |seat| !seat.slot.loading());
+    }
     assert!(
         matches!(&lock(&panics).slot, Slot::Failed(failure) if failure.to_string().contains("stopped reading")),
         "the panic not its failure"
@@ -319,7 +321,7 @@ fn new_code_over_a_held_view_counts_as_being_prepared() {
         "the same code counted"
     );
     // both asked of the node, which holds them: neither has landed
-    eventually("both asked of the node", || node.held().0 == 2);
+    node.wait_for_held(|held| held == 2);
     assert_eq!(lock(&moved_seat).prep(), Prep::Reading);
     assert!(
         matches!(lock(&moved_seat).slot, Slot::Compiled(_)),
@@ -371,18 +373,27 @@ fn a_failed_view_is_held_off_under_the_code_the_roster_names() {
 /// The start a load parked on `seat`, once it is there, run as the
 /// window thread runs it (`start_in`): at once, on the wasmtime runner.
 fn start_parked(seat: &Arc<Mutex<Mounted>>, program: &'static str) {
-    eventually("a start was parked", || lock(seat).to_start.is_some());
+    wait_for_seat(seat, |seat| {
+        seat.to_start.is_some() || matches!(seat.slot, Slot::Failed(_) | Slot::Empty)
+    });
+    assert!(lock(seat).to_start.is_some(), "no start was parked");
     futures::executor::block_on(start_in(seat.clone(), program));
 }
 
-/// Waits, up to ten seconds, for `done`; panics naming `what` if it never
-/// is.
-pub(in crate::runtime) fn eventually(what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !done() {
-        assert!(Instant::now() < deadline, "never: {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+pub(in crate::runtime) fn wait_for_seat(
+    seat: &Arc<Mutex<Mounted>>,
+    done: impl Fn(&Mounted) -> bool,
+) {
+    let mut changed = lock(seat).wake.subscribe();
+    futures::executor::block_on(async {
+        loop {
+            changed.borrow_and_update();
+            if done(&lock(seat)) {
+                break;
+            }
+            changed.changed().await.expect("the seat changed");
+        }
+    });
 }
 
 /// A node on a local socket: it answers the programs role's two roster
@@ -394,6 +405,7 @@ pub(in crate::runtime) fn eventually(what: &str, done: impl Fn() -> bool) {
 pub(in crate::runtime) struct FakeNode {
     pub(in crate::runtime) asked_of: Connection,
     held: Arc<Mutex<Held>>,
+    changed: Arc<std::sync::Condvar>,
 }
 
 #[derive(Default)]
@@ -475,11 +487,14 @@ impl FakeNode {
                 .collect(),
         });
         let held = Arc::new(Mutex::new(Held::default()));
+        let changed = Arc::new(std::sync::Condvar::new());
         let holding = held.clone();
+        let changes = changed.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let (answers, held) = (answers.clone(), holding.clone());
-                std::thread::spawn(move || answer(stream, &answers, &held));
+                let changed = changes.clone();
+                std::thread::spawn(move || answer(stream, &answers, &held, &changed));
             }
         });
         FakeNode {
@@ -492,6 +507,7 @@ impl FakeNode {
                 apart: None,
             },
             held,
+            changed,
         }
     }
 
@@ -500,15 +516,29 @@ impl FakeNode {
         let held = self.held.lock().unwrap();
         (held.now, held.most)
     }
+
+    pub(in crate::runtime) fn wait_for_held(&self, done: impl Fn(usize) -> bool) {
+        drop(
+            self.changed
+                .wait_while(self.held.lock().unwrap(), |held| !done(held.now))
+                .unwrap(),
+        );
+    }
 }
 
 impl Drop for FakeNode {
     fn drop(&mut self) {
         self.held.lock().unwrap().released = true;
+        self.changed.notify_all();
     }
 }
 
-fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>) {
+fn answer(
+    mut stream: std::net::TcpStream,
+    answers: &Answers,
+    held: &Mutex<Held>,
+    changed: &std::sync::Condvar,
+) {
     use super::super::kernel::tests::{read_request, respond};
     let (line, body) = read_request(&mut stream);
     if line.starts_with("GET /v1/status ") {
@@ -563,11 +593,15 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
         held.now += 1;
         held.most = held.most.max(held.now);
     }
-    while !held.lock().unwrap().released {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    held.lock().unwrap().now -= 1;
+    changed.notify_all();
+    drop(
+        changed
+            .wait_while(held.lock().unwrap(), |held| !held.released)
+            .unwrap(),
+    );
     respond(&mut stream, "404 Not Found", b"gone");
+    held.lock().unwrap().now -= 1;
+    changed.notify_all();
 }
 
 fn status(height: u64) -> noded_client::wire::Status {
@@ -890,7 +924,7 @@ fn a_long_roster_is_taken_whole_and_its_loads_queue() {
     assert_eq!(roster.lock().len(), listed, "the roster is taken whole");
     assert_eq!(roster.rail().len(), listed, "the rail lists every program");
     assert_eq!(lock(&registry).len(), listed, "every program is seated");
-    eventually("a load reached the node", || node.held().0 > 0);
+    node.wait_for_held(|held| held > 0);
     // time for a load per thread to have asked, had each got one
     std::thread::sleep(Duration::from_millis(500));
     let (_, most) = node.held();
@@ -918,9 +952,9 @@ fn a_stalled_load_does_not_hold_the_roster_read() {
         let _ = read.send(());
     });
     returned
-        .recv_timeout(Duration::from_secs(10))
+        .recv()
         .expect("the roster read waited on the load it queued");
-    eventually("the load is held by the node", || node.held().0 == 1);
+    node.wait_for_held(|held| held == 1);
 }
 
 /// A view whose manifest says `name`, `icon` (none when empty), `tint`
@@ -963,7 +997,7 @@ fn an_unopened_program_runs_no_init() {
     let (roster, registry) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &registry);
     let seat = lock(&registry)[&("lazy-view", 0)].clone();
-    eventually("the preload landed", || !lock(&seat).slot.loading());
+    wait_for_seat(&seat, |seat| !seat.slot.loading());
     assert!(
         matches!(
             &lock(&seat).slot,
@@ -973,15 +1007,13 @@ fn an_unopened_program_runs_no_init() {
     );
     // asked again (the seat not yet asked of this node, as on a reconnect):
     // compiled again, still unstarted, though the seat holds its code
-    let landed = {
+    let mut landed = {
         let mut locked = lock(&seat);
         locked.rev = locked.rev.wrapping_add(1);
         locked.wake.subscribe()
     };
     read_roster(node.asked_of.clone(), &roster, &registry);
-    eventually("the second preload landed", || {
-        landed.has_changed().unwrap_or(false)
-    });
+    futures::executor::block_on(landed.changed()).expect("the second preload landed");
     assert!(
         matches!(&lock(&seat).slot, Slot::Compiled(_)),
         "a preload over the compiled seat started the view"
@@ -1000,9 +1032,9 @@ fn an_unopened_program_runs_no_init() {
         code: Some((code, true)),
     });
     start_parked(&seat, "lazy-view");
-    eventually(
-        "the claiming pane's load ran init",
-        || matches!(&lock(&seat).slot, Slot::Failed(failure) if failure.to_string().contains("init trapped")),
+    assert!(
+        matches!(&lock(&seat).slot, Slot::Failed(failure) if failure.to_string().contains("init trapped")),
+        "the claiming pane's load ran init"
     );
     // the fetch kept the blob in the developer's own cache: it goes
     let kept = crate::backend::dirs()
@@ -1039,7 +1071,7 @@ fn a_rail_row_carries_the_icon_and_tint_its_views_manifest_declares() {
     // the rail reads the app's seats: these two are among them while it looks
     for (program, _) in &views {
         let seat = lock(&seats)[&(*program, 0)].clone();
-        eventually("the preload landed", || !lock(&seat).slot.loading());
+        wait_for_seat(&seat, |seat| !seat.slot.loading());
         lock(registry()).insert((*program, 0), seat);
     }
     let icon = |program: &str| {
@@ -1073,9 +1105,7 @@ fn a_rail_row_carries_the_icon_and_tint_its_views_manifest_declares() {
         code: Some((blob_id(&views[0].1), true)),
     });
     start_parked(&seat, "iconed-view");
-    eventually("the claiming pane's load started the view", || {
-        matches!(lock(&seat).slot, Slot::Ready(_))
-    });
+    assert!(matches!(lock(&seat).slot, Slot::Ready(_)));
     assert_eq!(icon("iconed-view"), (ICON.into(), Tint::Orange), "started");
     for (program, view) in &views {
         lock(registry()).remove(&(*program, 0));
@@ -1199,14 +1229,12 @@ fn a_program_is_streamed_into_the_cache_and_kept_only_whole() {
         })
     };
     let there = kept.recv().unwrap();
-    eventually(
-        "half the blob on the disk while the node holds the rest",
-        || {
-            landing(&there)
-                .first()
-                .is_some_and(|landed| *landed >= (answer.len() / 2 - 5) as u64)
-        },
-    );
+    while landing(&there)
+        .first()
+        .is_none_or(|landed| *landed < (answer.len() / 2 - 5) as u64)
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     release.send(()).unwrap();
     assert_eq!(read.join().unwrap().unwrap(), (body, "node"));
     assert!(there.exists() && landing(&there).is_empty());
@@ -1244,7 +1272,7 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
     let (roster, registry) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &registry);
     let seat = lock(&registry)[&("quick-view", 0)].clone();
-    eventually("the preload landed", || !lock(&seat).slot.loading());
+    wait_for_seat(&seat, |seat| !seat.slot.loading());
     let _ = std::fs::remove_file(
         crate::backend::dirs()
             .cache
@@ -1283,9 +1311,9 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
     lock(&seat).slot = Slot::Compiled(preloaded);
     queue(claim(8));
     start_parked(&seat, "quick-view");
-    eventually(
-        "the loader started the compiled view",
-        || matches!(&lock(&seat).slot, Slot::Ready(view) if view.instance == 8),
+    assert!(
+        matches!(&lock(&seat).slot, Slot::Ready(view) if view.instance == 8),
+        "the loader started the compiled view"
     );
 }
 
@@ -1307,7 +1335,7 @@ fn a_pane_opens_its_compiled_view_at_once() {
     let (roster, seats) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &seats);
     let seat = lock(&seats)[&(PROGRAM, 0)].clone();
-    eventually("the preload landed", || !lock(&seat).slot.loading());
+    wait_for_seat(&seat, |seat| !seat.slot.loading());
     drop(node);
     let _ = std::fs::remove_file(
         crate::backend::dirs()
@@ -1355,16 +1383,7 @@ fn a_seat_let_go_steps_back_to_its_code_and_stays_listed() {
     let (roster, seats) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &seats);
     let seat = lock(&seats)[&(PROGRAM, 0)].clone();
-    let mut loaded = lock(&seat).wake.subscribe();
-    futures::executor::block_on(async {
-        loop {
-            loaded.borrow_and_update();
-            if !lock(&seat).slot.loading() {
-                break;
-            }
-            loaded.changed().await.expect("the preload landed");
-        }
-    });
+    wait_for_seat(&seat, |seat| !seat.slot.loading());
     drop(node);
     super::super::roster::roster()
         .lock()
@@ -1446,9 +1465,7 @@ fn a_pane_starts_the_view_its_seat_compiled() {
     lock(&preloaded).slot = Slot::Compiled(ViewCode::for_test("Claimed", "", 320));
     lock(registry()).insert((PROGRAM, 0), preloaded);
     let seat = mounted(PROGRAM, 7001);
-    eventually("the claiming pane's load ran", || {
-        matches!(lock(&seat).slot, Slot::Failed(_))
-    });
+    wait_for_seat(&seat, |seat| matches!(seat.slot, Slot::Failed(_)));
     lock(registry()).remove(&(PROGRAM, 7001));
 }
 
@@ -1470,9 +1487,7 @@ fn a_seat_claimed_during_its_preload_is_started() {
         code: None,
     };
     preload.land(|_, _| Ok(Loaded::Compiled(ViewCode::for_test("Claimed", "", 320))));
-    eventually("the claiming pane's own load ran", || {
-        matches!(lock(&seat).slot, Slot::Failed(_))
-    });
+    wait_for_seat(&seat, |seat| matches!(seat.slot, Slot::Failed(_)));
 }
 
 /// A seat preloaded as compiled and reloading (a new deployment, a

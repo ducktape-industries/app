@@ -877,6 +877,21 @@ pub mod testing {
 
     static ASKED: std::sync::Mutex<Vec<Notice>> = std::sync::Mutex::new(Vec::new());
 
+    #[cfg(test)]
+    static POSTED: std::sync::Condvar = std::sync::Condvar::new();
+
+    #[cfg(test)]
+    pub(crate) fn wait_for_banners(done: impl Fn(&[Notice]) -> bool) {
+        let asked = ASKED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        drop(
+            POSTED
+                .wait_while(asked, |asked| !done(asked))
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+    }
+
     /// Every banner the host asked for so far, by every test.
     pub fn banners_asked() -> Vec<Notice> {
         ASKED
@@ -902,6 +917,8 @@ pub mod testing {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(notice.clone());
+            #[cfg(test)]
+            POSTED.notify_all();
             false
         }
 

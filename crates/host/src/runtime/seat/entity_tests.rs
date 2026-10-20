@@ -1,6 +1,6 @@
 //! The seat, turned off the draw path, under a bare root that draws it as
 //! `layers::PaneView` does: its tree, cached, or its standin.
-use super::tests::eventually;
+use super::tests::wait_for_seat;
 use super::*;
 use gpui_kit::{
     Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, TestAppContext,
@@ -427,7 +427,7 @@ fn a_load_landing_replaces_the_standin_without_a_frame_loop(cx: &mut TestAppCont
 fn a_load_that_lands_wakes_the_seat() {
     const PROGRAM: &str = "install-wake-test";
     let mounted = Mounted::seat();
-    let woke = mounted.lock().unwrap().wake.subscribe();
+    let mut woke = mounted.lock().unwrap().wake.subscribe();
     let generation = mounted.lock().unwrap().start();
     let snapshot = connection().lock().unwrap().clone();
     queue(Load {
@@ -437,9 +437,7 @@ fn a_load_that_lands_wakes_the_seat() {
         asked_of: snapshot,
         code: None,
     });
-    eventually("the install signalled the seat's wake", || {
-        woke.has_changed().unwrap()
-    });
+    futures::executor::block_on(woke.changed()).expect("the install signalled the seat's wake");
 }
 
 /// A stage the loader shows and a Retry each turn the seat once: the
@@ -490,9 +488,7 @@ fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     // the install's coalesce into the one turn the retry is
     let instance = seat.read_with(&native, |seat, _| seat.instance());
     retry(PROGRAM, instance);
-    eventually("the retried load failed without a node", || {
-        matches!(lock(&mounted).slot, Slot::Failed(_))
-    });
+    wait_for_seat(&mounted, |seat| matches!(seat.slot, Slot::Failed(_)));
     native.run_until_parked();
     assert_eq!(
         turns_of(&seat, &native),
@@ -1245,9 +1241,7 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
     // installed) each tell the rail
     let mounted = registry().lock().unwrap()[&key].clone();
     retry(key.0, key.1);
-    eventually("the retried load failed without a node", || {
-        matches!(lock(&mounted).slot, Slot::Failed(_))
-    });
+    wait_for_seat(&mounted, |seat| matches!(seat.slot, Slot::Failed(_)));
     assert!(
         woken() >= 2,
         "a retry and its load did not both tell the rail"

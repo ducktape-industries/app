@@ -395,7 +395,7 @@ fn flushed(center: &mut Center, path: &Path) {
 fn settled(path: &Path) {
     let (tell, told) = std::sync::mpsc::channel();
     in_order(&path.to_string_lossy(), move || tell.send(()).unwrap());
-    told.recv_timeout(Duration::from_secs(10)).unwrap();
+    told.recv().unwrap();
 }
 
 #[test]

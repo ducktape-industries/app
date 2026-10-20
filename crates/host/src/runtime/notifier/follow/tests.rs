@@ -2,7 +2,7 @@
 //! traded with the centre in hand, the lock, a restart after a blip.
 use super::super::tests::{allow, blob_carrying, mention, notifier_posting, rows, serial};
 use super::*;
-use crate::runtime::seat::tests::{FakeNode, blob_id, eventually};
+use crate::runtime::seat::tests::{FakeNode, blob_id};
 
 fn followed(network: &str, program: &str, blob: &[u8]) -> (FakeNode, String, Followed) {
     let entry = ::programs::Entry {
@@ -25,6 +25,17 @@ fn counted(center: &CenterHandle, program: &str) -> Vec<u32> {
     rows.map(|entry| entry.count).collect()
 }
 
+fn posted(chain: &str, program: &str, count: usize) {
+    let tag = format!("{program}/#general");
+    crate::contract::testing::wait_for_banners(|asked| {
+        asked
+            .iter()
+            .filter(|banner| banner.chain == chain && banner.tag == tag)
+            .count()
+            >= count
+    });
+}
+
 fn allowing() -> Settings {
     Settings {
         banners: true,
@@ -44,7 +55,8 @@ fn a_set_answers_on_its_own_node_and_a_connect_leaves_it_running() {
     let (_node, chain, followed) = followed("followed-net", program, &blob);
     let set = &followed.0;
     let center = set.recipient().center.clone();
-    eventually("its notifier posted", || counted(&center, program) == [1]);
+    posted(&chain, program, 1);
+    assert_eq!(counted(&center, program), [1]);
     assert_eq!(center.lock().network(), chain);
     handle().block_on(crate::runtime::kernel::drain());
     let tag = format!("{program}/#general");
@@ -88,7 +100,8 @@ fn take_up_trades_logs_and_refuses_the_left_sets_post() {
     let (_node, chain, followed) = followed("traded-net", program, &blob);
     let set = followed.0.clone();
     let source = set.recipient().center.clone();
-    eventually("the set posted", || counted(&source, program) == [1]);
+    posted(&chain, program, 1);
+    assert_eq!(counted(&source, program), [1]);
     let center = CenterHandle::default();
     let before = "traded-before#1";
     take_up(&center, before);
@@ -168,10 +181,11 @@ fn a_set_restarts_its_notifiers_when_its_node_answers_again() {
     let program = "notifier-tests-restarted";
     allow(program);
     let blob = blob_carrying(&notifier_posting("Restarted", "notify,", &mention()));
-    let (_node, _, followed) = followed("restarted-net", program, &blob);
+    let (_node, chain, followed) = followed("restarted-net", program, &blob);
     let set = &followed.0;
     let center = set.recipient().center.clone();
-    eventually("its notifier posted", || counted(&center, program) == [1]);
+    posted(&chain, program, 1);
+    assert_eq!(counted(&center, program), [1]);
     let mut heard = Heard {
         height: 0,
         lost: false,
@@ -180,9 +194,8 @@ fn a_set_restarts_its_notifiers_when_its_node_answers_again() {
     assert!(!set.polled(&mut heard, None));
     assert!(set.polled(&mut heard, Some(0)), "back after none");
     handle().block_on(set.read());
-    eventually("started over, it posted again", || {
-        counted(&center, program) == [2]
-    });
+    posted(&chain, program, 2);
+    assert_eq!(counted(&center, program), [2]);
 }
 
 #[test]

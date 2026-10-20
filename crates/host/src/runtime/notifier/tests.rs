@@ -1,6 +1,6 @@
 //! Notifiers against a fake node: what a roster read starts, keeps,
 //! replaces and stops, and what one posts with no pane of its program open.
-use super::super::seat::tests::{FakeNode, blob_id, eventually};
+use super::super::seat::tests::{FakeNode, blob_id};
 use super::*;
 use wire::methods::Notification;
 
@@ -153,7 +153,10 @@ fn a_notice_with_no_pane_open_is_one_row_and_one_banner() {
     );
     let notifiers = Notifiers::default();
     notifiers.reconcile(&node.asked_of, &[listed(program, &blob)]);
-    eventually("the notifier posted", || !rows(program).is_empty());
+    let tag = format!("{program}/#general");
+    crate::contract::testing::wait_for_banners(|asked| {
+        asked.iter().any(|banner| banner.tag == tag)
+    });
     // its later turns post nothing more
     std::thread::sleep(Duration::from_millis(100));
     let rows = rows(program);
@@ -162,7 +165,6 @@ fn a_notice_with_no_pane_open_is_one_row_and_one_banner() {
         (rows[0].view.as_str(), rows[0].title.as_str(), rows[0].count),
         ("Alone", "ada mentioned you", 1)
     );
-    let tag = format!("{program}/#general");
     let asked: Vec<_> = crate::contract::testing::banners_asked()
         .into_iter()
         .filter(|banner| banner.tag == tag)
@@ -249,7 +251,7 @@ fn a_rosters_programs_are_looked_into_one_at_a_time() {
         .collect();
     let notifiers = Notifiers::default();
     notifiers.reconcile(&node.asked_of, &programs);
-    eventually("a blob asked of the node", || node.held().0 > 0);
+    node.wait_for_held(|held| held > 0);
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(node.held(), (1, 1), "one blob asked at a time");
 }
@@ -382,28 +384,38 @@ fn each_recipient_has_its_own_notices_and_store() {
     let node = FakeNode::new(Vec::new(), Vec::new(), vec![blob.clone()]);
     let stores = tempfile::tempdir().unwrap();
     let accounts = [2u64, 3];
-    let sets: Vec<(Arc<Raised>, PathBuf, Notifiers)> = accounts
+    let mut sets: Vec<_> = accounts
         .iter()
         .map(|account| {
             let raised = Arc::new(Raised::default());
             let store = stores.path().join(account.to_string());
+            let (said, heard) = futures::channel::mpsc::unbounded();
             let notifiers = Notifiers {
                 running: Mutex::default(),
-                recipient: Some(Arc::new(recipient(*account, store.clone(), raised.clone()))),
+                recipient: Some(Arc::new(Recipient {
+                    said,
+                    ..recipient(*account, store.clone(), raised.clone())
+                })),
             };
             notifiers.reconcile(&node.asked_of, &[listed(program, &blob)]);
-            (raised, store, notifiers)
+            (raised, store, notifiers, heard)
         })
         .collect();
-    for (raised, store, _) in &sets {
+    for (raised, store, _, heard) in &mut sets {
+        use futures::StreamExt as _;
+        let (posted, intent) = futures::executor::block_on(heard.next()).unwrap();
+        assert_eq!(posted, program);
+        assert!(matches!(intent, Intent::Notified));
+        raised.wait_for(1);
         // its session seats the key `ab`
         let file = store
             .join("fake-network_230")
             .join("ab")
             .join(format!("{program}.borsh"));
-        eventually("each account's notifier posted and kept", || {
-            !raised.notices.lock().unwrap().is_empty() && file.exists()
-        });
+        let (tell, told) = std::sync::mpsc::channel();
+        kernel::in_order(&file.to_string_lossy(), move || tell.send(()).unwrap());
+        told.recv().unwrap();
+        assert!(file.exists(), "the notifier kept its store");
         let raised = raised.notices.lock().unwrap();
         assert_eq!(raised.len(), 1, "{raised:?}");
         assert_eq!(
