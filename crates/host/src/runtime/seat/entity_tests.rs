@@ -2815,6 +2815,51 @@ fn alive_of(seat: &Entity<Seat>, cx: &TestAppContext) -> Arc<()> {
 }
 
 #[gpui_kit::test]
+fn a_key_change_while_a_swap_owns_the_view_starts_the_update(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "rekey-mid-swap";
+    let (seat, mut native, mounted, pump, runner, alive) = swappable(cx, PROGRAM);
+    nudge(&seat, &session("aa"), &mut native);
+    let old = match &mut mounted.lock().unwrap().slot {
+        Slot::Ready(view) => {
+            let mut code = ViewCode::for_test("", "", 320);
+            code.runner = runner.clone();
+            code.hash = view.code_hash_for_test();
+            view.code = Some(code);
+            view.code_hash_for_test()
+        }
+        _ => panic!("not seated"),
+    };
+    let new = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&[keyed("new")]));
+    pump.hold();
+    park_swap(&mounted, PROGRAM, &runner, new);
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Snapshot"]);
+    assert!(mounted.lock().unwrap().owned, "the swap owns the view");
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.set_props(session("bb"), cx)));
+    pump.at_once();
+    pump.release_all();
+    native.run_until_parked();
+    draw_now(&mut native);
+    let locked = mounted.lock().unwrap();
+    let Slot::Ready(fresh) = &locked.slot else {
+        panic!("not seated");
+    };
+    assert!(
+        !Arc::ptr_eq(&fresh.alive, &alive),
+        "the old instance kept the seat"
+    );
+    assert_ne!(old, new);
+    assert_eq!(
+        fresh.code_hash_for_test(),
+        new,
+        "the key change started the old code, not the update"
+    );
+    assert_eq!(locked.props, Some(session("bb")));
+    assert!(locked.swap.is_none() && !locked.owned);
+}
+
+#[gpui_kit::test]
 fn a_key_change_in_the_background_ends_the_old_instance_at_once(cx: &mut TestAppContext) {
     const PROGRAM: &str = "rekey-background";
     crate::runtime::seat_for_test(PROGRAM, 320);
