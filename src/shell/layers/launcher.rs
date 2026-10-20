@@ -324,7 +324,7 @@ impl LauncherLayer {
                 .border_color(ink.line)
                 .on_mouse_down(MouseButton::Left, |event, window, _| {
                     match event.click_count {
-                        2 => window.titlebar_double_click(),
+                        2 => crate::shell::windows::double_click_fixed(window),
                         _ => window.start_window_move(),
                     }
                 })

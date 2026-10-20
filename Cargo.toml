@@ -208,8 +208,8 @@ gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "262
 # gpui-base 0.7.3 with the UIKit text contract (its README.ducktape.md):
 # `InputState::text_input` carries a field's keyboard hints to the platform
 gpui-base = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2622bd8294b97a966f8febbd3b9dcb2cb5850aca" }
-# Window::set_bounds (X11, macOS) and the Linux clipboard reads' wait hook
-# (`crates/web`): the backends, vendored in the fork
+# the X11 open position and static gravity the shell's moves rely on, and the
+# Linux clipboard reads' wait hook (`crates/web`): the backends, vendored in the fork
 gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2622bd8294b97a966f8febbd3b9dcb2cb5850aca" }
 gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2622bd8294b97a966f8febbd3b9dcb2cb5850aca" }
 # the X11 input-method client gpui-pre-linux uses, vendored in the fork: it decodes

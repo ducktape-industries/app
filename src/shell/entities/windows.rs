@@ -440,7 +440,7 @@ impl Windows {
         min: Option<Size<Pixels>>,
         cx: &mut Context<Self>,
     ) {
-        use gpui_kit::{TitlebarOptions, WindowOptions, point};
+        use gpui_kit::{TitlebarOptions, WindowOptions};
         let title = match kind {
             WindowKind::Console => "Ducktape".to_owned(),
             WindowKind::View { program } => {
@@ -464,19 +464,9 @@ impl Windows {
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
                 appears_transparent: cfg!(target_os = "macos"),
-                // the buttons are 14px tall, centred on the bar they sit
-                // over: the console's, or a pop-out's strip above its 1px rule
-                traffic_light_position: Some(point(
-                    px(11.),
-                    px(match kind {
-                        WindowKind::Console => (layers::BAR - 14.) / 2.,
-                        WindowKind::View { .. } => (layers::TITLE - 1. - 14.) / 2.,
-                    }),
-                )),
+                traffic_light_position: Some(windows::traffic_lights(kind)),
             }),
-            // the launcher is fixed at its size, the desk resizes
-            // (`swap_console` switches it as the screens cross)
-            is_resizable: !launcher,
+            is_resizable: true,
             // a pop-out goes down to its view's minimum, as it stands when
             // the window opens (there is no setting it later), a float to
             // its own
@@ -516,6 +506,12 @@ impl Windows {
                 // the self-update's healthy signal: the window drew, and the
                 // platform's frame loop came round for it
                 window.on_next_frame(|_, _| crate::update::rendered());
+                if launcher
+                    && let Err(error) =
+                        windows::set_resizable(window, false, Some(windows::traffic_lights(kind)))
+                {
+                    tracing::warn!(target: "ducktape::app", reason = "set_resizable_failed", %error, "the launcher's size was not fixed");
+                }
                 cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
             });
             match opened {
@@ -1604,8 +1600,13 @@ impl Windows {
                 // the launcher is fixed at its size, the desk resizes; set
                 // first: a fixed window still takes the new size, and the
                 // desk's zoom or full screen needs a resizable one
-                window.set_resizable(!launcher);
-                window.set_bounds(to);
+                let lights = Some(windows::traffic_lights(WindowKind::Console));
+                if let Err(error) = windows::set_resizable(window, !launcher, lights) {
+                    tracing::warn!(target: "ducktape::app", reason = "set_resizable_failed", %error, launcher, "the console's resizing was not switched");
+                }
+                if let Err(error) = windows::set_bounds(window, to, cx) {
+                    tracing::warn!(target: "ducktape::app", reason = "set_bounds_failed", %error, launcher, "the console was not moved");
+                }
                 match (launcher, desk) {
                     (false, Some(WindowBounds::Fullscreen(_))) => window.toggle_fullscreen(),
                     (false, Some(WindowBounds::Maximized(_))) if !cfg!(target_os = "macos") => {

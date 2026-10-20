@@ -89,6 +89,9 @@ fn open(reason: String, cx: &mut App) -> Result<AnyWindowHandle, String> {
             cx.quit();
             true
         });
+        if let Err(error) = super::windows::set_resizable(window, false, None) {
+            tracing::warn!(target: "ducktape::app", reason = "set_resizable_failed", %error, "the busy window's size was not fixed");
+        }
         let busy = cx.new(|_| BusyView { reason });
         cx.new(|cx| gpui_kit::component::Root::new(busy, window, cx))
     })

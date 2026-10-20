@@ -188,6 +188,88 @@ pub(in crate::shell) fn activate(
     Ok(())
 }
 
+pub(in crate::shell) fn traffic_lights(kind: super::WindowKind) -> Point<Pixels> {
+    let bar = match kind {
+        super::WindowKind::Console => super::layers::BAR,
+        super::WindowKind::View { .. } => super::layers::TITLE - 1.,
+    };
+    point(px(11.), px((bar - 14.) / 2.))
+}
+
+pub(in crate::shell) fn set_resizable(
+    window: &gpui_kit::Window,
+    resizable: bool,
+    lights: Option<Point<Pixels>>,
+) -> Result<(), String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let raw = match HasWindowHandle::window_handle(window) {
+        Ok(handle) => handle.as_raw(),
+        #[cfg(test)]
+        Err(raw_window_handle::HandleError::NotSupported) => {
+            let id = window.window_handle().window_id();
+            RESIZABLE.with_borrow_mut(|told| told.push((id, resizable)));
+            return Ok(());
+        }
+        Err(error) => return Err(format!("no native window: {error}")),
+    };
+    match raw {
+        #[cfg(target_os = "macos")]
+        RawWindowHandle::AppKit(handle) => {
+            mac_set_resizable(handle.ns_view, resizable)?;
+            if let Some(lights) = lights {
+                window.set_traffic_light_position(lights);
+            }
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        RawWindowHandle::Xcb(handle) => x11_set_resizable(window, handle.window.get(), resizable),
+        _ => {
+            let _ = lights;
+            Ok(())
+        }
+    }
+}
+
+pub(in crate::shell) fn set_bounds(
+    window: &mut gpui_kit::Window,
+    bounds: Bounds<Pixels>,
+    cx: &gpui_kit::App,
+) -> Result<(), String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let raw = match HasWindowHandle::window_handle(window) {
+        Ok(handle) => handle.as_raw(),
+        #[cfg(test)]
+        Err(raw_window_handle::HandleError::NotSupported) => {
+            window.set_bounds(bounds);
+            return Ok(());
+        }
+        Err(error) => return Err(format!("no native window: {error}")),
+    };
+    match raw {
+        #[cfg(target_os = "macos")]
+        RawWindowHandle::AppKit(_) => {
+            mac_set_bounds(window, bounds, cx);
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        RawWindowHandle::Xcb(handle) => x11_set_bounds(window, handle.window.get(), bounds),
+        _ => {
+            let _ = cx;
+            window.resize(bounds.size);
+            Ok(())
+        }
+    }
+}
+
+pub(in crate::shell) fn double_click_fixed(window: &gpui_kit::Window) {
+    #[cfg(target_os = "macos")]
+    if mac_double_click_minimizes() {
+        window.minimize_window();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
 pub(in crate::shell) fn join_all_spaces(window: &gpui_kit::Window) {
     #[cfg(target_os = "macos")]
     {
@@ -231,6 +313,12 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
+    pub(in crate::shell) static RESIZABLE: std::cell::RefCell<Vec<(gpui_kit::WindowId, bool)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
     /// What the test platform was told to keep above, in order.
     pub(in crate::shell) static KEPT_ABOVE: std::cell::RefCell<Vec<(gpui_kit::WindowId, bool)>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -256,6 +344,249 @@ fn mac_keep_above(ns_view: std::ptr::NonNull<std::ffi::c_void>, above: bool) -> 
         let _: () = msg_send![ns_window, setLevel: if above { FLOATING } else { NORMAL }];
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_window(
+    ns_view: std::ptr::NonNull<std::ffi::c_void>,
+) -> Result<*mut objc2::runtime::AnyObject, String> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    let view = ns_view.as_ptr().cast::<AnyObject>();
+    let ns_window: *mut AnyObject = unsafe { msg_send![view, window] };
+    if ns_window.is_null() {
+        return Err("the view is in no window".to_owned());
+    }
+    Ok(ns_window)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_set_resizable(
+    ns_view: std::ptr::NonNull<std::ffi::c_void>,
+    resizable: bool,
+) -> Result<(), String> {
+    use objc2::msg_send;
+    const NS_WINDOW_STYLE_MASK_RESIZABLE: usize = 1 << 3;
+    let ns_window = mac_window(ns_view)?;
+    unsafe {
+        let mask: usize = msg_send![ns_window, styleMask];
+        let mask = if resizable {
+            mask | NS_WINDOW_STYLE_MASK_RESIZABLE
+        } else {
+            mask & !NS_WINDOW_STYLE_MASK_RESIZABLE
+        };
+        let _: () = msg_send![ns_window, setStyleMask: mask];
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_set_bounds(window: &gpui_kit::Window, bounds: Bounds<Pixels>, cx: &gpui_kit::App) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    window
+        .spawn(cx, async move |cx| {
+            let view = cx.update(|window, _| {
+                match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
+                    Ok(RawWindowHandle::AppKit(handle)) => Some(handle.ns_view),
+                    _ => None,
+                }
+            });
+            if let Ok(Some(view)) = view
+                && let Err(error) = mac_move(view, bounds)
+            {
+                tracing::warn!(target: "ducktape::app", reason = "set_bounds_failed", %error, "the window was not moved");
+            }
+        })
+        .detach();
+}
+
+#[cfg(target_os = "macos")]
+fn mac_move(
+    ns_view: std::ptr::NonNull<std::ffi::c_void>,
+    bounds: Bounds<Pixels>,
+) -> Result<(), String> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    let ns_window = mac_window(ns_view)?;
+    unsafe {
+        let screen: *mut AnyObject = msg_send![ns_window, screen];
+        if screen.is_null() {
+            return Err("the window is on no screen".to_owned());
+        }
+        let on: NSRect = msg_send![screen, frame];
+        let (x, y) = appkit_origin(bounds, (on.origin.x, on.origin.y), on.size.height);
+        let extent = NSSize::new(
+            f64::from(f32::from(bounds.size.width)),
+            f64::from(f32::from(bounds.size.height)),
+        );
+        let frame = NSRect::new(NSPoint::new(x, y), extent);
+        let _: () = msg_send![ns_window, setFrame: frame, display: true];
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn appkit_origin(bounds: Bounds<Pixels>, screen: (f64, f64), height: f64) -> (f64, f64) {
+    let x = f64::from(f32::from(bounds.origin.x));
+    let y = f64::from(f32::from(bounds.origin.y));
+    let tall = f64::from(f32::from(bounds.size.height));
+    (screen.0 + x, height + screen.1 - y - tall)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_double_click_minimizes() -> bool {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSString;
+    let domain = NSString::from_str("NSGlobalDomain");
+    let key = NSString::from_str("AppleActionOnDoubleClick");
+    let minimize = NSString::from_str("Minimize");
+    unsafe {
+        let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        let global: *mut AnyObject = msg_send![defaults, persistentDomainForName: &*domain];
+        if global.is_null() {
+            return false;
+        }
+        let action: *mut AnyObject = msg_send![global, objectForKey: &*key];
+        if action.is_null() {
+            return false;
+        }
+        msg_send![action, isEqual: &*minimize]
+    }
+}
+
+#[cfg(target_os = "linux")]
+type SizeRange = (Option<(i32, i32)>, Option<(i32, i32)>);
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    static UNFIXED: std::cell::RefCell<std::collections::BTreeMap<gpui_kit::WindowId, SizeRange>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+#[cfg(target_os = "linux")]
+fn said(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn held(
+    mut hints: x11rb::properties::WmSizeHints,
+    (min, max): SizeRange,
+) -> x11rb::properties::WmSizeHints {
+    hints.min_size = min;
+    hints.max_size = max;
+    hints
+}
+
+#[cfg(target_os = "linux")]
+fn x11_hints(
+    xcb: &x11rb::xcb_ffi::XCBConnection,
+    id: u32,
+) -> Result<x11rb::properties::WmSizeHints, String> {
+    x11rb::properties::WmSizeHints::get_normal_hints(xcb, id)
+        .map_err(said)?
+        .reply()
+        .map(Option::unwrap_or_default)
+        .map_err(said)
+}
+
+#[cfg(target_os = "linux")]
+fn x11_write_hints(
+    xcb: &x11rb::xcb_ffi::XCBConnection,
+    id: u32,
+    hints: x11rb::properties::WmSizeHints,
+) -> Result<(), String> {
+    hints
+        .set_normal_hints(xcb, id)
+        .map_err(said)?
+        .check()
+        .map_err(said)
+}
+
+#[cfg(target_os = "linux")]
+fn x11_set_resizable(window: &gpui_kit::Window, id: u32, resizable: bool) -> Result<(), String> {
+    let key = window.window_handle().window_id();
+    let was = UNFIXED.with_borrow(|unfixed| unfixed.get(&key).copied());
+    if resizable && was.is_none() {
+        return Ok(());
+    }
+    let (xcb, _) = x11_connection(window)?;
+    let hints = x11_hints(&xcb, id)?;
+    let range = match (resizable, was) {
+        (true, Some(was)) => was,
+        _ => {
+            let size = window.bounds().size.to_device_pixels(window.scale_factor());
+            let size = Some((size.width.0, size.height.0));
+            (size, size)
+        }
+    };
+    x11_write_hints(&xcb, id, held(hints, range))?;
+    UNFIXED.with_borrow_mut(|unfixed| {
+        if resizable {
+            unfixed.remove(&key);
+        } else {
+            unfixed
+                .entry(key)
+                .or_insert((hints.min_size, hints.max_size));
+        }
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn x11_set_bounds(
+    window: &gpui_kit::Window,
+    id: u32,
+    bounds: Bounds<Pixels>,
+) -> Result<(), String> {
+    use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt as _};
+    let (xcb, _) = x11_connection(window)?;
+    let at = bounds.to_device_pixels(window.scale_factor());
+    let size = (at.size.width.0, at.size.height.0);
+    let key = window.window_handle().window_id();
+    if UNFIXED.with_borrow(|unfixed| unfixed.contains_key(&key)) {
+        x11_write_hints(
+            &xcb,
+            id,
+            held(x11_hints(&xcb, id)?, (Some(size), Some(size))),
+        )?;
+    }
+    let width = u32::try_from(size.0).map_err(said)?;
+    let height = u32::try_from(size.1).map_err(said)?;
+    let to = ConfigureWindowAux::new()
+        .x(at.origin.x.0)
+        .y(at.origin.y.0)
+        .width(width)
+        .height(height);
+    xcb.configure_window(id, &to)
+        .map_err(said)?
+        .check()
+        .map_err(said)
+}
+
+#[cfg(target_os = "linux")]
+fn x11_connection(
+    window: &gpui_kit::Window,
+) -> Result<(x11rb::xcb_ffi::XCBConnection, u32), String> {
+    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    use x11rb::connection::Connection as _;
+    let display = HasDisplayHandle::display_handle(window).map_err(said)?;
+    let RawDisplayHandle::Xcb(display) = display.as_raw() else {
+        return Err("not an XCB display".to_owned());
+    };
+    let connection = display.connection.ok_or("no XCB connection")?;
+    let xcb = unsafe {
+        x11rb::xcb_ffi::XCBConnection::from_raw_xcb_connection(connection.as_ptr(), false)
+    }
+    .map_err(said)?;
+    let root = usize::try_from(display.screen)
+        .ok()
+        .and_then(|screen| xcb.setup().roots.get(screen))
+        .ok_or("no such screen")?
+        .root;
+    Ok((xcb, root))
 }
 
 #[cfg(target_os = "linux")]
@@ -365,26 +696,9 @@ fn x11_send(
     window: &gpui_kit::Window,
     requests: impl FnOnce(&x11rb::xcb_ffi::XCBConnection) -> Result<Requests, String>,
 ) -> Result<(), String> {
-    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-    use x11rb::connection::Connection as _;
     use x11rb::protocol::xproto::ConnectionExt as _;
     let said = |error: &dyn std::fmt::Display| error.to_string();
-    let display = HasDisplayHandle::display_handle(window).map_err(|error| said(&error))?;
-    let RawDisplayHandle::Xcb(display) = display.as_raw() else {
-        return Err("not an XCB display".to_owned());
-    };
-    let connection = display.connection.ok_or("no XCB connection")?;
-    // SAFETY: gpui's live connection, which outlives this call (the window
-    // is borrowed); `false`: it is gpui's to disconnect, not this wrapper's.
-    let xcb = unsafe {
-        x11rb::xcb_ffi::XCBConnection::from_raw_xcb_connection(connection.as_ptr(), false)
-    }
-    .map_err(|error| said(&error))?;
-    let root = usize::try_from(display.screen)
-        .ok()
-        .and_then(|screen| xcb.setup().roots.get(screen))
-        .ok_or("no such screen")?
-        .root;
+    let (xcb, root) = x11_connection(window)?;
     for (mask, request) in requests(&xcb)? {
         // checked: a round trip, which also sends it
         xcb.send_event(false, root, mask, request)
@@ -559,6 +873,42 @@ mod tests {
         );
         let small = frame(0., 0., 300., 200.);
         assert_eq!(corner(float, small).origin, point(px(0.), px(0.)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fixed_x11_window_keeps_where_and_how_it_was_placed() {
+        use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
+        use x11rb::protocol::xproto::Gravity;
+        let mut opened = WmSizeHints::new();
+        opened.position = Some((WmSizeHintsSpecification::ProgramSpecified, 300, 200));
+        opened.win_gravity = Some(Gravity::STATIC);
+        opened.min_size = Some((720, 480));
+        opened.max_size = Some((16384, 16384));
+        let fixed = held(opened, (Some((960, 640)), Some((960, 640))));
+        assert_eq!(fixed.min_size, Some((960, 640)));
+        assert_eq!(fixed.max_size, Some((960, 640)));
+        assert!(matches!(
+            fixed.position,
+            Some((WmSizeHintsSpecification::ProgramSpecified, 300, 200))
+        ));
+        assert_eq!(fixed.win_gravity, Some(Gravity::STATIC));
+        let again = held(fixed, (opened.min_size, opened.max_size));
+        assert_eq!(again.min_size, Some((720, 480)));
+        assert_eq!(again.max_size, Some((16384, 16384)));
+    }
+
+    #[test]
+    fn a_frame_set_on_macos_is_the_frame_its_bounds_were_read_from() {
+        let (screen, height) = ((1920., -200.), 1440.);
+        let appkit = (2100., 150., 960., 640.);
+        let read = frame(
+            (appkit.0 - screen.0) as f32,
+            (height - appkit.1 - appkit.3 + screen.1) as f32,
+            appkit.2 as f32,
+            appkit.3 as f32,
+        );
+        assert_eq!(appkit_origin(read, screen, height), (appkit.0, appkit.1));
     }
 
     #[test]
