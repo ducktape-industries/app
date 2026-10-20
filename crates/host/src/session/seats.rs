@@ -250,6 +250,17 @@ impl Seats {
         landed
     }
 
+    pub fn drawn(&self, cx: &App) -> Vec<crate::memory::Drawn> {
+        self.map
+            .values()
+            .filter_map(|routed| {
+                let seat = routed.seat.read(cx);
+                let name = format!("{}/{}", seat.program(), seat.instance());
+                Some((name, seat.window()?, seat.tree()?))
+            })
+            .collect()
+    }
+
     /// Every placed seat's view, for the inspector (`ax::inspect`): the
     /// window it is drawn in, its program and its tree.
     #[cfg(any(test, feature = "ax-door"))]

@@ -175,7 +175,7 @@ impl OverlayLayer {
             SettingsPage::Notifications => self.notifications_page(&ink, cx),
             SettingsPage::Networks => self.networks_page(&ink, cx),
             SettingsPage::Updates => self.updates_page(&ink, cx),
-            SettingsPage::About => self.about_page(&ink),
+            SettingsPage::About => self.about_page(&ink, cx),
         };
         let page = &mut self.settings_rows;
         while page.rows.len() < rows.len() {
@@ -998,7 +998,7 @@ impl OverlayLayer {
     /// Settings › About: the product, its version and log; and on a
     /// machine whose call picture is Cisco's OpenH264 binary, the switch
     /// that fetches and uses it, with Cisco's line (its licence's terms).
-    fn about_page(&self, ink: &Ink) -> Vec<gpui_kit::Div> {
+    fn about_page(&self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use gpui_kit::*;
         let log = crate::backend::app_log_path()
             .map(|path| path.display().to_string())
@@ -1016,10 +1016,24 @@ impl OverlayLayer {
             ),
             line("Log", log, ink),
         ];
+        let debug = self.prefs.read(cx).get().debug;
+        let switch = self.switch(
+            "about/debug",
+            "Debug mode",
+            debug,
+            self.on_prefs(move |prefs, cx| prefs.set_debug(!debug, cx)),
+            ink,
+        );
+        let mut rows = rows;
+        rows.push(setting(
+            "Debug mode",
+            "Turns on the app's counters, and the account menu's Memory window: what the app holds, by owner.",
+            switch,
+            ink,
+        ));
         #[cfg(all(feature = "call", target_os = "linux"))]
         let rows = {
             use crate::backend::openh264;
-            let mut rows = rows;
             let on = openh264::enabled();
             let switch = self.switch(
                 "about/openh264",

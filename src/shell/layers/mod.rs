@@ -9,6 +9,7 @@ mod empty_pane;
 mod fields;
 mod help_pane;
 mod launcher;
+mod memory_pane;
 mod overlays;
 mod panes;
 mod root;
@@ -23,6 +24,7 @@ pub(super) use dot::StatusDot;
 pub(super) use empty_pane::{CHAT_READY, CONTEXT, EmptyPane};
 pub(super) use help_pane::HelpPane;
 pub(super) use launcher::{LAUNCHER_SIZE, LauncherLayer};
+pub(super) use memory_pane::MemoryPane;
 #[cfg(any(test, feature = "ax-door"))]
 pub(crate) use overlays::Kept;
 pub(super) use overlays::OverlayLayer;

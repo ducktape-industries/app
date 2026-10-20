@@ -187,6 +187,14 @@ impl Chrome {
             ),
             ink,
         ));
+        if self.prefs.read(cx).get().debug {
+            rows = rows.child(self.menu_row(
+                "account-memory",
+                "Memory",
+                self.closing(menu, self.on_windows(|windows, cx| windows.open_memory(cx))),
+                ink,
+            ));
+        }
         if let Some(number) = number {
             rows = rows.child(self.menu_row(
                 "copy-account",

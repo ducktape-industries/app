@@ -110,6 +110,7 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
         let label = match window.program {
             layout::EMPTY => "New window",
             layout::HELP => "Help",
+            layout::MEMORY => "Memory",
             program => program,
         };
         entries.push(Entry {
@@ -125,12 +126,13 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
 
 impl Entry {
     /// Its element id: `rail/<program>` for a program, `rail/<program>/<instance>`
-    /// for a window under it, `rail-help/<instance>` and `rail-new/<instance>`
-    /// for Help and an empty window.
+    /// for a window under it, `rail-help/<instance>`, `rail-memory/<instance>`
+    /// and `rail-new/<instance>` for Help, Memory and an empty window.
     fn id(&self) -> SharedString {
         let id = match (self.row, self.program) {
             (Row::Program(program), _) => format!("rail/{program}"),
             (Row::Window(instance), layout::HELP) => format!("rail-help/{instance}"),
+            (Row::Window(instance), layout::MEMORY) => format!("rail-memory/{instance}"),
             (Row::Window(instance), layout::EMPTY) => format!("rail-new/{instance}"),
             (Row::Window(instance), program) => format!("rail/{program}/{instance}"),
         };

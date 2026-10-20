@@ -493,7 +493,8 @@ draws nothing.
   (frame, `instance`, `program`, z, title), focus, fill (the window in
   front covers the desk; frames untouched) and the desk size; operations
   (`split`, `cycle`, fill, place, measure). Sentinel programs:
-  `EMPTY` (an empty pane shows the program finder) and `HELP`.
+  `EMPTY` (an empty pane shows the program finder), `HELP` and `MEMORY`
+  (debug mode's Memory window, `layers::MemoryPane`).
 - **Windows** (`shell/entities/windows.rs`). The OS windows: each one's
   handle, root view and own entities (`WindowEntities`: its `Desk`, what
   is open over it, its Spotlight, its `Front` — derived from the desk by
@@ -779,7 +780,11 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   their resident figure counts the page cache and is not part of macOS's
   footprint, so a reader never sums them with the rest. The door
   serves it at `GET /inspect/memory[?regions=1]`; the region walk runs
-  only when asked.
+  only when asked. Debug mode's Memory window shows the same rows
+  (`layers::MemoryPane`, from the account menu while `Prefs::debug` is
+  on, switched in Settings › About): drawn uncached, it reads on each
+  frame the window draws and asks for no frame of its own, and it walks
+  the regions as it opens and on Read regions again.
 - **Window-thread work.** Every wasm tick, frame decode (`shape`), `merge`
   and `ViewTree::replace` run on the window thread inside `Seat::turn`,
   while holding the seat mutex, between draws and never inside one; GPUI

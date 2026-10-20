@@ -1096,6 +1096,14 @@ impl Windows {
         }
     }
 
+    pub(crate) fn open_memory(&mut self, cx: &mut Context<Self>) {
+        let _timed = timed();
+        if let Some(own) = self.console_own() {
+            own.desk
+                .update(cx, |desk, cx| desk.open(layout::MEMORY, cx));
+        }
+    }
+
     /// Help asked for (⌘/, a menu): it greets a new account only until
     /// then (`Account.welcome`).
     pub(crate) fn help_asked(&mut self, cx: &mut Context<Self>) {

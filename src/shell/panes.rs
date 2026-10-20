@@ -15,6 +15,9 @@ pub(in crate::shell) fn label(rail: &[crate::runtime::RailRow], program: &str) -
     if program == layout::HELP {
         return "Help".to_owned();
     }
+    if program == layout::MEMORY {
+        return "Memory".to_owned();
+    }
     rail.iter()
         .find(|row| row.program == program)
         .map_or_else(|| program.to_owned(), |row| row.label.clone())

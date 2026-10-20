@@ -2165,3 +2165,52 @@ fn an_overlay_moving_draws_the_panes_by_its_slice_alone(cx: &mut TestAppContext)
         );
     }
 }
+
+#[gpui_kit::test]
+fn the_memory_window_comes_with_debug_mode_and_asks_for_no_frame(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let mut seed = super::layers::tests::Seed::boot();
+    seed.roster = Default::default();
+    seed.center = Default::default();
+    seed.screen = super::entities::Screen::Desk;
+    seed.active = Some("pane-ax-test");
+    seed.account.signer_key = "ab".into();
+    let (app, key, view, mut native) = super::layers::tests::open_console(seed, cx);
+    native.update(|_, cx| cx.set_reduce_motion(true));
+    set_motion(&app, false, &mut native);
+    polled(&app, status(7), &mut native);
+    let menu = |native: &mut VisualTestContext| {
+        show(&view, Some(Overlay::Menu(Popover::Account)), native);
+        ids(&native.update(draw))
+    };
+    let offers = |ids: &[String]| {
+        ids.iter()
+            .any(|id| id.rsplit(['/', ':']).next() == Some("account-memory"))
+    };
+    let shown = menu(&mut native);
+    assert!(!offers(&shown), "Memory without debug mode in {shown:?}");
+    app.prefs
+        .update(&mut native, |prefs, cx| prefs.set_debug(true, cx));
+    let shown = menu(&mut native);
+    assert!(offers(&shown), "no Memory with debug mode in {shown:?}");
+    native.update(|window, cx| press("account-memory", window, cx));
+    let shown = ids(&native.update(draw));
+    for want in ["memory/heading", "memory/regions", "memory/os"] {
+        assert!(
+            shown.iter().any(|id| id.ends_with(want)),
+            "{want} in {shown:?}"
+        );
+    }
+    native.update(|window, cx| press("memory/regions", window, cx));
+    let run = |native: &mut VisualTestContext, ms: u64| {
+        ducktape_host::frames::deliver(native, std::time::Duration::from_millis(ms));
+    };
+    run(&mut native, 200);
+    let drawn = window_count(key, "renders");
+    run(&mut native, 2000);
+    assert_eq!(
+        window_count(key, "renders"),
+        drawn,
+        "the Memory window asked for frames"
+    );
+}

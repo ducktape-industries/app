@@ -21,7 +21,7 @@ use super::super::{
     PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label, layout, pane_drag, pane_hold,
     panes, theme,
 };
-use super::{EmptyPane, HelpPane};
+use super::{EmptyPane, HelpPane, MemoryPane};
 use crate::a11y::Control as _;
 use crate::runtime::Seat;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -266,6 +266,9 @@ impl PaneLayer {
                     None if program == layout::HELP => {
                         Body::Help(cx.new(|cx| HelpPane::new(&account, &prefs, key, cx)))
                     }
+                    None if program == layout::MEMORY => {
+                        Body::Memory(cx.new(|_| MemoryPane::new(&app, key)))
+                    }
                     None if pane.is_view() => Body::Missing,
                     None => Body::Empty(cx.new(|cx| {
                         EmptyPane::window(
@@ -482,11 +485,13 @@ impl Render for PaneLayer {
 }
 
 /// What a pane shows: its seat's tree or standin, the app's own Help, or
-/// an empty window's finder, each a cached view of its own.
+/// an empty window's finder, each a cached view of its own; or debug mode's
+/// Memory window, uncached, so it reads on every frame the window draws.
 enum Body {
     Seat(Observed<Seat>),
     Empty(Entity<EmptyPane>),
     Help(Entity<HelpPane>),
+    Memory(Entity<MemoryPane>),
     /// A view pane whose seat is not there yet: nothing, until `Seats` says.
     Missing,
 }
@@ -578,6 +583,7 @@ impl PaneView {
             Body::Empty(empty) => AnyView::from(empty.clone())
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
+            Body::Memory(memory) => AnyView::from(memory.clone()).into_any_element(),
             Body::Missing => div().size_full().into_any_element(),
         }
     }

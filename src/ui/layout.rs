@@ -61,10 +61,12 @@ impl Frame {
 pub(crate) const EMPTY: &str = "";
 /// The app's own help, drawn by the shell: no program behind it.
 pub(crate) const HELP: &str = "ducktape:help";
+pub(crate) const MEMORY: &str = "ducktape:memory";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Pane {
-    /// The program shown, or [`EMPTY`] / [`HELP`]: `is_view` tells them apart.
+    /// The program shown, or [`EMPTY`] / [`HELP`] / [`MEMORY`]: `is_view`
+    /// tells them apart.
     pub(crate) program: &'static str,
     /// Unique per pane, for life: the shell keys the mounted view by it, so
     /// a pane moved between native windows keeps its view.
@@ -100,9 +102,9 @@ impl Pane {
         self.program == EMPTY
     }
 
-    /// A program's view is in it: not empty, not the app's help.
+    /// A program's view is in it: not empty, not the app's help or memory.
     pub(crate) fn is_view(&self) -> bool {
-        !matches!(self.program, EMPTY | HELP)
+        !matches!(self.program, EMPTY | HELP | MEMORY)
     }
 
     /// The narrowest its frame goes: once its view is drawn, the view's
