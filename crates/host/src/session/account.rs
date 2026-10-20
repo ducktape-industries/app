@@ -84,6 +84,7 @@ pub struct Account {
     link: Option<Task<()>>,
     passkey: Option<Task<()>>,
     presumed: bool,
+    unanswered: bool,
 }
 
 impl EventEmitter<AccountEvent> for Account {}
@@ -109,6 +110,7 @@ impl Account {
             link: None,
             passkey: None,
             presumed: false,
+            unanswered: false,
         }
     }
 
@@ -233,6 +235,7 @@ impl Account {
         self.link = None;
         self.passkey = None;
         self.presumed = false;
+        self.unanswered = false;
         self.phrase = None;
         self.client = backend::rpc_client("");
         self.network.clear();
@@ -431,6 +434,12 @@ impl Account {
         self.resolve(cx);
     }
 
+    pub fn resolve_unanswered(&mut self, cx: &mut Context<Self>) {
+        if self.unanswered {
+            self.resolve(cx);
+        }
+    }
+
     pub fn resolve(&mut self, cx: &mut Context<Self>) {
         let Ok(key) = noded_client::hex::hex_decode(&self.state.signer_key) else {
             return;
@@ -454,6 +463,7 @@ impl Account {
             }
         };
         spawn_on_runtime(cx, work, move |this, account, cx| {
+            this.unanswered = account.is_none();
             if let Some(account) = account {
                 this.resolved(&node, &signer, account, cx);
             }

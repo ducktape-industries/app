@@ -448,7 +448,7 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
     let follows = Follow::Changes(program.clone());
     let mut wanted = Wanted::of(view);
     // joined before the socket can send anything, where it may join now
-    let mut joined = wanted.now().then(|| feed(&node, &program));
+    let mut joined = wanted.now().then(|| feed(&node.client, &program));
     let claim = Claim::default();
     let held = claim.clone();
     start(view, id, Some(follows), claim, async move {
@@ -470,7 +470,7 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
                     continue;
                 }
                 Heard::Back => {
-                    joined = Some(feed(&node, &program));
+                    joined = Some(feed(&node.client, &program));
                     Ok(reread())
                 }
                 // a node that did not take the socket ends the subscription with why
@@ -637,17 +637,46 @@ impl Drop for Feed {
     }
 }
 
+pub(crate) struct Writes {
+    heard: tokio::sync::mpsc::Receiver<()>,
+    follower: tokio::task::JoinHandle<()>,
+}
+
+impl Writes {
+    pub(crate) async fn next(&mut self) -> Option<()> {
+        self.heard.recv().await
+    }
+}
+
+impl Drop for Writes {
+    fn drop(&mut self) {
+        self.follower.abort();
+    }
+}
+
+pub(crate) fn writes(client: &RpcClient, program: &str) -> Writes {
+    let (tell, heard) = tokio::sync::mpsc::channel(1);
+    let (feed, slot) = feed(client, program);
+    let follower = handle().spawn(async move {
+        let _feed = feed;
+        while slot.take().await.is_ok() {
+            let _ = tell.try_send(());
+        }
+    });
+    Writes { heard, follower }
+}
+
 type Feeds = HashMap<(String, String), std::sync::Weak<Feed>>;
 
 /// The feed of `program` on `node`, opened if none runs, and a follower's
 /// own slot in it (made before the socket can send anything).
-fn feed(node: &Node, program: &str) -> (std::sync::Arc<Feed>, std::sync::Arc<Slot>) {
+fn feed(client: &RpcClient, program: &str) -> (std::sync::Arc<Feed>, std::sync::Arc<Slot>) {
     static FEEDS: OnceLock<Mutex<Feeds>> = OnceLock::new();
     let mut feeds = FEEDS
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let key = (node.client.endpoint().to_owned(), program.to_owned());
+    let key = (client.endpoint().to_owned(), program.to_owned());
     let slot = std::sync::Arc::new(Slot::default());
     let follower = std::sync::Arc::downgrade(&slot);
     // a feed whose node refused the socket has ended: the next follower opens another
@@ -663,7 +692,7 @@ fn feed(node: &Node, program: &str) -> (std::sync::Arc<Feed>, std::sync::Arc<Slo
     feeds.retain(|_, feed| feed.strong_count() > 0);
     let followers: Followers = std::sync::Arc::new(Mutex::new(vec![follower]));
     let socket = handle().spawn(socket(
-        node.client.clone(),
+        client.clone(),
         program.to_owned(),
         followers.clone(),
     ));

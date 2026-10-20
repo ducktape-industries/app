@@ -3,8 +3,7 @@
 //! which network, what was typed, what went wrong) and owns the work that
 //! moves it: the connect attempt and the 2 s status poll, each a task
 //! dropped with the attempt it belongs to. The poll writes `Chain` (the
-//! height, when it moved, the node's answer) and asks `Account` for the
-//! seated key's account when a block moved. No status line: "Connected ·
+//! height, when it moved, the node's answer). No status line: "Connected ·
 //! block N" moved with every block, and the screens that say it build it
 //! from `Chain`'s height.
 //!
@@ -106,6 +105,7 @@ pub struct Session {
     source: Option<StatusSource>,
     connect: Option<Task<()>>,
     poll: Option<Task<()>>,
+    heard: Vec<Task<()>>,
     confirming: bool,
     hands_runtime: bool,
 }
@@ -134,6 +134,7 @@ impl Session {
             source: None,
             connect: None,
             poll: None,
+            heard: Vec::new(),
             confirming: false,
             hands_runtime: true,
         }
@@ -144,11 +145,48 @@ impl Session {
         self.hands_runtime = false;
     }
 
-    fn hand_runtime(&self, client: &backend::RpcClient, network: &str, chain: &str) {
+    fn hand_runtime(
+        &mut self,
+        client: &backend::RpcClient,
+        network: &str,
+        chain: &str,
+        cx: &mut Context<Self>,
+    ) {
         if self.hands_runtime {
             crate::runtime::take_up(&self.center, chain);
             crate::runtime::connected(client, network, chain);
+            self.hear_writes(client, cx);
         }
+    }
+
+    fn hear_writes(&mut self, client: &backend::RpcClient, cx: &mut Context<Self>) {
+        let programs = crate::runtime::writes(client, ::programs::PROGRAM);
+        let identity = crate::runtime::writes(client, identity::PROGRAM);
+        self.heard = vec![
+            Self::hear(programs, cx, |_, _| crate::runtime::deployments_checked()),
+            Self::hear(identity, cx, |this, cx| {
+                this.account.update(cx, |account, cx| account.resolve(cx))
+            }),
+        ];
+    }
+
+    fn hear(
+        mut writes: crate::runtime::Writes,
+        cx: &mut Context<Self>,
+        heard: fn(&mut Self, &mut Context<Self>),
+    ) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            while writes.next().await.is_some() {
+                if this.update(cx, |this, cx| heard(this, cx)).is_err() {
+                    return;
+                }
+            }
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "writes_unheard",
+                "the node refused a changes socket the session follows"
+            );
+        })
     }
 
     /// The node to reach at launch: `DUCKTAPE_RPC`, else the last one
@@ -275,7 +313,7 @@ impl Session {
             },
             cx,
         );
-        self.hand_runtime(&client, &network, &chain);
+        self.hand_runtime(&client, &network, &chain, cx);
         cx.emit(SessionEvent::Connected);
         self.account.update(cx, |account, cx| {
             if saved.signed_in {
@@ -405,7 +443,7 @@ impl Session {
         if left {
             self.left_network(cx);
         }
-        self.hand_runtime(&client, &network, &chain);
+        self.hand_runtime(&client, &network, &chain, cx);
         cx.emit(SessionEvent::Connected);
         self.account.update(cx, |account, cx| {
             account.open_device_key(cx);
@@ -438,9 +476,7 @@ impl Session {
         self.edit(|state| state.error = error, cx);
     }
 
-    /// The poll's answer: a status, or none. A moved height asks the node
-    /// which account the seated key holds now (a block may have created
-    /// it, or renamed it).
+    /// The poll's answer: a status, or none.
     pub fn status_answered(
         &mut self,
         answer: Result<backend::NodeStatus, String>,
@@ -459,9 +495,12 @@ impl Session {
                 let moved =
                     i64::try_from(status.height).unwrap_or(-1) != self.chain.read(cx).height;
                 self.apply_status(&status, cx);
-                if moved && self.hands_runtime {
+                if moved && self.hands_runtime && crate::runtime::deployments_due(status.height) {
                     crate::runtime::deployments_checked();
-                    self.account.update(cx, |account, cx| account.resolve(cx));
+                }
+                if moved {
+                    self.account
+                        .update(cx, |account, cx| account.resolve_unanswered(cx));
                 }
             }
             Err(error) => {
@@ -525,9 +564,18 @@ impl Session {
     pub fn lifecycle(&mut self, phase: gpui_kit::AppLifecyclePhase, cx: &mut Context<Self>) {
         use gpui_kit::AppLifecyclePhase::{Background, Foreground};
         match phase {
-            Background => self.poll = None,
+            Background => {
+                self.poll = None;
+                self.heard.clear();
+            }
             Foreground if self.state.connected && self.poll.is_none() => {
-                self.start_poll(Duration::ZERO, cx)
+                self.start_poll(Duration::ZERO, cx);
+                if self.hands_runtime {
+                    let client = backend::rpc_client(self.state.connected_rpc.clone());
+                    self.hear_writes(&client, cx);
+                    crate::runtime::deployments_checked();
+                    self.account.update(cx, |account, cx| account.resolve(cx));
+                }
             }
             _ => {}
         }
@@ -585,6 +633,7 @@ impl Session {
             crate::runtime::disconnected();
             crate::runtime::notifier::disconnected();
         }
+        self.heard.clear();
         self.roster.clear();
         cx.emit(SessionEvent::LeftNetwork);
     }

@@ -162,6 +162,7 @@ mod describe;
 pub(super) mod live;
 mod node;
 pub use node::{Answered, artifact};
+pub(crate) use node::{Writes, writes};
 mod replies;
 pub(super) mod screen;
 

@@ -571,7 +571,6 @@ fn answer(
                     }
                 }
             }
-            // answered, and counted: a roster read never asks it
             ::programs::Query::Scheduled { .. } => {
                 held.lock().unwrap().scheduled_asked += 1;
                 ::programs::Reply::Scheduled(::programs::PageResponse {
@@ -776,6 +775,18 @@ fn a_scheduled_swap_is_read_once_the_block_being_built_reaches_its_height() {
     );
 }
 
+#[test]
+fn the_roster_is_due_again_at_its_next_scheduled_change() {
+    let node = ProgramsNode::swapping("due-swap", 5);
+    let (roster, registry) = (Roster::default(), Registry::default());
+    assert!(roster.due(0), "a roster never read is due");
+    node.code_at(2, "due-swap", &roster, &registry);
+    assert!(!roster.due(2) && !roster.due(3), "the swap lands at 5");
+    assert!(roster.due(4), "the block being built is at its height");
+    node.code_at(4, "due-swap", &roster, &registry);
+    assert!(!roster.due(1_000), "nothing more is scheduled");
+}
+
 /// A blob body as the node stores a program's code: `program <len>\0<body>`.
 fn framed(body: &[u8]) -> Vec<u8> {
     let mut framed = format!("program {}\0", body.len()).into_bytes();
@@ -824,8 +835,8 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     assert_eq!(asked, 1, "not every block");
     assert_eq!(
         node.held.lock().unwrap().scheduled_asked,
-        0,
-        "the scheduled list is a view's ask (blob.manifest), never a roster read's"
+        2,
+        "the next scheduled change is read with each roster read"
     );
     let upgraded = FakeNode::with_roles(
         vec![listed("roles-programs", "upgraded")],
@@ -850,6 +861,10 @@ fn a_roles_answer_refused_or_unreadable_lists_no_program_and_is_asked_again() {
         let (roster, registry) = (Roster::default(), Registry::default());
         read_roster(node.asked_of.clone(), &roster, &registry);
         assert_eq!(roster.roles(), None);
+        assert!(
+            roster.due(0),
+            "a failed read is due again at the next block"
+        );
         assert!(
             roster.lock().is_empty(),
             "no view loads while the role bindings are unknown"

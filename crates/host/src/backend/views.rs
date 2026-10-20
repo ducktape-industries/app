@@ -140,6 +140,34 @@ pub async fn roles(
     }
 }
 
+pub async fn next_scheduled(
+    client: &RpcClient,
+    network: &str,
+    signer: &dyn noded_client::Signer,
+) -> Result<Option<u64>, Fetch> {
+    use ::programs::{PageRequest, Query, Reply};
+    let page = PageRequest::default();
+    match ask(client, network, signer, Query::Scheduled { page }).await? {
+        Reply::Scheduled(pending) => {
+            let ahead = pending
+                .items
+                .iter()
+                .map(|change| change.height)
+                .filter(|at| *at > pending.height)
+                .min();
+            match (ahead, pending.next) {
+                (None, Some(_)) => Err(Fetch::Unreadable(
+                    "the programs role answered part of its schedule".into(),
+                )),
+                (ahead, _) => Ok(ahead),
+            }
+        }
+        _ => Err(Fetch::Unreadable(
+            "the programs role answered the schedule question with another reply".into(),
+        )),
+    }
+}
+
 async fn ask(
     client: &RpcClient,
     network: &str,

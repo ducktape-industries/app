@@ -69,6 +69,15 @@ pub struct Roster {
 struct Bound {
     asked_of: Option<u64>,
     roles: Option<abi::Roles>,
+    due: Due,
+}
+
+#[derive(Clone, Copy, Default)]
+enum Due {
+    #[default]
+    Unknown,
+    Never,
+    At(u64),
 }
 
 impl Roster {
@@ -122,6 +131,7 @@ impl Roster {
     }
 
     pub(crate) fn clear(&self) {
+        self.bound().due = Due::Unknown;
         relist(self, Vec::new());
     }
 
@@ -139,6 +149,14 @@ impl Roster {
     /// Whether it lists `program`: a link to anything else names nothing.
     pub fn lists(&self, program: &str) -> bool {
         self.code(program).is_some()
+    }
+
+    pub(super) fn due(&self, height: u64) -> bool {
+        match self.bound().due {
+            Due::Unknown => true,
+            Due::Never => false,
+            Due::At(at) => height.saturating_add(1) >= at,
+        }
     }
 }
 
@@ -369,7 +387,7 @@ pub fn disconnected() {
     }
 }
 
-/// The node moved (a block landed): the roster is read again, and a
+/// The roster is read again, and a
 /// program whose code changed is loaded again, under a new generation, and
 /// swapped in place when ready. One read in flight at a time; a block that
 /// lands during one is covered by the next. The read alone holds that
@@ -386,6 +404,10 @@ pub fn deployments_checked() {
     {
         IN_FLIGHT.store(false, Ordering::SeqCst);
     }
+}
+
+pub fn deployments_due(height: u64) -> bool {
+    roster().due(height)
 }
 
 fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static) -> bool {
@@ -433,7 +455,25 @@ pub(super) fn read_roster(
                 error = %error,
                 "the node's programs were not listed"
             );
+            roster.bound().due = Due::Unknown;
             return None;
+        }
+    };
+    let due = match handle().block_on(crate::backend::views::next_scheduled(
+        client,
+        &asked_of.network,
+        &*crate::backend::query_signer(),
+    )) {
+        Ok(Some(height)) => Due::At(height),
+        Ok(None) => Due::Never,
+        Err(error) => {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "schedule_unreadable",
+                error = %error,
+                "the node's scheduled changes were not read"
+            );
+            Due::Unknown
         }
     };
     let roles_due = roster.bound().asked_of != Some(asked_of.rev) || *roster.lock() != programs;
@@ -451,6 +491,7 @@ pub(super) fn read_roster(
                     error = %error,
                     "the node's role bindings were not read"
                 );
+                roster.bound().due = Due::Unknown;
                 return None;
             }
         }
@@ -462,12 +503,13 @@ pub(super) fn read_roster(
         if node_since_left {
             return None;
         }
+        let mut bound = roster.bound();
         if let Some(roles) = roles {
-            *roster.bound() = Bound {
-                asked_of: Some(asked_of.rev),
-                roles: Some(roles),
-            };
+            bound.asked_of = Some(asked_of.rev);
+            bound.roles = Some(roles);
         }
+        bound.due = due;
+        drop(bound);
         if crate::contract::os().limits().preload == crate::contract::Preload::Headless {
             relist(roster, programs.clone());
             return Some(programs);

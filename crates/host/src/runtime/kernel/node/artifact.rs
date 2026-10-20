@@ -201,7 +201,7 @@ pub fn follow(address: &str) -> Option<(Following, mpsc::UnboundedReceiver<()>)>
                     return;
                 }
             }
-            let (_feed, slot) = feed(&node, files::PROGRAM);
+            let (_feed, slot) = feed(&node.client, files::PROGRAM);
             loop {
                 tokio::select! {
                     _ = slot.take() => {}

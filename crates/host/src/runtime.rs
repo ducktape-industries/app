@@ -39,6 +39,7 @@ pub mod web;
 pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
 pub use kernel::{Answered, artifact, day, local_offset, set_in_front};
+pub(crate) use kernel::{Writes, writes};
 // a host with no screen runs each program's notifier per account (`crates/pushd`),
 // and the desktop every other listed network's (`follow`)
 #[cfg(any(test, feature = "test-support"))]
@@ -56,7 +57,8 @@ pub use kernel::shown_title;
 #[cfg(feature = "av")]
 pub use kernel::plain;
 pub use roster::{
-    Link, Prep, RailRow, connected, deployments_checked, disconnected, props, valid_route,
+    Link, Prep, RailRow, connected, deployments_checked, deployments_due, disconnected, props,
+    valid_route,
 };
 pub use roster::{Roster, changes_channel, roster};
 pub use seat::{Back, Failure};

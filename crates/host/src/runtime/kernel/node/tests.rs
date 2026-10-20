@@ -1717,3 +1717,20 @@ fn a_followed_query_is_signed_by_the_reader() {
     assert_ne!(reader, seated_key);
     handle().block_on(backend::lock_signer());
 }
+
+#[test]
+fn a_programs_writes_are_heard_and_end_when_the_node_refuses() {
+    let paced = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let watched = counted_changes_node(&[5, 6], Some(paced.clone()));
+    let mut heard = writes(&watched.node.client, "programs");
+    for _ in [5, 6] {
+        paced.add_permits(1);
+        assert_eq!(handle().block_on(heard.next()), Some(()));
+    }
+    let flaky = flaky_changes_node();
+    flaky
+        .refuses
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut refused = writes(&flaky.node.client, "programs");
+    assert_eq!(handle().block_on(refused.next()), None);
+}
