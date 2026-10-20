@@ -571,6 +571,7 @@ pub(super) fn read_roster(
                 code: Some((listed.code, listed.bare)),
             });
         }
+        loads.sort_by_key(|load| names.iter().position(|name| *name == load.program));
         loads
     };
     let (claimed, preloads): (Vec<Load>, Vec<Load>) = loads

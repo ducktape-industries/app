@@ -439,8 +439,6 @@ fn first_claimed_or_first_waiting_load(waiting: &VecDeque<Load>) -> usize {
         .unwrap_or(0)
 }
 
-const PRELOAD_READ_CONCURRENCY: usize = 4;
-
 enum Read {
     View(Box<Listing>),
     None,
@@ -453,13 +451,8 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
         return;
     }
     handle().spawn(async move {
-        use futures::StreamExt as _;
         let began = Instant::now();
-        let read: Vec<(Load, Read, LoadTiming)> = futures::stream::iter(loads)
-            .map(read_one)
-            .buffer_unordered(PRELOAD_READ_CONCURRENCY)
-            .collect()
-            .await;
+        let read = read_every(loads).await;
         let (programs, from_node) = (
             read.len(),
             (read.iter())
@@ -507,26 +500,91 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
     });
 }
 
-async fn read_one(load: Load) -> (Load, Read, LoadTiming) {
-    use futures::FutureExt as _;
-    let mut timing = LoadTiming::default();
-    let read = std::panic::AssertUnwindSafe(read_bytes(&load, &mut timing))
-        .catch_unwind()
-        .await
-        .unwrap_or_else(|panic| {
-            let failure = loader_panic_with_stage("reading", &*panic);
-            let reason = failure.to_string();
-            log_source(load.program, None, "Failed", load.generation, &reason);
-            timing.outcome = "Failed";
-            Read::Failed(failure)
+enum Source {
+    Read(Read),
+    Node {
+        code: abi::BlobId,
+        bare: bool,
+        client: crate::backend::RpcClient,
+    },
+}
+
+type ViewBytes =
+    Result<Option<(crate::backend::views::Blob, &'static str)>, crate::backend::views::Fetch>;
+
+async fn read_every(loads: Vec<Load>) -> Vec<(Load, Read, LoadTiming)> {
+    use crate::backend::views::{programs_bytes, view_in, view_of};
+    let mut read = Vec::with_capacity(loads.len());
+    let mut asked = Vec::new();
+    for load in loads {
+        let mut timing = LoadTiming::default();
+        match caught(&load, &mut timing, read_source) {
+            Ok(Source::Read(done)) => read.push((load, done, timing)),
+            Ok(Source::Node { code, bare, client }) => {
+                asked.push((load, timing, code, bare, client))
+            }
+            Err(failure) => read.push((load, Read::Failed(failure), timing)),
+        }
+    }
+    let Some(client) = asked.first().map(|asked| asked.4.clone()) else {
+        return read;
+    };
+    let mut codes = Vec::new();
+    for asked in &asked {
+        if !codes.contains(&asked.2) {
+            codes.push(asked.2);
+        }
+    }
+    let mut again = Vec::new();
+    programs_bytes(&client, &codes, |code, bytes| {
+        let mut bytes = Some(bytes);
+        let theirs: Vec<_> = asked.extract_if(.., |asked| asked.2 == code).collect();
+        for (load, mut timing, _, bare, _) in theirs {
+            let Some(bytes) = bytes.take() else {
+                again.push((load, timing, code, bare));
+                continue;
+            };
+            let view = bytes.map(|(blob, from)| view_in(blob, bare).map(|view| (view, from)));
+            let done = caught(&load, &mut timing, |load, timing| {
+                read_listing(load, timing, view)
+            });
+            read.push((load, done.unwrap_or_else(Read::Failed), timing));
+        }
+    })
+    .await;
+    for (load, mut timing, code, bare) in again {
+        let view = view_of(&client, &code, bare).await;
+        let done = caught(&load, &mut timing, |load, timing| {
+            read_listing(load, timing, view)
         });
-    (load, read, timing)
+        read.push((load, done.unwrap_or_else(Read::Failed), timing));
+    }
+    for (load, timing, ..) in asked {
+        let failure = Failure::Refused("the node's answer left this program's code out".into());
+        read.push((load, Read::Failed(failure), timing));
+    }
+    read
+}
+
+fn caught<T>(
+    load: &Load,
+    timing: &mut LoadTiming,
+    reading: impl FnOnce(&Load, &mut LoadTiming) -> T,
+) -> Result<T, Failure> {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    catch_unwind(AssertUnwindSafe(|| reading(load, timing))).map_err(|panic| {
+        let failure = loader_panic_with_stage("reading", &*panic);
+        let reason = failure.to_string();
+        log_source(load.program, None, "Failed", load.generation, &reason);
+        timing.outcome = "Failed";
+        failure
+    })
 }
 
 #[cfg(test)]
 const PANICS_READING: &str = "seat-tests-panics-reading";
 
-async fn read_bytes(load: &Load, timing: &mut LoadTiming) -> Read {
+fn read_source(load: &Load, timing: &mut LoadTiming) -> Source {
     #[cfg(test)]
     assert_ne!(load.program, PANICS_READING, "the read panicked");
     let (Some((blob, bare)), Some(client), None) = (
@@ -534,21 +592,31 @@ async fn read_bytes(load: &Load, timing: &mut LoadTiming) -> Read {
         load.asked_of.client.clone(),
         view_override(load.program),
     ) else {
-        return Read::Loader;
+        return Source::Read(Read::Loader);
     };
-    let show = |stage: Slot| lock(&load.seat).show(load.generation, stage);
     timing.started = Some(Instant::now());
     timing.path = "read";
-    let bytes = match crate::contract::os().bundled_view(&blob) {
-        Some(view) => Ok(Some((view.into(), "bundle"))),
-        None => {
-            show(Slot::Fetching {
-                received: 0,
-                total: None,
-            });
-            crate::backend::views::view_of(&client, &blob, bare).await
-        }
+    if let Some(view) = crate::contract::os().bundled_view(&blob) {
+        return Source::Read(read_listing(
+            load,
+            timing,
+            Ok(Some((view.into(), "bundle"))),
+        ));
+    }
+    let fetching = Slot::Fetching {
+        received: 0,
+        total: None,
     };
+    lock(&load.seat).show(load.generation, fetching);
+    Source::Node {
+        code: blob,
+        bare,
+        client,
+    }
+}
+
+fn read_listing(load: &Load, timing: &mut LoadTiming, bytes: ViewBytes) -> Read {
+    let show = |stage: Slot| lock(&load.seat).show(load.generation, stage);
     timing.fetch = timing
         .started
         .map_or_else(Duration::default, |started| started.elapsed());
@@ -565,9 +633,9 @@ async fn read_bytes(load: &Load, timing: &mut LoadTiming) -> Read {
             Read::View(Box::new(listing))
         }
         Ok(None) => {
-            let hash = code_digest(&blob);
-            log_source(load.program, Some(&hash), "Missing", load.generation, "");
-            (timing.hash, timing.outcome) = (Some(hash), "Missing");
+            let hash = load.code.map(|(code, _)| code_digest(&code));
+            log_source(load.program, hash.as_ref(), "Missing", load.generation, "");
+            (timing.hash, timing.outcome) = (hash, "Missing");
             show(Slot::Fetching {
                 received: 0,
                 total: Some(0),

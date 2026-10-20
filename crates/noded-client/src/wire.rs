@@ -37,6 +37,7 @@ pub mod route {
     pub const NETWORK: &str = "/v1/network";
     /// The UDP port the node takes live sessions on (`live_wire::PORT_ROUTE`).
     pub const LIVE_PORT: &str = "/v1/live/port";
+    pub const BLOBS: &str = "/v1/blobs";
 }
 
 /// The kernel's table of recent blocks (`host::RECENT`): every block

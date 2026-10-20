@@ -287,6 +287,19 @@ impl Client {
         }
     }
 
+    pub async fn blobs_stream(&self, ids: &[BlobId]) -> Result<BlobsStream> {
+        let response = sent(
+            self.reads
+                .post(self.url(route::BLOBS))
+                .body(abi::encode(&ids.to_vec())),
+        )
+        .await?;
+        let chunks = response
+            .bytes_stream()
+            .map(|chunk| chunk.map_err(Error::from));
+        BlobsStream::of(chunks.boxed()).await
+    }
+
     /// A blob upload: `frame`, a signed blobs-role `Put` naming each blob's
     /// id, length and kind, then each blob it names, framed
     /// (`kind len\0body`), in its order, sent as `blobs` yields them, so
@@ -412,6 +425,81 @@ impl BlobStream {
             .checked_sub(piece.len())
             .ok_or_else(|| undecoded("the blob runs past its length"))?;
         Ok(Some(piece))
+    }
+}
+
+pub struct BlobsStream {
+    chunks: futures::stream::BoxStream<'static, Result<Bytes>>,
+    buffered: Bytes,
+    blobs: usize,
+    left: usize,
+}
+
+impl BlobsStream {
+    async fn of(chunks: futures::stream::BoxStream<'static, Result<Bytes>>) -> Result<Self> {
+        let mut blobs = BlobsStream {
+            chunks,
+            buffered: Bytes::new(),
+            blobs: 0,
+            left: 0,
+        };
+        blobs.blobs = u32::from_le_bytes(blobs.head::<4>().await?) as usize;
+        Ok(blobs)
+    }
+
+    pub async fn next_blob(&mut self) -> Result<Option<bool>> {
+        while self.piece().await?.is_some() {}
+        if self.blobs == 0 {
+            return match self.filled().await? {
+                true => Err(undecoded("the blobs answer runs past its end")),
+                false => Ok(None),
+            };
+        }
+        self.blobs -= 1;
+        match self.head::<1>().await? {
+            [0] => Ok(Some(false)),
+            [1] => {
+                self.left = u32::from_le_bytes(self.head::<4>().await?) as usize;
+                Ok(Some(true))
+            }
+            _ => Err(undecoded("the blobs answer did not decode")),
+        }
+    }
+
+    pub async fn piece(&mut self) -> Result<Option<Bytes>> {
+        if self.left == 0 {
+            return Ok(None);
+        }
+        if !self.filled().await? {
+            return Err(undecoded("the blob ended before its length"));
+        }
+        let piece = self.buffered.split_to(self.buffered.len().min(self.left));
+        self.left -= piece.len();
+        Ok(Some(piece))
+    }
+
+    async fn head<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let mut head = [0; N];
+        let mut at = 0;
+        while at < N {
+            if !self.filled().await? {
+                return Err(undecoded("the blobs answer ended inside an item's head"));
+            }
+            let took = self.buffered.len().min(N - at);
+            head[at..at + took].copy_from_slice(&self.buffered.split_to(took));
+            at += took;
+        }
+        Ok(head)
+    }
+
+    async fn filled(&mut self) -> Result<bool> {
+        while self.buffered.is_empty() {
+            match self.chunks.next().await {
+                Some(chunk) => self.buffered = chunk?,
+                None => return Ok(false),
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -683,6 +771,61 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn a_blobs_answer_reads_the_same_whatever_its_pieces() {
+        let (first, second) = (b"program 3\0abc".to_vec(), b"program 1\0z".to_vec());
+        let answer = [
+            3u32.to_le_bytes().to_vec(),
+            abi::encode(&Some(first.clone())),
+            vec![0],
+            abi::encode(&Some(second.clone())),
+        ]
+        .concat();
+        let streamed = |bytes: Vec<u8>, size: usize| {
+            let chunks: Vec<Result<Bytes>> = bytes
+                .chunks(size)
+                .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+                .collect();
+            BlobsStream::of(futures::stream::iter(chunks).boxed())
+        };
+        for size in 1..=answer.len() {
+            let mut blobs = streamed(answer.clone(), size).await.unwrap();
+            let mut read = Vec::new();
+            while let Some(held) = blobs.next_blob().await.unwrap() {
+                let mut bytes = Vec::new();
+                while let Some(piece) = blobs.piece().await.unwrap() {
+                    bytes.extend_from_slice(&piece);
+                }
+                read.push(held.then_some(bytes));
+            }
+            assert_eq!(
+                read,
+                [Some(first.clone()), None, Some(second.clone())],
+                "pieces of {size}"
+            );
+        }
+        let mut cut = streamed(answer[..answer.len() - 1].to_vec(), 4)
+            .await
+            .unwrap();
+        assert_eq!(cut.next_blob().await.unwrap(), Some(true));
+        assert_eq!(cut.next_blob().await.unwrap(), Some(false));
+        assert_eq!(cut.next_blob().await.unwrap(), Some(true));
+        let ended = loop {
+            match cut.piece().await {
+                Ok(Some(_)) => continue,
+                other => break other,
+            }
+        };
+        assert!(matches!(ended, Err(Error::Decode(_))));
+        let mut longer = streamed([answer.clone(), vec![9]].concat(), 5)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            longer.next_blob().await.unwrap();
+        }
+        assert!(matches!(longer.next_blob().await, Err(Error::Decode(_))));
     }
 
     #[tokio::test]

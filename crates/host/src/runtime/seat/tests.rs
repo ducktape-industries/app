@@ -170,17 +170,26 @@ fn a_roster_read_reads_every_program_before_it_prepares_any() {
         code: blob_id(&viewless),
         params: Vec::new(),
     };
+    let withheld = ::programs::View {
+        name: "ahead-withheld".into(),
+        view: blob_id(b"never-served"),
+    };
     let node = FakeNode::new(
-        vec![none, listed("ahead-held", "never-served")],
-        vec![listed_view],
+        vec![none],
+        vec![listed_view, withheld],
         vec![view, viewless],
     );
     let (roster, registry) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &registry);
     let seat = |program| lock(&registry)[&(program, 0)].clone();
-    let (view, none, held) = (seat("ahead-view"), seat("ahead-none"), seat("ahead-held"));
+    let (view, none, held) = (
+        seat("ahead-view"),
+        seat("ahead-none"),
+        seat("ahead-withheld"),
+    );
     for seat in [&view, &none] {
-        wait_for_seat(seat, |seat| seat.prep() == Prep::Waiting);
+        wait_for_seat(seat, |seat| seat.prep() != Prep::Reading);
+        assert_eq!(lock(seat).prep(), Prep::Waiting, "{}", landed(&lock(seat)));
     }
     node.wait_for_held(|held| held == 1);
     assert!(
@@ -228,15 +237,21 @@ fn a_seat_claimed_mid_read_is_loaded_while_another_read_hangs() {
         name: PROGRAM.into(),
         view: code,
     };
-    let node = FakeNode::new(
-        vec![listed("seat-tests-hangs", "never-served")],
-        vec![listed_view],
-        vec![view],
-    );
+    let hangs = ::programs::View {
+        name: "seat-tests-hangs".into(),
+        view: blob_id(b"never-served"),
+    };
+    let node = FakeNode::new(Vec::new(), vec![listed_view, hangs], vec![view]);
     let (roster, registry) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &registry);
     let seat = lock(&registry)[&(PROGRAM, 0)].clone();
-    wait_for_seat(&seat, |seat| seat.prep() == Prep::Waiting);
+    wait_for_seat(&seat, |seat| seat.prep() != Prep::Reading);
+    assert_eq!(
+        lock(&seat).prep(),
+        Prep::Waiting,
+        "{}",
+        landed(&lock(&seat))
+    );
     node.wait_for_held(|held| held == 1);
     lock(super::registry()).insert((PROGRAM, 0), seat);
     let opened = mounted(PROGRAM, 7401);
@@ -320,8 +335,7 @@ fn new_code_over_a_held_view_counts_as_being_prepared() {
         Prep::Settled,
         "the same code counted"
     );
-    // both asked of the node, which holds them: neither has landed
-    node.wait_for_held(|held| held == 2);
+    node.wait_for_held(|held| held == 1);
     assert_eq!(lock(&moved_seat).prep(), Prep::Reading);
     assert!(
         matches!(lock(&moved_seat).slot, Slot::Compiled(_)),
@@ -380,6 +394,19 @@ fn start_parked(seat: &Arc<Mutex<Mounted>>, program: &'static str) {
     futures::executor::block_on(start_in(seat.clone(), program));
 }
 
+fn landed(seat: &Mounted) -> String {
+    match &seat.slot {
+        Slot::Loading => "loading".into(),
+        Slot::Fetching { received, total } => format!("fetching {received} of {total:?}"),
+        Slot::Listed(_) => "listed".into(),
+        Slot::Compiling(_) => "compiling".into(),
+        Slot::Compiled(code) => format!("compiled {}", code.name),
+        Slot::Ready(_) => "ready".into(),
+        Slot::Empty => "empty".into(),
+        Slot::Failed(failure) => format!("failed: {failure}"),
+    }
+}
+
 pub(in crate::runtime) fn wait_for_seat(
     seat: &Arc<Mutex<Mounted>>,
     done: impl Fn(&Mounted) -> bool,
@@ -412,6 +439,10 @@ pub(in crate::runtime) struct FakeNode {
 struct Held {
     now: usize,
     most: usize,
+    asked: usize,
+    let_go: usize,
+    blob_requests: usize,
+    blobs_asked: Vec<Vec<abi::BlobId>>,
     released: bool,
     roles_asked: usize,
     scheduled_asked: usize,
@@ -524,6 +555,19 @@ impl FakeNode {
                 .unwrap(),
         );
     }
+
+    fn wait_until(&self, done: impl Fn(&Held) -> bool) {
+        drop(
+            self.changed
+                .wait_while(self.held.lock().unwrap(), |held| !done(held))
+                .unwrap(),
+        );
+    }
+
+    fn let_one_go(&self) {
+        self.held.lock().unwrap().let_go += 1;
+        self.changed.notify_all();
+    }
 }
 
 impl Drop for FakeNode {
@@ -583,24 +627,75 @@ fn answer(
         };
         return respond(&mut stream, "200 OK", &abi::encode(&abi::encode(&reply)));
     }
+    if line.starts_with("POST /v1/blobs ") {
+        return stream_blobs(stream, &body, answers, held, changed);
+    }
     let asked: abi::BlobId = abi::decode(&body).unwrap();
     if let Some((_, framed)) = answers.blobs.iter().find(|(id, _)| *id == asked) {
         return respond(&mut stream, "200 OK", &abi::encode(&Some(framed.clone())));
     }
+    hold_blob(held, changed);
+    respond(&mut stream, "404 Not Found", b"gone");
+    held.lock().unwrap().now -= 1;
+    changed.notify_all();
+}
+
+fn hold_blob(held: &Mutex<Held>, changed: &std::sync::Condvar) {
     {
         let mut held = held.lock().unwrap();
         held.now += 1;
         held.most = held.most.max(held.now);
+        held.asked += 1;
     }
     changed.notify_all();
-    drop(
-        changed
-            .wait_while(held.lock().unwrap(), |held| !held.released)
-            .unwrap(),
-    );
-    respond(&mut stream, "404 Not Found", b"gone");
-    held.lock().unwrap().now -= 1;
-    changed.notify_all();
+    let mut waiting = changed
+        .wait_while(held.lock().unwrap(), |held| {
+            !held.released && held.let_go == 0
+        })
+        .unwrap();
+    if !waiting.released {
+        waiting.let_go -= 1;
+    }
+}
+
+fn stream_blobs(
+    mut stream: std::net::TcpStream,
+    body: &[u8],
+    answers: &Answers,
+    held: &Mutex<Held>,
+    changed: &std::sync::Condvar,
+) {
+    use std::io::Write as _;
+    let ids: Vec<abi::BlobId> = abi::decode(body).unwrap();
+    {
+        let mut held = held.lock().unwrap();
+        held.blob_requests += 1;
+        held.blobs_asked.push(ids.clone());
+    }
+    let head = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
+    let count = (ids.len() as u32).to_le_bytes();
+    let began = stream.write_all(head.as_bytes());
+    if began.and_then(|()| stream.write_all(&count)).is_err() {
+        return;
+    }
+    for id in ids {
+        let item = match answers.blobs.iter().find(|(blob, _)| *blob == id) {
+            Some((_, framed)) => abi::encode(&Some(framed.clone())),
+            None => {
+                hold_blob(held, changed);
+                held.lock().unwrap().now -= 1;
+                changed.notify_all();
+                abi::encode(&None::<Vec<u8>>)
+            }
+        };
+        if stream
+            .write_all(&item)
+            .and_then(|()| stream.flush())
+            .is_err()
+        {
+            return;
+        }
+    }
 }
 
 fn status(height: u64) -> noded_client::wire::Status {
@@ -924,11 +1019,8 @@ fn a_newline_id_never_gets_a_seat_to_ask_from() {
     assert!(roster.lock().is_empty(), "listed");
 }
 
-/// A node that lists 1,000 programs, none of whose code it answers: the
-/// app takes every one of them, and runs at most one load a core at once —
-/// the rest wait their turn rather than each forking a thread.
 #[test]
-fn a_long_roster_is_taken_whole_and_its_loads_queue() {
+fn a_long_roster_is_taken_whole_and_read_in_one_request_a_blob_at_a_time() {
     let programs = (0..1000)
         .map(|n| listed(&format!("long-roster-{n:04}"), &format!("long-roster-{n}")))
         .collect();
@@ -939,13 +1031,55 @@ fn a_long_roster_is_taken_whole_and_its_loads_queue() {
     assert_eq!(roster.lock().len(), listed, "the roster is taken whole");
     assert_eq!(roster.rail().len(), listed, "the rail lists every program");
     assert_eq!(lock(&registry).len(), listed, "every program is seated");
-    node.wait_for_held(|held| held > 0);
-    // time for a load per thread to have asked, had each got one
-    std::thread::sleep(Duration::from_millis(500));
-    let (_, most) = node.held();
+    node.wait_until(|held| held.now == 1);
+    node.let_one_go();
+    node.wait_until(|held| held.asked == 2);
+    let held = node.held.lock().unwrap();
+    assert_eq!(held.blob_requests, 1, "one request for every program");
+    assert_eq!(held.most, 1, "{} blobs held at once", held.most);
+}
+
+#[test]
+fn a_roster_read_asks_its_preloads_in_the_rosters_order() {
+    let names: Vec<String> = (0..16)
+        .map(|n| format!("seat-tests-order-{n:02}"))
+        .collect();
+    let programs = names.iter().map(|name| listed(name, name)).collect();
+    let node = FakeNode::new(programs, Vec::new(), Vec::new());
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    node.wait_until(|held| held.now == 1);
+    let asked = node.held.lock().unwrap().blobs_asked.clone();
+    let in_order: Vec<abi::BlobId> = names.iter().map(|name| blob_id(name.as_bytes())).collect();
+    assert_eq!(asked, [in_order], "one request, in the roster's order");
+}
+
+#[test]
+fn claimed_loads_run_no_more_at_once_than_the_loaders() {
     let loaders = super::super::loaders();
-    assert!(
-        most <= loaders,
+    let node = FakeNode::new(Vec::new(), Vec::new(), Vec::new());
+    for n in 0..=loaders {
+        let seed = format!("seat-tests-loader-{n}");
+        let seat = Mounted::seat();
+        let generation = {
+            let mut locked = lock(&seat);
+            locked.instance = 7;
+            locked.start()
+        };
+        queue(Load {
+            program: intern(&seed),
+            seat,
+            generation,
+            asked_of: node.asked_of.clone(),
+            code: Some((blob_id(seed.as_bytes()), true)),
+        });
+    }
+    node.wait_until(|held| held.now == loaders);
+    node.let_one_go();
+    node.wait_until(|held| held.asked == loaders + 1);
+    let (_, most) = node.held();
+    assert_eq!(
+        most, loaders,
         "{most} loads ran at once, past the {loaders} loaders"
     );
 }

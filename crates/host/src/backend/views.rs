@@ -194,12 +194,147 @@ pub async fn view_of(
     bare: bool,
 ) -> Result<Option<(Blob, &'static str)>, Fetch> {
     let (blob, source) = program_bytes(client, code).await?;
-    Ok(match bare {
-        true => Some((blob, source)),
-        false => blob
-            .part(|body| section(body, VIEW_SECTION))
-            .map(|view| (view, source)),
+    Ok(view_in(blob, bare).map(|view| (view, source)))
+}
+
+pub fn view_in(blob: Blob, bare: bool) -> Option<Blob> {
+    match bare {
+        true => Some(blob),
+        false => blob.part(|body| section(body, VIEW_SECTION)),
+    }
+}
+
+pub async fn programs_bytes(
+    client: &RpcClient,
+    codes: &[BlobId],
+    mut each: impl FnMut(BlobId, Result<(Blob, &'static str), Fetch>),
+) {
+    let mut asked = Vec::new();
+    for code in codes {
+        match kept(cache_path(code), code).await {
+            Ok(Some(body)) => each(*code, Ok((body, "disk"))),
+            Ok(None) => asked.push(*code),
+            Err(error) => each(*code, Err(error)),
+        }
+    }
+    if asked.is_empty() {
+        return;
+    }
+    let mut blobs = match client.blobs_stream(&asked).await {
+        Ok(blobs) => blobs,
+        Err(error) => {
+            let failure = fetch_error(error);
+            for code in asked {
+                each(code, Err(failure.clone()));
+            }
+            return;
+        }
+    };
+    let mut codes = asked.into_iter();
+    let mut cut = None;
+    for code in codes.by_ref() {
+        match arrived(&mut blobs, &code).await {
+            Ok(bytes) => each(code, bytes),
+            Err(failure) => {
+                each(code, Err(failure.clone()));
+                cut = Some(failure);
+                break;
+            }
+        }
+    }
+    if let Some(cut) = cut {
+        for code in codes {
+            each(code, Err(cut.clone()));
+        }
+    }
+}
+
+async fn arrived(
+    blobs: &mut noded_client::BlobsStream,
+    code: &BlobId,
+) -> Result<Result<(Blob, &'static str), Fetch>, Fetch> {
+    use std::io::Write as _;
+    match blobs.next_blob().await.map_err(fetch_error)? {
+        Some(true) => {}
+        Some(false) => return Ok(Err(Fetch::NotHeld)),
+        None => {
+            return Err(Fetch::Unreadable(
+                "the node's answer ended before every blob it was asked for".into(),
+            ));
+        }
+    }
+    let path = cache_path(code);
+    let landing = landing_beside(&path);
+    let file = match opened(&path, &landing).await {
+        Ok(file) => Some(file),
+        Err(error) => {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "program_code_unkept",
+                %error,
+                "the cache could not keep a program's code; it is read whole from the node"
+            );
+            None
+        }
+    };
+    let mut hasher = blob::Hasher::new(code.kind());
+    let (mut whole, mut unwritten) = (Vec::new(), None);
+    loop {
+        let piece = match blobs.piece().await {
+            Ok(Some(piece)) => piece,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&landing).await;
+                return Err(fetch_error(error));
+            }
+        };
+        hasher.update(&piece);
+        if file.is_none() {
+            whole.extend_from_slice(&piece);
+            continue;
+        }
+        let Some(file) = file.clone().filter(|_| unwritten.is_none()) else {
+            continue;
+        };
+        let written = tokio::task::spawn_blocking(move || (&*file).write_all(&piece)).await;
+        if let Err(error) = written
+            .map_err(std::io::Error::other)
+            .and_then(|wrote| wrote)
+        {
+            unwritten = Some(error);
+        }
+    }
+    let matched = match hasher.finish() {
+        Ok(landed) if landed == *code => None,
+        Ok(_) => Some(Fetch::Corrupt),
+        Err(_) => Some(Fetch::Collision(*code)),
+    };
+    let failed = matched.or_else(|| {
+        unwritten
+            .map(|error| Fetch::Unreadable(format!("the program's code was not kept: {error}")))
+    });
+    if let Some(failure) = failed {
+        let _ = tokio::fs::remove_file(&landing).await;
+        return Ok(Err(failure));
+    }
+    if file.is_none() {
+        let body = Blob::from(whole).part(unframe).ok_or_else(headless);
+        return Ok(body.map(|body| (body, "node")));
+    }
+    if let Err(error) = tokio::fs::rename(&landing, &path).await {
+        let _ = tokio::fs::remove_file(&landing).await;
+        return Ok(Err(Fetch::Unreadable(format!(
+            "the program's code was not kept: {error}"
+        ))));
+    }
+    let landed = blocking(move || {
+        Blob::mapped(&path)
+            .map_err(|error| Fetch::Unreadable(format!("the program's code was not kept: {error}")))
     })
+    .await;
+    Ok(landed
+        .and_then(|blob| blob.part(unframe).ok_or_else(headless))
+        .map(|body| (body, "node")))
 }
 
 /// A program's blob, or a section of it, as this process holds it: the
@@ -372,21 +507,8 @@ async fn cached_at<F: Future<Output = std::io::Result<Result<(), Fetch>>> + Send
             }
         }
     };
-    let kept = {
-        let (path, code) = (path.clone(), *code);
-        blocking(move || match Blob::mapped(&path) {
-            Ok(blob) => Ok(framed_blob_hash_matches(&blob, &code)?.then_some(blob)),
-            Err(_) => Ok(None),
-        })
-        .await
-    };
-    match kept {
-        Ok(Some(blob)) => {
-            return Ok(blob
-                .part(unframe)
-                .map(|body| (body, "disk"))
-                .ok_or_else(headless));
-        }
+    match kept(path.clone(), code).await {
+        Ok(Some(body)) => return Ok(Ok((body, "disk"))),
         Ok(None) => {}
         Err(error) => return Ok(Err(error)),
     }
@@ -404,6 +526,17 @@ async fn cached_at<F: Future<Output = std::io::Result<Result<(), Fetch>>> + Send
     Ok(landed
         .and_then(|blob| blob.part(unframe).ok_or_else(headless))
         .map(|body| (body, "node")))
+}
+
+async fn kept(path: PathBuf, code: &BlobId) -> Result<Option<Blob>, Fetch> {
+    let code = *code;
+    let blob = blocking(move || match Blob::mapped(&path) {
+        Ok(blob) => Ok(framed_blob_hash_matches(&blob, &code)?.then_some(blob)),
+        Err(_) => Ok(None),
+    })
+    .await?;
+    blob.map(|blob| blob.part(unframe).ok_or_else(headless))
+        .transpose()
 }
 
 /// A blob no listed program runs (an upload, a scheduled change's code),
@@ -441,26 +574,33 @@ async fn fetched(
     code: &BlobId,
     path: &Path,
 ) -> std::io::Result<Result<(), Fetch>> {
-    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let landing = path.with_extension(format!("{}-{n}.partial", std::process::id()));
+    let landing = landing_beside(path);
     let landed = async {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let file = tokio::fs::File::create(&landing).await?.into_std().await;
-        Ok(
-            match streamed(client, code, std::sync::Arc::new(file)).await? {
-                Ok(()) => Ok(tokio::fs::rename(&landing, path).await?),
-                Err(error) => Err(error),
-            },
-        )
+        let file = opened(path, &landing).await?;
+        Ok(match streamed(client, code, file).await? {
+            Ok(()) => Ok(tokio::fs::rename(&landing, path).await?),
+            Err(error) => Err(error),
+        })
     }
     .await;
     if !matches!(landed, Ok(Ok(()))) {
         let _ = tokio::fs::remove_file(&landing).await;
     }
     landed
+}
+
+fn landing_beside(path: &Path) -> PathBuf {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.with_extension(format!("{}-{n}.partial", std::process::id()))
+}
+
+async fn opened(path: &Path, landing: &Path) -> std::io::Result<std::sync::Arc<std::fs::File>> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let file = tokio::fs::File::create(landing).await?.into_std().await;
+    Ok(std::sync::Arc::new(file))
 }
 
 async fn streamed(
