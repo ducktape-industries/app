@@ -377,7 +377,10 @@ its meaning; the host and the views name the const, never the string.
 4. **Sign.** A read: `backend::query_frame` signs a `Frame` with the
    seated key, or with the process's throwaway `reader_key` while nobody
    is signed in. Its anchor is the zero `Tip` and it carries no salt: the
-   program hears who asks, and the node checks neither on a query.
+   program hears who asks, and the node checks neither on a query. It
+   reads the confirmed layer (`Layer::Confirmed`): what blocks wrote, the
+   state `program.changes` reports, so a frame the preconfirmed layer ran
+   and a block then ran otherwise never shows.
    A write (`op.submit`): `backend::seated_frame` reads `/v1/status` and
    anchors the frame at the tip it reports (`backend::anchor`:
    `Tip{height, id: tip}`), then `Frame::sign` builds `Body{scheme: Ed25519,
@@ -385,7 +388,7 @@ its meaning; the host and the views name the const, never the string.
    (`backend::salt`) and signs `abi::encode(body)` under
    `FRAME_NAMESPACE`; the bytes go to `/v1/submit` in a `wire::Submit`
    with `preconfirm: Preconfirm::On`, so the node runs the frame at once, keeps its
-   writes in the preconfirmed layer the view's queries read, and answers
+   writes in the preconfirmed layer, and answers
    the predicted receipt (`Submitted::Preconfirmed`). The node runs a frame
    only while its anchor is one of the 256 blocks before the block that
    carries it (`anchor` refusal otherwise), and a block runs a frame at

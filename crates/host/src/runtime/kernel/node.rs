@@ -974,7 +974,7 @@ pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {
         let frame =
             backend::query_frame(&*node.signer(), &node.network, &call.target, call.body).await?;
         node.client
-            .query(backend::Layer::Preconfirmed, frame)
+            .query(backend::Layer::Confirmed, frame)
             .await
             .map_err(refused)
     })

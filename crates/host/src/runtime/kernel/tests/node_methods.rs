@@ -65,7 +65,7 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
     assert_eq!(bodies.len(), 2);
     for body in bodies {
         let query: noded_client::wire::Query = abi::decode(&body).unwrap();
-        assert_eq!(query.layer, backend::Layer::Preconfirmed);
+        assert_eq!(query.layer, backend::Layer::Confirmed);
         let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
         assert_eq!(frame.body.target, "programs");
         assert_eq!(frame.body.network, b"test-network");
@@ -84,6 +84,29 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
             refusal::MALFORMED_REQUEST
         );
     }
+}
+
+#[tokio::test]
+async fn a_view_query_reads_what_blocks_wrote_not_the_preconfirmed_overlay() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let node = node::Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+        apart: None,
+    };
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let (_, received) = read_request(&mut stream);
+        let asked: noded_client::wire::Query = abi::decode(&received).unwrap();
+        let state: &[u8] = match asked.layer {
+            backend::Layer::Confirmed => b"the frame a block wrote",
+            backend::Layer::Preconfirmed => b"a frame no block wrote",
+        };
+        respond(&mut stream, "200 OK", &abi::encode(&state.to_vec()));
+    });
+    let read = query(node, call("harness", b"frames")).await.unwrap();
+    server.join().unwrap();
+    assert_eq!(read, b"the frame a block wrote");
 }
 
 #[tokio::test]

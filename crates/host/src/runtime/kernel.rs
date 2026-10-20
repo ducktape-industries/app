@@ -47,8 +47,8 @@
 //! - `program.query` `Call{target, body}` — one query on the connected node:
 //!   `body` is the payload of a signed frame to `target`, and the bytes the
 //!   program `Respond`ed come back as they are. It reads the node's
-//!   preconfirmed layer: an op this view was just answered for is already
-//!   in what it reads.
+//!   confirmed layer, what blocks wrote, as `program.changes` reports it:
+//!   an op this view was just answered for shows once a block carries it.
 //! - `op.submit` `Call{target, body}` — one op, signed with the key
 //!   unlocked in this session and submitted;
 //!   answered with the receipt's output, or the program's refusal. The
