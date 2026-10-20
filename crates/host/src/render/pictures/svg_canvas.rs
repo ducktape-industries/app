@@ -52,8 +52,8 @@ impl Element for SvgCanvas {
         let height = f32::from(bounds.size.height).max(1.);
         let svg_bytes = canvas_svg(&self.commands, width, height);
         let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg_bytes));
-        let mut picture = guarded_svg_paint(
-            SvgPaintSource::Image(image.clone()),
+        let mut picture = guarded_image(
+            image.clone(),
             img(image).size_full().object_fit(ObjectFit::Fill),
         )
         .into_any_element();

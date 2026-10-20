@@ -761,9 +761,11 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   atlas tiles leave every window when the seat drops), each entry charged
   its bytes and its own size, and what one picture decode may allocate
   (`render/picture_resources.rs`). `svg_raster_bytes` (256 MiB) is a
-  per-window SVG raster budget (`render/svg_limits.rs`: each raster
-  charged at its real size plus its entry, evicting the least recently
-  drawn rasters no frame shows, whose atlas tiles leave with them). Loads
+  per-window SVG raster budget (`render/svg_limits.rs`: the host
+  rasterises a view's SVG itself (resvg) in the colour it paints in, each
+  raster charged its frame and atlas tile plus its entry, evicting the
+  least recently drawn rasters no frame shows, whose atlas tiles leave
+  with them through `drop_image`). Loads
   run on at most `loaders()` threads, the parallelism the OS reports. The wire bounds a
   frame's nesting (`view_wire::MAX_DEPTH`, 64) and an element id's
   (`view_wire::MAX_ELEMENT_ID_DEPTH`, 64).

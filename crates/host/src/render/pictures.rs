@@ -5,7 +5,6 @@
 use super::picture_resources::{cache_fits, decode_image};
 use super::*;
 use crate::render::native_id;
-use gpui_kit::{Hitbox, Svg};
 use std::{cell::RefCell, rc::Rc};
 
 pub use crate::runtime::pictures::PictureBytes;
@@ -136,79 +135,6 @@ impl Rasters {
 mod svg_canvas;
 use svg_canvas::SvgCanvas;
 
-/// A view Svg's glyph. gpui's `svg()` paints only in its own text colour
-/// (`Svg::paint`), and the view's style is on the wrapping box, so the
-/// glyph takes the colour in effect where it paints, as CSS `currentColor`
-/// does: the box's own `text_color` (hover and active included, since the
-/// box computes them), else the one it inherits.
-struct CurrentColor(Svg);
-
-impl IntoElement for CurrentColor {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl Element for CurrentColor {
-    type RequestLayoutState = ();
-    type PrepaintState = Option<Hitbox>;
-
-    fn id(&self) -> Option<ElementId> {
-        Element::id(&self.0)
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        Element::source_location(&self.0)
-    }
-
-    fn request_layout(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        Element::request_layout(&mut self.0, id, inspector_id, window, cx)
-    }
-
-    fn prepaint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        state: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<Hitbox> {
-        Element::prepaint(&mut self.0, id, inspector_id, bounds, state, window, cx)
-    }
-
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        state: &mut (),
-        hitbox: &mut Option<Hitbox>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.0.style().text.color = Some(window.text_style().color);
-        Element::paint(
-            &mut self.0,
-            id,
-            inspector_id,
-            bounds,
-            state,
-            hitbox,
-            window,
-            cx,
-        );
-    }
-}
-
 impl ViewTree {
     pub(super) fn vector(
         &mut self,
@@ -246,38 +172,17 @@ impl ViewTree {
         };
         let mut element = div();
         *element.style() = Arc::unwrap_or_clone(self.style(*style));
-        let native_transform =
-            Transformation::scale(size(transformation.scale[0], transformation.scale[1]))
-                .with_translation(point(
-                    px(transformation.translate[0]),
-                    px(transformation.translate[1]),
-                ))
-                .with_rotation(radians(transformation.rotate));
         element = match source {
             wire::SvgSource::Data { .. } => match data {
                 Some((_, Err(refused))) => element.child(refused),
-                Some((bytes, Ok(()))) => element.child(guarded_svg_paint(
-                    SvgPaintSource::Data(bytes.clone()),
-                    CurrentColor(
-                        svg()
-                            .data(&bytes)
-                            .with_transformation(native_transform)
-                            .size_full(),
-                    ),
-                )),
+                Some((bytes, Ok(()))) => {
+                    element.child(svg_glyph(GlyphSource::Data(bytes), *transformation))
+                }
                 None => element.child("SVG data unavailable"),
             },
-            wire::SvgSource::Asset(path) if wire::safe_asset_path(path) => {
-                element.child(guarded_svg_paint(
-                    SvgPaintSource::Asset(path.clone().into()),
-                    CurrentColor(
-                        svg()
-                            .path(path.clone())
-                            .with_transformation(native_transform)
-                            .size_full(),
-                    ),
-                ))
-            }
+            wire::SvgSource::Asset(path) if wire::safe_asset_path(path) => element.child(
+                svg_glyph(GlyphSource::Asset(path.clone().into()), *transformation),
+            ),
             wire::SvgSource::Asset(_) => element.child("SVG asset identifier refused"),
             wire::SvgSource::External(_) => element.child("External SVG path refused"),
             wire::SvgSource::None => element.child("SVG source unavailable"),

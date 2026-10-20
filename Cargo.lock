@@ -2815,6 +2815,7 @@ dependencies = [
  "quinn",
  "rand 0.8.8",
  "rcgen",
+ "resvg 0.46.0",
  "rustls",
  "rustls-webpki",
  "serde",

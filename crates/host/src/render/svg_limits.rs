@@ -1,71 +1,82 @@
-//! A per-window budget for rasterised view SVGs, the device's SVG raster
-//! memory setting (`backend::memory_bounds`). `guarded_svg_paint` wraps
-//! an svg element; at prepaint its raster, under the key gpui paints it with
-//! (`Window::svg_params`), is admitted to the window's ledger and charged
-//! the raster gpui makes: the box width, and the height the SVG's own
-//! aspect ratio gives it, scaled down to its 8192px cap (svg_renderer.rs
-//! `rasterize_tree`). A raster that does not fit evicts the rasters drawn
-//! least recently that no frame gpui may still show holds, and each leaves
-//! the window's atlas with its charge (`Window::drop_svg`); one that does
-//! not fit beside those is not painted (a red quad shows in its place). The
-//! ledger goes when the window closes.
+//! A per-window budget for view SVG rasters. The host rasterises a view's glyph itself (resvg), in
+//! the colour it paints in, and an SVG canvas's picture through gpui's image assets; each raster is
+//! charged its frame and atlas tile, and those no frame still shows leave with `drop_image`.
 use super::*;
-use gpui_kit::{DevicePixels, Global, RenderSvgParams, Svg, WindowId};
+use gpui_kit::{Corners, Global, RenderImage, Rgba, SMOOTH_SVG_SCALE_FACTOR, WindowId, relative};
+use resvg::tiny_skia::{Pixmap, Transform};
+use std::hash::{BuildHasher, RandomState};
+use std::sync::LazyLock;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-const ENTRY_BYTES: u64 = std::mem::size_of::<(SvgRaster, HeldRaster)>() as u64;
-const SVG_BYTES_PER_PIXEL: u64 = 5; // tiny-skia RGBA plus GPUI's alpha mask.
+const ENTRY_BYTES: u64 = std::mem::size_of::<(Raster, HeldRaster)>() as u64;
+const BYTES_PER_PIXEL: u64 = 8;
+const MOST_SIDE: f32 = 8192.;
 
-/// What a guard draws.
-pub(super) enum SvgPaintSource {
-    /// `svg().data(bytes)`.
+static SOURCE_KEYS: LazyLock<RandomState> = LazyLock::new(RandomState::new);
+
+pub(super) enum GlyphSource {
     Data(Arc<[u8]>),
-    /// `svg().path(path)`, read from the asset source.
     Asset(SharedString),
-    /// `img(image)` of SVG bytes: gpui's image assets decode it, and its
-    /// tile is the decoded image's.
-    Image(Arc<Image>),
 }
 
-impl SvgPaintSource {
-    /// The path gpui paints the SVG under (`Svg::data_path` for bytes).
-    fn path(&self) -> SharedString {
+impl GlyphSource {
+    fn key(&self) -> u64 {
         match self {
-            Self::Data(bytes) => Svg::data_path(bytes),
-            Self::Asset(path) => path.clone(),
-            Self::Image(image) => Svg::data_path(image.bytes()),
+            Self::Data(bytes) => SOURCE_KEYS.hash_one((0_u8, &**bytes)),
+            Self::Asset(path) => SOURCE_KEYS.hash_one((1_u8, &**path)),
         }
+    }
+
+    fn tree(&self, cx: &App) -> Option<usvg::Tree> {
+        let asset;
+        let bytes = match self {
+            Self::Data(bytes) => &**bytes,
+            Self::Asset(path) => {
+                asset = cx.asset_source().load(path).ok()??;
+                &*asset
+            }
+        };
+        super::svg_check::parse(bytes).ok()
     }
 }
 
-/// A raster as gpui holds it in a window, and so how it leaves.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct GlyphKey {
+    source: u64,
+    width: u32,
+    scale: u32,
+    tint: u32,
+    turn: [u32; 5],
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
-enum SvgRaster {
-    /// `paint_svg`'s alpha mask, under its own key.
-    Svg(RenderSvgParams),
-    /// The image gpui decodes, and its tile.
+enum Raster {
+    Glyph(GlyphKey),
     Image(Arc<Image>),
+}
+
+struct Placed {
+    image: Arc<RenderImage>,
+    origin: Point<f32>,
+    extent: Size<f32>,
 }
 
 struct HeldRaster {
     charge: u64,
-    /// The ledger's tick when a guard last drew it.
     drawn: u64,
-    /// The guards whose element state holds it (`SvgPin`).
     pins: usize,
+    placed: Option<Placed>,
 }
 
 #[derive(Default)]
 struct WindowSvgLedger {
     bytes: u64,
     tick: u64,
-    rasters: HashMap<SvgRaster, HeldRaster>,
+    rasters: HashMap<Raster, HeldRaster>,
 }
 
 impl WindowSvgLedger {
-    /// Marks `raster` drawn now, pinned once more when `pin`; `false` when
-    /// the ledger does not hold it.
-    fn drew(&mut self, raster: &SvgRaster, pin: bool) -> bool {
+    fn drew(&mut self, raster: &Raster, pin: bool) -> bool {
         self.tick += 1;
         let Some(held) = self.rasters.get_mut(raster) else {
             return false;
@@ -83,25 +94,20 @@ impl WindowSvgLedger {
             .is_some_and(|total| total <= budget)
     }
 
-    /// Takes out the raster drawn least recently that no guard pins.
-    fn evict(&mut self) -> Option<SvgRaster> {
+    fn evict(&mut self) -> Option<(Raster, HeldRaster)> {
         let raster = (self.rasters.iter())
             .filter(|(_, held)| held.pins == 0)
             .min_by_key(|(_, held)| held.drawn)
             .map(|(raster, _)| raster.clone())?;
         let held = self.rasters.remove(&raster)?;
         self.bytes -= held.charge;
-        Some(raster)
+        Some((raster, held))
     }
 }
 
-/// A guard's hold on the raster it drew. It lives in the guard's element
-/// state, which gpui keeps while the frame being drawn or the last frame
-/// drawn has it: a cached view's frame replays its sprites without drawing
-/// the guard again, so a pinned raster's tile must stay in the atlas.
 struct SvgPin {
     ledger: Rc<RefCell<WindowSvgLedger>>,
-    raster: SvgRaster,
+    raster: Raster,
 }
 
 impl Drop for SvgPin {
@@ -120,40 +126,90 @@ struct SvgAdmissionLedgers {
 
 impl Global for SvgAdmissionLedgers {}
 
-/// What a raster of `size` costs. `intrinsic` is the SVG's own size
-/// (usvg's, as gpui parses it); `None`, an SVG gpui cannot parse,
-/// rasterises nothing and costs nothing.
-fn svg_raster_charge(size: Size<DevicePixels>, intrinsic: Option<(f32, f32)>) -> Option<u64> {
-    let (raster_width, raster_height) = (size.width.0, size.height.0);
-    if raster_width <= 0 || raster_width > 8192 || raster_height <= 0 {
-        return None;
-    }
-    // gpui's `SvgSize::Size`: the width is the box's, the height follows the
-    // SVG's aspect ratio, and both scale down until neither passes 8192px.
-    let charge = intrinsic.map_or(0, |(svg_width, svg_height)| {
-        let scale = raster_width as f32 / svg_width;
-        let (width, height) = (svg_width * scale, svg_height * scale);
-        let fit = (8192.0 / width).min(8192.0 / height).min(1.0);
-        u64::from((width * fit) as u32) * u64::from((height * fit) as u32) * SVG_BYTES_PER_PIXEL
-    });
-    Some(charge)
+fn fitted(width: f32, height: f32) -> Option<(f32, (u32, u32))> {
+    let fit = (MOST_SIDE / width).min(MOST_SIDE / height).min(1.);
+    let pixels = ((width * fit) as u32, (height * fit) as u32);
+    (pixels.0 > 0 && pixels.1 > 0).then_some((fit, pixels))
 }
 
-/// An SVG's own size as gpui's parser reads it, or `None` when it cannot
-/// parse the SVG. An asset is read from the app's asset source, as gpui
-/// reads it to draw.
-fn svg_intrinsic_size(source: &SvgPaintSource, cx: &App) -> Option<(f32, f32)> {
-    let asset;
-    let bytes = match source {
-        SvgPaintSource::Data(bytes) => bytes,
-        SvgPaintSource::Image(image) => image.bytes(),
-        SvgPaintSource::Asset(path) => {
-            asset = cx.asset_source().load(path).ok()??;
-            &*asset
-        }
+fn pixels_charge((width, height): (u32, u32)) -> u64 {
+    u64::from(width) * u64::from(height) * BYTES_PER_PIXEL
+}
+
+fn image_charge(width: f32, image: &Image) -> u64 {
+    let Ok(tree) = super::svg_check::parse(image.bytes()) else {
+        return 0;
     };
-    let size = super::svg_check::parse(bytes).ok()?.size();
-    Some((size.width(), size.height()))
+    let svg = tree.size();
+    fitted(width, svg.height() * width / svg.width()).map_or(0, |(_, pixels)| pixels_charge(pixels))
+}
+
+struct Plan {
+    tree: usvg::Tree,
+    pixels: (u32, u32),
+    transform: Transform,
+    origin: Point<f32>,
+    extent: Size<f32>,
+}
+
+fn plan(tree: usvg::Tree, width: f32, scale: f32, turn: &wire::SvgTransformation) -> Option<Plan> {
+    let svg = tree.size();
+    let height = svg.height() * width / svg.width();
+    let (sin, cos) = turn.rotate.sin_cos();
+    let [sx, sy] = turn.scale;
+    let linear = [cos * sx, sin * sx, -sin * sy, cos * sy];
+    let shift = turn.translate.map(|by| by * scale);
+    let place = |x: f32, y: f32| {
+        point(
+            linear[0] * x + linear[2] * y + shift[0],
+            linear[1] * x + linear[3] * y + shift[1],
+        )
+    };
+    let corners = [(-1., -1.), (1., -1.), (-1., 1.), (1., 1.)]
+        .map(|(x, y): (f32, f32)| place(x * width / 2., y * height / 2.));
+    let low = corners
+        .iter()
+        .fold(point(f32::INFINITY, f32::INFINITY), |low, at| {
+            point(low.x.min(at.x), low.y.min(at.y))
+        });
+    let high = (corners.iter()).fold(point(f32::NEG_INFINITY, f32::NEG_INFINITY), |high, at| {
+        point(high.x.max(at.x), high.y.max(at.y))
+    });
+    let extent = size(high.x - low.x, high.y - low.y);
+    let (fit, pixels) = fitted(extent.width, extent.height)?;
+    let corner = place(-width / 2., -height / 2.);
+    let (along, down) = (fit * width / svg.width(), fit * height / svg.height());
+    let transform = Transform::from_row(
+        linear[0] * along,
+        linear[1] * along,
+        linear[2] * down,
+        linear[3] * down,
+        fit * (corner.x - low.x),
+        fit * (corner.y - low.y),
+    );
+    Some(Plan {
+        tree,
+        pixels,
+        transform,
+        origin: low,
+        extent,
+    })
+}
+
+fn tinted(plan: &Plan, tint: u32) -> Option<Arc<RenderImage>> {
+    let (width, height) = plan.pixels;
+    let mut pixmap = Pixmap::new(width, height)?;
+    resvg::render(&plan.tree, plan.transform, &mut pixmap.as_mut());
+    let [red, green, blue, alpha] = tint.to_be_bytes();
+    let alpha = u16::from(alpha);
+    let pixels = (pixmap.data().chunks_exact(4))
+        .flat_map(|pixel| {
+            let covered = (alpha * u16::from(pixel[3]) + 127) / 255;
+            [blue, green, red, covered as u8]
+        })
+        .collect();
+    let frame = image::RgbaImage::from_raw(width, height, pixels)?;
+    Some(Arc::new(RenderImage::new(vec![image::Frame::new(frame)])))
 }
 
 fn admission_ledgers(cx: &mut App) -> &mut SvgAdmissionLedgers {
@@ -174,7 +230,6 @@ fn admission_ledgers(cx: &mut App) -> &mut SvgAdmissionLedgers {
     cx.global_mut::<SvgAdmissionLedgers>()
 }
 
-/// The window's ledger, made on first use.
 fn window_ledger(window_id: WindowId, cx: &mut App) -> Rc<RefCell<WindowSvgLedger>> {
     admission_ledgers(cx)
         .windows
@@ -183,42 +238,41 @@ fn window_ledger(window_id: WindowId, cx: &mut App) -> Rc<RefCell<WindowSvgLedge
         .clone()
 }
 
-/// Admits `raster`, a raster of `size` drawn from `source`, to `ledger`,
-/// evicting what it must; the pin holds it, `None` when it does not fit.
-fn admit_svg_raster(
+fn pinned(ledger: &Rc<RefCell<WindowSvgLedger>>, raster: &Raster) -> Option<SvgPin> {
+    ledger.borrow_mut().drew(raster, true).then(|| SvgPin {
+        ledger: ledger.clone(),
+        raster: raster.clone(),
+    })
+}
+
+fn admit(
     ledger: &Rc<RefCell<WindowSvgLedger>>,
-    raster: SvgRaster,
-    size: Size<DevicePixels>,
-    source: &SvgPaintSource,
+    raster: Raster,
+    charge: u64,
     window: &mut Window,
     cx: &mut App,
 ) -> Option<SvgPin> {
-    // a raster already held costs nothing more
-    if !ledger.borrow_mut().drew(&raster, true) {
-        // ponytail: a refused key is parsed again each frame it shows; the
-        // refusal is the window's last resort, so its cost is not cached
-        let charge = svg_raster_charge(size, svg_intrinsic_size(source, cx))?;
-        let budget = admission_ledgers(cx).budget;
-        loop {
-            let evicted = {
-                let mut ledger = ledger.borrow_mut();
-                if ledger.fits(charge, budget) {
-                    ledger.bytes += charge;
-                    let drawn = ledger.tick;
-                    ledger.rasters.insert(
-                        raster.clone(),
-                        HeldRaster {
-                            charge,
-                            drawn,
-                            pins: 1,
-                        },
-                    );
-                    break;
-                }
-                ledger.evict()?
-            };
-            drop_raster(evicted, window, cx);
-        }
+    let budget = admission_ledgers(cx).budget;
+    loop {
+        let evicted = {
+            let mut ledger = ledger.borrow_mut();
+            if ledger.fits(charge, budget) {
+                ledger.bytes += charge;
+                let drawn = ledger.tick;
+                ledger.rasters.insert(
+                    raster.clone(),
+                    HeldRaster {
+                        charge,
+                        drawn,
+                        pins: 1,
+                        placed: None,
+                    },
+                );
+                break;
+            }
+            ledger.evict()?
+        };
+        drop_raster(evicted, window, cx);
     }
     Some(SvgPin {
         ledger: ledger.clone(),
@@ -226,24 +280,22 @@ fn admit_svg_raster(
     })
 }
 
-/// Takes an evicted raster out of the window's atlas. A decoded image
-/// leaves gpui's image assets too, unless another window's ledger holds it.
-fn drop_raster(raster: SvgRaster, window: &mut Window, cx: &mut App) {
-    match raster {
-        SvgRaster::Svg(params) => window.drop_svg(params),
-        SvgRaster::Image(image) => {
-            if let Some(decoded) = image.clone().get_render_image(window, cx) {
-                window.drop_image(decoded).ok();
-            }
-            let raster = SvgRaster::Image(image.clone());
-            let held = cx
-                .global::<SvgAdmissionLedgers>()
-                .windows
-                .values()
-                .any(|ledger| ledger.borrow().rasters.contains_key(&raster));
-            if !held {
-                image.remove_asset(cx);
-            }
+fn drop_raster((raster, held): (Raster, HeldRaster), window: &mut Window, cx: &mut App) {
+    if let Some(placed) = held.placed {
+        window.drop_image(placed.image).ok();
+    }
+    if let Raster::Image(image) = raster {
+        if let Some(decoded) = image.clone().get_render_image(window, cx) {
+            window.drop_image(decoded).ok();
+        }
+        let raster = Raster::Image(image.clone());
+        let held = cx
+            .global::<SvgAdmissionLedgers>()
+            .windows
+            .values()
+            .any(|ledger| ledger.borrow().rasters.contains_key(&raster));
+        if !held {
+            image.remove_asset(cx);
         }
     }
 }
@@ -254,20 +306,186 @@ pub(super) fn svg_admitted_bytes(window_id: WindowId, cx: &App) -> u64 {
         .map_or(0, |ledger| ledger.borrow().bytes)
 }
 
-/// `child` drawn only once its raster is admitted.
-pub(super) fn guarded_svg_paint(source: SvgPaintSource, child: impl IntoElement) -> SvgPaintGuard {
-    SvgPaintGuard {
-        path: source.path(),
+fn full_size(window: &mut Window, cx: &mut App) -> LayoutId {
+    let style = gpui_kit::Style {
+        size: size(relative(1.).into(), relative(1.).into()),
+        ..Default::default()
+    };
+    window.request_layout(style, [], cx)
+}
+
+pub(super) fn svg_glyph(source: GlyphSource, turn: wire::SvgTransformation) -> SvgGlyph {
+    SvgGlyph {
+        key: source.key(),
         source,
+        turn,
+    }
+}
+
+pub(super) struct SvgGlyph {
+    source: GlyphSource,
+    key: u64,
+    turn: wire::SvgTransformation,
+}
+
+enum Drawn {
+    Held,
+    Blank,
+    Refused,
+}
+
+impl SvgGlyph {
+    fn admit(
+        &self,
+        key: GlyphKey,
+        ledger: &Rc<RefCell<WindowSvgLedger>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (Drawn, Option<SvgPin>) {
+        let raster = Raster::Glyph(key);
+        if let Some(pin) = pinned(ledger, &raster) {
+            return (Drawn::Held, Some(pin));
+        }
+        let (width, scale) = (f32::from_bits(key.width), f32::from_bits(key.scale));
+        let Some(plan) =
+            (self.source.tree(cx)).and_then(|tree| plan(tree, width, scale, &self.turn))
+        else {
+            return (Drawn::Blank, None);
+        };
+        let Some(pin) = admit(ledger, raster, pixels_charge(plan.pixels), window, cx) else {
+            return (Drawn::Refused, None);
+        };
+        let placed = tinted(&plan, key.tint).map(|image| Placed {
+            image,
+            origin: plan.origin,
+            extent: plan.extent,
+        });
+        if let Some(held) = ledger.borrow_mut().rasters.get_mut(&pin.raster) {
+            held.placed = placed;
+        }
+        (Drawn::Held, Some(pin))
+    }
+}
+
+impl IntoElement for SvgGlyph {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for SvgGlyph {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(host_id(format!("svg/{:016x}", self.key)))
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (full_size(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut Window,
+        _: &mut App,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let scale = window.scale_factor() * SMOOTH_SVG_SCALE_FACTOR;
+        let turn = self.turn;
+        let key = GlyphKey {
+            source: self.key,
+            width: (f32::from(bounds.size.width) * scale).ceil().to_bits(),
+            scale: scale.to_bits(),
+            tint: u32::from(Rgba::from(window.text_style().color)),
+            turn: [
+                turn.scale[0],
+                turn.scale[1],
+                turn.translate[0],
+                turn.translate[1],
+                turn.rotate,
+            ]
+            .map(f32::to_bits),
+        };
+        let raster = Raster::Glyph(key);
+        let ledger = window_ledger(window.window_handle().window_id(), cx);
+        let drawn = window.with_element_state(
+            global_id.expect("the glyph has an id"),
+            |pin: Option<Option<SvgPin>>, window| match pin.flatten() {
+                Some(pin) if pin.raster == raster => {
+                    ledger.borrow_mut().drew(&raster, false);
+                    (Drawn::Held, Some(pin))
+                }
+                other => {
+                    drop(other);
+                    self.admit(key, &ledger, window, cx)
+                }
+            },
+        );
+        match drawn {
+            Drawn::Held => {
+                let placed = (ledger.borrow().rasters.get(&raster))
+                    .and_then(|held| held.placed.as_ref())
+                    .map(|placed| (placed.image.clone(), placed.origin, placed.extent));
+                let Some((image, origin, extent)) = placed else {
+                    return;
+                };
+                let at = Bounds::new(
+                    bounds.center() + point(px(origin.x / scale), px(origin.y / scale)),
+                    size(px(extent.width / scale), px(extent.height / scale)),
+                );
+                if let Err(error) = window.paint_image(at, at, Corners::default(), image, 0, false)
+                {
+                    tracing::warn!(
+                        target: "ducktape::app",
+                        reason = "view_svg_paint_failed",
+                        %error,
+                        "a view SVG's raster did not paint"
+                    );
+                }
+            }
+            Drawn::Refused => window.paint_quad(fill(bounds, rgb(0x7f1d1d))),
+            Drawn::Blank => {}
+        }
+    }
+}
+
+pub(super) fn guarded_image(image: Arc<Image>, child: impl IntoElement) -> SvgPaintGuard {
+    SvgPaintGuard {
+        image,
         child: child.into_any_element(),
     }
 }
 
 pub(super) struct SvgPaintGuard {
-    source: SvgPaintSource,
-    /// `source.path()`, which also names the guard, so its element state
-    /// (`SvgPin`) is its own.
-    path: SharedString,
+    image: Arc<Image>,
     child: AnyElement,
 }
 
@@ -284,7 +502,7 @@ impl Element for SvgPaintGuard {
     type PrepaintState = bool;
 
     fn id(&self) -> Option<ElementId> {
-        Some(host_id(self.path.clone()))
+        Some(host_id(format!("svg-image/{:016x}", self.image.id())))
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -310,16 +528,11 @@ impl Element for SvgPaintGuard {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        // the child is laid out on the guard's own layout, so these are the
-        // bounds it paints with
-        let params = window.svg_params(bounds, self.path.clone());
-        let size = params.size;
-        let raster = match &self.source {
-            SvgPaintSource::Image(image) => SvgRaster::Image(image.clone()),
-            SvgPaintSource::Data(_) | SvgPaintSource::Asset(_) => SvgRaster::Svg(params),
-        };
+        let scale = window.scale_factor() * SMOOTH_SVG_SCALE_FACTOR;
+        let width = (f32::from(bounds.size.width) * scale).ceil();
+        let raster = Raster::Image(self.image.clone());
         let ledger = window_ledger(window.window_handle().window_id(), cx);
-        let source = &self.source;
+        let image = &self.image;
         let allowed = window.with_element_state(
             global_id.expect("the guard has an id"),
             |pin: Option<Option<SvgPin>>, window| {
@@ -328,11 +541,12 @@ impl Element for SvgPaintGuard {
                         ledger.borrow_mut().drew(&raster, false);
                         Some(pin)
                     }
-                    // the guard's last raster is no longer drawn: its pin
-                    // goes before the new one is admitted
                     other => {
                         drop(other);
-                        admit_svg_raster(&ledger, raster, size, source, window, cx)
+                        pinned(&ledger, &raster).or_else(|| {
+                            let charge = image_charge(width, image);
+                            admit(&ledger, raster.clone(), charge, window, cx)
+                        })
                     }
                 };
                 (pin.is_some(), pin)
@@ -357,7 +571,6 @@ impl Element for SvgPaintGuard {
         if *allowed {
             self.child.paint(window, cx);
         } else {
-            // A visible host-owned refusal replaces the expensive native paint.
             window.paint_quad(fill(bounds, rgb(0x7f1d1d)));
         }
     }
@@ -366,126 +579,135 @@ impl Element for SvgPaintGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::{AnyView, StyleRefinement};
+    use gpui_kit::{AnyView, ImageId, StyleRefinement};
     use std::{cell::Cell, collections::HashSet};
 
-    /// An SVG one unit wide and 100 tall: in a box 100 wide its raster
-    /// reaches gpui's 8192px cap, the most a box that wide can cost.
-    const TALL: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="100"><path d="M0 0h1v100H0z"/></svg>"#;
+    const HELD: usize = 4_096;
+    const SQUARE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><path d="M1 1h2v2H1z"/></svg>"#;
 
-    fn svg_raster_fits(width: i32, height: i32, svg: (f32, f32)) -> bool {
-        svg_raster_charge(size(DevicePixels(width), DevicePixels(height)), Some(svg)).is_some()
+    fn unturned() -> wire::SvgTransformation {
+        wire::SvgTransformation {
+            scale: [1., 1.],
+            translate: [0., 0.],
+            rotate: 0.,
+        }
     }
 
-    const HELD: usize = 4_096;
+    fn parsed(svg: &[u8]) -> usvg::Tree {
+        crate::render::svg_check::parse(svg).unwrap()
+    }
+
+    fn sized(svg: (f32, f32), width: f32, turn: wire::SvgTransformation) -> Option<Plan> {
+        let markup = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}"/>"#,
+            svg.0, svg.1
+        );
+        plan(parsed(markup.as_bytes()), width, 2., &turn)
+    }
+
+    #[test]
+    fn a_glyph_is_charged_the_raster_it_draws() {
+        let pixels = |svg, width| sized(svg, width, unturned()).map(|plan| plan.pixels);
+        assert_eq!(pixels((24., 24.), 96.), Some((96, 96)));
+        assert_eq!(pixels((10., 5.), 48.), Some((48, 24)));
+        assert_eq!(
+            pixels((1., 100.), 200.),
+            Some((81, 8192)),
+            "a tall SVG scales down until its height is 8192px"
+        );
+        assert_eq!(
+            pixels((24., 24.), 0.),
+            None,
+            "a box with no width draws nothing"
+        );
+        assert_eq!(pixels_charge((96, 96)), 96 * 96 * 8);
+    }
+
+    #[test]
+    fn a_turned_glyph_turns_round_the_middle_of_its_box() {
+        let quarter = wire::SvgTransformation {
+            rotate: std::f32::consts::FRAC_PI_2,
+            ..unturned()
+        };
+        assert_eq!(sized((10., 5.), 48., quarter).unwrap().pixels, (24, 48));
+        let moved = wire::SvgTransformation {
+            translate: [3., -1.],
+            ..unturned()
+        };
+        let moved = sized((10., 5.), 48., moved).unwrap();
+        assert_eq!((moved.pixels, moved.origin), ((48, 24), point(-18., -14.)));
+        let halved = wire::SvgTransformation {
+            scale: [0.5, 0.5],
+            ..unturned()
+        };
+        let halved = sized((10., 5.), 48., halved).unwrap();
+        assert_eq!((halved.pixels, halved.origin), ((24, 12), point(-12., -6.)));
+    }
+
+    #[test]
+    fn a_glyph_takes_the_colour_it_paints_in_through_its_alpha() {
+        let plan = plan(parsed(SQUARE), 4., 1., &unturned()).unwrap();
+        let image = tinted(&plan, 0x1122_3380).unwrap();
+        let pixels = image.as_bytes(0).unwrap();
+        assert_eq!(
+            pixels[5 * 4..][..4],
+            [0x33, 0x22, 0x11, 0x80],
+            "inside the square"
+        );
+        assert_eq!(pixels[..4], [0x33, 0x22, 0x11, 0], "outside it");
+    }
 
     fn hold_only(rasters: usize, charge: u64, cx: &mut App) {
         admission_ledgers(cx).budget = rasters as u64 * (charge + ENTRY_BYTES);
     }
 
-    fn icon_charge(side: f32, window: &Window) -> u64 {
-        let icon = Bounds::new(point(px(0.), px(0.)), size(px(side), px(side)));
-        svg_raster_charge(
-            window.svg_params(icon, SharedString::default()).size,
-            Some((24.0, 24.0)),
-        )
-        .unwrap()
+    fn key(source: u64, width: u32) -> Raster {
+        Raster::Glyph(GlyphKey {
+            source,
+            width,
+            scale: 0,
+            tint: 0,
+            turn: [0; 5],
+        })
     }
 
-    /// Sizes are gpui's raster key (`Window::svg_params`): the box at twice
-    /// the device scale.
-    #[test]
-    fn raster_budget_counts_device_scale_smoothing_rgba_and_alpha() {
-        assert!(svg_raster_fits(400, 400, (1.0, 1.0)));
-        assert!(!svg_raster_fits(0, 200, (1.0, 1.0)));
-        assert!(!svg_raster_fits(200, 0, (1.0, 1.0)));
-        assert!(!svg_raster_fits(16384, 16384, (1.0, 1.0)));
-        assert_eq!(
-            svg_raster_charge(size(DevicePixels(2000), DevicePixels(2)), Some((1.0, 4.0))),
-            Some(2000 * 8000 * 5),
-            "a narrow source aspect ratio inflates the raster height"
-        );
-        assert_eq!(
-            svg_raster_charge(size(DevicePixels(2000), DevicePixels(2)), Some((1.0, 1.0))),
-            Some(2000 * 2000 * 5),
-            "a square source in the same short box is charged its square"
-        );
-    }
-
-    /// The charge is the raster gpui makes (`rasterize_tree`): the key's
-    /// width, the SVG's own aspect, the 8192px cap.
-    #[test]
-    fn raster_charge_is_the_raster_gpui_makes() {
-        let charge =
-            |width, svg| svg_raster_charge(size(DevicePixels(width), DevicePixels(2)), svg);
-        assert_eq!(charge(96, Some((24.0, 24.0))), Some(96 * 96 * 5));
-        assert_eq!(charge(48, Some((10.0, 5.0))), Some(48 * 24 * 5));
-        assert_eq!(
-            charge(200, Some((1.0, 100.0))),
-            Some(81 * 8192 * 5),
-            "a tall SVG scales down until its height is 8192px"
-        );
-        assert_eq!(
-            charge(48, None),
-            Some(0),
-            "an SVG gpui cannot parse rasterises nothing"
-        );
-    }
-
-    /// Admits `source` under the key `name` at `width` x `height` raster
-    /// pixels, as a guard does.
-    fn admit_named(
-        source: &SvgPaintSource,
-        name: &str,
-        width: i32,
-        height: i32,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<SvgPin> {
-        let size = size(DevicePixels(width), DevicePixels(height));
-        let raster = SvgRaster::Svg(RenderSvgParams {
-            path: SharedString::from(name.to_owned()),
-            size,
-        });
+    fn admit_key(raster: Raster, charge: u64, window: &mut Window, cx: &mut App) -> Option<SvgPin> {
         let ledger = window_ledger(window.window_handle().window_id(), cx);
-        admit_svg_raster(&ledger, raster, size, source, window, cx)
+        pinned(&ledger, &raster).or_else(|| admit(&ledger, raster, charge, window, cx))
     }
 
-    /// Rasters still pinned are never evicted: past the budget a new one is
-    /// refused.
+    struct Blank;
+
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
     #[gpui_kit::test]
     fn window_aggregate_reuses_keys_and_refuses_new_rasters_at_budget(
         cx: &mut gpui_kit::TestAppContext,
     ) {
         cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(10.), px(10.)), |_, _| GuardedPaint {
-            width: 1.0,
-            paints: Rc::new(Cell::new(0)),
-        });
-        let tall = SvgPaintSource::Data(Arc::from(TALL));
-        let charge =
-            svg_raster_charge(size(DevicePixels(200), DevicePixels(2)), Some((1.0, 100.0)))
-                .unwrap();
+        let window = cx.open_window(size(px(10.), px(10.)), |_, _| Blank);
+        let charge = 1 << 20;
         cx.update_window(window.into(), |_, window, cx| {
             let window_id = window.window_handle().window_id();
             let mut pins = vec![
-                admit_named(&tall, "1", 200, 2, window, cx).unwrap(),
-                admit_named(&tall, "1", 200, 2, window, cx).unwrap(),
+                admit_key(key(1, 2), charge, window, cx).unwrap(),
+                admit_key(key(1, 2), charge, window, cx).unwrap(),
             ];
             assert_eq!(svg_admitted_bytes(window_id, cx), charge);
-
-            // GPUI includes both requested dimensions in its native atlas key.
-            pins.push(admit_named(&tall, "1", 200, 4, window, cx).unwrap());
+            pins.push(admit_key(key(1, 4), charge, window, cx).unwrap());
             assert_eq!(svg_admitted_bytes(window_id, cx), charge * 2);
-
             let mut source = 2;
-            while let Some(pin) = admit_named(&tall, &source.to_string(), 200, 2, window, cx) {
+            while let Some(pin) = admit_key(key(source, 2), charge, window, cx) {
                 pins.push(pin);
                 source += 1;
             }
             assert!(source > 2, "the budget admitted some distinct sources");
             assert!(svg_admitted_bytes(window_id, cx) <= admission_ledgers(cx).budget);
-            assert!(admit_named(&tall, "1", 200, 2, window, cx).is_some());
+            assert!(admit_key(key(1, 2), charge, window, cx).is_some());
         })
         .unwrap();
     }
@@ -495,21 +717,15 @@ mod tests {
         cx: &mut gpui_kit::TestAppContext,
     ) {
         cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(10.), px(10.)), |_, _| GuardedPaint {
-            width: 1.0,
-            paints: Rc::new(Cell::new(0)),
-        });
+        let window = cx.open_window(size(px(10.), px(10.)), |_, _| Blank);
         let window_id = window.window_id();
         cx.update_window(window.into(), |_, window, cx| {
-            cx.global_mut::<SvgAdmissionLedgers>()
-                .windows
-                .remove(&window_id);
+            admission_ledgers(cx).windows.remove(&window_id);
             hold_only(HELD, 0, cx);
-            let blank = SvgPaintSource::Data(Arc::from(&b"blank"[..]));
             let pins: Vec<_> = (0..HELD)
-                .map(|source| admit_named(&blank, &source.to_string(), 1, 2, window, cx).unwrap())
+                .map(|source| admit_key(key(source as u64, 2), 0, window, cx).unwrap())
                 .collect();
-            assert!(admit_named(&blank, &HELD.to_string(), 1, 2, window, cx).is_none());
+            assert!(admit_key(key(HELD as u64, 2), 0, window, cx).is_none());
             drop(pins);
         })
         .unwrap();
@@ -519,130 +735,42 @@ mod tests {
         cx.update(|cx| assert_eq!(svg_admitted_bytes(window_id, cx), 0));
     }
 
-    struct GuardedPaint {
-        width: f32,
-        paints: Rc<Cell<usize>>,
-    }
-
-    impl Render for GuardedPaint {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let paints = self.paints.clone();
-            guarded_svg_paint(
-                SvgPaintSource::Data(Arc::from(&b"guard-test"[..])),
-                canvas(|_, _, _| (), move |_, _, _, _| paints.set(paints.get() + 1))
-                    .w(px(self.width))
-                    .h(px(1.0)),
-            )
-        }
-    }
-
-    /// A toolbar's worth of icons, each its own 24px SVG.
-    struct Icons {
-        paints: Rc<Cell<usize>>,
-    }
-
-    impl Render for Icons {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .flex()
-                .flex_wrap()
-                .size_full()
-                .children((0..200).map(|index| {
-                    let svg = format!(
-                        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" id="icon-{index}"><path d="M0 0h24v24H0z"/></svg>"#
-                    );
-                    let paints = self.paints.clone();
-                    guarded_svg_paint(
-                        SvgPaintSource::Data(Arc::from(svg.as_bytes())),
-                        canvas(|_, _, _| (), move |_, _, _, _| paints.set(paints.get() + 1))
-                            .size(px(24.)),
-                    )
-                }))
-        }
-    }
-
-    /// The ledger charges each icon its own square raster, not the 8192px
-    /// worst case: 200 distinct icons fit one window's budget and all paint.
-    #[gpui_kit::test]
-    fn two_hundred_distinct_icons_all_paint_in_one_window(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        let paints = Rc::new(Cell::new(0));
-        let counted = paints.clone();
-        let window = cx.open_window(size(px(480.), px(240.)), move |_, _| Icons {
-            paints: counted,
-        });
-        paints.set(0);
-        cx.update_window(window.into(), |_, window, cx| {
-            window.draw(cx).clear(cx);
-            assert!(
-                window.painted_quads().is_empty(),
-                "an icon drew its refusal"
-            );
-            let icon_box = Bounds::new(point(px(0.), px(0.)), size(px(24.), px(24.)));
-            let icon = svg_raster_charge(
-                window.svg_params(icon_box, SharedString::default()).size,
-                Some((24.0, 24.0)),
-            )
-            .unwrap();
-            assert_eq!(
-                svg_admitted_bytes(window.window_handle().window_id(), cx),
-                200 * icon,
-                "each icon is charged its own raster"
-            );
-        })
-        .unwrap();
-        assert_eq!(paints.get(), 200, "every icon painted");
-    }
-
-    #[gpui_kit::test]
-    fn oversized_guard_skips_child_paint_while_small_guard_paints(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        cx.update(gpui_kit::init);
-        let small_paints = Rc::new(Cell::new(0));
-        let small = small_paints.clone();
-        let window = cx.open_window(size(px(100.), px(1.)), move |_, _| GuardedPaint {
-            width: 100.0,
-            paints: small,
-        });
-        small_paints.set(0);
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
-            .unwrap();
-        assert_eq!(small_paints.get(), 1);
-
-        let large_paints = Rc::new(Cell::new(0));
-        let large = large_paints.clone();
-        let window = cx.open_window(size(px(3_700.), px(1.)), move |_, _| GuardedPaint {
-            width: 3_700.0,
-            paints: large,
-        });
-        cx.update_window(window.into(), |_, window, cx| {
-            window.draw(cx).clear(cx);
-            assert!(!window.painted_quads().is_empty(), "refusal is visible");
-        })
-        .unwrap();
-        assert_eq!(large_paints.get(), 0);
-    }
-
-    /// The SVG rasters `window_id`'s ledger holds.
-    fn svg_admitted(window_id: WindowId, cx: &App) -> HashSet<RenderSvgParams> {
-        let ledger = cx.global::<SvgAdmissionLedgers>().windows[&window_id].borrow();
-        (ledger.rasters.keys())
-            .filter_map(|raster| match raster {
-                SvgRaster::Svg(params) => Some(params.clone()),
-                SvgRaster::Image(_) => None,
-            })
-            .collect()
-    }
-
     fn distinct_icon(index: usize) -> String {
         format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" id="icon-{index}"><circle cx="12" cy="12" r="10"/></svg>"#
         )
     }
 
-    /// Icons `first..first + count`, each its own SVG, `side` px square,
-    /// painted by gpui's svg element.
+    fn icon_source(index: usize) -> GlyphSource {
+        GlyphSource::Data(Arc::from(distinct_icon(index).as_bytes()))
+    }
+
+    fn icon_charge(side: f32, window: &Window) -> u64 {
+        let scale = window.scale_factor() * SMOOTH_SVG_SCALE_FACTOR;
+        let tree = parsed(distinct_icon(0).as_bytes());
+        pixels_charge(
+            plan(tree, (side * scale).ceil(), scale, &unturned())
+                .unwrap()
+                .pixels,
+        )
+    }
+
+    fn glyphs(window_id: WindowId, cx: &App) -> HashMap<GlyphKey, ImageId> {
+        let ledger = cx.global::<SvgAdmissionLedgers>().windows[&window_id].borrow();
+        (ledger.rasters.iter())
+            .filter_map(|(raster, held)| match raster {
+                Raster::Glyph(key) => Some((*key, held.placed.as_ref()?.image.id)),
+                Raster::Image(_) => None,
+            })
+            .collect()
+    }
+
+    fn in_atlas(id: ImageId, window: &Window) -> bool {
+        let mut probe = RenderImage::new(vec![image::Frame::new(image::RgbaImage::new(1, 1))]);
+        probe.id = id;
+        window.has_image_atlas_entry(&probe)
+    }
+
     struct Churn {
         first: usize,
         count: usize,
@@ -665,55 +793,104 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             self.renders.set(self.renders.get() + 1);
             let side = self.side;
-            div().flex().flex_wrap().size_full().children(
-                (self.first..self.first + self.count).map(move |index| {
-                    let icon = distinct_icon(index);
-                    guarded_svg_paint(
-                        SvgPaintSource::Data(Arc::from(icon.as_bytes())),
-                        svg()
-                            .data(icon.as_bytes())
-                            .text_color(rgb(0xffffff))
-                            .size(px(side)),
-                    )
-                }),
-            )
+            div()
+                .flex()
+                .flex_wrap()
+                .size_full()
+                .text_color(rgb(0xffffff))
+                .children((self.first..self.first + self.count).map(move |index| {
+                    div()
+                        .size(px(side))
+                        .child(svg_glyph(icon_source(index), unturned()))
+                }))
         }
     }
 
-    /// Asserts the frame drew no refusal, the ledger is within its budget,
-    /// every raster it holds is in the atlas, and every raster it once held
-    /// and let go has left it. Returns how many it let go.
+    #[gpui_kit::test]
+    fn two_hundred_distinct_icons_all_paint_in_one_window(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(480.), px(240.)), |_, _| Churn::new(0, 200));
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(
+                window.painted_quads().is_empty(),
+                "an icon drew its refusal"
+            );
+            let window_id = window.window_handle().window_id();
+            let held = glyphs(window_id, cx);
+            assert_eq!(held.len(), 200, "every icon has its own raster");
+            assert_eq!(
+                svg_admitted_bytes(window_id, cx),
+                200 * icon_charge(24., window),
+                "each icon is charged its own raster"
+            );
+            assert!(
+                held.values().all(|id| in_atlas(*id, window)),
+                "every icon painted"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_glyph_past_the_budget_draws_its_refusal_and_one_that_fits_paints(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let small = cx.open_window(size(px(24.), px(24.)), |_, _| Churn::new(0, 1));
+        cx.update_window(small.into(), |_, window, cx| {
+            hold_only(1, icon_charge(24., window), cx);
+            window.draw(cx).clear(cx);
+            assert!(window.painted_quads().is_empty(), "the small icon painted");
+            assert_eq!(glyphs(window.window_handle().window_id(), cx).len(), 1);
+        })
+        .unwrap();
+        let large = cx.open_window(size(px(48.), px(48.)), |_, _| Churn {
+            side: 48.,
+            ..Churn::new(1, 1)
+        });
+        cx.update_window(large.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                window.painted_quads().len(),
+                1,
+                "the large icon drew its refusal"
+            );
+            assert!(glyphs(window.window_handle().window_id(), cx).is_empty());
+        })
+        .unwrap();
+    }
+
     fn assert_ledger_and_atlas_agree(
-        seen: &mut HashSet<RenderSvgParams>,
+        seen: &mut HashMap<GlyphKey, ImageId>,
         frame: &str,
         window: &mut Window,
         cx: &mut App,
     ) -> usize {
         let window_id = window.window_handle().window_id();
         assert!(window.painted_quads().is_empty(), "{frame} drew a refusal");
-        let held = svg_admitted(window_id, cx);
+        let held = glyphs(window_id, cx);
         assert!(svg_admitted_bytes(window_id, cx) <= admission_ledgers(cx).budget);
-        for params in &held {
+        for id in held.values() {
             assert!(
-                window.has_svg_atlas_entry(params),
+                in_atlas(*id, window),
                 "{frame}: a held raster is in the atlas"
             );
         }
-        seen.extend(held.iter().cloned());
-        let evicted: Vec<_> = seen.difference(&held).collect();
-        for params in &evicted {
+        seen.extend(held.iter().map(|(key, id)| (*key, *id)));
+        let evicted: Vec<ImageId> = (seen.iter())
+            .filter(|(key, _)| !held.contains_key(key))
+            .map(|(_, id)| *id)
+            .collect();
+        for id in &evicted {
             assert!(
-                !window.has_svg_atlas_entry(params),
+                !in_atlas(*id, window),
                 "{frame}: an evicted raster's tile left the atlas"
             );
         }
         evicted.len()
     }
 
-    /// A window that draws more distinct icons over time than the ledger's budget
-    /// holds, a few hundred at a time and then through a resize sweep,
-    /// never refuses one: the rasters no frame shows any more are evicted,
-    /// and their tiles leave the atlas with them.
     #[gpui_kit::test]
     fn icons_drawn_over_time_past_the_budget_never_refuse(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -722,7 +899,7 @@ mod tests {
             hold_only(HELD, icon_charge(24., window), cx)
         })
         .unwrap();
-        let mut seen = HashSet::new();
+        let mut seen = HashMap::new();
         for batch in 0..20 {
             window
                 .update(cx, |churn, _, cx| {
@@ -758,8 +935,6 @@ mod tests {
         .unwrap();
     }
 
-    /// Two views, as a desk's panes: the first cached and left alone, so
-    /// gpui replays its frame (and its sprites' tiles) without drawing it.
     struct TwoPanes {
         still: Entity<Churn>,
         busy: Entity<Churn>,
@@ -781,9 +956,6 @@ mod tests {
         }
     }
 
-    /// While one view churns past the budget, a cached view that gpui
-    /// replays keeps its rasters: they are its frame's, though no guard of
-    /// it has drawn since.
     #[gpui_kit::test]
     fn a_cached_views_icons_stay_while_another_view_churns(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -800,14 +972,14 @@ mod tests {
             TwoPanes { still, busy }
         });
         let (_still, busy) = (still_entity.unwrap(), busy_entity.unwrap());
-        let mut still_keys = HashSet::new();
+        let still_sources: HashSet<u64> = (100_000..100_040)
+            .map(|index| icon_source(index).key())
+            .collect();
+        let mut still_keys = HashMap::new();
         cx.update_window(window.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
-            let still_paths: HashSet<_> = (100_000..100_040)
-                .map(|index| Svg::data_path(distinct_icon(index).as_bytes()))
-                .collect();
-            still_keys = svg_admitted(window.window_handle().window_id(), cx);
-            still_keys.retain(|params| still_paths.contains(&params.path));
+            still_keys = glyphs(window.window_handle().window_id(), cx);
+            still_keys.retain(|key, _| still_sources.contains(&key.source));
         })
         .unwrap();
         assert_eq!(still_keys.len(), 40);
@@ -816,7 +988,7 @@ mod tests {
         })
         .unwrap();
         let renders_before = still_renders.get();
-        let mut seen = HashSet::new();
+        let mut seen = HashMap::new();
         for batch in 0..20 {
             cx.update(|cx| {
                 busy.update(cx, |busy, cx| {
@@ -827,9 +999,9 @@ mod tests {
             cx.update_window(window.into(), |_, window, cx| {
                 window.draw(cx).clear(cx);
                 assert_ledger_and_atlas_agree(&mut seen, &format!("batch {batch}"), window, cx);
-                for params in &still_keys {
+                for id in still_keys.values() {
                     assert!(
-                        window.has_svg_atlas_entry(params),
+                        in_atlas(*id, window),
                         "batch {batch}: the cached view's raster stayed in the atlas"
                     );
                 }
@@ -844,10 +1016,6 @@ mod tests {
         assert!(seen.len() > HELD, "the busy view went past the budget");
     }
 
-    /// Icons whose guards are gone stay pinned through the next frame (gpui
-    /// keeps their element state until it finishes): a view that swaps
-    /// more than half the budget of icons for new ones refuses the excess
-    /// on that frame, and draws them all on the next.
     #[gpui_kit::test]
     fn icons_swapped_wholesale_wait_one_frame_for_the_last_ones_to_go(
         cx: &mut gpui_kit::TestAppContext,
@@ -868,7 +1036,6 @@ mod tests {
                 cx.notify();
             })
             .unwrap();
-        // the update drew the frame that swapped them
         cx.update_window(window.into(), |_, window, cx| {
             assert_eq!(
                 window.painted_quads().len(),
@@ -884,8 +1051,6 @@ mod tests {
         .unwrap();
     }
 
-    /// A frame whose own icons pass the budget evicts none of them: the
-    /// one past the budget draws its refusal.
     #[gpui_kit::test]
     fn a_frame_alone_over_the_budget_still_refuses(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -905,42 +1070,33 @@ mod tests {
             .unwrap();
         cx.update_window(window.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
-            let held = svg_admitted(window.window_handle().window_id(), cx);
+            let held = glyphs(window.window_handle().window_id(), cx);
             assert_eq!(held.len(), HELD);
             assert_eq!(
                 window.painted_quads().len(),
                 1,
                 "the icon past the budget drew its refusal"
             );
-            for params in &held {
-                assert!(
-                    window.has_svg_atlas_entry(params),
-                    "the frame's own rasters stayed"
-                );
+            for id in held.values() {
+                assert!(in_atlas(*id, window), "the frame's own rasters stayed");
             }
         })
         .unwrap();
     }
 
-    /// An SVG canvas's picture as `svg_canvas` draws it: gpui's image
-    /// assets decode it.
     struct CanvasPicture {
         image: Option<Arc<Image>>,
     }
 
     impl Render for CanvasPicture {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().children(self.image.clone().map(|image| {
-                guarded_svg_paint(
-                    SvgPaintSource::Image(image.clone()),
-                    img(image).size(px(24.)),
-                )
-            }))
+            div().size_full().children(
+                (self.image.clone())
+                    .map(|image| guarded_image(image.clone(), img(image).size(px(24.)))),
+            )
         }
     }
 
-    /// A canvas picture no frame draws any more is evicted like an icon:
-    /// its tile leaves the atlas and its decode leaves gpui's image assets.
     #[gpui_kit::test]
     fn an_evicted_canvas_picture_leaves_the_atlas_and_the_image_assets(
         cx: &mut gpui_kit::TestAppContext,
@@ -972,9 +1128,8 @@ mod tests {
         cx.update_window(window.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
             hold_only(HELD, 0, cx);
-            let blank = SvgPaintSource::Data(Arc::from(&b"blank"[..]));
             let pins: Vec<_> = (0..HELD)
-                .map(|source| admit_named(&blank, &source.to_string(), 1, 2, window, cx).unwrap())
+                .map(|source| admit_key(key(source as u64, 2), 0, window, cx).unwrap())
                 .collect();
             assert!(
                 !window.has_image_atlas_entry(&decoded),

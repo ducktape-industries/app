@@ -1,12 +1,18 @@
-//! A view's SVG reaches gpui's parser only when every image it names is a data-URL raster within
+//! A view's SVG reaches the host's rasterizer only when every image it names is a data-URL raster within
 //! the rasterizer's caps; a file, a nested SVG or gzip refuses the whole document.
 use image::{ImageFormat, ImageReader};
 use std::io::Cursor;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 
 const MAX_RASTER_SIDE: u32 = 8192;
 const MAX_RASTER_PIXELS: u64 = 1 << 24;
+
+static FONTS: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
+    let mut fonts = usvg::fontdb::Database::new();
+    fonts.load_system_fonts();
+    Arc::new(fonts)
+});
 
 pub(crate) fn parse(bytes: &[u8]) -> Result<usvg::Tree, &'static str> {
     if bytes.starts_with(&[0x1f, 0x8b]) {
@@ -14,6 +20,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<usvg::Tree, &'static str> {
     }
     let named = Arc::new(AtomicBool::new(false));
     let (by_data, by_string) = (named.clone(), named.clone());
+    let select = usvg::FontResolver::default_font_selector();
     let options = usvg::Options {
         image_href_resolver: usvg::ImageHrefResolver {
             resolve_data: Box::new(move |mime, data, _| {
@@ -25,6 +32,15 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<usvg::Tree, &'static str> {
                 by_string.store(true, Ordering::Relaxed);
                 None
             }),
+        },
+        font_resolver: usvg::FontResolver {
+            select_font: Box::new(move |font, fonts| {
+                if fonts.is_empty() {
+                    *fonts = FONTS.clone();
+                }
+                select(font, fonts)
+            }),
+            select_fallback: usvg::FontResolver::default_fallback_selector(),
         },
         ..usvg::Options::default()
     };

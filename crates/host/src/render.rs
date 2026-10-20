@@ -12,8 +12,8 @@ use gpui_kit::{
     IntoElement, KeyDownEvent, LayoutId, ListAlignment, ListSizingBehavior, ListState, MouseButton,
     MouseDownEvent, MouseMoveEvent, ObjectFit, ParentElement as _, Pixels, Point, Render,
     RenderImage, ScrollHandle, SharedString, Size, Stateful, StatefulInteractiveElement as _,
-    Styled, StyledImage as _, StyledText, Subscription, TextLayout, Transformation,
-    WeakFocusHandle, Window, canvas, div, fill, img, point, px, radians, rgb, size, svg,
+    Styled, StyledImage as _, StyledText, Subscription, TextLayout, WeakFocusHandle, Window,
+    canvas, div, fill, img, point, px, rgb, size,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -73,7 +73,7 @@ pub use pictures::PictureBytes;
 use pictures::SharedRasters;
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, named_sheet, native_cursor};
-use svg_limits::{SvgPaintSource, guarded_svg_paint};
+use svg_limits::{GlyphSource, guarded_image, svg_glyph};
 use uniform::UniformListHostState;
 use variable_list::VariableList;
 

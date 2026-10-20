@@ -27,7 +27,7 @@ wasmtime = ["dep:wasmtime", "describe/host"]
 # clipboard, the AX door). Without it the crate is the runtime a host with
 # no screen runs (`crates/pushd`): the roster, the kernel contract, the
 # notifiers, the store and the notification centre, the backend.
-ui = ["dep:gpui-kit", "dep:gpui-base", "dep:image", "dep:usvg", "dep:gif"]
+ui = ["dep:gpui-kit", "dep:gpui-base", "dep:image", "dep:usvg", "dep:resvg", "dep:gif"]
 # the AX test door (`src/ax`): kit and qa builds, and every test
 ax-door = ["ui"]
 # gpui's own frame and input histograms into `GET /perf` (docs/perf.md §3.5)
@@ -66,9 +66,8 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"], optional = true }
-# A view SVG's own size, which sets the height gpui rasterises it at
-# (`render/svg_limits.rs`): gpui's own parser, already in the graph.
-usvg = { version = "0.46.0", default-features = false, optional = true }
+usvg = { version = "0.46.0", default-features = false, features = ["text", "system-fonts"], optional = true }
+resvg = { version = "0.46.0", default-features = false, features = ["text", "raster-images"], optional = true }
 gif = { version = "0.14", optional = true }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite.workspace = true

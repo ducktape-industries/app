@@ -1,14 +1,12 @@
-//! The window ledger's cost, measured with gpui's own SVG element through
-//! the headless wgpu renderer (`picture_pixels::rendering_app`): Linux only,
-//! the one host the test renderer builds on. Lives here, not in
-//! `svg_limits.rs`, so the host core's source carries no `cfg(target_os)`
-//! outside its test modules (`tools/dep-gate.sh`).
+//! The window ledger's cost, measured with the host's SVG glyphs through the headless wgpu renderer
+//! (`picture_pixels::rendering_app`): Linux only, the one host the test renderer builds on, so the
+//! host core's source carries no `cfg(target_os)` outside its test modules (`tools/dep-gate.sh`).
 #![cfg(target_os = "linux")]
 
-use crate::render::svg_limits::{SvgPaintSource, guarded_svg_paint, svg_admitted_bytes};
+use crate::render::svg_limits::{GlyphSource, svg_admitted_bytes, svg_glyph};
 use gpui_kit::{
     AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, Window, div,
-    px, size, svg,
+    px, size,
 };
 use std::sync::Arc;
 
@@ -24,17 +22,19 @@ impl Render for RealIcons {
             .flex()
             .flex_wrap()
             .size_full()
+            .text_color(gpui_kit::black())
             .children((0..self.count).map(|index| {
                 let icon = format!(
                     r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" id="icon-{index}"><circle cx="12" cy="12" r="10"/></svg>"#
                 );
-                guarded_svg_paint(
-                    SvgPaintSource::Data(Arc::from(icon.as_bytes())),
-                    svg()
-                        .data(icon.as_bytes())
-                        .size(px(24.))
-                        .text_color(gpui_kit::black()),
-                )
+                div().size(px(24.)).child(svg_glyph(
+                    GlyphSource::Data(Arc::from(icon.as_bytes())),
+                    view_wire::SvgTransformation {
+                        scale: [1., 1.],
+                        translate: [0., 0.],
+                        rotate: 0.,
+                    },
+                ))
             }))
     }
 }

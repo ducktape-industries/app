@@ -121,6 +121,28 @@ fn a_view_svg_with_no_colour_paints_in_the_one_it_inherits() {
     assert_near(glyph, BLUE, "the glyph's middle");
 }
 
+fn turned(scale: [f32; 2], translate: [f32; 2]) -> wire::Node {
+    let mut node = glyph(div().text_color(rgb(0xff0000)));
+    if let wire::Node::Svg { transformation, .. } = &mut node {
+        *transformation = wire::SvgTransformation {
+            scale,
+            translate,
+            rotate: 0.,
+        };
+    }
+    node
+}
+
+#[test]
+fn a_view_svg_takes_its_scale_and_translation() {
+    let [middle, corner] = painted_at(div(), turned([0.5, 0.5], [0., 0.]), [(15, 15), (4, 4)]);
+    assert_near(middle, RED, "the halved glyph's middle");
+    assert_near(corner, WHITE, "the corner the halved glyph leaves");
+    let [moved, left] = painted_at(div(), turned([0.5, 0.5], [20., 0.]), [(35, 15), (15, 15)]);
+    assert_near(moved, RED, "the glyph moved right");
+    assert_near(left, WHITE, "where it was");
+}
+
 #[test]
 fn a_view_gradient_background_paints() {
     let gradient = gpui_kit::linear_gradient(
