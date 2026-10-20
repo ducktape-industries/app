@@ -14,7 +14,7 @@
 //! sent and send every picture it draws again.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use view_wire as wire;
 
 /// A seat's picture bytes by content hash, each held once: the seat's
@@ -23,7 +23,24 @@ use view_wire as wire;
 #[derive(Clone, Default)]
 pub struct PictureBytes {
     pub raster: HashMap<u64, Arc<wire::ImageData>>,
-    pub vector: HashMap<u64, Arc<[u8]>>,
+    pub vector: HashMap<u64, Vector>,
+}
+
+pub type Checked = Result<(), &'static str>;
+
+#[derive(Clone)]
+pub struct Vector {
+    pub bytes: Arc<[u8]>,
+    pub checked: Arc<OnceLock<Checked>>,
+}
+
+impl Vector {
+    pub fn new(bytes: Arc<[u8]>) -> Self {
+        Self {
+            bytes,
+            checked: Arc::default(),
+        }
+    }
 }
 
 const ENTRY_BYTES: u64 = std::mem::size_of::<(u64, Arc<wire::ImageData>)>() as u64;
@@ -87,7 +104,7 @@ impl Pictures {
             held.raster.insert(hash, data);
         }
         for (hash, bytes) in vector {
-            self.bytes += bytes.len() as u64;
+            self.bytes += bytes.bytes.len() as u64;
             held.vector.insert(hash, bytes);
         }
     }
@@ -118,9 +135,9 @@ impl Pictures {
                 Picture::Vector(hash, _) => {
                     if let Some(data) = held.vector.get(&hash)
                         && !kept.vector.contains_key(&hash)
-                        && fits(data.len())
+                        && fits(data.bytes.len())
                     {
-                        bytes += data.len() as u64;
+                        bytes += data.bytes.len() as u64;
                         kept.vector.insert(hash, data.clone());
                     }
                 }
@@ -172,7 +189,7 @@ fn bytes_of(root: &mut wire::Node) -> PictureBytes {
             .map(|(hash, data)| (hash, Arc::new(data)))
             .collect(),
         vector: (vector.into_iter())
-            .map(|(hash, bytes)| (hash, Arc::from(bytes)))
+            .map(|(hash, bytes)| (hash, Vector::new(Arc::from(bytes))))
             .collect(),
     }
 }
@@ -201,7 +218,7 @@ mod tests {
             .held()
             .vector
             .get(&hash)
-            .map(|bytes| bytes.to_vec())
+            .map(|held| held.bytes.to_vec())
     }
 
     #[test]

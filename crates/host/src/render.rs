@@ -45,6 +45,7 @@ mod sheet;
 mod sideways;
 mod style;
 mod surfaces;
+mod svg_check;
 mod svg_limits;
 mod text;
 mod tooltip_containment;
@@ -72,7 +73,7 @@ pub use pictures::PictureBytes;
 use pictures::SharedRasters;
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, named_sheet, native_cursor};
-use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
+use svg_limits::{SvgPaintSource, guarded_svg_paint};
 use uniform::UniformListHostState;
 use variable_list::VariableList;
 

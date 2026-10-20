@@ -27,7 +27,7 @@ wasmtime = ["dep:wasmtime", "describe/host"]
 # clipboard, the AX door). Without it the crate is the runtime a host with
 # no screen runs (`crates/pushd`): the roster, the kernel contract, the
 # notifiers, the store and the notification centre, the backend.
-ui = ["dep:gpui-kit", "dep:gpui-base", "dep:image", "dep:usvg"]
+ui = ["dep:gpui-kit", "dep:gpui-base", "dep:image", "dep:usvg", "dep:gif"]
 # the AX test door (`src/ax`): kit and qa builds, and every test
 ax-door = ["ui"]
 # gpui's own frame and input histograms into `GET /perf` (docs/perf.md §3.5)
@@ -69,6 +69,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # A view SVG's own size, which sets the height gpui rasterises it at
 # (`render/svg_limits.rs`): gpui's own parser, already in the graph.
 usvg = { version = "0.46.0", default-features = false, optional = true }
+gif = { version = "0.14", optional = true }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite.workspace = true
 # The live lane (`backend/live.rs`): QUIC to the UDP port the node's
@@ -110,6 +111,7 @@ ducktape-web = { path = "../web", optional = true }
 ducktape-av = { path = "../av", optional = true }
 
 [dev-dependencies]
+flate2 = "1"
 # what the media pieces' tests read off a piece (empty without `av`)
 ducktape-av = { path = "../av", features = ["test-support"] }
 # paused time for the live session's keep-alive and idle tests

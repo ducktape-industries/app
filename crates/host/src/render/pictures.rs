@@ -226,11 +226,22 @@ impl ViewTree {
             unreachable!()
         };
         // the bytes the node brings, else the seat's under its hash
-        let data: Option<Arc<[u8]>> = match source {
+        let data: Option<(Arc<[u8]>, crate::runtime::pictures::Checked)> = match source {
             wire::SvgSource::Data {
                 bytes: Some(bytes), ..
-            } => Some(Arc::from(bytes.as_slice())),
-            wire::SvgSource::Data { hash, bytes: None } => self.pictures.vector.get(hash).cloned(),
+            } => {
+                let bytes: Arc<[u8]> = Arc::from(bytes.as_slice());
+                let checked = super::svg_check::parse(&bytes).map(drop);
+                Some((bytes, checked))
+            }
+            wire::SvgSource::Data { hash, bytes: None } => {
+                self.pictures.vector.get(hash).map(|held| {
+                    let checked = held
+                        .checked
+                        .get_or_init(|| super::svg_check::parse(&held.bytes).map(drop));
+                    (held.bytes.clone(), *checked)
+                })
+            }
             _ => None,
         };
         let mut element = div();
@@ -244,10 +255,8 @@ impl ViewTree {
                 .with_rotation(radians(transformation.rotate));
         element = match source {
             wire::SvgSource::Data { .. } => match data {
-                Some(bytes) if !svg_data_allowed(&bytes) => {
-                    element.child("Compressed SVG data refused")
-                }
-                Some(bytes) => element.child(guarded_svg_paint(
+                Some((_, Err(refused))) => element.child(refused),
+                Some((bytes, Ok(()))) => element.child(guarded_svg_paint(
                     SvgPaintSource::Data(bytes.clone()),
                     CurrentColor(
                         svg()

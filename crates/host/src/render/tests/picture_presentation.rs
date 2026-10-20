@@ -109,7 +109,10 @@ fn held() -> Arc<PictureBytes> {
             pixels: RED.to_vec(),
         }),
     );
-    held.vector.insert(22, Arc::from(PRESENTATION_SVG));
+    held.vector.insert(
+        22,
+        crate::runtime::pictures::Vector::new(Arc::from(PRESENTATION_SVG)),
+    );
     Arc::new(held)
 }
 

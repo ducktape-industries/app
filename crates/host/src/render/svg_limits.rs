@@ -9,8 +9,6 @@
 //! the window's atlas with its charge (`Window::drop_svg`); one that does
 //! not fit beside those is not painted (a red quad shows in its place). The
 //! ledger goes when the window closes.
-//! `svg_data_allowed` refuses gzip-compressed SVG before it reaches the
-//! parser.
 use super::*;
 use gpui_kit::{DevicePixels, Global, RenderSvgParams, Svg, WindowId};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -122,12 +120,6 @@ struct SvgAdmissionLedgers {
 
 impl Global for SvgAdmissionLedgers {}
 
-/// Whether the bytes may reach the SVG parser: gzip (svgz, by its magic) is
-/// refused, so a view cannot hand the parser a small file that inflates.
-pub(super) fn svg_data_allowed(bytes: &[u8]) -> bool {
-    !bytes.starts_with(&[0x1f, 0x8b])
-}
-
 /// What a raster of `size` costs. `intrinsic` is the SVG's own size
 /// (usvg's, as gpui parses it); `None`, an SVG gpui cannot parse,
 /// rasterises nothing and costs nothing.
@@ -160,9 +152,7 @@ fn svg_intrinsic_size(source: &SvgPaintSource, cx: &App) -> Option<(f32, f32)> {
             &*asset
         }
     };
-    let size = usvg::Tree::from_data(bytes, &usvg::Options::default())
-        .ok()?
-        .size();
+    let size = super::svg_check::parse(bytes).ok()?.size();
     Some((size.width(), size.height()))
 }
 
@@ -400,14 +390,6 @@ mod tests {
             Some((24.0, 24.0)),
         )
         .unwrap()
-    }
-
-    #[test]
-    fn compressed_svg_data_is_refused_before_native_parsing() {
-        assert!(!svg_data_allowed(&[0x1f, 0x8b, 0x08, 0x00]));
-        assert!(svg_data_allowed(
-            b"<svg xmlns='http://www.w3.org/2000/svg'/>"
-        ));
     }
 
     /// Sizes are gpui's raster key (`Window::svg_params`): the box at twice
