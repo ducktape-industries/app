@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 type Scopes = Rc<RefCell<Option<Vec<super::pointer::ScopeKey>>>>;
+type Mask = Rc<Cell<Option<gpui_kit::ContentMask<Pixels>>>>;
 
 /// The host's band, over every window's rank and every priority a view
 /// asks for: each window draws at its rank (`PaneLayer`), and a view's
@@ -143,9 +144,11 @@ impl Element for SlotDeferred {
 /// out in (the desk's), so a window dragged past the desk's edge never
 /// paints or takes a press over the chrome beside it.
 pub fn clipped(child: AnyElement, priority: usize) -> Clipped {
+    let mask = Mask::default();
     Clipped {
-        child: Some(child),
+        child: Some(Masked(child, mask.clone()).into_any_element()),
         priority,
+        mask,
     }
 }
 
@@ -153,6 +156,7 @@ pub fn clipped(child: AnyElement, priority: usize) -> Clipped {
 pub struct Clipped {
     child: Option<AnyElement>,
     priority: usize,
+    mask: Mask,
 }
 
 impl IntoElement for Clipped {
@@ -199,8 +203,8 @@ impl Element for Clipped {
         _cx: &mut App,
     ) {
         let child = self.child.take().expect("deferred child is drawn once");
-        let mask = window.content_mask();
-        window.defer_draw(child, window.element_offset(), self.priority, Some(mask));
+        self.mask.set(Some(window.content_mask()));
+        window.defer_draw(child, window.element_offset(), self.priority, None);
     }
 
     fn paint(
@@ -213,6 +217,64 @@ impl Element for Clipped {
         _window: &mut Window,
         _cx: &mut App,
     ) {
+    }
+}
+
+struct Masked(AnyElement, Mask);
+
+impl IntoElement for Masked {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Masked {
+    type RequestLayoutState = ();
+    type PrepaintState = Option<gpui_kit::ContentMask<Pixels>>;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<gpui_kit::ContentMask<Pixels>> {
+        let mask = self.1.get();
+        window.with_content_mask(mask, |window| self.0.prepaint(window, cx));
+        mask
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        mask: &mut Option<gpui_kit::ContentMask<Pixels>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_content_mask(*mask, |window| self.0.paint(window, cx));
     }
 }
 
@@ -408,6 +470,63 @@ mod tests {
             }
         })
         .unwrap();
+    }
+
+    const SPILL: u32 = 0x00ffff;
+
+    struct Spilled(Rc<RefCell<Vec<&'static str>>>);
+    impl Render for Spilled {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
+            let log = self.0.clone();
+            let spill = div()
+                .id("spill")
+                .absolute()
+                .left(px(30.))
+                .size(px(100.))
+                .bg(rgb(SPILL))
+                .occlude()
+                .on_click(move |_, _, _| log.borrow_mut().push("spill"));
+            div()
+                .size(px(40.))
+                .overflow_hidden()
+                .child(clipped(spill.into_any_element(), 0))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_clipped_draw_paints_and_takes_clicks_only_inside_its_mask(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let window = cx.open_window(size(px(200.), px(200.)), {
+            let log = log.clone();
+            move |_, _| Spilled(log)
+        });
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            crate::render::draw_frame(window, cx);
+            let quads: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background.as_solid() == Some(rgb(SPILL).into()))
+                .collect();
+            assert!(!quads.is_empty(), "the clipped draw paints");
+            let bound = gpui_kit::ScaledPixels(40. * window.scale_factor());
+            for quad in quads {
+                let mask = quad.content_mask.bounds;
+                assert!(mask.origin.x + mask.size.width <= bound, "{mask:?}");
+            }
+        });
+        native.simulate_click(point(px(100.), px(10.)), Default::default());
+        assert!(
+            log.borrow().is_empty(),
+            "a click outside the mask reached the draw: {:?}",
+            log.borrow()
+        );
+        native.simulate_click(point(px(35.), px(10.)), Default::default());
+        assert_eq!(*log.borrow(), ["spill"]);
     }
 
     #[gpui_kit::test]
