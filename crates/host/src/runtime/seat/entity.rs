@@ -190,6 +190,7 @@ pub struct Placed {
     pub float_min: Option<f32>,
     pub on_top: bool,
     pub keeps_above: bool,
+    pub hidden: bool,
 }
 
 /// The view's root, sized to the seat: a wire root that names no size
@@ -356,6 +357,11 @@ impl Seat {
     #[cfg(any(test, feature = "test-support"))]
     pub fn in_front(&self) -> bool {
         self.in_front
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn placed(&self) -> Placed {
+        self.placed
     }
 
     /// The body its view is laid out in (`place`).
@@ -626,6 +632,7 @@ impl Seat {
         *props = self.props.clone();
         let ticks = view.ticks;
         view.set_visible(self.in_front);
+        view.set_presented(!self.placed.hidden);
         view.keeps_above = self.placed.keeps_above;
         view.set_placement(wire::methods::Placement {
             floating: self.placed.float_min.is_some(),

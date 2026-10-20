@@ -110,6 +110,7 @@ pub(crate) struct Windows {
     keeping: Option<String>,
     placed: BTreeMap<WindowKey, WindowBounds>,
     moves: BTreeMap<WindowKey, Subscription>,
+    hidden: BTreeSet<WindowKey>,
 }
 
 /// A window a view floated its pane into: the program, whose next float
@@ -231,6 +232,7 @@ impl Windows {
             keeping: None,
             placed: BTreeMap::new(),
             moves: BTreeMap::new(),
+            hidden: BTreeSet::new(),
         }
     }
 
@@ -272,6 +274,10 @@ impl Windows {
     /// ones the person is looking at (`Seats`).
     pub(crate) fn front(&self) -> Option<WindowKey> {
         self.front
+    }
+
+    pub(crate) fn presented(&self, key: WindowKey) -> bool {
+        !self.hidden.contains(&key)
     }
 
     /// Window `key`'s own entities; none for a window that is not ours.
@@ -499,6 +505,7 @@ impl Windows {
                 opened_view = Some(view.downgrade());
                 windows.update(cx, |this, cx| {
                     this.watch_activation(key, window, cx);
+                    this.watch_visibility(key, window, cx);
                     this.watch_bounds(key, window, cx);
                 });
                 window.on_window_should_close(cx, move |window, cx| {
@@ -558,6 +565,25 @@ impl Windows {
             }),
         );
         self.activation(key, window.is_window_active(), cx);
+    }
+
+    fn watch_visibility(&mut self, key: WindowKey, window: &mut Window, cx: &mut Context<Self>) {
+        self.subscriptions.push(
+            cx.observe_window_visibility(window, move |this, visibility, _, cx| {
+                this.visibility(key, visibility.is_visible(), cx)
+            }),
+        );
+        self.visibility(key, window.is_visible(), cx);
+    }
+
+    fn visibility(&mut self, key: WindowKey, visible: bool, cx: &mut Context<Self>) {
+        let moved = match visible {
+            true => self.hidden.remove(&key),
+            false => self.hidden.insert(key),
+        };
+        if moved {
+            cx.notify();
+        }
     }
 
     fn watch_bounds(&mut self, key: WindowKey, window: &mut Window, cx: &mut Context<Self>) {
@@ -803,6 +829,7 @@ impl Windows {
         self.floats.remove(&key);
         self.placed.remove(&key);
         self.moves.remove(&key);
+        self.hidden.remove(&key);
         if self.console == Some(key) {
             self.console = None;
         }

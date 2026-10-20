@@ -399,7 +399,8 @@ its meaning; the host and the views name the const, never the string.
    view on its next tick. Nothing wakes the wasm from another thread.
 6. **Subscriptions.** `program.changes <program>` (`follow_changes`: one WebSocket
    `/v1/changes/<program>?keys` (the keys alone) per node and program, held while a follower's view
-   is on screen, a notifier's always, and the app in front; a follower back
+   is on screen (a desktop pane: presented, its window not hidden nor under a pane filling the
+   desk), a notifier's always, and the app in front; a follower back
    is told to re-read first), `chain.heads` (`heads`: polls
    status at half the node's block time and reads the advance from
    `/v1/blocks`, on the same terms), `live.publish`/`live.subscribe`/

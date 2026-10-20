@@ -286,8 +286,8 @@ pub struct OsFacts {
     pub os_asks_notices: bool,
     /// A view's node feeds (`program.changes`, `chain.heads`) run only while
     /// it is on screen: a phone's, whose tabs keep panes seated that no one
-    /// sees. A desktop window keeps its feeds while it is open, focused or
-    /// not. A notifier, on no screen, follows either way.
+    /// sees. A desktop pane keeps its feeds while it is presented, focused
+    /// or not. A notifier, on no screen, follows either way.
     pub feeds_follow_screen: bool,
 }
 

@@ -694,6 +694,7 @@ impl View {
             visibility_change: _,
             visibility_subscriptions: _,
             on_screen: _,
+            presented: _,
             in_front: _,
             placement: _,
             placement_change: _,
@@ -1010,6 +1011,7 @@ impl View {
             visibility_change: None,
             visibility_subscriptions: Vec::new(),
             on_screen: tokio::sync::watch::channel(false).0,
+            presented: tokio::sync::watch::channel(true).0,
             in_front: kernel::in_front(),
             placement: Default::default(),
             placement_change: None,
@@ -1064,6 +1066,11 @@ impl View {
         self.visible = visible;
         self.visibility_change = Some(visible);
         self.screen_moved();
+    }
+
+    pub fn set_presented(&mut self, presented: bool) {
+        self.presented
+            .send_if_modified(|was| std::mem::replace(was, presented) != presented);
     }
 
     /// What this view shows, on screen or not, to `host.screen`.

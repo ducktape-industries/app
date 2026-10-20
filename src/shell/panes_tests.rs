@@ -2254,3 +2254,43 @@ fn the_memory_window_comes_with_debug_mode_and_asks_for_no_frame(cx: &mut TestAp
         "the Memory window asked for frames"
     );
 }
+
+#[gpui_kit::test]
+fn a_pane_is_hidden_under_a_filled_pane_and_in_a_hidden_window(cx: &mut TestAppContext) {
+    const FRONT: &str = "pane-presented-front-view";
+    const BACK: &str = "pane-presented-back-view";
+    let (app, _, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(BACK, 400);
+    crate::runtime::seat_for_test(FRONT, 400);
+    pane(&view, PaneMessage::Select(BACK), &mut native);
+    pane(&view, PaneMessage::Split(FRONT), &mut native);
+    let hidden = |program: &str, native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            let layout = view.read(cx).layout(cx);
+            let pane = layout
+                .panes
+                .iter()
+                .find(|pane| pane.program == program)
+                .expect("the pane opened");
+            let seat = app.seats.read(cx).seat(pane.instance).expect("seated");
+            seat.read(cx).placed().hidden
+        })
+    };
+    assert!(!hidden(FRONT, &mut native));
+    assert!(!hidden(BACK, &mut native), "split, both are presented");
+    pane(&view, PaneMessage::Fill, &mut native);
+    native.run_until_parked();
+    assert!(!hidden(FRONT, &mut native), "the pane filling the desk");
+    assert!(hidden(BACK, &mut native), "under the pane filling the desk");
+    pane(&view, PaneMessage::Fill, &mut native);
+    native.run_until_parked();
+    assert!(!hidden(BACK, &mut native), "the fill let go");
+    native.simulate_visibility_change(gpui_kit::WindowVisibility::Hidden);
+    native.run_until_parked();
+    assert!(hidden(FRONT, &mut native), "its window hidden");
+    assert!(hidden(BACK, &mut native), "its window hidden");
+    native.simulate_visibility_change(gpui_kit::WindowVisibility::Visible);
+    native.run_until_parked();
+    assert!(!hidden(FRONT, &mut native), "its window presented again");
+    assert!(!hidden(BACK, &mut native), "its window presented again");
+}

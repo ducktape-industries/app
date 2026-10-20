@@ -84,8 +84,8 @@
 //!   came back on screen or the app in front, or fell a block behind (it
 //!   holds one item untaken), and the view should re-read everything. Only
 //!   a view of an app in front holds the socket, and on a phone only one on
-//!   screen (a notifier: always); a desktop window keeps it while it is
-//!   open. Off screen on a phone or behind another app it lets go, and a
+//!   screen (a notifier: always); a desktop pane keeps it while it is
+//!   presented. Off screen on a phone or behind another app it lets go, and a
 //!   socket no view holds closes.
 //! - `chain.heads` — a subscription that gets one `Head` per finalized block,
 //!   oldest first: the host reads the node's status at half its block

@@ -1592,15 +1592,47 @@ fn two_blocks_before_a_take_are_one_reread() {
     assert_eq!(coalesced(Some(refused()), block(9)), refused());
 }
 
-/// A view's feed is wanted while the app is in front and, where its screen
-/// gates it (a phone's view), while it is on screen: a desktop window open
-/// behind another keeps its feed; nothing behind another app does.
+/// A view's feed is wanted while the app is in front, where its screen
+/// gates it (a phone's view) while it is on screen, and while its pane is
+/// presented: a desktop window behind another keeps its feed.
 #[test]
 fn a_feed_is_wanted_in_front_and_on_a_phone_on_screen() {
-    assert!(wanted(true, None), "a desktop window, focused or not");
-    assert!(wanted(true, Some(true)));
-    assert!(!wanted(true, Some(false)), "a phone's view off screen");
-    assert!(!wanted(false, None), "behind another app");
+    assert!(
+        wanted(true, None, Some(true)),
+        "a desktop pane, focused or not"
+    );
+    assert!(wanted(true, Some(true), Some(true)));
+    assert!(
+        !wanted(true, Some(false), Some(true)),
+        "a phone's view off screen"
+    );
+    assert!(!wanted(false, None, Some(true)), "behind another app");
+    assert!(
+        !wanted(true, None, Some(false)),
+        "a desktop pane not presented"
+    );
+    assert!(wanted(true, None, None), "a notifier");
+}
+
+#[test]
+fn a_view_not_presented_holds_no_socket() {
+    let watched = counted_changes_node(&[5], None);
+    let mut view = view();
+    view.set_presented(false);
+    follow_changes(&mut view, 1, watched.node.clone(), "chat".into());
+    view.set_presented(true);
+    assert_eq!(
+        drained(&view, 2),
+        [change_item(None), change_item(Some(5))],
+        "presented: re-read, then the blocks"
+    );
+    assert_eq!(counted(&watched.opened, 1), 1);
+    view.set_presented(false);
+    assert_eq!(
+        counted(&watched.closed, 1),
+        1,
+        "not presented, the socket closes"
+    );
 }
 
 /// `chain.heads` back on screen goes on after the last head it handed,

@@ -503,13 +503,14 @@ fn reread() -> Vec<u8> {
 /// When a view's node subscription holds its socket or its poll
 /// ([`wanted`]), as its app and its screen move. A phone behind another
 /// app, or on a tab whose panes are seated but not shown, asks the node
-/// nothing for them: its notices come by push. A desktop window keeps its
-/// feeds while it is open, focused or not.
+/// nothing for them: its notices come by push. A desktop pane keeps its
+/// feeds while it is presented, focused or not.
 struct Wanted {
     front: tokio::sync::watch::Receiver<bool>,
     /// the view's screen, where it gates the feeds
     /// (`OsFacts::feeds_follow_screen`; never a notifier's)
     on_screen: Option<tokio::sync::watch::Receiver<bool>>,
+    presented: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl Wanted {
@@ -518,45 +519,53 @@ impl Wanted {
         Self {
             front: view.in_front.clone(),
             on_screen: gated.then(|| view.on_screen.subscribe()),
+            presented: (!view.notifier).then(|| view.presented.subscribe()),
         }
     }
 
     fn now(&self) -> bool {
         let shown = self.on_screen.as_ref().map(|shown| *shown.borrow());
-        wanted(*self.front.borrow(), shown)
+        let presented = self.presented.as_ref().map(|presented| *presented.borrow());
+        wanted(*self.front.borrow(), shown, presented)
     }
 
     /// Once it is wanted (`true`), or once it no longer is.
     async fn until(&mut self, wanted: bool) {
         while self.now() != wanted {
-            let Self { front, on_screen } = self;
+            let Self {
+                front,
+                on_screen,
+                presented,
+            } = self;
             // a value whose sender is gone moves no more
             let front = async {
                 if front.changed().await.is_err() {
                     std::future::pending::<()>().await;
                 }
             };
-            let screen = async {
-                let moved = match on_screen {
-                    Some(shown) => shown.changed().await.is_ok(),
-                    None => false,
-                };
-                if !moved {
-                    std::future::pending::<()>().await;
-                }
-            };
             tokio::select! {
                 () = front => {}
-                () = screen => {}
+                () = moved(on_screen) => {}
+                () = moved(presented) => {}
             }
         }
     }
 }
 
+async fn moved(watched: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    let moved = match watched {
+        Some(watched) => watched.changed().await.is_ok(),
+        None => false,
+    };
+    if !moved {
+        std::future::pending::<()>().await;
+    }
+}
+
 /// Whether a view's node subscription is wanted now: while the app is in
-/// front, and, where the view's screen gates it, while that is on screen.
-fn wanted(in_front: bool, on_screen: Option<bool>) -> bool {
-    in_front && on_screen.unwrap_or(true)
+/// front, where the view's screen gates it while that is on screen, and while it is presented.
+fn wanted(in_front: bool, on_screen: Option<bool>, presented: Option<bool>) -> bool {
+    in_front && on_screen.unwrap_or(true) && presented.unwrap_or(true)
 }
 
 /// ONE `/v1/changes/<program>` socket per node and program, however many

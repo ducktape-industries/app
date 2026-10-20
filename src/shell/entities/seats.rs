@@ -77,6 +77,7 @@ impl DeskSeats {
                         float_min: windows.float_min(*key),
                         on_top: windows.on_top(*key),
                         keeps_above,
+                        hidden: !windows.presented(*key),
                     };
                     (*key, (own.desk.read(cx).get().clone(), on_desk, placed))
                 })
@@ -97,6 +98,11 @@ impl DeskSeats {
                     .map(move |(index, pane)| {
                         let body = view_body(on_desk, layout, index);
                         let window = window.map(|window| (window, body, in_front));
+                        let covered = layout.filled && index != layout.focused;
+                        let placed = Placed {
+                            hidden: placed.hidden || covered,
+                            ..placed
+                        };
                         (pane.instance, (pane.program, window, placed))
                     })
             })

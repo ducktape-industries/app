@@ -206,6 +206,7 @@ pub(super) struct View {
     /// follows the node only while its view is on screen
     /// (`kernel::node::Wanted`).
     pub(crate) on_screen: tokio::sync::watch::Sender<bool>,
+    pub(crate) presented: tokio::sync::watch::Sender<bool>,
     /// Whether the app is in front (`kernel::set_in_front`), as this
     /// view's tasks read it.
     pub(crate) in_front: tokio::sync::watch::Receiver<bool>,
