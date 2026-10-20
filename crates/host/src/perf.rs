@@ -469,8 +469,9 @@ mod tests {
         gauge(other, "nodes", 4);
         drop(time(VIEW, "tick.call"));
         count(Key::Window(window), "renders", 1);
-        count(Key::Shell, "rail.calls", 1);
+        count(Key::Shell, "perf-test.calls", 1);
         mark("desk");
+        crate::runtime::Roster::default().rail();
 
         let by_program = snapshot(false);
         let view = &by_program["views"]["perf-test"];
@@ -479,7 +480,7 @@ mod tests {
         assert_eq!(view["nodes"]["max"], 10);
         assert_eq!(view["tick.call"]["n"], 1);
         assert_eq!(by_program["windows"][&name]["renders"], 1);
-        assert_eq!(by_program["shell"]["rail.calls"], 1);
+        assert_eq!(by_program["shell"]["perf-test.calls"], 1);
         assert!(by_program["startup"]["desk"].is_number());
 
         let by_instance = snapshot(true);

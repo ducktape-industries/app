@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use super::center::{Center, CenterHandle, HOST, Notice, NoticeKind, read_log};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
@@ -507,7 +508,6 @@ fn a_redraws_posts_read_the_prefs_once_and_write_the_log_once() {
     });
     let mut view = crate::runtime::kernel::tests::view();
     view.connection.chain = "dev".into();
-    let _on = crate::perf::on_for_test();
     let reads = crate::backend::prefs_reads();
     for id in 0..256 {
         let notice = methods::encode(&post(&id.to_string(), ""));
@@ -524,8 +524,17 @@ fn a_redraws_posts_read_the_prefs_once_and_write_the_log_once() {
     );
     center.lock().flush();
     settled(&path);
-    let saves = &crate::perf::snapshot(false)["shell"]["io.notify_save"]["n"];
-    assert_eq!(saves.as_u64(), Some(1), "one write for the redraw's posts");
+    // Another center's worker also saves while this redraw is measured.
+    let other_path = dir.path().join("@device.json");
+    let mut other = Center::default();
+    other.open_device_log(other_path.clone());
+    other.post_host("unrelated", "", "", 0);
+    settled(&other_path);
+    assert_eq!(
+        center.lock().saves.load(Ordering::Relaxed),
+        1,
+        "one write for the redraw's posts"
+    );
     let kept = read_log(&path).unwrap();
     assert_eq!(kept.len(), 256);
     assert_eq!(kept.last().unwrap().title, "255");

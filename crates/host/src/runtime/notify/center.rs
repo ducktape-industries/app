@@ -121,6 +121,8 @@ pub struct Center {
     carried_moved: bool,
     rev: u64,
     saved: u64,
+    #[cfg(test)]
+    pub(super) saves: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// A notification centre, shared by whoever holds a clone: the app's one
@@ -465,7 +467,7 @@ impl Center {
             self.saved = self.rev;
         }
         if let Some(path) = &self.device_log {
-            save(path.clone(), self.device.clone());
+            self.save(path.clone(), self.device.clone());
         }
     }
 
@@ -640,6 +642,8 @@ impl Center {
             saved: self.rev + 1,
             device: std::mem::take(&mut self.device),
             device_log: self.device_log.take(),
+            #[cfg(test)]
+            saves: self.saves.clone(),
             ..Center::default()
         };
         left
@@ -677,11 +681,28 @@ impl Center {
         }
         self.saved = self.rev;
         if let Some(path) = &self.log {
-            save(path.clone(), self.entries.clone());
+            self.save(path.clone(), self.entries.clone());
             if std::mem::take(&mut self.carried_moved) {
-                save(pending_carried_copies_path(path), self.carried.clone());
+                self.save(pending_carried_copies_path(path), self.carried.clone());
             }
         }
+    }
+
+    fn save(&self, path: PathBuf, entries: Vec<Entry>) {
+        let name = path.to_string_lossy().into_owned();
+        #[cfg(test)]
+        let saves = self.saves.clone();
+        crate::runtime::kernel::in_order(&name, move || {
+            let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(bytes) = serde_json::to_vec(&entries) {
+                let _ = noded_client::fs::atomic_write(&path, &bytes, false);
+            }
+            #[cfg(test)]
+            saves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
     }
 }
 
@@ -717,19 +738,6 @@ impl Log {
     pub(crate) fn file(&self) -> Option<&Path> {
         self.log.as_deref()
     }
-}
-
-fn save(path: PathBuf, entries: Vec<Entry>) {
-    let name = path.to_string_lossy().into_owned();
-    crate::runtime::kernel::in_order(&name, move || {
-        let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(bytes) = serde_json::to_vec(&entries) {
-            let _ = noded_client::fs::atomic_write(&path, &bytes, false);
-        }
-    });
 }
 
 fn opened(path: &Path) -> Option<Vec<Entry>> {
