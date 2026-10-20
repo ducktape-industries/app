@@ -630,7 +630,6 @@ x11rb::atom_manager! {
 }
 
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 fn wayland_activate(
     window: &gpui_kit::Window,
     surface: std::ptr::NonNull<std::ffi::c_void>,
@@ -687,6 +686,7 @@ wayland_client::delegate_noop!(
     Activating: ignore wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1
 );
 
+#[cfg(target_os = "linux")]
 fn x11_activate(window: &gpui_kit::Window, id: u32, token: Option<&str>) -> Result<(), String> {
     use x11rb::protocol::xproto::EventMask;
     x11_send(window, |xcb| {
