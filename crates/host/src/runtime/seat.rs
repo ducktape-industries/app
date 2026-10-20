@@ -168,6 +168,7 @@ pub(super) struct ViewCode {
     pub(super) min_width: u32,
     pub(super) width: Option<u32>,
     pub(super) capabilities: Vec<Capability>,
+    pub(super) hosts: Vec<String>,
     pub(super) wire: String,
 }
 
@@ -186,6 +187,7 @@ impl ViewCode {
             min_width,
             width: None,
             capabilities: Vec::new(),
+            hosts: Vec::new(),
             wire: view_wire::WIRE_LEVEL.to_string(),
         })
     }

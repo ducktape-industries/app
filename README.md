@@ -78,7 +78,10 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   command), `live.*` (`publish`/`send`/`subscribe`/`tracks`: a view's live
   tracks through the node's relay, off consensus, on one QUIC or websocket
   session per connection, `src/backend/live.rs`), and the app's own
-  (`host.*`, `clock.ticks`, `clipboard.*`, `notify.*`, `store.*`). A view
+  (`host.*`, `clock.ticks`, `clipboard.*`, `notify.*`, `store.*`), and
+  `socket.open`/`socket.send` (a WebSocket from this device to a `wss://`
+  host the view's manifest lists, once the person allowed those hosts on a
+  card; `src/runtime/kernel/socket.rs`) with `host.random`. A view
   reaches only the capabilities its manifest declares. The app forwards the
   bytes to the program the view names and signs writes with the seated key;
   it never reads a payload.
@@ -139,9 +142,9 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (rev `6a2a21b4d259e3ecb8e7c4b46aa9bfcfde572cee`): `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, `files`.
-`ducktape-industries/ducktape` (rev `facd3c32542a6dcd90f8320a81d1a6e5f534de5f`, the rev that programs rev pins): `abi`, `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
-`ducktape-industries/gpui-pre` (rev `2622bd8294b97a966f8febbd3b9dcb2cb5850aca`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
+`ducktape-industries/programs` (rev `f45348abf11f5c53c8b8313ca97fcd352ac756ba`): `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, `files`.
+`ducktape-industries/ducktape` (rev `f836730c6a3adeb1657bbe61f6c04524149bfcc3`, the rev that programs rev pins): `abi`, `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
+`ducktape-industries/gpui-pre` (rev `eef11e96c9fcf7e0389d31f125013370a1b02d92`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
 
 ## Building
 

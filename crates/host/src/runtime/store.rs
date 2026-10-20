@@ -272,7 +272,7 @@ pub(super) fn store_of(recipient: Option<&super::notifier::Recipient>) -> PathBu
     }
 }
 
-fn path(store: &Path, chain: &str, program: &str) -> PathBuf {
+pub(super) fn path(store: &Path, chain: &str, program: &str) -> PathBuf {
     store
         .join(escaped(chain))
         .join(format!("{}.borsh", escaped(program)))

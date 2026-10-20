@@ -37,6 +37,7 @@ pub use sheet::{counts, sheet};
 /// The card's title for an op to the person's account (identity's).
 pub const ACCOUNT: &str = "Confirm a change to your account";
 pub const NETWORK: &str = "Confirm a change to the network";
+pub const CONNECT: &str = "Allow a connection from this device";
 
 /// What the dialog says for one op: its title ([`ACCOUNT`] or
 /// [`NETWORK`]), the sentence, the asking program's id in it (its bytes,
@@ -564,6 +565,29 @@ pub(super) fn queue_in(
 #[cfg(any(test, feature = "test-support"))]
 pub fn queue(program: &'static str, instance: u64, words: Words) -> Option<Told> {
     queue_in(waiting(), program, instance, words)
+}
+
+pub(super) fn connect(program: &str, hosts: &[String]) -> Words {
+    let lead = "Program ";
+    Words {
+        title: CONNECT,
+        said: format!(
+            "{lead}{program} asks to connect from this device to the hosts below. What it sends goes from this device straight to them, never through the network."
+        ),
+        id: Some(lead.len()..lead.len() + program.len()),
+        shown: Some(hosts.join("\n")),
+        described: false,
+        card: Card {
+            title: format!("Connect: {program}"),
+            facts: vec![
+                Fact::new("Program", program, true),
+                Fact::new("Hosts", hosts.join(", "), true),
+            ],
+            warning: "It sends and hears what it likes on these hosts whenever it runs, from this device.".into(),
+            verb: "Allow",
+            danger: false,
+        },
+    }
 }
 
 #[cfg(test)]

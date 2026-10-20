@@ -262,6 +262,7 @@ pub struct Listing {
     pub min_width: u32,
     pub width: Option<u32>,
     pub capabilities: Vec<Capability>,
+    pub hosts: Vec<String>,
     pub wire: String,
 }
 
@@ -277,6 +278,7 @@ fn manifest_of(bytes: &[u8]) -> Listing {
             min_width: manifest.min_width,
             width: manifest.width,
             capabilities: manifest.capabilities,
+            hosts: view_wire::manifest::read_hosts(bytes),
             wire: manifest.wire_id,
         })
         .unwrap_or_default()
@@ -298,6 +300,7 @@ pub fn listing(program: &str) -> Option<Listing> {
                 min_width: $held.min_width,
                 width: $held.width,
                 capabilities: $held.capabilities.clone(),
+                hosts: $held.hosts.clone(),
                 wire: $held.wire.clone(),
             }
         };
@@ -343,6 +346,9 @@ pub fn allows(capability: Capability) -> &'static str {
         }
         Capability::File => {
             "lets you pick files on this device: it sees their names and sizes, never where they are"
+        }
+        Capability::Socket => {
+            "connects from this device to the hosts it names, once you said yes: nothing passes through the network"
         }
         Capability::Artifact => "shows pages kept on the network, which the app draws",
     }

@@ -640,7 +640,20 @@ fn an_old_manifest_naming_targets_still_loads() {
             min_width: 480,
             width: None,
             capabilities: vec![methods::Capability::Op, methods::Capability::Program],
+            hosts: Vec::new(),
             wire: "0123abcd".into(),
         }
+    );
+}
+
+#[test]
+fn a_manifest_lists_the_hosts_its_sockets_reach() {
+    let text = "ducktape.view.manifest\nTelegram\n\nsocket,\n480\n4\n\n\nblue\n\nvenus.web.telegram.org,flora.web.telegram.org,";
+    let view = module(&[("ducktape.view.manifest", text.as_bytes())]);
+    let listing = crate::runtime::manifest_of(&view);
+    assert_eq!(listing.capabilities, [methods::Capability::Socket]);
+    assert_eq!(
+        listing.hosts,
+        ["venus.web.telegram.org", "flora.web.telegram.org"]
     );
 }

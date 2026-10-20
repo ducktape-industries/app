@@ -161,6 +161,7 @@ fn hosted(floats: bool) -> Vec<String> {
 mod describe;
 pub(super) mod live;
 mod node;
+pub(super) mod socket;
 pub use node::{Answered, artifact};
 pub(crate) use node::{Writes, writes};
 mod replies;
@@ -596,6 +597,9 @@ pub(super) fn answer(
         (Capability::Live, "send") => live::send(view, id, payload),
         (Capability::Live, "subscribe") => live::subscribe(view, id, payload),
         (Capability::Live, "tracks") => live::tracks(view, id, payload),
+        (Capability::Socket, "open") => socket::open(view, id, payload),
+        (Capability::Socket, "send") => socket::send(view, id, payload),
+        (Capability::Host, "random") => socket::random(view, id, payload),
         (Capability::Host, "id") => {
             let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();

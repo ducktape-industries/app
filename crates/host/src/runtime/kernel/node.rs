@@ -277,8 +277,11 @@ impl Items {
 
     /// The refusal that ends the subscription.
     pub(super) fn last(&self, refusal: wire::Error) {
-        self.replies
-            .answer(&self.claim, self.id, Err(refusal), true);
+        self.end(Err(refusal));
+    }
+
+    pub(super) fn end(&self, last: Answer) {
+        self.replies.answer(&self.claim, self.id, last, true);
     }
 }
 

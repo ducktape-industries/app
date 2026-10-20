@@ -305,6 +305,7 @@ impl View {
         fresh.tint = view.tint;
         fresh.description = view.description.clone();
         fresh.capabilities = view.capabilities.clone();
+        fresh.hosts = view.hosts.clone();
         fresh.min_width = view.min_width;
         fresh.width = view.width;
         fresh.wire = view.wire.clone();
@@ -654,6 +655,7 @@ impl View {
             tint,
             description,
             capabilities,
+            hosts,
             min_width,
             width,
             wire,
@@ -706,6 +708,7 @@ impl View {
             replies: _,
             live_subscriptions: _,
             tracks: _,
+            sockets: _,
             tasks: _,
             clipboard: _,
             picker: _,
@@ -724,6 +727,7 @@ impl View {
         sibling.tint = *tint;
         sibling.description = description.clone();
         sibling.capabilities = capabilities.clone();
+        sibling.hosts = hosts.clone();
         sibling.min_width = *min_width;
         sibling.width = *width;
         sibling.wire = wire.clone();
@@ -883,6 +887,7 @@ impl View {
         view.tint = listing.tint;
         view.description = listing.description;
         view.capabilities = listing.capabilities;
+        view.hosts = listing.hosts;
         view.min_width = listing.min_width;
         view.width = listing.width;
         view.wire = listing.wire;
@@ -973,6 +978,7 @@ impl View {
             tint: Tint::None,
             description: String::new(),
             capabilities: Vec::new(),
+            hosts: Vec::new(),
             min_width: 0,
             width: None,
             // the manifest's, once `load` reads it
@@ -1023,6 +1029,7 @@ impl View {
             replies: Arc::default(),
             live_subscriptions: Vec::new(),
             tracks: Default::default(),
+            sockets: Default::default(),
             tasks: Vec::new(),
             clipboard: Default::default(),
             picker: Default::default(),
@@ -1155,6 +1162,7 @@ fn view_code(
         min_width: listing.min_width,
         width: listing.width,
         capabilities: listing.capabilities,
+        hosts: listing.hosts,
         wire: listing.wire,
     }
 }
