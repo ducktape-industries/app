@@ -15,9 +15,9 @@
 #   cargo clippy --locked --workspace --all-targets --no-deps --features web -- -D warnings
 #   cargo test --locked --workspace --features web
 #   cargo build --locked --features web
-# The first build downloads CEF (about 300 MiB). Without the setuid sandbox
-# helper beside the binary, run with DUCKTAPE_WEB_NO_SANDBOX=1 (Linux; macOS
-# needs no helper, its framework is linked beside the binary at build).
+# The first build downloads CEF (about 300 MiB). On Linux CEF runs without
+# its sandbox unless a root-owned setuid `chrome-sandbox` sits beside the
+# binary; a macOS bundle's children are the helper apps of `ducktape-web-helper`.
 
 [package]
 name = "ducktape-web"
@@ -38,6 +38,11 @@ cef = [
     "dep:gpui_linux",
     "dep:cef-dll-sys",
 ]
+
+[[bin]]
+name = "ducktape-web-helper"
+path = "src/bin/helper.rs"
+required-features = ["cef"]
 
 [dependencies]
 gpui-kit = { version = "=0.7.3", optional = true }

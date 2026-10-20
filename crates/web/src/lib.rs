@@ -6,14 +6,13 @@
 //! Shape:
 //! - subprocesses are the app's own binary: [`child`] is the first thing in
 //!   `main`, before anything of the app starts.
-//! - CEF starts on the first page, not at app start, and only with its
-//!   sandbox: the Linux helper (`chrome-sandbox` beside the binary) must be
-//!   root's and setuid, else every page says the helper is not installed.
-//!   `DUCKTAPE_WEB_NO_SANDBOX=1` runs without it (development boxes).
-//!   macOS has no helper: CEF's framework sits beside the binary (`build.rs`
-//!   links it there), the app loads it before any CEF call (`mac.rs`), and
-//!   each child, this binary unbundled, enters its seatbelt sandbox first.
-//!   No app bundle yet.
+//! - CEF starts on the first page, not at app start. On Linux it runs in its
+//!   setuid sandbox when `chrome-sandbox` beside the binary is root's and
+//!   setuid, and without one otherwise: releases ship no helper.
+//!   macOS: CEF's framework sits beside the binary (`build.rs` links it
+//!   there) or in the bundle's `Frameworks/` beside its helper apps, the app
+//!   loads it before any CEF call (`mac.rs`), and each child enters its
+//!   seatbelt sandbox first.
 //!   CEF's signal handlers are off: a SIGTERM is the app's to handle.
 //! - the message loop is CEF's external pump: `on_schedule_message_pump_work`
 //!   (any CEF thread) sends its delay down a channel; one gpui foreground
@@ -43,6 +42,24 @@ mod page;
 mod scheme;
 
 pub use page::{Leave, Page, PageState};
+
+pub fn color_scheme(dark: bool) {
+    ENGINE.with_borrow_mut(|engine| {
+        if engine.dark == Some(dark) {
+            return;
+        }
+        engine.dark = Some(dark);
+        for (_, shared) in &engine.pages {
+            if let Some(host) = shared.host() {
+                handlers::scheme(&host, dark);
+            }
+        }
+    });
+}
+
+fn dark() -> Option<bool> {
+    ENGINE.with_borrow(|engine| engine.dark)
+}
 pub use scheme::{Answer, Network, SCHEME, Served, serve};
 
 use std::cell::RefCell;
@@ -163,6 +180,7 @@ struct Engine {
     status: Status,
     pages: Vec<(WeakEntity<Page>, Rc<page::Shared>)>,
     contexts: HashMap<PathBuf, cef::RequestContext>,
+    dark: Option<bool>,
 }
 
 thread_local! {
@@ -202,10 +220,7 @@ fn start(root: &Path, cx: &mut App) -> Result<(), SharedString> {
 }
 
 fn initialize(root: &Path) -> Result<(), SharedString> {
-    let sandbox = std::env::var_os("DUCKTAPE_WEB_NO_SANDBOX").is_none_or(|value| value != "1");
-    if sandbox && !sandbox_helper_installed() {
-        return Err("The web sandbox helper is not installed.".into());
-    }
+    let sandbox = sandbox_helper_installed();
     #[cfg(target_os = "macos")]
     if !mac::load() {
         return Err("The web view's framework is not beside the app.".into());
@@ -223,7 +238,7 @@ fn initialize(root: &Path) -> Result<(), SharedString> {
 }
 
 /// Linux: the setuid helper CEF's sandbox runs through, beside the binary,
-/// root's with the setuid bit; without it CEF aborts the whole process.
+/// root's with the setuid bit; without it CEF runs with no sandbox.
 #[cfg(target_os = "linux")]
 fn sandbox_helper_installed() -> bool {
     use std::os::unix::fs::MetadataExt as _;
@@ -233,9 +248,6 @@ fn sandbox_helper_installed() -> bool {
         .is_ok_and(|helper| helper.uid() == 0 && helper.mode() & 0o4000 != 0)
 }
 
-// macOS: each child enters seatbelt itself (`mac::sandbox`), nothing to
-// install. ponytail: Windows' sandbox is its packaging's (a broker),
-// unchecked here until there is one to check
 #[cfg(not(target_os = "linux"))]
 fn sandbox_helper_installed() -> bool {
     true
@@ -311,7 +323,18 @@ fn register(page: WeakEntity<Page>, shared: Rc<page::Shared>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{loadable, origin};
+    use super::{color_scheme, dark, loadable, origin};
+
+    #[test]
+    fn a_page_made_after_a_theme_switch_is_told_the_theme_now() {
+        assert_eq!(dark(), None, "no theme told before the app tells one");
+        color_scheme(true);
+        assert_eq!(dark(), Some(true));
+        color_scheme(false);
+        assert_eq!(dark(), Some(false), "the switch, not the first theme");
+        color_scheme(false);
+        assert_eq!(dark(), Some(false));
+    }
 
     #[test]
     fn an_origin_names_the_site_and_nothing_else() {

@@ -35,8 +35,6 @@ pub(crate) fn initialize(sandbox: bool, root: &Path) -> bool {
         log_severity: LogSeverity::WARNING,
         // a SIGTERM is the app's: CEF's own handler exits before teardown
         disable_signal_handlers: 1,
-        // macOS: the framework beside the binary, the children this binary
-        // (else CEF looks for both inside an app bundle)
         #[cfg(target_os = "macos")]
         framework_dir_path: crate::mac::framework()
             .unwrap_or_default()
@@ -44,7 +42,7 @@ pub(crate) fn initialize(sandbox: bool, root: &Path) -> bool {
             .as_ref()
             .into(),
         #[cfg(target_os = "macos")]
-        browser_subprocess_path: std::env::current_exe()
+        browser_subprocess_path: crate::mac::subprocess()
             .unwrap_or_default()
             .to_string_lossy()
             .as_ref()
@@ -76,6 +74,29 @@ pub(crate) fn context(profile: &Path) -> Option<RequestContext> {
     Some(context)
 }
 
+pub(crate) fn scheme(host: &BrowserHost, dark: bool) {
+    let value = match dark {
+        true => "dark",
+        false => "light",
+    };
+    let (Some(mut params), Some(mut features), Some(mut feature)) = (
+        dictionary_value_create(),
+        list_value_create(),
+        dictionary_value_create(),
+    ) else {
+        return;
+    };
+    feature.set_string(Some(&"name".into()), Some(&"prefers-color-scheme".into()));
+    feature.set_string(Some(&"value".into()), Some(&value.into()));
+    features.set_dictionary(0, Some(&mut feature));
+    params.set_list(Some(&"features".into()), Some(&mut features));
+    host.execute_dev_tools_method(
+        0,
+        Some(&"Emulation.setEmulatedMedia".into()),
+        Some(&mut params),
+    );
+}
+
 /// Asks CEF for the page's browser, in `context` (its profile); the
 /// browser arrives in `on_after_created`. A fresh request context is not
 /// initialized yet, which the synchronous call refuses.
@@ -86,6 +107,7 @@ pub(crate) fn create(shared: &Rc<Shared>, url: &str, context: Option<RequestCont
     };
     let settings = BrowserSettings {
         windowless_frame_rate: 60,
+        background_color: 0xFFFF_FFFF,
         ..Default::default()
     };
     let mut client = PageClient::new(
@@ -348,6 +370,9 @@ wrap_life_span_handler! {
 
         fn on_after_created(&self, browser: Option<&mut Browser>) {
             *self.shared.browser.borrow_mut() = browser.map(|browser| browser.clone());
+            if let (Some(dark), Some(host)) = (crate::dark(), self.shared.host()) {
+                scheme(&host, dark);
+            }
             self.shared.dirty.set(true);
         }
 

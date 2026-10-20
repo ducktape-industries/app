@@ -127,6 +127,7 @@ impl ViewTree {
                     .refine_style(&self.style(*style))
                     .id(native_id(id))
                     .overflow_hidden()
+                    .bg(ground(cx))
                     .child(page)
                     .into_any_element();
             }
@@ -151,12 +152,16 @@ impl ViewTree {
             if !page.read(cx).unavailable() {
                 let height =
                     height.map_or(window.viewport_size().height, |height| px(height as f32));
+                let palette = crate::theme::palette(cx);
                 return div()
                     .refine_style(&self.style(*style))
                     .id(native_id(id))
                     .overflow_hidden()
-                    .h(height)
-                    .child(page)
+                    .border_1()
+                    .border_color(crate::theme::hsla(palette.border))
+                    .rounded(px(design::radius::CARD as f32))
+                    .bg(crate::theme::hsla(palette.surface))
+                    .child(div().w_full().h(height).child(page))
                     .into_any_element();
             }
         }
@@ -174,6 +179,7 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> &mut Piece {
+        ducktape_web::color_scheme(gpui_kit::component::Theme::global(cx).is_dark());
         let key = key(&self.authored_path, node).expect("a web piece");
         if !self.webs.pages.contains_key(&key) {
             let piece = open(address, on_state, follows, self.perf_key, window, cx);
@@ -246,6 +252,11 @@ fn open(
         _leave: leave,
         _follow: follow,
     }
+}
+
+#[cfg(feature = "web")]
+fn ground(cx: &App) -> gpui_kit::Hsla {
+    crate::theme::hsla(crate::theme::palette(cx).surface)
 }
 
 fn link_line(id: &wire::ElementIdWire, link: &str, cx: &mut Context<ViewTree>) -> AnyElement {

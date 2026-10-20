@@ -133,7 +133,11 @@ wrap_resource_handler! {
             };
             if let Some(response) = response {
                 response.set_status(c_int::from(served.status));
-                response.set_mime_type(Some(&served.mime.as_str().into()));
+                let (media, charset) = media_type(&served.mime);
+                response.set_mime_type(Some(&media.into()));
+                if let Some(charset) = charset {
+                    response.set_charset(Some(&charset.into()));
+                }
                 response.set_header_by_name(Some(&"Cache-Control".into()), Some(&"no-store".into()), 1);
             }
             if let Some(length) = response_length {
@@ -167,6 +171,18 @@ wrap_resource_handler! {
     }
 }
 
+fn media_type(mime: &str) -> (&str, Option<&str>) {
+    let mut parts = mime.split(';');
+    let media = parts.next().unwrap_or_default().trim();
+    let charset = parts.find_map(|parameter| {
+        let (name, value) = parameter.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| value.trim().trim_matches('"'))
+    });
+    (media, charset)
+}
+
 wrap_render_process_handler! {
     struct PageScript;
 
@@ -192,7 +208,14 @@ wrap_render_process_handler! {
                 return;
             };
             global.set_value_bykey(Some(&TELL.into()), Some(&mut tell), V8Propertyattribute::default());
-            context.eval(Some(&WATCH.into()), Some(&address.as_str().into()), 0, None, None);
+            let (mut value, mut thrown) = (None, None);
+            context.eval(
+                Some(&WATCH.into()),
+                Some(&address.as_str().into()),
+                0,
+                Some(&mut value),
+                Some(&mut thrown),
+            );
         }
     }
 }
@@ -223,5 +246,27 @@ wrap_v8_handler! {
             self.frame.send_process_message(ProcessId::BROWSER, Some(&mut message));
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::media_type;
+
+    #[test]
+    fn a_mime_type_reaches_cef_as_its_media_type_and_charset() {
+        assert_eq!(
+            media_type("text/html; charset=utf-8"),
+            ("text/html", Some("utf-8"))
+        );
+        assert_eq!(
+            media_type("text/plain;Charset=\"UTF-8\""),
+            ("text/plain", Some("UTF-8"))
+        );
+        assert_eq!(media_type("image/png"), ("image/png", None));
+        assert_eq!(
+            media_type("application/json; q=1"),
+            ("application/json", None)
+        );
     }
 }

@@ -25,7 +25,11 @@ the app still checks and says what is newer, but downloads and installs
 nothing until you press Update now there.
 For nightly, read `nightly.json` instead of `stable.json` below.
 
-**macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`,
+Releases carry the web view (CEF), which draws web pages and artifacts in
+place.
+
+**macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`, with
+CEF's framework and its helper apps in `Contents/Frameworks/`, all
 Developer ID signed and notarized, with a Developer ID provisioning profile
 embedded: it authorizes the app's application identifier and keychain access
 group, which a key locked by Touch ID needs (macOS keeps those in the data
@@ -47,18 +51,31 @@ browser download is quarantined: after dragging it to `/Applications`, run
 
 **Linux (x86_64).** Needs `jq`, and at runtime `libxcb1`,
 `libxkbcommon-x11-0`, ALSA's library for the microphone and speakers
-(`libasound2`; `libasound2t64` from Ubuntu 24.04 on) and a Vulkan driver
-(`libvulkan1` and `mesa-vulkan-drivers` on Ubuntu). `ducktape-app install`
-puts the binary under `~/.local/share/ducktape/` and registers a desktop
-entry; the extracted copy can be deleted after.
+(`libasound2`; `libasound2t64` from Ubuntu 24.04 on), a Vulkan driver
+(`libvulkan1` and `mesa-vulkan-drivers` on Ubuntu), and the libraries CEF
+loads: `libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0
+libcups2 libdbus-1-3 libgbm1 libpango-1.0-0 libcairo2 libglib2.0-0
+libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2` (Ubuntu 24.04
+names some of these with `t64`). `ducktape-app install` puts the binary and
+CEF's files under `~/.local/share/ducktape/` and registers a desktop entry;
+the extracted copy can be deleted after.
+
+On Linux the web view runs **without Chromium's sandbox**: releases ship no
+`chrome-sandbox`, since its setuid-root helper can't live in a folder you own.
+A page's renderer then runs with your user's rights, so a flaw in Chromium
+that a page exploits can read and write what you can. A page's own requests
+and frames reach any https site and this machine's loopback services; simple
+POSTs get through even where CORS blocks reading the answers. A root-owned setuid
+`chrome-sandbox` placed beside the installed binary turns the sandbox back
+on. macOS runs every CEF child in its own sandbox.
 
 ```bash
 sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
   | jq -r .manifest | jq -r '.artifacts["linux-x86_64"].sha256')
 curl -fLo /tmp/ducktape.tar.gz "https://dl.ducktape.industries/app/Ducktape-$sha-linux-x86_64.tar.gz"
 echo "$sha  /tmp/ducktape.tar.gz" | sha256sum -c
-tar xzf /tmp/ducktape.tar.gz -C /tmp
-/tmp/ducktape-app install
+mkdir -p /tmp/ducktape && tar xzf /tmp/ducktape.tar.gz -C /tmp/ducktape
+/tmp/ducktape/ducktape-app install
 ```
 
 ## What the app does

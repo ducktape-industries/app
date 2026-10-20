@@ -59,6 +59,19 @@ if [[ -n "$profile" ]]; then
     -c "Add :keychain-access-groups:0 string $app_id" \
     "$entitlements"
 fi
+frameworks="$contents/Frameworks"
+if [[ -d "$frameworks" ]]; then
+  framework="$frameworks/Chromium Embedded Framework.framework"
+  for library in "$framework"/Libraries/*.dylib; do
+    codesign "${sign[@]}" "$library"
+  done
+  codesign "${sign[@]}" "$framework"
+  for helper in "$frameworks"/*Helper*.app; do
+    helper_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$helper/Contents/Info.plist")
+    codesign "${sign[@]}" --identifier "$helper_id" \
+      --entitlements "$repo/packaging/helper-entitlements.plist" "$helper"
+  done
+fi
 codesign "${sign[@]}" --identifier "$bundle_id" --entitlements "$entitlements" "$contents/MacOS/ducktape-app"
 codesign "${sign[@]}" --entitlements "$entitlements" "$app"
 codesign --verify --deep --strict "$app"
