@@ -76,7 +76,7 @@ async fn validators(
     program: &str,
 ) -> Result<Vec<Vec<u8>>, view_wire::Error> {
     let validators = abi::encode(&valset::Query::Validators);
-    let frame = query_frame(&*query_signer(), network, program, validators).await?;
+    let frame = query_frame(&*query_signer(network), network, program, validators).await?;
     let reply = client
         .query(Layer::Preconfirmed, frame)
         .await

@@ -1,11 +1,11 @@
-//! This device, signed in: the one signer held while the person is signed
-//! in (the shell opens it: the desktop's device key, or its keystore for a
-//! password-locked one) and the frames it signs. Every write a view submits
-//! is signed here — a view never sees a private key or a password.
+//! This device, signed in: the key seated for each network the person is
+//! signed in to, and the frames it signs. Every write a view submits is
+//! signed here — a view never sees a private key or a password.
 
 use noded_client::SignError;
 use noded_client::hex::hex_encode;
 use noded_client::wire::{Frame, Tip, salt};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use view_wire::Error;
 use view_wire::methods::refusal;
@@ -16,19 +16,23 @@ struct Signer {
     key: Arc<dyn noded_client::Signer>,
 }
 
-static SIGNER: std::sync::Mutex<Option<Signer>> = std::sync::Mutex::new(None);
+static SIGNERS: std::sync::Mutex<BTreeMap<String, Signer>> = std::sync::Mutex::new(BTreeMap::new());
 
-fn seat() -> std::sync::MutexGuard<'static, Option<Signer>> {
-    SIGNER
+fn seats() -> std::sync::MutexGuard<'static, BTreeMap<String, Signer>> {
+    SIGNERS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn key_of(network: &str) -> Option<Arc<dyn noded_client::Signer>> {
+    seats().get(network).map(|signer| signer.key.clone())
 }
 
 const LOCKED: &str = "this device's key is locked; unlock it first";
 
 /// Whether a key is seated: what a write would be signed with.
-pub fn seated() -> bool {
-    seat().is_some()
+pub fn seated(network: &str) -> bool {
+    seats().contains_key(network)
 }
 
 /// The seat is one for the process: a test that seats a key or locks it
@@ -53,15 +57,21 @@ fn locked_seat() -> Error {
     Error::new(refusal::SESSION_LOCKED, LOCKED)
 }
 
-/// Seats `key` as the one that signs; answers its public key.
-pub async fn seat_key(key: Arc<dyn noded_client::Signer>) -> String {
+pub async fn seat_key(network: &str, key: Arc<dyn noded_client::Signer>) -> String {
     let pubkey = hex_encode(&key.public_key());
-    *seat() = Some(Signer { key });
+    seats().insert(network.to_owned(), Signer { key });
     pubkey
 }
 
 pub async fn lock_signer() -> bool {
-    seat().take().is_some()
+    let mut seats = seats();
+    let held = !seats.is_empty();
+    seats.clear();
+    held
+}
+
+pub fn unseat(network: &str) -> bool {
+    seats().remove(network).is_some()
 }
 
 /// The seated key as the signer of a flow that waits between its
@@ -69,6 +79,7 @@ pub async fn lock_signer() -> bool {
 /// starts, it looks the seat up again at each signature, so a lock in the
 /// meantime refuses the signature ([`LOCKED`]) where a copy would sign.
 pub struct Seated {
+    network: String,
     public: [u8; 32],
 }
 
@@ -80,22 +91,19 @@ impl noded_client::Signer for Seated {
     /// Refused, as locked, also when another key was seated since: its
     /// signature would not be this signer's.
     fn sign(&self, namespace: &[u8], message: &[u8]) -> Result<[u8; 64], SignError> {
-        let session = seat();
-        match session.as_ref() {
-            Some(signer) if signer.key.public_key() == self.public => {
-                signer.key.sign(namespace, message)
-            }
+        match key_of(&self.network) {
+            Some(key) if key.public_key() == self.public => key.sign(namespace, message),
             _ => Err(SignError(LOCKED.into())),
         }
     }
 }
 
 /// The signer for the key seated now; locked, none.
-pub fn seated_signer() -> Result<Seated, Error> {
-    let session = seat();
-    let signer = session.as_ref().ok_or_else(locked_seat)?;
+pub fn seated_signer(network: &str) -> Result<Seated, Error> {
+    let key = key_of(network).ok_or_else(locked_seat)?;
     Ok(Seated {
-        public: signer.key.public_key(),
+        network: network.to_owned(),
+        public: key.public_key(),
     })
 }
 
@@ -107,10 +115,7 @@ pub async fn seated_frame(
     target: &str,
     payload: Vec<u8>,
 ) -> Result<Frame, Error> {
-    let key = seat()
-        .as_ref()
-        .map(|signer| signer.key.clone())
-        .ok_or_else(locked_seat)?;
+    let key = key_of(network).ok_or_else(locked_seat)?;
     let anchor = anchor(client).await?;
     let frame = Frame::sign(
         &*key,
@@ -128,22 +133,21 @@ pub async fn anchor(client: &RpcClient) -> Result<Tip, Error> {
 }
 
 /// The seated key's public half.
-pub async fn seated_key() -> Result<Vec<u8>, Error> {
-    let session = seat();
-    let signer = session.as_ref().ok_or_else(locked_seat)?;
-    Ok(signer.key.public_key().to_vec())
+pub async fn seated_key(network: &str) -> Result<Vec<u8>, Error> {
+    let key = key_of(network).ok_or_else(locked_seat)?;
+    Ok(key.public_key().to_vec())
 }
 
-/// The seated key's public half and its signature over `message` under
-/// `namespace` — a consent the device key gives (`backend::passkey`).
-pub async fn seated_sign(namespace: &[u8], message: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let session = seat();
-    let signer = session.as_ref().ok_or_else(locked_seat)?;
+pub async fn seated_sign(key: &[u8], namespace: &[u8], message: &[u8]) -> Result<Vec<u8>, Error> {
+    let signer = seats()
+        .values()
+        .map(|signer| signer.key.clone())
+        .find(|signer| signer.public_key().as_slice() == key)
+        .ok_or_else(locked_seat)?;
     let proof = signer
-        .key
         .sign(namespace, message)
         .map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))?;
-    Ok((signer.key.public_key().to_vec(), proof.to_vec()))
+    Ok(proof.to_vec())
 }
 
 /// A query `signer` signs: [`query_signer`] for the network in hand, the
@@ -163,11 +167,8 @@ pub async fn query_frame(
 /// What signs a query: the seated key, or the shell's reader
 /// (`OsServices::reader`) while none is seated — the key [`query_frame`]
 /// signs with.
-pub fn query_signer() -> Arc<dyn noded_client::Signer> {
-    seat().as_ref().map_or_else(
-        || crate::contract::os().reader(),
-        |signer| signer.key.clone(),
-    )
+pub fn query_signer(network: &str) -> Arc<dyn noded_client::Signer> {
+    key_of(network).unwrap_or_else(|| crate::contract::os().reader())
 }
 
 #[cfg(test)]
@@ -179,14 +180,36 @@ mod tests {
     async fn a_seated_signer_refuses_once_the_key_is_locked() {
         let _serial = seat_serial();
         let sign = |signer: &Seated| noded_client::Signer::sign(signer, b"ns", b"message");
-        seat_key(Arc::new(ed25519::PrivateKey::from_seed(3))).await;
-        let seated = seated_signer().unwrap();
+        seat_key("a", Arc::new(ed25519::PrivateKey::from_seed(3))).await;
+        let seated = seated_signer("a").unwrap();
         assert!(sign(&seated).is_ok());
         lock_signer().await;
         assert_eq!(sign(&seated), Err(SignError(LOCKED.into())));
-        seat_key(Arc::new(ed25519::PrivateKey::from_seed(4))).await;
+        seat_key("a", Arc::new(ed25519::PrivateKey::from_seed(4))).await;
         assert_eq!(sign(&seated), Err(SignError(LOCKED.into())));
         lock_signer().await;
-        assert!(seated_signer().is_err());
+        assert!(seated_signer("a").is_err());
+    }
+
+    #[tokio::test]
+    async fn each_network_signs_with_its_own_key_and_one_lock_locks_every_one() {
+        let _serial = seat_serial();
+        let public =
+            |seed| noded_client::Signer::public_key(&ed25519::PrivateKey::from_seed(seed)).to_vec();
+        let reader = noded_client::Signer::public_key(&*crate::contract::os().reader()).to_vec();
+        seat_key("a", Arc::new(ed25519::PrivateKey::from_seed(5))).await;
+        seat_key("b", Arc::new(ed25519::PrivateKey::from_seed(6))).await;
+        assert_eq!(seated_key("a").await.unwrap(), public(5));
+        assert_eq!(seated_key("b").await.unwrap(), public(6));
+        assert!(seated_key("c").await.is_err(), "no key was seated for c");
+        let queries = |network| noded_client::Signer::public_key(&*query_signer(network)).to_vec();
+        assert_eq!((queries("b"), queries("c")), (public(6), reader));
+        assert!(seated_sign(&public(5), b"ns", b"message").await.is_ok());
+        assert!(unseat("a"));
+        assert!(!seated("a") && seated("b"), "leaving a keeps b's key");
+        assert!(seated_sign(&public(5), b"ns", b"message").await.is_err());
+        seat_key("a", Arc::new(ed25519::PrivateKey::from_seed(5))).await;
+        assert!(lock_signer().await);
+        assert!(!seated("a") && !seated("b"), "one Lock locks every network");
     }
 }

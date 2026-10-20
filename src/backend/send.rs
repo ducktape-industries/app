@@ -375,7 +375,7 @@ async fn submit(
     program: &str,
     payload: Vec<u8>,
 ) -> Result<Sent, Failure> {
-    super::seat_key(key).await;
+    super::seat_key(&status.network, key).await;
     let frame = super::seated_frame(client, &status.network, program, payload)
         .await
         .map_err(Failure::Unsigned)?;

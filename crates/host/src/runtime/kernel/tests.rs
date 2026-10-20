@@ -1477,7 +1477,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     assert!(consent::front().is_none());
     // seated and connected: the ask waits, nothing reaches the node
     let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
-    handle().block_on(backend::seat_key(std::sync::Arc::new(key)));
+    handle().block_on(backend::seat_key("test-network", std::sync::Arc::new(key)));
     // garbage for the frame's anchor read, on this view's own connection
     let node = fake_node(vec![(
         noded_client::wire::route::STATUS,
@@ -1592,7 +1592,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
     // listed, its code carrying no describe module
     list_program("acl-programs", 0xa2, false, None);
     let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
-    handle().block_on(backend::seat_key(std::sync::Arc::new(key)));
+    handle().block_on(backend::seat_key("test-network", std::sync::Arc::new(key)));
     let mut view = view();
     // a manifest name that reads as a role's: the card asks all the same,
     // naming the roster's program

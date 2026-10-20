@@ -130,9 +130,10 @@ fn applying_node_with_a_lost_answer(lost: &'static str) -> (Node, Sent) {
 async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
-    ))
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(41)),
+    )
     .await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
     let answer = submit(node.clone(), call_registry(), Claim::default()).await;
@@ -159,9 +160,10 @@ fn call_registry() -> Vec<u8> {
 async fn a_submit_whose_anchor_read_was_lost_is_refused_unsent() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
-    ))
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(41)),
+    )
     .await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::STATUS);
     let answer = submit(node.clone(), call_registry(), Claim::default()).await;
@@ -179,9 +181,10 @@ async fn a_submit_whose_anchor_read_was_lost_is_refused_unsent() {
 async fn a_frame_the_node_refuses_outright_is_refused_not_submitted() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
-    ))
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(41)),
+    )
     .await;
     let node = fake_node(vec![
         (
@@ -209,9 +212,10 @@ async fn a_frame_the_node_refuses_outright_is_refused_not_submitted() {
 async fn a_predicted_refusal_is_still_a_pooled_frame() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
-    ))
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(41)),
+    )
     .await;
     let node = fake_node(vec![
         (
@@ -290,9 +294,10 @@ async fn a_held_answer_lands() {
 async fn a_redirected_submit_goes_nowhere_else() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
-    ))
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(41)),
+    )
     .await;
     let elsewhere = fake_node(vec![(
         noded::route::SUBMIT,
@@ -445,9 +450,10 @@ fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::Atomic
 async fn two_identical_submits_in_flight_are_two_frames() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
-    ))
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(41)),
+    )
     .await;
     let (node, applied) = node_refusing_duplicates();
     let (first, second) = tokio::join!(
@@ -897,9 +903,10 @@ fn a_reconnect_leaves_an_ended_request_ended() {
 async fn a_submit_out_at_a_reconnect_answers_in_doubt() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
-    ))
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(41)),
+    )
     .await;
     let old = fake_node(vec![
         (
@@ -1187,9 +1194,10 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
     use commonware_cryptography::Signer as _;
     const MOST: u64 = 3 << 20;
     let _seat = backend::seat_serial();
-    backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(43),
-    ))
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(43)),
+    )
     .await;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tape.bin");
@@ -1264,9 +1272,12 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
 async fn put_meeting(carried: Option<abi::Outcome>, seed: u64) -> Answer {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(seed),
-    ))
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(
+            seed,
+        )),
+    )
     .await;
     let blobs = put_of(&view(), vec![bytes("chunk", b"tape")]);
     let fake = put_node(carried);
@@ -1362,9 +1373,10 @@ async fn a_put_of_a_file_whose_size_changed_since_the_pick_is_a_host_fault() {
 fn a_put_waiting_for_its_bundle_goes_with_the_view() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    futures::executor::block_on(backend::seat_key(std::sync::Arc::new(
-        commonware_cryptography::ed25519::PrivateKey::from_seed(44),
-    )));
+    futures::executor::block_on(backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(44)),
+    ));
     let fake = put_node(bundle_five());
     let mut view = view();
     let blobs = put_of(&view, vec![bytes("chunk", b"tape")]);
@@ -1406,11 +1418,11 @@ async fn the_try_network_holds_a_put() {
     const MOST: u64 = 1 << 20;
     let _seat = backend::seat_serial();
     let key = commonware_cryptography::ed25519::PrivateKey::from_seed(noded::salt());
-    backend::seat_key(std::sync::Arc::new(key)).await;
     let endpoint =
         std::env::var("DUCKTAPE_TRY_NODE").unwrap_or_else(|_| "http://127.0.0.1:18947".into());
     let client = RpcClient::new(endpoint);
     let status = client.status().await.unwrap();
+    backend::seat_key(&status.network, std::sync::Arc::new(key)).await;
     let name = format!("op-put {}", noded::salt() % 1_000_000);
     let account = backend::identity::create_plain_account(&client, &status.network, &name)
         .await
@@ -1443,9 +1455,14 @@ async fn the_try_network_holds_a_put() {
     for id in ids {
         let blob = abi::BlobId::Sha256(id);
         let ask = abi::encode(&blob::contract::Query::Held { blob });
-        let frame = backend::query_frame(&*backend::query_signer(), &status.network, target, ask)
-            .await
-            .unwrap();
+        let frame = backend::query_frame(
+            &*backend::query_signer(&status.network),
+            &status.network,
+            target,
+            ask,
+        )
+        .await
+        .unwrap();
         let reply = client
             .query(backend::Layer::Confirmed, frame)
             .await
@@ -1686,7 +1703,10 @@ fn a_followed_query_is_signed_by_the_reader() {
     let _seat = backend::seat_serial();
     let seated = commonware_cryptography::ed25519::PrivateKey::from_seed(61);
     let seated_key = noded_client::Signer::public_key(&seated).to_vec();
-    handle().block_on(backend::seat_key(std::sync::Arc::new(seated)));
+    handle().block_on(backend::seat_key(
+        "other-network",
+        std::sync::Arc::new(seated),
+    ));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let (heard, signed) = std::sync::mpsc::channel();

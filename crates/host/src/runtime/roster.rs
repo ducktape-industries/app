@@ -532,7 +532,7 @@ pub(super) fn read_roster(
     let programs = handle().block_on(crate::backend::views::programs(
         client,
         &asked_of.network,
-        &*crate::backend::query_signer(),
+        &*crate::backend::query_signer(&asked_of.network),
     ));
     drop(read);
     let programs = match programs {
@@ -551,7 +551,7 @@ pub(super) fn read_roster(
     let due = match handle().block_on(crate::backend::views::next_scheduled(
         client,
         &asked_of.network,
-        &*crate::backend::query_signer(),
+        &*crate::backend::query_signer(&asked_of.network),
     )) {
         Ok(Some(height)) => Due::At(height),
         Ok(None) => Due::Never,
@@ -570,7 +570,7 @@ pub(super) fn read_roster(
         match handle().block_on(crate::backend::views::roles(
             client,
             &asked_of.network,
-            &*crate::backend::query_signer(),
+            &*crate::backend::query_signer(&asked_of.network),
         )) {
             Ok(roles) => Some(roles),
             Err(error) => {

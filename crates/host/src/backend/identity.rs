@@ -18,7 +18,9 @@ pub async fn create_plain_account(
     network: &str,
     name: &str,
 ) -> Result<(u64, String), String> {
-    let device = seated_key().await.map_err(|refusal| refusal.message)?;
+    let device = seated_key(network)
+        .await
+        .map_err(|refusal| refusal.message)?;
     if let Some(account) = account_of_key(client, network, device).await? {
         return Ok(account);
     }
@@ -42,7 +44,7 @@ pub async fn account_of_key(
     network: &str,
     key: Vec<u8>,
 ) -> Result<Option<(u64, String)>, String> {
-    noded_client::identity::account_of_key(client, network, key, &*query_signer()).await
+    noded_client::identity::account_of_key(client, network, key, &*query_signer(network)).await
 }
 
 pub async fn submit_seated(client: &RpcClient, network: &str, op: &Op) -> Result<Vec<u8>, String> {

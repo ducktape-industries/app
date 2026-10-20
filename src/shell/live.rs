@@ -43,9 +43,6 @@ impl Live {
 
 pub(crate) fn boot(live: Live, entities: &Entities, cx: &mut gpui_kit::App) {
     let runtime = crate::runtime::handle();
-    let signer = runtime.block_on(crate::backend::seat_key(std::sync::Arc::new(
-        ed25519::PrivateKey::from_seed(live.seed),
-    )));
     let client = crate::backend::rpc_client(live.endpoint.clone());
     let status = match runtime.block_on(client.status()) {
         Ok(status) => status,
@@ -54,6 +51,10 @@ pub(crate) fn boot(live: Live, entities: &Entities, cx: &mut gpui_kit::App) {
             std::process::exit(1);
         }
     };
+    let signer = runtime.block_on(crate::backend::seat_key(
+        &status.network,
+        std::sync::Arc::new(ed25519::PrivateKey::from_seed(live.seed)),
+    ));
     let chain = ducklink::ChainId::of(&status.network, &status.genesis)
         .map_or_else(|| status.network.clone(), |chain| chain.to_string());
     crate::runtime::connected(&client, &status.network, &chain);

@@ -1336,7 +1336,7 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
         }
         Err(error) => return Err(super::refused(error)),
     };
-    let key = super::seated_key().await?;
+    let key = super::seated_key(&status.network).await?;
     let endpoint = rpc.endpoint().to_owned();
     let hello = Hello {
         chain: status.genesis,
@@ -1548,13 +1548,7 @@ async fn handshake(link: &mut Link, hello: Hello, node: &[u8]) -> Result<bool, E
         return Err(unavailable("the node did not challenge the hello"));
     };
     let preimage = live_wire::proof_preimage(&chain, node, &challenge.nonce, &key);
-    let (signer, signature) = super::seated_sign(live_wire::NAMESPACE, &preimage).await?;
-    if signer != key {
-        return Err(Error::new(
-            refusal::STALE_CONNECTION,
-            "the seated key changed during the live handshake",
-        ));
-    }
+    let signature = super::seated_sign(&key, live_wire::NAMESPACE, &preimage).await?;
     link.send(&Control::Proof(Proof { signature })).await?;
     match link.recv().await.map_err(Unread::refusal)? {
         Control::Welcome(welcome) => Ok(welcome.datagrams),

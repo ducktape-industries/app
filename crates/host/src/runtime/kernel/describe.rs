@@ -275,7 +275,7 @@ mod stage {
         let endpoint = std::env::var("DESCRIBE_STAGE").expect("DESCRIBE_STAGE names the node");
         let client = RpcClient::new(endpoint);
         let network = client.status().await.expect("the stage answers").network;
-        let programs = views::programs(&client, &network, &*crate::backend::query_signer())
+        let programs = views::programs(&client, &network, &*crate::backend::query_signer(&network))
             .await
             .expect("its roster");
         *super::super::super::roster::roster().lock() = programs;

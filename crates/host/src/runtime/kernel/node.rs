@@ -38,7 +38,7 @@ impl Node {
     pub(super) fn signer(&self) -> std::sync::Arc<dyn noded_client::Signer> {
         match self.on.followed() {
             true => crate::contract::os().reader(),
-            false => backend::query_signer(),
+            false => backend::query_signer(&self.network),
         }
     }
 }
@@ -100,7 +100,7 @@ pub(super) fn spawn_consented(
         );
         return;
     }
-    if !backend::seated() {
+    if !backend::seated(&view.connection.network) {
         view.refuse(
             id,
             refusal::SESSION_LOCKED,

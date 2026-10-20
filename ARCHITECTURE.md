@@ -638,12 +638,13 @@ Connect ─► /v1/status ─► contract check ─► keyring::bind ─► devi
    which case nothing is made and the key screen asks for its password. A
    store that errors is never taken for an empty one: its sentence lands on
    the failed-key screen, and nothing is made or kept over its key.
-   `backend::seat_key` puts the key in the process-wide `SIGNER` and
-   answers the public key (`signer_key`). No password, no phrase for a
+   `backend::seat_key` seats the key for its network (`SIGNERS`, one key
+   per network) and answers the public key (`signer_key`). No password, no phrase for a
    device key. The legacy file is opened once by `Account::unlock(password)`
    (`key_dir::open_password_locked`) and moved into the OS store (`device_key::save`, which keeps a key only
-   where none is kept yet). `Account::lock` calls `lock_signer` and returns to
-   `Screen::Unlock`; `browse_without_key` opens the desk read-only.
+   where none is kept yet). `Account::lock` calls `lock_signer`, which unseats
+   every network's key, and returns to `Screen::Unlock` (leaving a network
+   unseats its key alone, `unseat`); `browse_without_key` opens the desk read-only.
 3. **Account** (`backend/identity.rs` `account_of_key` →
    `Account::resolved`). A key with an account goes to `Screen::Desk`; one
    without goes to `Screen::Account`, which offers:
@@ -842,7 +843,7 @@ House words, and where one word means several things.
 - **seat** — four meanings. (1) `seat::Mounted`: the per-`(program,
   instance)` slot a view is loaded into, in `runtime/seat.rs`.
   (2) the **seated key**: the signing key in `backend/session.rs`'s
-  `SIGNER` (`seat_key`, `seated_frame`; `AccountState::seating` while it
+  `SIGNERS`, one per network (`seat_key`, `seated_frame`; `AccountState::seating` while it
   opens). (3) "unseated": a pane that left the desk for its own window
   (`shell/windows.rs`). (4) the element id `seat` of the pane area
   (`shell/layers/root.rs`). Also `runtime::Seat` (`seat/entity.rs`): the
@@ -975,7 +976,7 @@ House words, and where one word means several things.
   network's keys (`<network>` or `<network>+<founded>`). (2) the `keyring`
   crate: the OS credential store `backend/device_key.rs` uses.
 - **device key / seated key / reader key / legacy key** — this device's
-  per-network ed25519 key in the OS store; the one loaded into `SIGNER`;
+  per-network ed25519 key in the OS store; the one seated for its network in `SIGNERS`;
   the throwaway key that signs queries while locked; a password-locked
   keystore file from before keys moved into the OS.
 - **passkey / touch / ceremony / auth page / relay slot** — an account
