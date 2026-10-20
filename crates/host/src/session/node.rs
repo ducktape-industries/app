@@ -177,7 +177,7 @@ impl Session {
     ) -> Task<()> {
         cx.spawn(async move |this, cx| {
             while writes.next().await.is_some() {
-                if this.update(cx, |this, cx| heard(this, cx)).is_err() {
+                if this.update(cx, heard).is_err() {
                     return;
                 }
             }
