@@ -552,3 +552,64 @@ pub(super) mod largest {
 
 #[global_allocator]
 static ALLOCATOR: largest::Largest = largest::Largest;
+
+#[test]
+fn a_new_key_on_the_session_starts_the_notifier_again_under_it() {
+    use futures::StreamExt as _;
+    let program = "notifier-tests-rekey";
+    let posting = wire::Request {
+        id: 1,
+        kind: "notify.post".into(),
+        payload: wire::methods::encode(&mention()),
+    };
+    let keeping = wire::Request {
+        id: 2,
+        kind: "store.set".into(),
+        payload: wire::methods::encode(&("notified".to_owned(), Some(b"7".to_vec()))),
+    };
+    let blob = blob_carrying(&notifier_asking(
+        "Rekey",
+        "notify,store,",
+        vec![posting, keeping],
+    ));
+    let node = FakeNode::new(Vec::new(), Vec::new(), vec![blob.clone()]);
+    let store = tempfile::tempdir().unwrap();
+    let (said, mut heard) = futures::channel::mpsc::unbounded();
+    let recipient = Arc::new(Recipient {
+        said,
+        ..recipient(2, store.path().to_owned(), Arc::new(Raised::default()))
+    });
+    let notifiers = Notifiers {
+        running: Mutex::default(),
+        recipient: Some(recipient.clone()),
+    };
+    notifiers.reconcile(&node.asked_of, &[listed(program, &blob)]);
+    let kept = |key: &str| {
+        let file = store
+            .path()
+            .join("fake-network_230")
+            .join(key)
+            .join(format!("{program}.borsh"));
+        let (tell, told) = std::sync::mpsc::channel();
+        kernel::in_order(&file.to_string_lossy(), move || tell.send(()).unwrap());
+        told.recv().unwrap();
+        file.exists()
+    };
+    assert!(futures::executor::block_on(heard.next()).is_some());
+    assert!(kept("ab"));
+    recipient.session.send_replace(Some(super::super::props(
+        true,
+        "fake-network#0",
+        "cd",
+        Some(2),
+        "",
+    )));
+    let (posted, intent) = futures::executor::block_on(heard.next()).unwrap();
+    assert_eq!(posted, program);
+    assert!(
+        matches!(intent, Intent::Notified),
+        "a fresh instance's first turn"
+    );
+    assert!(kept("cd"), "the fresh instance keeps under the new key");
+    notifiers.reconcile(&node.asked_of, &[]);
+}

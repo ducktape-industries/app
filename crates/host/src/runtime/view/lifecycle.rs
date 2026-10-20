@@ -762,6 +762,24 @@ impl View {
         }
     }
 
+    pub(in crate::runtime) fn restart_code(&mut self) -> Option<(Box<ViewCode>, String)> {
+        let code = self.code.take()?;
+        let shown = shown_as(self.program, &code.hash);
+        Some((code, shown))
+    }
+
+    pub(in crate::runtime) async fn restarted(&self, shown: &str) -> Result<Self, String> {
+        let mut fresh = self.sibling(shown).await?;
+        fresh.connection = self.connection.clone();
+        fresh.inited(shown).await?;
+        Ok(fresh)
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime) fn code_hash_for_test(&self) -> [u8; 32] {
+        self.running.code_hash()
+    }
+
     pub fn deployed(&mut self, hash: [u8; 32]) {
         self.hash = Some(hash);
     }

@@ -83,7 +83,11 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   host the view's manifest lists, once the person allowed exactly those
   hosts on a card, asked again whenever an update changes the list;
   `src/runtime/kernel/socket.rs`) with `host.random`. A view
-  reaches only the capabilities its manifest declares. The app forwards the
+  reaches only the capabilities its manifest declares. A view instance
+  belongs to the key it was seated with: when the seated key moves to
+  another, or the session locks, every view and notifier on that network
+  starts again fresh, with nothing carried, so no socket, request or
+  memory of one key's runs on under the next (`seat.rs` `Mounted::rekey`). The app forwards the
   bytes to the program the view names and signs writes with the seated key;
   it never reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's

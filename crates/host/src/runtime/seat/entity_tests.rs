@@ -2782,3 +2782,105 @@ fn a_swipe_let_go_during_a_tick_waits_for_the_backs_own_answer(cx: &mut TestAppC
     );
     crate::contract::testing::touch_first_for_test(false);
 }
+
+fn session(signer: &str) -> Vec<u8> {
+    crate::runtime::props(true, "fake-network#0", signer, None, "")
+}
+
+fn holding_a_socket(
+    seat: &Entity<Seat>,
+    cx: &TestAppContext,
+) -> tokio::sync::oneshot::Receiver<()> {
+    let mounted = mounted_of(seat, cx);
+    let mut locked = mounted.lock().unwrap();
+    let Slot::Ready(view) = &mut locked.slot else {
+        panic!("not seated")
+    };
+    let mut code = ViewCode::for_test("Keyed", "", 320);
+    code.hash = view.code_hash_for_test();
+    view.code = Some(code);
+    let (held, closed) = tokio::sync::oneshot::channel::<()>();
+    crate::runtime::kernel::hold_for_test(view, 7, async move {
+        let _held = held;
+        std::future::pending::<()>().await
+    });
+    closed
+}
+
+fn alive_of(seat: &Entity<Seat>, cx: &TestAppContext) -> Arc<()> {
+    match &mounted_of(seat, cx).lock().unwrap().slot {
+        Slot::Ready(view) => view.alive.clone(),
+        _ => panic!("not seated"),
+    }
+}
+
+#[gpui_kit::test]
+fn a_key_change_in_the_background_ends_the_old_instance_at_once(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "rekey-background";
+    crate::runtime::seat_for_test(PROGRAM, 320);
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    nudge(&seat, &session("aa"), &mut native);
+    let closed = holding_a_socket(&seat, &native);
+    let old = alive_of(&seat, &native);
+    native.update(|_, cx| cx.set_global(Backgrounded(true)));
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.set_props(session("bb"), cx)));
+    assert!(
+        matches!(
+            mounted_of(&seat, &native).lock().unwrap().slot,
+            Slot::Compiled(_)
+        ),
+        "the old instance runs on in the background"
+    );
+    assert!(
+        futures::executor::block_on(closed).is_err(),
+        "the old instance's subscription runs on"
+    );
+    native.update(|_, cx| cx.set_global(Backgrounded(false)));
+    native.run_until_parked();
+    draw_now(&mut native);
+    let fresh = alive_of(&seat, &native);
+    assert!(!Arc::ptr_eq(&fresh, &old), "the old instance came back");
+    assert_eq!(
+        mounted_of(&seat, &native).lock().unwrap().props,
+        Some(session("bb"))
+    );
+}
+
+#[gpui_kit::test]
+fn a_key_change_ends_a_hidden_seats_instance_at_once(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "rekey-hidden";
+    crate::runtime::seat_for_test(PROGRAM, 320);
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    nudge(&seat, &session("aa"), &mut native);
+    let closed = holding_a_socket(&seat, &native);
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.hide(cx)));
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.set_props(session(""), cx)));
+    assert!(
+        matches!(
+            mounted_of(&seat, &native).lock().unwrap().slot,
+            Slot::Compiled(_)
+        ),
+        "a hidden seat's instance runs on after the lock"
+    );
+    assert!(futures::executor::block_on(closed).is_err());
+}
+
+#[gpui_kit::test]
+fn the_first_unlock_and_the_same_key_restart_nothing(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "rekey-unlock";
+    crate::runtime::seat_for_test(PROGRAM, 320);
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    nudge(&seat, &session(""), &mut native);
+    let old = alive_of(&seat, &native);
+    nudge(&seat, &session("aa"), &mut native);
+    assert!(
+        Arc::ptr_eq(&alive_of(&seat, &native), &old),
+        "a first unlock restarted the view"
+    );
+    let moved = crate::runtime::props(false, "fake-network#0", "aa", Some(4), "");
+    nudge(&seat, &moved, &mut native);
+    assert!(
+        Arc::ptr_eq(&alive_of(&seat, &native), &old),
+        "the same key restarted the view"
+    );
+}

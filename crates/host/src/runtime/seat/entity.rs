@@ -390,6 +390,11 @@ impl Seat {
         if self.props.as_ref() == Some(&props) {
             return;
         }
+        if lock(&self.mounted).rekey(&props) {
+            self.in_flight = None;
+            self._landing = None;
+            self.owed = true;
+        }
         self.props = Some(props);
         self.wake(cx);
     }

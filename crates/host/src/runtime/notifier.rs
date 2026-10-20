@@ -440,6 +440,7 @@ fn drive(
     mut session: tokio::sync::watch::Receiver<Option<Vec<u8>>>,
 ) {
     let mut answered = notifier.replies.changes();
+    let mut seated = session.borrow().clone();
     let name = match &notifier.recipient {
         Some(_) => format!("{} on {}", notifier.program, notifier.connection.network),
         None => notifier.program.to_owned(),
@@ -451,6 +452,21 @@ fn drive(
         }
         answered.borrow_and_update();
         let current = session.borrow_and_update().clone();
+        if super::seat::rekeyed(seated.as_deref(), current.as_deref()) {
+            let shown = format!("{} notifier", notifier.program);
+            match handle().block_on(notifier.restarted(&shown)) {
+                Ok(fresh) => {
+                    notifier = fresh;
+                    answered = notifier.replies.changes();
+                }
+                Err(reason) => {
+                    tracing::warn!(target: "ducktape::app", program = notifier.program,
+                        reason = %reason, "notifier not started again under the new key");
+                    return;
+                }
+            }
+        }
+        seated.clone_from(&current);
         let again = redrawn(&mut notifier, &current);
         gauge.set(notifier.memory_bytes() as u64, notifier.memory_resident());
         for intent in std::mem::take(&mut notifier.intents) {

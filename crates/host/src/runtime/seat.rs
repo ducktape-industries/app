@@ -12,6 +12,7 @@ pub(super) struct Mounted {
     pub(super) to_start: Option<Box<Parked>>,
     pub(super) owned: bool,
     pub(super) replacing: Option<(u64, Prep)>,
+    pub(super) rekeyed_at: Option<u64>,
 }
 
 pub(super) struct Parked {
@@ -40,6 +41,7 @@ impl Mounted {
             to_start: None,
             owned: false,
             replacing: None,
+            rekeyed_at: None,
         }))
     }
 
@@ -141,6 +143,105 @@ impl Mounted {
         self.generation += 1;
         self.slot = Slot::Empty;
         self.wake.send_replace(());
+    }
+
+    pub(super) fn rekey(&mut self, props: &[u8]) -> bool {
+        if !rekeyed(self.props.as_deref(), Some(props)) {
+            return false;
+        }
+        self.props = Some(props.to_vec());
+        let Slot::Ready(view) = &mut self.slot else {
+            return false;
+        };
+        let running = view.connection.clone();
+        let restart = match self.swap.take() {
+            Some(pending) => Some((pending.code, pending.shown, pending.asked_of)),
+            None => view
+                .restart_code()
+                .map(|(code, shown)| (code, shown, running)),
+        };
+        self.generation += 1;
+        self.rekeyed_at = Some(self.generation);
+        self.to_start = None;
+        self.wake.send_replace(());
+        let Some((code, shown, asked_of)) = restart else {
+            self.slot = Slot::Failed(Failure::Refused(
+                "the seated key changed, and this view has no code to start again".into(),
+            ));
+            return true;
+        };
+        self.slot = Slot::Compiled(code.clone());
+        self.to_start = Some(Box::new(Parked {
+            code,
+            shown,
+            generation: self.generation,
+            asked_of,
+            timing: LoadTiming::default(),
+        }));
+        true
+    }
+}
+
+fn signer(props: Option<&[u8]>) -> Option<String> {
+    props
+        .and_then(|props| wire::methods::decode::<wire::methods::Session>(props).ok())
+        .map(|session| session.signer)
+        .filter(|signer| !signer.is_empty())
+}
+
+pub(super) fn rekeyed(was: Option<&[u8]>, now: Option<&[u8]>) -> bool {
+    signer(was).is_some_and(|was| signer(now).as_deref() != Some(was.as_str()))
+}
+
+#[cfg(test)]
+mod rekey_tests {
+    use super::*;
+
+    fn session(signer: &str) -> Vec<u8> {
+        wire::methods::encode(&wire::methods::Session {
+            connected: true,
+            chain_id: "dev".into(),
+            signer: signer.into(),
+            account: None,
+            endpoint: String::new(),
+        })
+    }
+
+    #[test]
+    fn only_a_move_off_a_seated_key_restarts() {
+        let (a, b, none) = (session("aa"), session("bb"), session(""));
+        assert!(!rekeyed(None, Some(&a)));
+        assert!(!rekeyed(Some(&none), Some(&a)));
+        assert!(!rekeyed(Some(&a), Some(&a)));
+        assert!(rekeyed(Some(&a), Some(&b)));
+        assert!(rekeyed(Some(&a), Some(&none)));
+        assert!(rekeyed(Some(&a), None));
+    }
+
+    #[test]
+    fn a_key_change_restarts_from_the_update_waiting_to_swap_in() {
+        let mut view = crate::runtime::kernel::tests::view();
+        view.code = Some(ViewCode::for_test("Telegram", "", 480));
+        let asked_of = view.connection.clone();
+        let mut update = ViewCode::for_test("Telegram v2", "", 480);
+        update.hash = [2; 32];
+        let seat = Mounted::seat();
+        let mut locked = lock(&seat);
+        locked.props = Some(session("aa"));
+        locked.slot = Slot::Ready(Box::new(view));
+        locked.swap = Some(Box::new(Parked {
+            code: update,
+            shown: "telegram view @ 020202020202".into(),
+            generation: locked.generation,
+            asked_of,
+            timing: LoadTiming::default(),
+        }));
+        assert!(locked.rekey(&session("bb")));
+        assert!(locked.swap.is_none());
+        assert!(matches!(&locked.slot, Slot::Compiled(code) if code.hash == [2; 32]));
+        let parked = locked.to_start.as_ref().expect("its start is parked");
+        assert_eq!(parked.code.hash, [2; 32], "the old code started again");
+        assert_eq!(parked.generation, locked.generation);
     }
 }
 
@@ -884,8 +985,28 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
     timing.lock_wait = waited.elapsed();
     let installed = Instant::now();
     locked.owned = false;
-    let stale =
-        locked.generation != generation || (view_override(program).is_none() && asked_of.stale());
+    let left = view_override(program).is_none() && asked_of.stale();
+    let stale = locked.generation != generation || left;
+    if stale && !left && locked.rekeyed_at == Some(locked.generation) {
+        let current = locked.generation;
+        let mounted: &mut Mounted = &mut locked;
+        match mounted.to_start.as_mut() {
+            Some(start) => {
+                start.code = code.clone();
+                start.shown = shown.clone();
+                mounted.slot = Slot::Compiled(code.clone());
+            }
+            None => {
+                mounted.swap = Some(Box::new(Parked {
+                    code: code.clone(),
+                    shown: shown.clone(),
+                    generation: current,
+                    asked_of: asked_of.clone(),
+                    timing: LoadTiming::default(),
+                }));
+            }
+        }
+    }
     if !stale {
         let Mounted {
             slot,

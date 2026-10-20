@@ -307,6 +307,22 @@ where
 
 /// A subscription fed by the app itself, not the node (`store.changes`,
 /// `host.screen`): a reconnect leaves it running ([`Follow::Host`]).
+#[cfg(test)]
+pub(in crate::runtime) fn hold_for_test(
+    view: &mut View,
+    id: u64,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    view.tasks.push((
+        id,
+        NodeTask {
+            task: handle().spawn(task),
+            follows: None,
+            claim: Claim::default(),
+        },
+    ));
+}
+
 pub(in crate::runtime) fn spawn_host_subscription<Body, Fut>(view: &mut View, id: u64, body: Body)
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,

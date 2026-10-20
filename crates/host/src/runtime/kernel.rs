@@ -167,6 +167,8 @@ pub(crate) use node::{Writes, writes};
 mod replies;
 pub(super) mod screen;
 
+#[cfg(test)]
+pub(super) use node::hold_for_test;
 pub(super) use node::{NodeTask, reconnected, spawn_host_subscription, spawn_reply};
 use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
