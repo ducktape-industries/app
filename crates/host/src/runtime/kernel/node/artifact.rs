@@ -100,7 +100,7 @@ async fn ask(node: &Node, query: files::Query) -> Result<files::Reply, view_wire
     .await?;
     let answer = node
         .client
-        .query(crate::backend::Layer::Preconfirmed, frame)
+        .query(crate::backend::Layer::Confirmed, frame)
         .await
         .map_err(crate::backend::refused)?;
     abi::decode(&answer).map_err(|refusal| {
@@ -192,34 +192,111 @@ pub fn follow(address: &str) -> Option<(Following, mpsc::UnboundedReceiver<()>)>
     };
     let node = on_network(&chain).ok()?;
     let (changed, heard) = mpsc::unbounded();
-    let task = crate::runtime::handle().spawn(async move {
-        let mut front = super::super::in_front();
-        let mut shown = file_at(&node, &path).await;
-        loop {
-            while !*front.borrow() {
-                if front.changed().await.is_err() {
-                    return;
-                }
+    let joined = node.clone();
+    let join = move || {
+        Box::pin(futures::stream::unfold(
+            feed(&joined.client, files::PROGRAM),
+            |(feed, slot)| async move {
+                let _ = slot.take().await;
+                Some(((), (feed, slot)))
+            },
+        ))
+    };
+    let stat = move || {
+        let (node, path) = (node.clone(), path.clone());
+        async move { file_at(&node, &path).await }
+    };
+    let task =
+        crate::runtime::handle().spawn(watched(super::super::in_front(), join, stat, changed));
+    Some((Following(task), heard))
+}
+
+async fn watched<Writes, Stat>(
+    mut front: tokio::sync::watch::Receiver<bool>,
+    mut join: impl FnMut() -> Writes,
+    mut stat: impl FnMut() -> Stat,
+    changed: mpsc::UnboundedSender<()>,
+) where
+    Writes: futures::Stream<Item = ()> + Unpin,
+    Stat: std::future::Future<Output = Option<abi::BlobId>>,
+{
+    use futures::StreamExt as _;
+    let mut shown = stat().await;
+    let mut back = false;
+    loop {
+        while !*front.borrow() {
+            back = true;
+            if front.changed().await.is_err() {
+                return;
             }
-            let (_feed, slot) = feed(&node.client, files::PROGRAM);
-            loop {
+        }
+        let mut writes = join();
+        loop {
+            if !std::mem::take(&mut back) {
                 tokio::select! {
-                    _ = slot.take() => {}
+                    written = writes.next() => if written.is_none() {
+                        return;
+                    },
                     moved = front.changed() => match moved {
                         Ok(()) if !*front.borrow() => break,
                         Ok(()) => continue,
                         Err(_) => return,
                     },
                 }
-                let now = file_at(&node, &path).await;
-                if now != shown {
-                    shown = now;
-                    if changed.unbounded_send(()).is_err() {
-                        return;
-                    }
+            }
+            let now = stat().await;
+            if now != shown {
+                shown = now;
+                if changed.unbounded_send(()).is_err() {
+                    return;
                 }
             }
         }
-    });
-    Some((Following(task), heard))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt as _;
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    #[tokio::test]
+    async fn a_file_written_in_front_or_while_away_reloads_its_page() {
+        let (front, in_front) = tokio::sync::watch::channel(true);
+        let version = std::sync::Arc::new(AtomicU8::new(1));
+        let (joins, mut joined) = mpsc::unbounded();
+        let join = move || {
+            let (write, mut writes) = tokio::sync::mpsc::unbounded_channel::<()>();
+            joins
+                .unbounded_send(write)
+                .expect("the test hears each join");
+            Box::pin(futures::stream::poll_fn(move |cx| writes.poll_recv(cx)))
+        };
+        let stat = {
+            let version = version.clone();
+            move || {
+                let now = version.load(Ordering::SeqCst);
+                async move { Some(abi::BlobId::Sha256([now; 32])) }
+            }
+        };
+        let (changed, mut heard) = mpsc::unbounded();
+        let watching = tokio::spawn(watched(in_front, join, stat, changed));
+        let first = joined.next().await.expect("it joins the feed in front");
+        version.store(2, Ordering::SeqCst);
+        first.send(()).expect("the follower holds the feed");
+        assert_eq!(heard.next().await, Some(()), "a write in front reloads it");
+        front.send(false).expect("the follower watches the front");
+        first.closed().await;
+        version.store(3, Ordering::SeqCst);
+        front.send(true).expect("the follower watches the front");
+        drop(joined.next().await.expect("it joins again in front"));
+        assert_eq!(
+            heard.next().await,
+            Some(()),
+            "a file written while away reloads it on coming back"
+        );
+        assert_eq!(heard.next().await, None);
+        watching.await.expect("the follower ends");
+    }
 }

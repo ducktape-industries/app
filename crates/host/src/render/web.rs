@@ -1,7 +1,7 @@
 //! The web pieces (`wire::Node::Web`, `Node::Artifact`) on this host, and every
 //! call the rest of the app makes into the web feature. With feature `web` a
 //! piece is a `ducktape_web::Page` (crates/web, where all of CEF lives), one
-//! per node, kept by the node's authored path from the frame that first has it
+//! per node (an artifact's per node and link), kept from the frame that first has it
 //! to the frame that no longer does; without it a piece is its address as a
 //! link and every https link goes to the system browser. Callers need
 //! no `cfg`:
@@ -43,7 +43,19 @@ impl EventEmitter<Opened> for ViewTree {}
 #[derive(Default)]
 pub(super) struct Pages {
     #[cfg(feature = "web")]
-    pages: HashMap<AuthoredPath, Piece>,
+    pages: HashMap<Key, Piece>,
+}
+
+#[cfg(feature = "web")]
+type Key = (AuthoredPath, Option<String>);
+
+#[cfg(feature = "web")]
+fn key(path: &AuthoredPath, node: &wire::Node) -> Option<Key> {
+    match node {
+        wire::Node::Web { .. } => Some((path.clone(), None)),
+        wire::Node::Artifact { link, .. } => Some((path.clone(), Some(link.clone()))),
+        _ => None,
+    }
 }
 
 /// One web piece's page, the commands of its last revision applied, and
@@ -66,11 +78,9 @@ impl Pages {
         if !self.pages.is_empty() {
             let mut kept = std::collections::HashSet::new();
             commands::walk_authored_paths(root, None, &mut Vec::new(), &mut |node, path| {
-                if matches!(node, wire::Node::Web { .. } | wire::Node::Artifact { .. }) {
-                    kept.insert(path.clone());
-                }
+                kept.extend(key(path, node));
             });
-            self.pages.retain(|path, _| kept.contains(path));
+            self.pages.retain(|key, _| kept.contains(key));
         }
         let _ = root;
     }
@@ -96,7 +106,7 @@ impl ViewTree {
         };
         #[cfg(feature = "web")]
         {
-            let piece = self.page(url, *on_state, false, window, cx);
+            let piece = self.page(node, url, *on_state, false, window, cx);
             if piece.revision != *revision {
                 piece.revision = *revision;
                 piece.page.update(cx, |page, cx| {
@@ -136,7 +146,7 @@ impl ViewTree {
         };
         #[cfg(feature = "web")]
         if crate::runtime::artifact::serves(link) {
-            let piece = self.page(link, None, true, window, cx);
+            let piece = self.page(node, link, None, true, window, cx);
             let (page, height) = (piece.page.clone(), piece.height.get());
             if !page.read(cx).unavailable() {
                 let height =
@@ -157,18 +167,19 @@ impl ViewTree {
     #[cfg(feature = "web")]
     fn page(
         &mut self,
+        node: &wire::Node,
         address: &str,
         on_state: Option<u32>,
         follows: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> &mut Piece {
-        let path = self.authored_path.clone();
-        if !self.webs.pages.contains_key(&path) {
+        let key = key(&self.authored_path, node).expect("a web piece");
+        if !self.webs.pages.contains_key(&key) {
             let piece = open(address, on_state, follows, self.perf_key, window, cx);
-            self.webs.pages.insert(path.clone(), piece);
+            self.webs.pages.insert(key.clone(), piece);
         }
-        let piece = self.webs.pages.get_mut(&path).expect("made above");
+        let piece = self.webs.pages.get_mut(&key).expect("made above");
         piece.on_state.set(on_state);
         piece
     }
@@ -405,6 +416,33 @@ mod tests {
             native.simulate_event(gpui_kit::KeyUpEvent { keystroke });
             assert_eq!(*heard.borrow(), [link]);
         }
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn an_artifact_keeps_its_page_while_its_link_holds_and_a_web_piece_while_its_node_does() {
+        let path = AuthoredPath::default();
+        let artifact = |link: &str| wire::Node::Artifact {
+            id: wire::ElementIdWire::Name("plan".into()),
+            link: link.into(),
+            style: crate::render::plain_style(),
+        };
+        let web = |url: &str| wire::Node::Web {
+            id: wire::ElementIdWire::Name("page".into()),
+            url: url.into(),
+            style: crate::render::plain_style(),
+            revision: 0,
+            commands: Vec::new(),
+            on_state: None,
+        };
+        let other = "duck://duckpond-725bcad1/files/shared/other.html";
+        assert_eq!(key(&path, &artifact(PLAN)), key(&path, &artifact(PLAN)));
+        assert_ne!(key(&path, &artifact(PLAN)), key(&path, &artifact(other)));
+        assert_eq!(
+            key(&path, &web("https://example.com")),
+            key(&path, &web("https://example.org"))
+        );
+        assert_eq!(key(&path, &wire::Node::Space), None);
     }
 
     #[test]
