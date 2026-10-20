@@ -159,7 +159,7 @@ impl Find {
                     .is_some_and(|have| have.to_lowercase().contains(&want.to_lowercase()))
             })
         };
-        self.id.as_deref().is_none_or(|id| node.id == id)
+        self.id.as_deref().is_none_or(|id| names(&node.id, id))
             && self.role.as_deref().is_none_or(|role| {
                 node.node
                     .role
@@ -174,6 +174,13 @@ impl Find {
                     .is_some_and(|rest| rest.starts_with([':', '/']) || rest.is_empty())
             })
     }
+}
+
+/// Whether `id` names the node whose id is `have`: the whole id, or its
+/// last segment (after the last `/` or `:`), so a script can name a node by
+/// the id the view gave it alone.
+fn names(have: &str, id: &str) -> bool {
+    have == id || have.rsplit(['/', ':']).next() == Some(id)
 }
 
 /// Every seated view the door serves, each named as its ids begin: the
@@ -290,34 +297,36 @@ fn target(door: &Door<'_>, id: &str, cx: &mut App) -> Result<Place, Reply> {
     the_one(id, every(door, cx))
 }
 
-/// The one node of `nodes` that has `id`: 404 when none has it, 409
-/// naming each one when more than one does.
+/// The one node of `nodes` that `id` names (`names`): 404 when none, 409
+/// naming each one when more than one.
 fn the_one<T>(id: &str, nodes: Vec<(Node, T)>) -> Result<T, Reply> {
     let mut named: Vec<_> = nodes
         .into_iter()
-        .filter(|(node, _)| node.id == id)
+        .filter(|(node, _)| names(&node.id, id))
         .collect();
     match named.len() {
         0 => Err(missing(id)),
         1 => Ok(named.remove(0).1),
-        _ => {
-            let nodes: Vec<_> = named
-                .iter()
-                .map(|(node, _)| {
-                    json!({
-                        "kind": node.node.kind,
-                        "path": node.node.path,
-                        "role": node.node.role,
-                        "label": node.node.label,
-                    })
-                })
-                .collect();
-            Err(Reply::new(
-                409,
-                json!({ "error": "more than one node has this id", "id": id, "nodes": nodes }),
-            ))
-        }
+        _ => Err(shared(id, named.iter().map(|(node, _)| node))),
     }
+}
+
+fn shared<'a>(id: &str, named: impl Iterator<Item = &'a Node>) -> Reply {
+    let nodes: Vec<_> = named
+        .map(|node| {
+            json!({
+                "id": node.id,
+                "kind": node.node.kind,
+                "path": node.node.path,
+                "role": node.node.role,
+                "label": node.node.label,
+            })
+        })
+        .collect();
+    Reply::new(
+        409,
+        json!({ "error": "more than one node has this id", "id": id, "nodes": nodes }),
+    )
 }
 
 fn missing(id: &str) -> Reply {
@@ -338,14 +347,18 @@ fn shown_of(place: &Place, cx: &App) -> Option<Shown> {
     }
 }
 
-/// Every node `find` names, in document order.
+/// Every node `find` names, in document order; an `id` that names more
+/// than one node answers 409 naming each.
 async fn found(door: &Door<'_>, find: Find, cx: &mut AsyncApp) -> Reply {
     let nodes = read(door, None, cx).await;
     let kept: Vec<_> = nodes
         .into_iter()
         .filter(|node| find.matches(node))
         .collect();
-    Reply::ok(json!(kept))
+    match &find.id {
+        Some(id) if kept.len() > 1 => shared(id, kept.iter()),
+        _ => Reply::ok(json!(kept)),
+    }
 }
 
 async fn press(door: &Door<'_>, press: Press, cx: &mut AsyncApp) -> Reply {
@@ -627,6 +640,9 @@ mod tests {
         assert!(find(r#"{"in": "console"}"#));
         assert!(find(r#"{"in": "console:chat"}"#));
         assert!(find(r#"{"id": "console:chat/composer/send"}"#));
+        assert!(find(r#"{"id": "send"}"#));
+        assert!(!find(r#"{"id": "composer/send"}"#));
+        assert!(!find(r#"{"id": "sen"}"#));
         assert!(!find(r#"{"in": "console:cha"}"#));
         assert!(!find(r#"{"role": "Link"}"#));
         assert!(!find(r#"{"label": "send", "text": "send"}"#));
@@ -653,6 +669,28 @@ mod tests {
             shared.body.contains("chat.send") && shared.body.contains("desk.send"),
             "{}",
             shared.body
+        );
+    }
+
+    #[test]
+    fn a_last_segment_names_its_node_and_says_when_two_end_in_it() {
+        let thread = node("console:chat/chat-root/chat-thread-pane", "Group", "Thread");
+        let room = node("console:chat/chat-root/chat-room-pane", "Group", "Room");
+        let other = node("console:files/chat-room-pane", "Group", "Elsewhere");
+        let nodes = || vec![(thread.clone(), 1), (room.clone(), 2), (other.clone(), 3)];
+        assert_eq!(the_one("chat-thread-pane", nodes()).ok(), Some(1));
+        assert_eq!(
+            the_one("console:chat/chat-root/chat-room-pane", nodes()).ok(),
+            Some(2)
+        );
+        assert_eq!(the_one("chat-root", nodes()).err().unwrap().status, 404);
+        let two = the_one("chat-room-pane", nodes()).err().unwrap();
+        assert_eq!(two.status, 409);
+        assert!(
+            two.body.contains("console:chat/chat-root/chat-room-pane")
+                && two.body.contains("console:files/chat-room-pane"),
+            "{}",
+            two.body
         );
     }
 }
