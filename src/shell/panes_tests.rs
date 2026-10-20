@@ -1613,6 +1613,7 @@ fn an_empty_pane_stops_its_figure_when_motion_goes_off_without_a_frame_loop(
     let _on = crate::perf::on_for_test();
     let (app, key, view, mut native) = console(cx);
     native.update(|_, cx| cx.set_reduce_motion(false));
+    native.update(|window, _| window.activate_window());
     set_motion(&app, true, &mut native);
     pane(&view, PaneMessage::Close(0), &mut native);
     assert_eq!(panes(&mut native, &view).0, 0, "the desk is bare");
@@ -1725,6 +1726,44 @@ fn a_still_desk_draws_no_frame(cx: &mut TestAppContext) {
     }
 }
 
+#[gpui_kit::test]
+fn a_desk_behind_another_window_draws_no_frame(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (app, key, view, mut native) = console(cx);
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    native.update(|window, _| window.activate_window());
+    set_motion(&app, true, &mut native);
+    polled(&app, status(7), &mut native);
+    pane(&view, PaneMessage::Close(0), &mut native);
+    assert_eq!(panes(&mut native, &view).0, 0, "the desk is bare");
+    let run = |native: &mut VisualTestContext, ms: u64| {
+        ducktape_host::frames::deliver(native, std::time::Duration::from_millis(ms));
+    };
+    run(&mut native, 400);
+    assert!(window_count(key, "renders.empty") > 1, "the figure moved");
+    native.deactivate_window();
+    run(&mut native, 200);
+    let drawn = window_count(key, "renders");
+    run(&mut native, 2000);
+    assert_eq!(
+        window_count(key, "renders"),
+        drawn,
+        "a window behind another drew"
+    );
+    native.update(|window, _| window.activate_window());
+    run(&mut native, 200);
+    let (dot, empty) = (
+        window_count(key, "renders.dot"),
+        window_count(key, "renders.empty"),
+    );
+    run(&mut native, 1000);
+    assert!(
+        window_count(key, "renders.dot") >= dot + 29
+            && window_count(key, "renders.empty") >= empty + 29,
+        "in front again, the breath and the figure held still"
+    );
+}
+
 /// The system stops asking for less motion: the bare desk's figure
 /// tumbles again, from the frame that redraws the window (AX-122).
 #[gpui_kit::test]
@@ -1732,6 +1771,7 @@ fn the_figure_moves_again_when_less_motion_is_no_longer_asked(cx: &mut TestAppCo
     let _on = crate::perf::on_for_test();
     let (app, key, view, mut native) = console(cx);
     native.update(|_, cx| cx.set_reduce_motion(false));
+    native.update(|window, _| window.activate_window());
     set_motion(&app, true, &mut native);
     pane(&view, PaneMessage::Close(0), &mut native);
     let second = |native: &mut VisualTestContext| {

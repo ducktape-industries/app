@@ -3,7 +3,7 @@
 
 /// The node, as a breath (the canvas's `.pulse`): 5px to 11px and back
 /// over 2s, green to its soft tone, while it answers; red, 5px to 9px over
-/// 0.8s while it does not. An 8px dot when motion is off.
+/// 0.8s while it does not. An 8px dot when motion is off or its window is behind.
 pub(super) fn pulse(
     ok: bool,
     moving: bool,
@@ -23,7 +23,7 @@ pub(super) fn pulse(
         .flex()
         .items_center()
         .justify_center();
-    match moving && !cx.reduce_motion() {
+    match moving && !cx.reduce_motion() && window.is_window_active() {
         false => well.child(dot.size(px(8.)).bg(color)).into_any_element(),
         true => {
             ducktape_host::frames::notify(30, window, cx);

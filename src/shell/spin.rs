@@ -202,7 +202,7 @@ impl Spin {
         // the system's ask may have moved since the last tick: a window
         // drawn again after it stops asking moves again
         self.moving = moving(self.switch, cx);
-        if !self.alive() {
+        if !window.is_window_active() || !self.alive() {
             self.last_tick = None;
             return;
         }
@@ -211,10 +211,11 @@ impl Spin {
         }
         self.ticking = true;
         let spin = cx.entity().downgrade();
-        ducktape_host::frames::then(figure::FPS as u32, window, cx, move |_, cx| {
+        ducktape_host::frames::then(figure::FPS as u32, window, cx, move |window, cx| {
+            let active = window.is_window_active();
             let _ = spin.update(cx, |spin, cx| {
                 spin.ticking = false;
-                if !spin.alive() {
+                if !active || !spin.alive() {
                     spin.last_tick = None;
                     return;
                 }
@@ -424,6 +425,8 @@ mod tests {
         });
         let spin = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, _| window.activate_window());
+        native.run_until_parked();
         native.update(ducktape_host::render::draw_frame);
         frame(&mut native, frames);
         native.update(|_, cx| spin.read(cx).ticks)
@@ -459,6 +462,8 @@ mod tests {
         });
         let spin = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, _| window.activate_window());
+        native.run_until_parked();
         native.update(ducktape_host::render::draw_frame);
         let per_second = (Duration::from_secs(1).as_nanos() / step.as_nanos()) as u32;
         (0..seconds)
@@ -524,6 +529,44 @@ mod tests {
         assert_eq!(play(true, false, 600, cx), 600);
     }
 
+    #[gpui_kit::test]
+    fn a_figure_behind_another_window_holds_still(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let window = cx.open_window(size(px(400.), px(400.)), |_, cx| {
+            Spin::new(Figure::Roll, true, Hsla::default(), cx)
+        });
+        let spin = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, _| window.activate_window());
+        native.run_until_parked();
+        native.update(ducktape_host::render::draw_frame);
+        let ticks =
+            |native: &mut gpui_kit::VisualTestContext| native.update(|_, cx| spin.read(cx).ticks);
+        frame(&mut native, 10);
+        native.deactivate_window();
+        frame(&mut native, 1);
+        let behind = ticks(&mut native);
+        assert!(
+            behind >= 10,
+            "in front it ticked {behind} times in ten frames"
+        );
+        frame(&mut native, 30);
+        assert_eq!(
+            ticks(&mut native),
+            behind,
+            "behind another window it ticked"
+        );
+        native.update(|window, _| window.activate_window());
+        native.run_until_parked();
+        frame(&mut native, 30);
+        let again = ticks(&mut native) - behind;
+        assert!(
+            again >= 29,
+            "in front again it ticked {again} times in thirty frames"
+        );
+    }
+
     /// With motion off it holds still and asks for no frames.
     #[gpui_kit::test]
     fn a_still_figure_asks_for_no_frames(cx: &mut gpui_kit::TestAppContext) {
@@ -544,6 +587,8 @@ mod tests {
         });
         let spin = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, _| window.activate_window());
+        native.run_until_parked();
         native.update(ducktape_host::render::draw_frame);
         frame(&mut native, 10);
         native.update(|_, cx| cx.set_reduce_motion(true));
