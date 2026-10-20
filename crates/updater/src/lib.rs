@@ -17,6 +17,7 @@
 pub mod layout;
 pub mod manifest;
 pub mod phase;
+pub mod record;
 pub mod release;
 pub mod sha;
 pub mod state;
@@ -27,6 +28,10 @@ pub use manifest::{Artifact, Manifest, Platform, Release, SCHEMA, SuccessorKey};
 pub use phase::{
     Command, Downloading, Event, Idle, PendingHealthy, Phase, RollbackReason, RolledBack, Staged,
     SwapState, Swapping, Take, UpdateBanner,
+};
+pub use record::{
+    Input, RECORD, RecordRefusal, RecordedArtifact, ReleaseRecord, Source, VerifiedRecord,
+    verify_record,
 };
 pub use release::{PublicKey, RELEASE_KEY, RELEASE_NS, Signature};
 pub use sha::Sha;
