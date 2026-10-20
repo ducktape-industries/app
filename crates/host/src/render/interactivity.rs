@@ -545,29 +545,41 @@ fn apply_misc<E: StatefulInteractiveElement>(
 /// the right button), which gpui-pre recognizes but hands to no aux-click
 /// listener. The press is claimed, so no tap follows it and nothing under
 /// the node hears it.
-pub(super) fn long_press(handler: u32, cx: &mut Context<ViewTree>) -> impl IntoElement + use<> {
+pub(super) fn long_press(
+    handler: u32,
+    follows: Follows,
+    cx: &mut Context<ViewTree>,
+) -> impl IntoElement + use<> {
     use gpui_kit::Styled as _;
     let view = cx.entity().downgrade();
     gpui_kit::canvas(
         |bounds, window, _| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
         move |_, hitbox, window, _| {
             window.on_mouse_event(move |event: &LongPressEvent, phase, window, cx| {
-                if phase != DispatchPhase::Bubble
-                    || event.phase != TouchPhase::Started
-                    || window.default_prevented()
-                    || !hitbox.is_hovered(window)
-                {
+                if phase != DispatchPhase::Bubble {
                     return;
                 }
+                if event.phase != TouchPhase::Started {
+                    follow(&view, &follows, event, window, cx);
+                    return;
+                }
+                if window.default_prevented() || !hitbox.is_hovered(window) {
+                    return;
+                }
+                let Some(tree) = view.upgrade() else {
+                    return;
+                };
                 window.prevent_default();
+                window.capture_long_press(&tree);
                 cx.stop_propagation();
                 let click = gpui_kit::ClickEvent::Touch(gpui_kit::TouchClickEvent {
                     position: event.start_position,
                     tap_count: 1,
                     long_press: true,
                 });
-                let _ = view.update(cx, |this, cx| {
+                tree.update(cx, |this, cx| {
                     this.activate();
+                    this.long_pressed = Some(follows.at.clone());
                     cx.emit(wire::Event::AuxClick {
                         handler,
                         event: (&click).into(),
@@ -578,4 +590,73 @@ pub(super) fn long_press(handler: u32, cx: &mut Context<ViewTree>) -> impl IntoE
     )
     .absolute()
     .inset_0()
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) struct Pressed {
+    pub(super) path: AuthoredPath,
+    pub(super) id: gpui_kit::ElementId,
+}
+
+pub(super) struct Follows {
+    pub(super) at: Pressed,
+    pub(super) moves: Option<u32>,
+    pub(super) ups: Option<u32>,
+}
+
+fn follow(
+    view: &gpui_kit::WeakEntity<ViewTree>,
+    follows: &Follows,
+    event: &LongPressEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(tree) = view.upgrade() else {
+        return;
+    };
+    if !window.has_long_press_capture(&tree) {
+        return;
+    }
+    tree.update(cx, |this, cx| {
+        if this.long_pressed.as_ref() != Some(&follows.at) {
+            return;
+        }
+        match event.phase {
+            TouchPhase::Started => {}
+            TouchPhase::Moved => {
+                if let Some(handler) = follows.moves {
+                    let moved = MouseMoveEvent {
+                        position: event.position,
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Default::default(),
+                    };
+                    cx.emit(wire::Event::MouseMove {
+                        handler,
+                        phase: wire::DispatchPhase::Bubble,
+                        event: (&moved).into(),
+                    });
+                }
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                this.long_pressed = None;
+                let position = match event.phase {
+                    TouchPhase::Ended => event.position,
+                    _ => event.start_position,
+                };
+                if let Some(handler) = follows.ups {
+                    let up = MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Default::default(),
+                        click_count: 1,
+                    };
+                    cx.emit(wire::Event::MouseUp {
+                        handler,
+                        phase: wire::DispatchPhase::Bubble,
+                        event: (&up).into(),
+                    });
+                }
+            }
+        }
+    });
 }

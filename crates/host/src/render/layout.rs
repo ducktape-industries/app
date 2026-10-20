@@ -59,7 +59,7 @@ impl ViewTree {
             self.render_index += 1;
             host_id(format!("container-{index}"))
         });
-        let mut element = element.id(native_id);
+        let mut element = element.id(native_id.clone());
         element = self.view_aria(element, node, interactivity, cx);
         // Only a container with an id of its own owns its path: an id-less
         // one sits on its nearest named ancestor's path.
@@ -93,7 +93,15 @@ impl ViewTree {
         }
         // first, so a node inside that hears it too hears it first
         if let Some(handler) = interactivity.on_aux_click {
-            element = element.child(super::interactivity::long_press(handler, cx));
+            let follows = super::interactivity::Follows {
+                at: super::interactivity::Pressed {
+                    path: self.authored_path.clone(),
+                    id: native_id,
+                },
+                moves: interactivity.on_mouse_move,
+                ups: interactivity.on_mouse_up,
+            };
+            element = element.child(super::interactivity::long_press(handler, follows, cx));
         }
         for child in children {
             element = element.child(self.node(child, window, cx));

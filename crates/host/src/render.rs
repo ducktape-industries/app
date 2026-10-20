@@ -299,6 +299,7 @@ pub struct ViewTree {
     /// The keys a node heard go down and has not heard come up, each told
     /// it came up if the keyboard leaves the node first (`interactivity`).
     held_keys: Vec<interactivity::HeldKey>,
+    long_pressed: Option<interactivity::Pressed>,
 
     // Pictures by the view's content hash: the seat's bytes, which a node
     // that names a hash alone draws from, and the rasters decoded from them.
@@ -389,6 +390,7 @@ impl ViewTree {
             dialogs: HashMap::new(),
             opener: None,
             held_keys: Vec::new(),
+            long_pressed: None,
             sensors: HashMap::new(),
             webs: Default::default(),
             media: Default::default(),
