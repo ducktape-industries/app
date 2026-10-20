@@ -67,7 +67,7 @@ pub use accessibility::{Accessible, announce};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub use commands::dialog_entry;
 use inputs::Field;
-pub use inspect::Inspected;
+pub use inspect::{Inspected, Listening, address};
 pub use pictures::PictureBytes;
 use pictures::SharedRasters;
 use sensors::SensorState;

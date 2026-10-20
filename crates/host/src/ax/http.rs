@@ -342,6 +342,20 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
         ("GET", "inspect/memory") => Ok(Request::Inspect(inspect::Ask::Memory {
             regions: flag("regions"),
         })),
+        ("GET", "inspect/listeners") => {
+            let number = |name: &str| params.get(name).and_then(|value| value.parse::<f32>().ok());
+            match (number("x"), number("y")) {
+                (Some(x), Some(y)) => Ok(Request::Inspect(inspect::Ask::Listeners {
+                    window: params.get("window").map(|window| window.to_string()),
+                    x,
+                    y,
+                })),
+                _ => Err(Reply::new(
+                    400,
+                    json!({ "error": "listeners takes x and y, in window pixels" }),
+                )),
+            }
+        }
         _ => {
             let mut endpoints = vec![
                 "GET /tree",
@@ -363,6 +377,7 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
                 "POST /inspect/scroll",
                 "GET /inspect/screenshot",
                 "GET /inspect/memory",
+                "GET /inspect/listeners",
             ];
             if private {
                 endpoints.push("POST /reveal");
@@ -581,6 +596,7 @@ fn request(args: &[String]) -> Option<(&'static str, String, String)> {
         ),
         (Some("inspect"), ["screenshot"]) => ("GET", format!("/inspect/screenshot?{}", query(&["window"])), String::new()),
         (Some("inspect"), ["memory"]) => ("GET", format!("/inspect/memory?{}", query(&["regions"])), String::new()),
+        (Some("inspect"), ["listeners"]) => ("GET", format!("/inspect/listeners?{}", query(&["window", "x", "y"])), String::new()),
         _ => return None,
     };
     Some((method, target, body))
@@ -653,6 +669,37 @@ mod tests {
             Some(("POST", "/perf/reset".to_owned(), String::new()))
         );
         assert_eq!(request(&words("perf --reset --by instance")), None);
+    }
+
+    #[test]
+    fn listeners_route_and_cli_words() {
+        assert_eq!(
+            route(
+                "GET",
+                "/inspect/listeners?x=10&y=20.5&window=console",
+                b"",
+                false
+            ),
+            Ok(Request::Inspect(inspect::Ask::Listeners {
+                window: Some("console".into()),
+                x: 10.,
+                y: 20.5,
+            }))
+        );
+        assert_eq!(
+            route("GET", "/inspect/listeners?x=10", b"", false)
+                .unwrap_err()
+                .status,
+            400
+        );
+        assert_eq!(
+            request(&words("inspect listeners --x 10 --y 20")),
+            Some((
+                "GET",
+                "/inspect/listeners?x=10&y=20".to_owned(),
+                String::new()
+            ))
+        );
     }
 
     #[test]

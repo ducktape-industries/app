@@ -1074,7 +1074,15 @@ House words, and where one word means several things.
   `press` and `type` first wheel a clipped node into view (409 when a
   wheel brings it no closer). Both kinds of node record where they were
   drawn while the door serves (`ax/shown.rs`). A `wait` that times out
-  answers 408 with the tree it last read.
+  answers 408 with the tree it last read. `listeners --x X --y Y
+  [--window W]` (`GET /inspect/listeners`) answers who handles a pointer
+  event there: every drawn view node and shell control hit at the point
+  (gpui's own hit test, so a covered one drops out), innermost first, each
+  with the pointer listeners the host registered for it and their handler
+  routes, plus the selection scope or claim the pointer router finds there.
+  gpui keeps its frame's listeners private, so kit widgets' own listeners
+  are not listed, and the answer's `scope` says so; nodes with listeners
+  and no id of their own have no draw record and are named in `unplaced`.
   `screenshot` is gpui's `Window::render_to_image`, which gpui builds only
   with `test-support`; any other build answers 501 and the OS's own
   screenshot stands in.

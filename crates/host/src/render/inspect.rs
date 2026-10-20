@@ -36,6 +36,43 @@ pub struct Inspected {
     pub presses: Vec<&'static str>,
 }
 
+pub struct Listening {
+    pub address: String,
+    pub path: AuthoredPath,
+    pub placed: bool,
+    pub listeners: Vec<(&'static str, u32)>,
+    pub consumes_click: bool,
+}
+
+pub fn address(path: &AuthoredPath) -> String {
+    path.iter().map(segment).collect::<Vec<_>>().join("/")
+}
+
+fn pointer_listeners(interactivity: &wire::Interactivity) -> Vec<(&'static str, u32)> {
+    let i = interactivity;
+    [
+        ("on_click", i.on_click),
+        ("on_aux_click", i.on_aux_click),
+        ("capture_mouse_down", i.capture_mouse_down),
+        ("on_mouse_down", i.on_mouse_down),
+        ("on_mouse_down_out", i.on_mouse_down_out),
+        ("capture_mouse_up", i.capture_mouse_up),
+        ("on_mouse_up", i.on_mouse_up),
+        ("on_mouse_up_out", i.on_mouse_up_out),
+        ("capture_mouse_pressure", i.capture_mouse_pressure),
+        ("on_mouse_pressure", i.on_mouse_pressure),
+        ("on_mouse_move", i.on_mouse_move),
+        ("on_mouse_exit", i.on_mouse_exit),
+        ("on_scroll_wheel", i.on_scroll_wheel),
+        ("capture_pinch", i.capture_pinch),
+        ("on_pinch", i.on_pinch),
+        ("on_hover", i.on_hover),
+    ]
+    .into_iter()
+    .filter_map(|(on, handler)| handler.map(|handler| (on, handler)))
+    .collect()
+}
+
 /// One id as the inspector writes it in a path.
 fn segment(id: &wire::ElementIdWire) -> String {
     match id {
@@ -193,6 +230,26 @@ impl ViewTree {
             None
         });
         nodes
+    }
+
+    pub fn listening(&self) -> Vec<Listening> {
+        let mut found = Vec::new();
+        walk::<()>(&self.root, &mut |address, path, node| {
+            if let Some(interactivity) = node.interactivity() {
+                let listeners = pointer_listeners(interactivity);
+                if !listeners.is_empty() {
+                    found.push(Listening {
+                        address: address.to_owned(),
+                        path: path.clone(),
+                        placed: node.identity().is_some(),
+                        listeners,
+                        consumes_click: interactivity.consumes_click,
+                    });
+                }
+            }
+            None
+        });
+        found
     }
 
     pub fn authored(&self, address: &str) -> Option<AuthoredPath> {

@@ -33,6 +33,11 @@ pub enum Ask {
     Memory {
         regions: bool,
     },
+    Listeners {
+        window: Option<String>,
+        x: f32,
+        y: f32,
+    },
 }
 
 pub(super) async fn answer(ask: Ask, door: &Door<'_>, cx: &mut AsyncApp) -> Reply {
@@ -51,6 +56,7 @@ pub(super) async fn answer(ask: Ask, door: &Door<'_>, cx: &mut AsyncApp) -> Repl
         Ask::Scroll(asked) => scroll(door, asked, cx).await,
         Ask::Screenshot(window) => screenshot(door, window, cx).await,
         Ask::Memory { regions } => memory(door, regions, cx),
+        Ask::Listeners { window, x, y } => listeners(door, window, point(px(x), px(y)), cx).await,
     }
 }
 
@@ -539,6 +545,125 @@ async fn wait(door: &Door<'_>, wait: Wait, cx: &mut AsyncApp) -> Reply {
 /// it, a PNG in base64. The platform draws it (`Window::render_to_image`,
 /// which gpui builds only with its `test-support`); a build or a platform
 /// that cannot answers 501 in its own words.
+async fn listeners(
+    door: &Door<'_>,
+    window: Option<String>,
+    at: Point<Pixels>,
+    cx: &mut AsyncApp,
+) -> Reply {
+    settled(door, None, cx).await;
+    cx.update(|cx| {
+        let served = (door.windows)(cx);
+        let Some((name, _, handle)) = served
+            .into_iter()
+            .find(|(name, _, _)| window.as_deref().is_none_or(|want| want == name))
+        else {
+            return Reply::new(404, json!({ "error": "no such window" }));
+        };
+        let trees: Vec<_> = views(door, cx)
+            .into_iter()
+            .filter(|(_, drawn_in, _)| *drawn_in == handle)
+            .map(|(view, _, tree)| (view, tree))
+            .collect();
+        let natives: Vec<_> = natives::drawn(cx)
+            .into_iter()
+            .filter(|drawn| drawn.borrow().shown.window == handle)
+            .map(|drawn| (format!("{name}:{}", drawn.borrow().id), drawn))
+            .collect();
+        match handle.update(cx, |_, window, cx| {
+            listening_at(&trees, &natives, at, window, cx)
+        }) {
+            Ok(mut answer) => {
+                answer["window"] = json!(name);
+                Reply::ok(answer)
+            }
+            Err(_) => Reply::new(404, json!({ "error": "no such window" })),
+        }
+    })
+}
+
+pub(crate) fn listening_at(
+    trees: &[(String, Entity<ViewTree>)],
+    natives: &[(String, Rc<RefCell<Drawn>>)],
+    at: Point<Pixels>,
+    window: &gpui_kit::Window,
+    cx: &App,
+) -> serde_json::Value {
+    let mut views = Vec::new();
+    let mut unplaced = Vec::new();
+    for (view, tree) in trees {
+        for node in tree.read(cx).listening() {
+            let id = match node.address.is_empty() {
+                true => view.clone(),
+                false => format!("{view}/{}", node.address),
+            };
+            if !node.placed {
+                unplaced.push(id);
+                continue;
+            }
+            let hit = shown::view(tree.entity_id(), &node.path, cx)
+                .is_some_and(|shown| shown.hitbox.is_hovered_at(at, window));
+            if !hit {
+                continue;
+            }
+            let listeners: Vec<_> = node
+                .listeners
+                .iter()
+                .map(|(on, handler)| json!({ "on": on, "handler": handler }))
+                .collect();
+            views.push((
+                node.path.len(),
+                json!({
+                    "id": id,
+                    "kind": "view",
+                    "listeners": listeners,
+                    "consumes_click": node.consumes_click,
+                }),
+            ));
+        }
+    }
+    let mut shell = Vec::new();
+    for (id, drawn) in natives {
+        let drawn = drawn.borrow();
+        if !drawn.shown.hitbox.is_hovered_at(at, window) {
+            continue;
+        }
+        shell.push((
+            drawn.at.split('.').count(),
+            json!({ "id": id, "kind": "native", "listeners": [{ "on": "on_click" }] }),
+        ));
+    }
+    views.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+    shell.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+    let hit: Vec<_> = views
+        .into_iter()
+        .chain(shell)
+        .map(|(_, node)| node)
+        .collect();
+    let selection = crate::render::pointer::region_at(at, window, cx).map(|(kind, tree, path)| {
+        let view = trees
+            .iter()
+            .find(|(_, drawn)| drawn.entity_id() == tree)
+            .map(|(view, _)| view.clone());
+        let place = match (view, path) {
+            (Some(view), Some(path)) if !path.is_empty() => {
+                format!("{view}/{}", crate::render::address(&path))
+            }
+            (Some(view), _) => view,
+            (None, _) => String::new(),
+        };
+        json!({ "kind": kind, "in": place })
+    });
+    json!({
+        "scope": "host-registered listeners; kit internals not listed",
+        "at": [f32::from(at.x), f32::from(at.y)],
+        "order": "innermost first, as bubble listeners run; capture listeners run in the reverse order",
+        "listeners": hit,
+        "unplaced": unplaced,
+        "selection": selection,
+    })
+}
+
 async fn screenshot(door: &Door<'_>, window: Option<String>, cx: &mut AsyncApp) -> Reply {
     settled(door, None, cx).await;
     cx.update(|cx| {

@@ -532,6 +532,32 @@ struct Routers(HashMap<WindowId, Weak<RefCell<Router>>>);
 
 impl Global for Routers {}
 
+pub fn region_at(
+    at: Point<Pixels>,
+    window: &Window,
+    cx: &App,
+) -> Option<(&'static str, EntityId, Option<AuthoredPath>)> {
+    let regions = router(window, cx)?.borrow_mut().regions();
+    let innermost = |mark: Mark| {
+        regions
+            .iter()
+            .filter(|region| {
+                let region = region.borrow();
+                region.mark == mark && region.hitbox.is_hovered_at(at, window)
+            })
+            .max_by_key(|region| region.borrow().depth)
+    };
+    let (kind, region) = match innermost(Mark::Claim) {
+        Some(region) => ("claim", region),
+        None => ("scope", innermost(Mark::Scope)?),
+    };
+    let region = region.borrow();
+    Some(match &region.key {
+        ScopeKey::Pane(tree) => (kind, *tree, None),
+        ScopeKey::Node(key) => (kind, key.tree, Some(key.path.clone())),
+    })
+}
+
 fn router(window: &Window, cx: &App) -> Option<Rc<RefCell<Router>>> {
     cx.try_global::<Routers>()?
         .0
