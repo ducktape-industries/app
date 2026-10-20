@@ -83,6 +83,7 @@ pub struct Account {
     call: Option<Task<()>>,
     link: Option<Task<()>>,
     passkey: Option<Task<()>>,
+    presumed: bool,
 }
 
 impl EventEmitter<AccountEvent> for Account {}
@@ -107,6 +108,7 @@ impl Account {
             call: None,
             link: None,
             passkey: None,
+            presumed: false,
         }
     }
 
@@ -219,12 +221,18 @@ impl Account {
     /// any sign-in half done. Dropping the tasks cancels them; an account
     /// lookup in flight lands and is discarded by `resolved`'s node and
     /// key check.
+    pub fn presume(&mut self, cx: &mut Context<Self>) {
+        self.presumed = true;
+        self.show(Screen::Desk, cx);
+    }
+
     pub fn leave_network(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.seating = None;
         self.call = None;
         self.link = None;
         self.passkey = None;
+        self.presumed = false;
         self.phrase = None;
         self.client = backend::rpc_client("");
         self.network.clear();
@@ -348,7 +356,7 @@ impl Account {
         if !self.keyring.is_empty() {
             backend::note_device_key(&self.keyring, &self.state.signer_key);
         }
-        if self.screen(cx) != Screen::Connect {
+        if !self.presumed && self.screen(cx) != Screen::Connect {
             self.show(Screen::Unlock { awaiting: true }, cx);
         }
         self.resolve(cx);
@@ -372,6 +380,7 @@ impl Account {
     /// as its row was picked: `layers::Chrome`.)
     pub fn lock(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
+        self.presumed = false;
         self.edit(
             |state| {
                 state.locked = true;
@@ -468,6 +477,15 @@ impl Account {
         let _timed = timed();
         if node != self.node() || key != self.state.signer_key {
             return;
+        }
+        backend::note_signed_in(node, account.is_some());
+        if std::mem::take(&mut self.presumed) && account.is_none() {
+            self.show(
+                Screen::Account {
+                    step: AccountStep::Name,
+                },
+                cx,
+            );
         }
         if self.screen(cx) == (Screen::Unlock { awaiting: true }) {
             self.show(

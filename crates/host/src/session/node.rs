@@ -106,6 +106,8 @@ pub struct Session {
     source: Option<StatusSource>,
     connect: Option<Task<()>>,
     poll: Option<Task<()>>,
+    confirming: bool,
+    hands_runtime: bool,
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -132,6 +134,20 @@ impl Session {
             source: None,
             connect: None,
             poll: None,
+            confirming: false,
+            hands_runtime: true,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn apart_from_runtime(&mut self) {
+        self.hands_runtime = false;
+    }
+
+    fn hand_runtime(&self, client: &backend::RpcClient, network: &str, chain: &str) {
+        if self.hands_runtime {
+            crate::runtime::take_up(&self.center, chain);
+            crate::runtime::connected(client, network, chain);
         }
     }
 
@@ -219,10 +235,95 @@ impl Session {
             },
             cx,
         );
+        if !self.state.connected
+            && let Some(saved) = backend::recent_endpoints()
+                .into_iter()
+                .find(|entry| entry.url == origin)
+        {
+            self.presume(&origin, saved, cx);
+        }
         let work = source();
         self.connect = Some(spawn_on_runtime(cx, work, move |this, answer, cx| {
             this.connect_answered(origin, source, answer, cx)
         }));
+    }
+
+    fn presume(&mut self, origin: &str, saved: backend::RecentEndpoint, cx: &mut Context<Self>) {
+        let Some(genesis) = saved.genesis else {
+            return;
+        };
+        let remotes = &crate::contract::os().dirs().remotes;
+        let Ok(keyring) = noded_client::keyring::bind(remotes, &saved.network, saved.founded)
+        else {
+            return;
+        };
+        let other_chain = keyring.other_chain;
+        let chain = crate::runtime::chain_named(&saved.network, &genesis);
+        let network = saved.network.clone();
+        let client = backend::rpc_client(origin.to_owned());
+        self.account.update(cx, |account, cx| {
+            account.take_up(keyring, client.clone(), network.clone(), cx)
+        });
+        self.edit(
+            |state| {
+                state.connected_rpc = origin.to_owned();
+                state.network = network.clone();
+                state.chain = chain.clone();
+                state.other_chain = other_chain;
+                state.connected = true;
+                state.reconnecting = false;
+            },
+            cx,
+        );
+        self.hand_runtime(&client, &network, &chain);
+        cx.emit(SessionEvent::Connected);
+        self.account.update(cx, |account, cx| {
+            if saved.signed_in {
+                account.presume(cx);
+            }
+            account.open_device_key(cx);
+            account.resolve(cx);
+        });
+        self.confirming = true;
+    }
+
+    fn unconfirmed(&mut self, source: StatusSource, error: String, cx: &mut Context<Self>) {
+        tracing::debug!(target: "ducktape::app", %error, "status not answered");
+        self.edit(|state| state.reconnecting = true, cx);
+        if self.poll.is_none() {
+            self.source = Some(source);
+            self.start_poll(STATUS_EVERY, cx);
+        }
+    }
+
+    fn confirmed(
+        &mut self,
+        origin: String,
+        source: StatusSource,
+        status: &backend::NodeStatus,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirming = false;
+        backend::note_endpoint(backend::RecentEndpoint {
+            url: origin,
+            network: status.network.clone(),
+            founded: status.time,
+            other_chain: self.state.other_chain,
+            genesis: Some(status.genesis),
+            signed_in: false,
+        });
+        self.edit(
+            |state| {
+                state.recent_endpoints = backend::recent_endpoints();
+                state.reconnecting = false;
+            },
+            cx,
+        );
+        self.apply_status(status, cx);
+        if self.poll.is_none() {
+            self.source = Some(source);
+            self.start_poll(STATUS_EVERY, cx);
+        }
     }
 
     fn connect_answered(
@@ -243,6 +344,7 @@ impl Session {
         );
         let status = match answer {
             Ok(status) => status,
+            Err(error) if self.confirming => return self.unconfirmed(source, error, cx),
             Err(error) => return self.connect_failed(origin, error, cx),
         };
         crate::perf::mark("connected");
@@ -252,7 +354,20 @@ impl Session {
                 status.contract,
                 noded_client::wire::NODE_CONTRACT
             );
+            if self.confirming {
+                self.disconnect(cx);
+            }
             return self.connect_failed(origin, error, cx);
+        }
+        let presumed = std::mem::take(&mut self.confirming);
+        if presumed
+            && crate::runtime::chain_of(&status) == self.state.chain
+            && status.network == self.state.network
+        {
+            return self.confirmed(origin, source, &status, cx);
+        }
+        if presumed {
+            self.disconnect(cx);
         }
         let remotes = &crate::contract::os().dirs().remotes;
         let keyring = match noded_client::keyring::bind(remotes, &status.network, status.time) {
@@ -271,6 +386,8 @@ impl Session {
             network: network.clone(),
             founded: status.time,
             other_chain,
+            genesis: Some(status.genesis),
+            signed_in: false,
         });
         self.edit(
             |state| {
@@ -288,8 +405,7 @@ impl Session {
         if left {
             self.left_network(cx);
         }
-        crate::runtime::take_up(&self.center, &chain);
-        crate::runtime::connected(&client, &network, &chain);
+        self.hand_runtime(&client, &network, &chain);
         cx.emit(SessionEvent::Connected);
         self.account.update(cx, |account, cx| {
             account.open_device_key(cx);
@@ -332,12 +448,18 @@ impl Session {
     ) {
         let _timed = timed();
         match answer {
+            Ok(status) if self.confirming => {
+                let origin = self.state.connected_rpc.clone();
+                if let Some(source) = self.source.clone() {
+                    self.connect_answered(origin, source, Ok(status), cx);
+                }
+            }
             Ok(status) => {
                 self.edit(|state| state.reconnecting = false, cx);
                 let moved =
                     i64::try_from(status.height).unwrap_or(-1) != self.chain.read(cx).height;
                 self.apply_status(&status, cx);
-                if moved {
+                if moved && self.hands_runtime {
                     crate::runtime::deployments_checked();
                     self.account.update(cx, |account, cx| account.resolve(cx));
                 }
@@ -427,6 +549,7 @@ impl Session {
         self.connect = None;
         self.poll = None;
         self.source = None;
+        self.confirming = false;
         self.edit(
             |state| {
                 state.connected = false;
@@ -451,13 +574,17 @@ impl Session {
         });
         self.screen
             .update(cx, |screen, cx| screen.set(Screen::Connect, cx));
-        crate::runtime::take_up(&self.center, "");
+        if self.hands_runtime {
+            crate::runtime::take_up(&self.center, "");
+        }
         self.left_network(cx);
     }
 
     fn left_network(&mut self, cx: &mut Context<Self>) {
-        crate::runtime::disconnected();
-        crate::runtime::notifier::disconnected();
+        if self.hands_runtime {
+            crate::runtime::disconnected();
+            crate::runtime::notifier::disconnected();
+        }
         self.roster.clear();
         cx.emit(SessionEvent::LeftNetwork);
     }

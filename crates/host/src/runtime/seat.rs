@@ -295,7 +295,9 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
         view.instance = instance;
     }
     let first = locked.generation == 0;
-    let asked = snapshot.client.is_some() || view_override(program).is_some();
+    let listed = !roster().lock().is_empty();
+    let asked = asks_now(snapshot.client.is_some(), code.is_some(), listed)
+        || view_override(program).is_some();
     let compiled = matches!(locked.slot, Slot::Compiled(_));
     let here = locked.slot.startable(code);
     let reading = !first && matches!(locked.slot, Slot::Loading | Slot::Fetching { .. });
@@ -320,6 +322,10 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
     }
     rail_moved();
     seat
+}
+
+fn asks_now(connected: bool, listed_here: bool, roster_read: bool) -> bool {
+    connected && (listed_here || roster_read)
 }
 
 /// Retry, as a failed or stopped tab offers it: the seat's view is asked for

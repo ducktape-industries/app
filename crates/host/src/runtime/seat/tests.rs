@@ -1551,3 +1551,17 @@ fn a_load_from_a_node_the_app_left_starts_no_other() {
         "a load from a left node started another"
     );
 }
+
+#[test]
+fn a_pane_mounted_before_the_roster_is_read_waits_for_the_read() {
+    assert!(!super::asks_now(false, true, true), "asked of no node");
+    assert!(
+        !super::asks_now(true, false, false),
+        "a pane failed as not listed before its network's roster was read"
+    );
+    assert!(super::asks_now(true, true, true));
+    assert!(
+        super::asks_now(true, false, true),
+        "a program the read roster leaves out is never said to be"
+    );
+}

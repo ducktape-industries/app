@@ -8,7 +8,7 @@
 //! already reached (`Session::seed_connected`); the take-up itself is
 //! `Account::take_up`'s row in account_tests.rs and the kit's.
 use super::tests::{notifies, session, source, status};
-use super::{STATUS_EVERY, Screen, Session, SessionEvent, SessionState};
+use super::{AccountStep, STATUS_EVERY, Screen, Session, SessionEvent, SessionState};
 use crate::backend::NodeStatus;
 use gpui_kit::{Entity, Subscription, TestAppContext};
 use std::cell::{Cell, RefCell};
@@ -306,4 +306,159 @@ fn the_poll_stops_in_the_background_and_asks_at_once_in_front(cx: &mut TestAppCo
     assert_eq!(asked.get(), 2, "coming to the front did not ask at once");
     poll(cx);
     assert_eq!(asked.get(), 3, "the poll did not go on");
+}
+
+fn saved(url: &str, signed_in: bool, genesis: [u8; 32]) {
+    crate::backend::note_endpoint(crate::backend::RecentEndpoint {
+        url: url.into(),
+        network: "testkit".into(),
+        genesis: Some(genesis),
+        signed_in,
+        ..Default::default()
+    });
+}
+
+fn on_desk(screen: Screen) -> bool {
+    matches!(screen, Screen::Desk | Screen::Layout)
+}
+
+#[gpui_kit::test]
+fn a_saved_network_lands_on_the_desk_before_its_node_answers(cx: &mut TestAppContext) {
+    let _seat = crate::backend::seat_serial();
+    cx.executor().allow_parking();
+    const SAVED: &str = "http://127.0.0.1:11";
+    saved(SAVED, true, [0; 32]);
+    let session = cx.update(session);
+    let (source, asked) = source(|n| Ok(status(7 + n as u64)));
+    session.update(cx, |session, cx| {
+        session.connect_through(SAVED.into(), source, cx)
+    });
+    let presumed = state(&session, cx);
+    assert!(presumed.connected && presumed.connecting, "{presumed:?}");
+    assert_eq!(
+        presumed.chain,
+        crate::runtime::chain_named("testkit", &[0; 32])
+    );
+    let shown = screen(&session, cx);
+    assert!(
+        on_desk(shown),
+        "a saved network waited for its node: {shown:?}"
+    );
+    cx.run_until_parked();
+    let confirmed = state(&session, cx);
+    assert!(confirmed.connected && !confirmed.connecting && !confirmed.reconnecting);
+    assert_eq!(
+        chain(&session, cx).read_with(cx, |chain, _| chain.height),
+        7
+    );
+    assert!(on_desk(screen(&session, cx)));
+    poll(cx);
+    assert_eq!(
+        asked.get(),
+        2,
+        "the poll did not start on the confirming answer"
+    );
+}
+
+#[gpui_kit::test]
+fn a_saved_network_whose_node_does_not_answer_stays_on_the_desk(cx: &mut TestAppContext) {
+    let _seat = crate::backend::seat_serial();
+    cx.executor().allow_parking();
+    const SAVED: &str = "http://127.0.0.1:12";
+    saved(SAVED, true, [0; 32]);
+    let session = cx.update(session);
+    let (source, _) = source(|n| match n {
+        0 => Err("error sending request for url".into()),
+        _ => Ok(status(7)),
+    });
+    session.update(cx, |session, cx| {
+        session.connect_through(SAVED.into(), source, cx)
+    });
+    cx.run_until_parked();
+    let lost = state(&session, cx);
+    assert!(lost.connected && lost.reconnecting, "{lost:?}");
+    assert!(
+        lost.error.is_empty(),
+        "a saved network's miss was said as a failure"
+    );
+    assert!(on_desk(screen(&session, cx)));
+    poll(cx);
+    assert!(
+        !state(&session, cx).reconnecting,
+        "the poll's answer did not confirm"
+    );
+    assert_eq!(
+        chain(&session, cx).read_with(cx, |chain, _| chain.height),
+        7
+    );
+}
+
+#[gpui_kit::test]
+fn a_saved_node_that_answers_another_chain_is_taken_up_afresh(cx: &mut TestAppContext) {
+    let _seat = crate::backend::seat_serial();
+    cx.executor().allow_parking();
+    const SAVED: &str = "http://127.0.0.1:13";
+    saved(SAVED, true, [1; 32]);
+    let session = cx.update(session);
+    let (source, _) = source(|_| Ok(status(7)));
+    session.update(cx, |session, cx| {
+        session.connect_through(SAVED.into(), source, cx)
+    });
+    assert_eq!(
+        state(&session, cx).chain,
+        crate::runtime::chain_named("testkit", &[1; 32])
+    );
+    cx.run_until_parked();
+    let taken = state(&session, cx);
+    assert!(taken.connected && !taken.connecting);
+    assert_eq!(
+        taken.chain,
+        crate::runtime::chain_named("testkit", &[0; 32])
+    );
+    assert!(
+        !on_desk(screen(&session, cx)),
+        "the other chain kept the presumed desk"
+    );
+}
+
+#[gpui_kit::test]
+fn a_saved_network_never_signed_in_waits_on_the_key_step(cx: &mut TestAppContext) {
+    let _seat = crate::backend::seat_serial();
+    cx.executor().allow_parking();
+    const SAVED: &str = "http://127.0.0.1:14";
+    saved(SAVED, false, [0; 32]);
+    let session = cx.update(session);
+    let (source, _) = source(|_| Ok(status(7)));
+    session.update(cx, |session, cx| {
+        session.connect_through(SAVED.into(), source, cx)
+    });
+    let shown = screen(&session, cx);
+    assert_eq!(shown, Screen::Unlock { awaiting: false });
+    assert!(
+        state(&session, cx).connected,
+        "its reads did not start at launch"
+    );
+}
+
+#[gpui_kit::test]
+fn a_presumed_desk_whose_key_holds_no_account_goes_to_the_account_step(cx: &mut TestAppContext) {
+    let _seat = crate::backend::seat_serial();
+    cx.executor().allow_parking();
+    const SAVED: &str = "http://127.0.0.1:15";
+    saved(SAVED, true, [0; 32]);
+    let session = cx.update(session);
+    let (source, _) = source(|_| Ok(status(7)));
+    session.update(cx, |session, cx| {
+        session.connect_through(SAVED.into(), source, cx)
+    });
+    cx.run_until_parked();
+    let (_, account, _) = session.read_with(cx, |session, _| session.parts());
+    let key = account.read_with(cx, |account, _| account.get().signer_key.clone());
+    account.update(cx, |account, cx| account.resolved(SAVED, &key, None, cx));
+    assert_eq!(
+        screen(&session, cx),
+        Screen::Account {
+            step: AccountStep::Name
+        }
+    );
 }

@@ -112,13 +112,15 @@ pub mod tests {
         let prefs = cx.new(|_| Slice::new(Prefs::load()));
         let account = cx.new(|_| Account::new(screen.clone(), prefs));
         cx.new(|_| {
-            Session::new(
+            let mut session = Session::new(
                 chain,
                 account,
                 screen,
                 Default::default(),
                 Roster::default(),
-            )
+            );
+            session.apart_from_runtime();
+            session
         })
     }
 

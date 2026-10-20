@@ -572,12 +572,14 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
             network: "testkit".into(),
             founded: 1,
             other_chain: false,
+            ..Default::default()
         },
         crate::backend::RecentEndpoint {
             url: "http://127.0.0.1:2".into(),
             network: "testkit".into(),
             founded: 2,
             other_chain: true,
+            ..Default::default()
         },
     ];
     let (_view, mut native) = open((seed, Overlay::Network), cx);

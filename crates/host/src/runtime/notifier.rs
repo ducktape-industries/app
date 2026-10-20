@@ -43,7 +43,9 @@ use notify::{CenterHandle, Permission, Settings};
 mod follow;
 #[cfg(any(test, feature = "test-support"))]
 pub use follow::follow_for_test;
-pub use follow::{Followed, STATUS_EVERY, chain_of, follow, followed_url, lock_followed, take_up};
+pub use follow::{
+    Followed, STATUS_EVERY, chain_named, chain_of, follow, followed_url, lock_followed, take_up,
+};
 pub(super) use follow::{flush_sets, holding};
 
 /// The instance a notifier's requests and perf samples go under: no pane's.

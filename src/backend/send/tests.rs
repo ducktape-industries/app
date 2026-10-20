@@ -22,6 +22,7 @@ fn recent(url: &str, network: &str, founded: u64) -> RecentEndpoint {
         network: network.into(),
         founded,
         other_chain: false,
+        ..Default::default()
     }
 }
 

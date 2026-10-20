@@ -47,6 +47,7 @@ pub(super) fn desk() -> Seed {
         network: "testkit".into(),
         founded: 1,
         other_chain: false,
+        ..Default::default()
     }];
     seed
 }

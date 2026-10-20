@@ -22,7 +22,9 @@ pub mod views;
 pub fn dirs() -> &'static crate::contract::Dirs {
     crate::contract::os().dirs()
 }
-pub use endpoints::{RecentEndpoint, forget_endpoint, note_endpoint, recent_endpoints};
+pub use endpoints::{
+    RecentEndpoint, forget_endpoint, note_endpoint, note_signed_in, recent_endpoints,
+};
 pub use noded_client::Client as RpcClient;
 pub use noded_client::wire::{Layer, Status as NodeStatus};
 #[cfg(any(test, feature = "test-support"))]

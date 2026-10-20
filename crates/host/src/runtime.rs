@@ -44,7 +44,7 @@ pub use kernel::{Answered, day, local_offset, set_in_front};
 #[cfg(any(test, feature = "test-support"))]
 pub use notifier::follow_for_test;
 pub use notifier::{
-    Carried, Followed, Recipient, STATUS_EVERY, Said, chain_of, follow, followed_url,
+    Carried, Followed, Recipient, STATUS_EVERY, Said, chain_named, chain_of, follow, followed_url,
     lock_followed, notify_for, take_up,
 };
 // the web view cleans a page's title as a window's (render/web.rs), the

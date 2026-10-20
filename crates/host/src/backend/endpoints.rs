@@ -17,6 +17,8 @@ pub struct RecentEndpoint {
     /// This node's chain is not the one this device first met under its
     /// name ([`Keyring::other_chain`](noded_client::keyring::Keyring::other_chain)).
     pub other_chain: bool,
+    pub genesis: Option<[u8; 32]>,
+    pub signed_in: bool,
 }
 
 impl RecentEndpoint {
@@ -60,7 +62,13 @@ fn endpoint_of_json(value: &serde_json::Value) -> Option<RecentEndpoint> {
         network: value.get("network")?.as_str()?.to_owned(),
         founded: value["founded"].as_u64().unwrap_or_default(),
         other_chain: value["other_chain"].as_bool().unwrap_or_default(),
+        genesis: value["genesis"].as_str().and_then(genesis_of),
+        signed_in: value["signed_in"].as_bool().unwrap_or_default(),
     })
+}
+
+fn genesis_of(text: &str) -> Option<[u8; 32]> {
+    noded_client::hex::hex_decode(text).ok()?.try_into().ok()
 }
 
 /// Moves `entry` to the front: its URL, with the network it just reported.
@@ -68,10 +76,29 @@ pub fn note_endpoint(entry: RecentEndpoint) {
     edit_endpoints(|recent| note(recent, entry));
 }
 
-fn note(recent: &mut Vec<RecentEndpoint>, entry: RecentEndpoint) {
+fn note(recent: &mut Vec<RecentEndpoint>, mut entry: RecentEndpoint) {
+    entry.signed_in |= recent.iter().any(|known| {
+        known.url == entry.url
+            && known.network == entry.network
+            && known.founded == entry.founded
+            && known.signed_in
+    });
     recent.retain(|known| known.url != entry.url);
     recent.insert(0, entry);
     recent.truncate(8);
+}
+
+pub fn note_signed_in(url: &str, signed_in: bool) {
+    let moved = recent_endpoints()
+        .iter()
+        .any(|known| known.url == url && known.signed_in != signed_in);
+    if moved {
+        edit_endpoints(|recent| {
+            for known in recent.iter_mut().filter(|known| known.url == url) {
+                known.signed_in = signed_in;
+            }
+        });
+    }
 }
 
 /// Drops `endpoint` from the recent list — the row's Forget button.
@@ -96,6 +123,8 @@ fn entries_of(recent: &[RecentEndpoint]) -> Vec<serde_json::Value> {
                 "network": entry.network,
                 "founded": entry.founded,
                 "other_chain": entry.other_chain,
+                "genesis": entry.genesis.map(|genesis| noded_client::hex::hex_encode(&genesis)),
+                "signed_in": entry.signed_in,
             })
         })
         .collect()
@@ -154,6 +183,7 @@ mod tests {
             network: "testkit".into(),
             founded: 1,
             other_chain,
+            ..RecentEndpoint::default()
         };
         assert_eq!(
             row("http://127.0.0.1:36817", false).label(),
@@ -169,5 +199,39 @@ mod tests {
             c.founded = 9;
             c
         });
+    }
+
+    #[test]
+    fn a_saved_node_keeps_its_genesis_and_whether_this_device_signed_in() {
+        let entry = RecentEndpoint {
+            url: "http://d".into(),
+            network: "testkit".into(),
+            founded: 3,
+            genesis: Some([7; 32]),
+            signed_in: true,
+            ..RecentEndpoint::default()
+        };
+        let saved = entries_of(std::slice::from_ref(&entry));
+        assert_eq!(endpoint_of_json(&saved[0]).as_ref(), Some(&entry));
+        let mut recent = vec![entry.clone()];
+        let again = RecentEndpoint {
+            signed_in: false,
+            ..entry.clone()
+        };
+        note(&mut recent, again);
+        assert!(
+            recent[0].signed_in,
+            "a reconnect forgot this device's account"
+        );
+        let refounded = RecentEndpoint {
+            founded: 4,
+            signed_in: false,
+            ..entry
+        };
+        note(&mut recent, refounded);
+        assert!(
+            !recent[0].signed_in,
+            "another chain kept the last one's account"
+        );
     }
 }

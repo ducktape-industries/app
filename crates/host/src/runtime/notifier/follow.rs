@@ -18,8 +18,12 @@ pub const STATUS_EVERY: Duration = Duration::from_secs(2);
 /// The chain id `duck://` links name of the node answering `status`: its
 /// network and genesis salt; the name alone when the genesis yields none.
 pub fn chain_of(status: &crate::backend::NodeStatus) -> String {
-    ducklink::ChainId::of(&status.network, &status.genesis)
-        .map_or_else(|| status.network.clone(), |chain| chain.to_string())
+    chain_named(&status.network, &status.genesis)
+}
+
+pub fn chain_named(network: &str, genesis: &[u8; 32]) -> String {
+    ducklink::ChainId::of(network, genesis)
+        .map_or_else(|| network.to_owned(), |chain| chain.to_string())
 }
 
 #[derive(Default)]
