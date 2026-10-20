@@ -13,36 +13,21 @@ use gpui_kit::{App, Context, Entity, Subscription, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-/// How long a node not followed when asked rests before it is asked again:
-/// each ask is a client of its own, so far slower than a set's poll.
-// ponytail: one cadence for "down" and "its chain is taken"; a backoff,
-// or a client kept per node, if a long Recent list makes it felt
-const REST: Duration = Duration::from_secs(30);
+const UNFOLLOWED_NODE_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) struct Follower {
     session: Entity<Session>,
     account: Entity<Account>,
-    /// The sets running, by the node each follows.
     running: BTreeMap<String, Followed>,
-    /// Nodes asked at least once this run, followed or not.
     asked: BTreeSet<String>,
-    /// Nodes not followed when last asked (not answering, or their chain
-    /// in hand or followed already): asked again after [`REST`], or as
-    /// the chain in hand moves.
     resting: BTreeSet<String>,
-    /// The chain in hand as last seen.
     chain: String,
-    /// The one follow out.
     out: Option<Task<()>>,
-    /// The wait before the resting nodes are asked again.
     rest: Option<Task<()>>,
-    /// The lock as last handed to the host's sets (`lock_followed`).
     locked: bool,
     _observing: [Subscription; 2],
 }
 
-/// The nodes to follow: the Recent list's, most recent first, each once,
-/// never the node in hand.
 pub(crate) fn wanted(recent: &[RecentEndpoint], in_hand: &str) -> Vec<String> {
     let mut wanted: Vec<String> = Vec::new();
     for entry in recent {
@@ -54,9 +39,6 @@ pub(crate) fn wanted(recent: &[RecentEndpoint], in_hand: &str) -> Vec<String> {
 }
 
 impl Follower {
-    /// Following from now on what `session` lists, for `account`'s lock.
-    /// It notifies as each node asked answers or not: a banner's switch
-    /// may wait for that (`Windows::open_switched`).
     pub(crate) fn new(
         session: &Entity<Session>,
         account: &Entity<Account>,
@@ -71,7 +53,6 @@ impl Follower {
             chain: String::new(),
             out: None,
             rest: None,
-            // as the host's sets start
             locked: false,
             _observing: [
                 cx.observe(session, |this, _, cx| this.sync(cx)),
@@ -83,8 +64,6 @@ impl Follower {
         this
     }
 
-    /// Whether a node listed is still to be asked: a banner's switch to a
-    /// chain no set follows yet waits for it.
     pub(crate) fn asking(&self, cx: &App) -> bool {
         let state = self.session.read(cx).get();
         wanted(&state.recent_endpoints, &state.connected_rpc)
@@ -92,19 +71,14 @@ impl Follower {
             .any(|node| !self.asked.contains(node))
     }
 
-    /// The sets as the session now lists its nodes: one gone for a node
-    /// forgotten or now in hand; then, with no connect and no follow out,
-    /// the next node not followed asked.
     fn sync(&mut self, cx: &mut Context<Self>) {
         let state = self.session.read(cx).get().clone();
-        // a chain left, or taken up: what was taken may be free now
         if state.chain != self.chain {
             self.chain = state.chain.clone();
             self.resting.clear();
         }
         let wanted = wanted(&state.recent_endpoints, &state.connected_rpc);
         let before = self.running.len();
-        // a set whose chain was taken up in hand left as it was
         self.running.retain(|node, followed| {
             wanted.contains(node) && (state.chain.is_empty() || followed.chain() != state.chain)
         });
@@ -138,13 +112,14 @@ impl Follower {
         }));
     }
 
-    /// The resting nodes asked again after [`REST`].
     fn rest_then_ask(&mut self, cx: &mut Context<Self>) {
         if self.rest.is_some() {
             return;
         }
         self.rest = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(REST).await;
+            cx.background_executor()
+                .timer(UNFOLLOWED_NODE_RETRY_INTERVAL)
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.rest = None;
                 this.resting.clear();
@@ -153,10 +128,6 @@ impl Follower {
         }));
     }
 
-    /// Locked, every set runs on with no key and no account, as the
-    /// network in hand's notifiers do, and one followed meanwhile starts
-    /// so; unlocked, with them again. The host keeps the lock beside its
-    /// sets, so a follow out as it moves starts as it is.
     fn lock(&mut self, cx: &mut Context<Self>) {
         let locked = self.account.read(cx).get().locked;
         if locked == self.locked {
@@ -174,7 +145,6 @@ mod tests {
     use ducktape_host::runtime::follow_for_test;
     use gpui_kit::{AppContext as _, TestAppContext};
 
-    /// Nodes that refuse at once: a follow of either is out, then rests.
     const THERE: &str = "http://127.0.0.1:1";
     const HERE: &str = "http://127.0.0.1:2";
 
@@ -186,13 +156,10 @@ mod tests {
         }
     }
 
-    /// A follower over a session and an account of the test's own, on
-    /// what `state` lists.
     fn follower(
         state: SessionState,
         cx: &mut TestAppContext,
     ) -> (Entity<Follower>, Entity<Session>, Entity<Account>) {
-        // a follow asks its node on the runtime's thread
         cx.executor().allow_parking();
         let session = cx.update(ducktape_host::session::tests::session);
         let (_, account, _) = session.read_with(cx, |session, _| session.parts());
@@ -201,10 +168,6 @@ mod tests {
         (follower, session, account)
     }
 
-    /// Every listed node but the one in hand, most recent first, each
-    /// once; and a set whose chain is taken up in hand, through any of its
-    /// nodes, stops (a second node of that chain the host refuses,
-    /// `follow_refuses_the_chain_in_hand_and_a_second_set`).
     #[gpui_kit::test]
     fn wanted_skips_the_chain_in_hand_and_dedupes(cx: &mut TestAppContext) {
         let recent = [listed("a"), listed(HERE), listed("b"), listed("a")];
@@ -240,8 +203,6 @@ mod tests {
         );
     }
 
-    /// While a connect is out, no follow starts (a switch's node may be the
-    /// one asked); once it lands, the next listed node is asked.
     #[gpui_kit::test]
     fn nothing_starts_while_connecting(cx: &mut TestAppContext) {
         let state = SessionState {
@@ -265,9 +226,6 @@ mod tests {
         assert_eq!(out(cx), (true, 0), "no follow started once it landed");
     }
 
-    /// Lock hands every set no key and no account, as the network in
-    /// hand's notifiers, a set followed while it is locked from its start;
-    /// Unlock hands them back.
     #[gpui_kit::test]
     fn lock_drops_the_account(cx: &mut TestAppContext) {
         let state = SessionState {

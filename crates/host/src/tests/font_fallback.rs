@@ -5,12 +5,9 @@ use gpui_kit::{FontRun, FontStyle, FontWeight, PlatformTextSystem, font, px};
 use gpui_wgpu::CosmicTextSystem;
 use std::borrow::Cow;
 
-/// Noto's CBDT color font: the face the Linux desktop registers beside the
-/// bundled ones (macOS supplies its own emoji; CoreGraphics cannot load it).
 const EMOJI_FACE: &[u8] = include_bytes!("../../../../assets/fonts/NotoColorEmoji.ttf");
 
 pub fn text_system() -> CosmicTextSystem {
-    // No installed fonts: the application must be sufficient on a fresh Linux host.
     let system = CosmicTextSystem::new_without_system_fonts(super::FAMILY_UI);
     system
         .add_fonts(
@@ -74,7 +71,6 @@ fn emoji_runs_resolve_to_bundled_color_face() {
 #[test]
 fn every_bundled_static_face_is_selected_and_shapes() {
     let system = text_system();
-    // `italic`: ships italics; `between`: ships Medium and SemiBold, upright.
     for (family, sample, italic, between) in [
         (super::FAMILY_UI, "Am", true, true),
         (super::FAMILY_MONO, "Am", true, true),
@@ -116,8 +112,6 @@ fn every_bundled_static_face_is_selected_and_shapes() {
     }
 }
 
-/// A 600 run's Hangul falls back to Pretendard's own SemiBold: the fallback
-/// is asked at the matched face's weight, so Hangul and Latin match.
 #[test]
 fn semibold_hangul_falls_back_to_its_own_weight() {
     let system = text_system();

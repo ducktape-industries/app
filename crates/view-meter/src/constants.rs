@@ -59,15 +59,10 @@ use wasmparser::{
 };
 
 use crate::accepts::refuse;
-use crate::{FEATURES, MEMORY_PAGES, PAGE, Refusal, SMALL_BULK};
+use crate::{FEATURES, MEMORY_PAGES, PAGE, Refusal, SMALL_BULK_OP_FOLDING_LIMIT};
 
-/// Each size-charged operator whose length wasmtime sees as a constant, by
-/// its byte offset in the module, and the cost wasmtime folds for it.
 pub(crate) type Constants = HashMap<u32, i64>;
 
-/// The [`Constants`] of `code`, which [`crate::accepts`] took: each body is
-/// replayed as the validator walks it (the validator gives each operator's
-/// arity).
 pub(crate) fn find(code: &[u8]) -> Result<Constants, Refusal> {
     let mut validator = Validator::new_with_features(FEATURES);
     let mut module = Module::default();
@@ -86,17 +81,9 @@ pub(crate) fn find(code: &[u8]) -> Result<Constants, Refusal> {
     Ok(constants)
 }
 
-/// What a body's translation reads from the rest of the module.
 #[derive(Default)]
 struct Module {
-    /// Per global: the immediate of the `iconst` wasmtime compiles a
-    /// `global.get` of it to (an immutable global defined by a lone
-    /// `i32.const`, sign-extended as `translate_global_get` does, or a lone
-    /// `i64.const`).
     globals: Vec<Option<i64>>,
-    /// Memory 0's largest size in bytes (`Memory::maximum_byte_size`): a load
-    /// or store past it traps unconditionally, and wasmtime stops
-    /// translating there.
     memory_bytes: Option<u64>,
 }
 
@@ -148,26 +135,16 @@ fn integer(ty: ValType) -> bool {
     matches!(ty, ValType::I32 | ValType::I64)
 }
 
-/// An SSA value, by its index in [`Ssa::values`] (what it is: a [`Val`]).
 type ValueId = u32;
-/// The shared value for everything that is not an integer constant.
 const OPAQUE: ValueId = 0;
-/// The function's entry block.
 const ENTRY: u32 = 0;
-/// No definition in that block (a value index never reached: a body has
-/// fewer than 2^32 values).
 const UNDEFINED: ValueId = u32::MAX;
 
-/// What an SSA value ([`ValueId`]) is.
 #[derive(Clone, Copy)]
 enum Val {
-    /// An `iconst`, with its immediate as Cranelift stores it.
     Const(i64),
-    /// Anything else.
     Opaque,
-    /// A block parameter the SSA builder placed for a variable.
     Param,
-    /// A parameter found redundant: the value it stands for.
     Alias(ValueId),
 }
 
@@ -176,7 +153,6 @@ struct Block {
     preds: Vec<u32>,
     sealed: bool,
     single_pred: Option<u32>,
-    /// variables looked up before the block was sealed, with their parameter
     undef: Vec<(u32, ValueId)>,
 }
 
@@ -185,16 +161,10 @@ enum Call {
     Finish { sentinel: ValueId, block: u32 },
 }
 
-/// Cranelift's `SSABuilder` for one function, on the blocks the translator
-/// builds; values are [`Val`]s.
 struct Ssa {
     values: Vec<Val>,
     blocks: Vec<Block>,
-    /// each variable's definition in each block, [`UNDEFINED`] where it has
-    /// none, dense by block (Cranelift's `variables`); the entry block's from
-    /// the start
     defs: Vec<Vec<ValueId>>,
-    /// whether each variable is an integer (a missing definition is `iconst 0`)
     int: Vec<bool>,
     calls: Vec<Call>,
     results: Vec<ValueId>,
@@ -202,8 +172,6 @@ struct Ssa {
 }
 
 impl Ssa {
-    // a body is at most 7,654,321 bytes (`accepts`), so its values and
-    // blocks number far below 2^32: the fallbacks are never taken
     fn value(&mut self, value: Val) -> ValueId {
         self.values.push(value);
         u32::try_from(self.values.len() - 1).unwrap_or(OPAQUE)
@@ -221,7 +189,6 @@ impl Ssa {
         value
     }
 
-    /// The immediate of the `iconst` `value` stands for, if it is one.
     fn constant(&self, value: ValueId) -> Option<i64> {
         match self.values.get(self.resolve(value) as usize) {
             Some(Val::Const(imm)) => Some(*imm),
@@ -254,12 +221,13 @@ impl Ssa {
         self.run(var)
     }
 
-    /// Cranelift's `run_state_machine`: an explicit stack, never recursion.
     fn run(&mut self, var: u32) -> ValueId {
         while let Some(call) = self.calls.pop() {
             match call {
                 Call::UseVar(block) => self.use_var_nonlocal(var, block),
-                Call::Finish { sentinel, block } => self.finish(var, sentinel, block),
+                Call::Finish { sentinel, block } => {
+                    self.finish_predecessor_lookup(var, sentinel, block)
+                }
             }
         }
         self.results.pop().unwrap_or(OPAQUE)
@@ -310,9 +278,7 @@ impl Ssa {
             .extend(preds.iter().rev().map(|&pred| Call::UseVar(pred)));
     }
 
-    /// Cranelift's `finish_predecessors_lookup`: a parameter every
-    /// predecessor fills with the same definition is that definition.
-    fn finish(&mut self, var: u32, sentinel: ValueId, block: u32) {
+    fn finish_predecessor_lookup(&mut self, var: u32, sentinel: ValueId, block: u32) {
         let count = self.blocks[block as usize].preds.len();
         let at = self.results.len().saturating_sub(count);
         let mut found = None;
@@ -332,7 +298,6 @@ impl Ssa {
         let result = match found {
             Some(value) if agree => value,
             Some(_) => sentinel,
-            // used but never defined: Cranelift's `iconst 0`
             None => match self.int[var as usize] {
                 true => self.value(Val::Const(0)),
                 false => OPAQUE,
@@ -367,23 +332,14 @@ enum Kind {
     If,
 }
 
-/// A control frame (`ControlStackFrame`).
 struct Frame {
     kind: Kind,
-    /// entered in reachable code (otherwise a placeholder: nothing in it is
-    /// translated)
     live: bool,
-    /// the operand stack height below the frame's parameters
     base: usize,
-    /// the block after the frame (`following_code`; an `if`'s destination)
     next: u32,
-    /// a loop's header (`br_destination`)
     header: u32,
-    /// an `if`'s head block and parameters, for its `else`
     head: u32,
     params: Vec<ValueId>,
-    /// an `if` whose parameters equal its results: the head branches to the
-    /// destination until an `else` moves that edge (`ElseData::NoElse`)
     else_lazy: bool,
     else_seen: bool,
     consequent_ends_reachable: bool,
@@ -408,7 +364,6 @@ impl Frame {
     }
 }
 
-/// One body's translation.
 struct Translation<'m> {
     module: &'m Module,
     ssa: Ssa,
@@ -418,16 +373,13 @@ struct Translation<'m> {
     reachable: bool,
 }
 
-/// The arity of a translated operator, which every valid one has.
-fn need(arity: Option<(u32, u32)>) -> Result<(usize, usize), Refusal> {
+fn validated_operator_arity(arity: Option<(u32, u32)>) -> Result<(usize, usize), Refusal> {
     arity
         .map(|(params, results)| (params as usize, results as usize))
         .ok_or_else(|| Refusal::Unsupported("an operator of unknown arity".to_owned()))
 }
 
-/// A load's or store's offset and the bytes it touches (wasmtime's
-/// `access_size`), for the memory operators in [`FEATURES`].
-fn access(op: &Operator<'_>) -> Option<(u64, u64)> {
+fn memory_offset_and_access_size(op: &Operator<'_>) -> Option<(u64, u64)> {
     use Operator as O;
     let (memarg, size) = match op {
         O::I32Load8S { memarg }
@@ -499,8 +451,6 @@ impl<'m> Translation<'m> {
             let offset = locals.original_position();
             let (count, ty) = locals.read().map_err(refuse)?;
             func.define_locals(offset, count, ty).map_err(refuse)?;
-            // `declare_locals`: one `iconst 0` per declaration, for all its
-            // locals
             let zero = match integer(ty) {
                 true => self.ssa.value(Val::Const(0)),
                 false => OPAQUE,
@@ -509,7 +459,6 @@ impl<'m> Translation<'m> {
             self.ssa.defs.extend(std::iter::repeat_n(vec![zero], count));
             self.ssa.int.extend(std::iter::repeat_n(integer(ty), count));
         }
-        // `fuel_function_entry`
         self.fuel_check();
         let mut operators = body.get_operators_reader().map_err(refuse)?;
         while !operators.eof() {
@@ -539,8 +488,6 @@ impl<'m> Translation<'m> {
         self.stack.extend(std::iter::repeat_n(OPAQUE, count));
     }
 
-    /// A new block whose only predecessor is the current one, sealed, made
-    /// current (an `if`'s consequent, `br_if`'s fallthrough).
     fn continue_alone(&mut self) {
         let block = self.ssa.block();
         self.ssa.add_pred(block, self.current);
@@ -548,9 +495,6 @@ impl<'m> Translation<'m> {
         self.current = block;
     }
 
-    /// A branch around one block that rejoins (`brif` to a side block that
-    /// jumps to the continuation): the fuel check's out-of-gas call, a
-    /// funcref's lazy initialization.
     fn rejoin(&mut self) {
         let side = self.ssa.block();
         let join = self.ssa.block();
@@ -562,13 +506,10 @@ impl<'m> Translation<'m> {
         self.current = join;
     }
 
-    /// `fuel_check`.
     fn fuel_check(&mut self) {
         self.rejoin();
     }
 
-    /// `emit_raw_array_or_table_fill` on a lazily initialized funcref table:
-    /// a loop of one block.
     fn fill_loop(&mut self) {
         let start = self.current;
         let body = self.ssa.block();
@@ -582,8 +523,6 @@ impl<'m> Translation<'m> {
         self.ssa.seal(after);
     }
 
-    /// `translate_per_element_copy`: a forward and a backward loop, each
-    /// reading a lazily initialized funcref when the source is a table.
     fn per_element_copy(&mut self, read_rejoins: bool) {
         let start = self.current;
         let nonempty = self.ssa.block();
@@ -608,8 +547,6 @@ impl<'m> Translation<'m> {
         }
     }
 
-    /// `translate_table_grow` past its fuel: on success, a fill of the new
-    /// elements, then the join.
     fn table_grow(&mut self) {
         let grow = self.current;
         let fill = self.ssa.block();
@@ -624,7 +561,6 @@ impl<'m> Translation<'m> {
         self.ssa.seal(done);
     }
 
-    /// The edge of a branch to label `depth` (`br_destination`).
     fn branch(&mut self, depth: u32) -> u32 {
         let at = self.frames.len().saturating_sub(1 + depth as usize);
         let frame = &mut self.frames[at];
@@ -637,8 +573,6 @@ impl<'m> Translation<'m> {
         }
     }
 
-    /// The `else` of a live `if` (its head reachable): a block whose
-    /// predecessor is the head, with the `if`'s parameters again.
     fn enter_else(&mut self) {
         let Some(frame) = self.frames.last_mut() else {
             return;
@@ -646,8 +580,6 @@ impl<'m> Translation<'m> {
         frame.else_seen = true;
         let (head, next, base, params) = (frame.head, frame.next, frame.base, frame.params.clone());
         if frame.else_lazy {
-            // `change_jump_destination`: the head's edge leaves the
-            // destination (`swap_remove`) for the new else block
             let preds = &mut self.ssa.blocks[next as usize].preds;
             if let Some(at) = preds.iter().position(|&pred| pred == head) {
                 preds.swap_remove(at);
@@ -657,7 +589,6 @@ impl<'m> Translation<'m> {
             self.ssa.seal(block);
             self.current = block;
         } else {
-            // allocated at the `if`: its one predecessor is the head
             let block = self.ssa.block();
             self.ssa.add_pred(block, head);
             self.ssa.seal(block);
@@ -668,7 +599,6 @@ impl<'m> Translation<'m> {
         self.stack.extend(params);
     }
 
-    /// Continues after `frame` in its next block, its results on the stack.
     fn follow(&mut self, frame: &Frame, results: usize) {
         self.current = frame.next;
         self.ssa.seal(frame.next);
@@ -687,13 +617,13 @@ impl<'m> Translation<'m> {
     ) -> Result<(), Refusal> {
         match *op {
             Operator::Block { .. } => {
-                let (params, _) = need(arity)?;
+                let (params, _) = validated_operator_arity(arity)?;
                 let next = self.ssa.block();
                 let base = self.stack.len().saturating_sub(params);
                 self.frames.push(Frame::new(Kind::Block, true, base, next));
             }
             Operator::Loop { .. } => {
-                let (params, _) = need(arity)?;
+                let (params, _) = validated_operator_arity(arity)?;
                 self.pop_n(params);
                 let base = self.stack.len();
                 self.push_opaque(params);
@@ -704,11 +634,10 @@ impl<'m> Translation<'m> {
                 let mut frame = Frame::new(Kind::Loop, true, base, next);
                 frame.header = header;
                 self.frames.push(frame);
-                // `translate_loop_header`
                 self.fuel_check();
             }
             Operator::If { blockty } => {
-                let (inputs, _) = need(arity)?;
+                let (inputs, _) = validated_operator_arity(arity)?;
                 self.pop();
                 let base = self.stack.len().saturating_sub(inputs.saturating_sub(1));
                 let head = self.current;
@@ -718,8 +647,6 @@ impl<'m> Translation<'m> {
                 frame.head = head;
                 frame.params = self.stack[base..].to_vec();
                 frame.else_lazy = params_equal_results(func, blockty)?;
-                // the head's `brif`: the consequent, and the destination
-                // until an `else` (or a block allocated for the `else`)
                 self.ssa.add_pred(consequent, head);
                 if frame.else_lazy {
                     self.ssa.add_pred(next, head);
@@ -737,7 +664,7 @@ impl<'m> Translation<'m> {
                 self.enter_else();
             }
             Operator::End => {
-                let (_, results) = need(arity)?;
+                let (_, results) = validated_operator_arity(arity)?;
                 if let Some(frame) = self.frames.pop() {
                     self.ssa.add_pred(frame.next, self.current);
                     self.follow(&frame, results);
@@ -804,8 +731,6 @@ impl<'m> Translation<'m> {
         Ok(())
     }
 
-    /// Every other operator: its stack effect, wasmtime's own control flow
-    /// for it, its constant length when it is size-charged.
     fn step_other(
         &mut self,
         op: &Operator<'_>,
@@ -814,23 +739,18 @@ impl<'m> Translation<'m> {
         constants: &mut Constants,
     ) -> Result<(), Refusal> {
         let length = self.stack.last().copied().unwrap_or(OPAQUE);
-        let (params, results) = need(arity)?;
+        let (params, results) = validated_operator_arity(arity)?;
         self.pop_n(params);
         self.push_opaque(results);
-        let mut size_charged = || {
-            // `pre_translate_bulk_op`: a constant is folded, its immediate
-            // read unsigned and clamped to i64; past 128, or not a constant,
-            // the fuel is checked
-            match self.ssa.constant(length) {
-                Some(imm) => {
-                    let cost = i64::try_from(imm.cast_unsigned()).unwrap_or(i64::MAX);
-                    constants.insert(offset, cost);
-                    if cost > SMALL_BULK {
-                        self.fuel_check();
-                    }
+        let mut size_charged = || match self.ssa.constant(length) {
+            Some(imm) => {
+                let cost = i64::try_from(imm.cast_unsigned()).unwrap_or(i64::MAX);
+                constants.insert(offset, cost);
+                if cost > SMALL_BULK_OP_FOLDING_LIMIT {
+                    self.fuel_check();
                 }
-                None => self.fuel_check(),
             }
+            None => self.fuel_check(),
         };
         match *op {
             Operator::MemoryCopy { .. }
@@ -854,13 +774,9 @@ impl<'m> Translation<'m> {
                 size_charged();
                 self.per_element_copy(true);
             }
-            // `table_get_funcref`, here and where call_indirect reads a table
             Operator::TableGet { .. } | Operator::CallIndirect { .. } => self.rejoin(),
             _ => {
-                if let Some((at, size)) = access(op) {
-                    // `bounds_check_field_access`: past the largest memory,
-                    // an unconditional trap, and nothing after it is
-                    // translated
+                if let Some((at, size)) = memory_offset_and_access_size(op) {
                     let largest = self.module.memory_bytes.unwrap_or(u64::MAX);
                     if at.saturating_add(size) > largest {
                         self.reachable = false;
@@ -871,7 +787,6 @@ impl<'m> Translation<'m> {
         Ok(())
     }
 
-    /// `translate_unreachable_operator`: only the control frames.
     fn step_unreachable(
         &mut self,
         op: &Operator<'_>,
@@ -902,7 +817,7 @@ impl<'m> Translation<'m> {
                     Kind::Block | Kind::Loop => false,
                 };
                 if frame.branched_to || anyway {
-                    let (_, results) = need(arity)?;
+                    let (_, results) = validated_operator_arity(arity)?;
                     self.follow(&frame, results);
                 }
             }
@@ -912,7 +827,6 @@ impl<'m> Translation<'m> {
     }
 }
 
-/// The function type at `ty` in the module's type space.
 fn function_type(func: &FuncValidator<ValidatorResources>, ty: u32) -> Option<&FuncType> {
     match &func.resources().sub_type_at(ty)?.composite_type.inner {
         CompositeInnerType::Func(ty) => Some(ty),
@@ -920,8 +834,6 @@ fn function_type(func: &FuncValidator<ValidatorResources>, ty: u32) -> Option<&F
     }
 }
 
-/// Whether an `if` of `blockty` has the same parameter and result types:
-/// then wasmtime allocates its `else` block only at the `else`.
 fn params_equal_results(
     func: &FuncValidator<ValidatorResources>,
     blockty: BlockType,

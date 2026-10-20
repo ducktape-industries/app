@@ -13,20 +13,14 @@ use super::layers::PaneLayer;
 use super::*;
 use gpui_kit::{Context, Window};
 
-/// Pixels an arrow moves or sizes by; with Shift, [`FAR`].
-const STEP: f32 = 8.;
+const ARROW_MOVE_PIXELS: f32 = 8.;
 const FAR: f32 = 32.;
 
-/// The held window's box has the keys.
 pub(super) struct Holding {
-    /// The held window's box.
     own: gpui_kit::FocusHandle,
-    /// What had the keys when the hold took them.
     previous: Option<gpui_kit::FocusHandle>,
 }
 
-/// What a screen reader is told when a window is taken: how to move it and
-/// how to let go. The chords are the platform's.
 pub(super) fn hold_words(rail: &[crate::runtime::RailRow], program: &str) -> String {
     let (size, keep) = match cfg!(target_os = "macos") {
         true => ("Option", "Return"),
@@ -38,7 +32,6 @@ pub(super) fn hold_words(rail: &[crate::runtime::RailRow], program: &str) -> Str
     )
 }
 
-/// The key that keeps a window on a tab or in a hold: Return on a Mac.
 pub(super) fn keep_key() -> &'static str {
     match cfg!(target_os = "macos") {
         true => "Return",
@@ -47,15 +40,12 @@ pub(super) fn keep_key() -> &'static str {
 }
 
 impl WindowRoot {
-    /// The window the desk's chords act on: the one in front, when the
-    /// desk's keys reach it and it has a frame.
     pub(super) fn desk_pane(&self, cx: &gpui_kit::App) -> Option<usize> {
         let layout = self.layout(cx);
         let pane = layout.panes.get(layout.focused)?;
         (self.desk_keys(cx) && pane.frame.is_some()).then_some(layout.focused)
     }
 
-    /// ⌘⇧↩. A window held lets go where it is first.
     pub(super) fn fill_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.desk_pane(cx).is_none() {
             return;
@@ -66,15 +56,12 @@ impl WindowRoot {
         self.pane_message(PaneMessage::Fill, window, cx);
     }
 
-    /// ⌘⇧M.
     pub(super) fn hold_pane(&mut self, cx: &mut Context<Self>) {
         if let Some(index) = self.desk_pane(cx) {
             self.hold_message(PaneMessage::Hold(index), cx);
         }
     }
 
-    /// A hold's message to the desk. Not `pane_message`: that hands the
-    /// keys to the window in front, and the hold has them.
     pub(super) fn hold_message(&mut self, message: PaneMessage, cx: &mut Context<Self>) {
         self.desk.update(cx, |desk, cx| desk.moved_by(message, cx));
         cx.notify();
@@ -82,19 +69,12 @@ impl WindowRoot {
 }
 
 impl PaneLayer {
-    /// A hold's message to the desk, through the window.
     fn hold_message(&self, message: PaneMessage, cx: &mut gpui_kit::App) {
         let _ = self
             .window
             .update(cx, |desk, cx| desk.hold_message(message, cx));
     }
 
-    /// Brings the keys in line with the desk: to the held window's box
-    /// when a window is taken, and back to what had them when it is let go.
-    /// After a draw (`PaneLayer::drawn`), after Search closing gave the keys
-    /// back to what had them (the overlay layer's observer, before the
-    /// draw): a hold run from Search keeps that give-back, not Search's
-    /// field.
     pub(super) fn sync_hold(
         &mut self,
         layout: &layout::Layout,
@@ -109,7 +89,7 @@ impl PaneLayer {
             .map(|(own, _)| own.clone());
         match (own, &self.holding) {
             (None, None) => {}
-            (None, Some(_)) => self.give_back(window, cx),
+            (None, Some(_)) => self.restore_keys_if_hold_still_has_them(window, cx),
             (Some(own), None) => {
                 self.holding = Some(Holding {
                     own: own.clone(),
@@ -119,17 +99,13 @@ impl PaneLayer {
             }
             (Some(own), Some(_)) => {
                 if !own.is_focused(window) {
-                    // the keys went elsewhere (a Tab, a press, assistive technology)
                     self.hold_message(PaneMessage::Release { keep: true }, cx);
                 }
             }
         }
     }
 
-    /// The hold is let go of: the keys go back to what had them, where its
-    /// box still has them. A press, a Tab or assistive technology that took
-    /// them left them where they went.
-    fn give_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn restore_keys_if_hold_still_has_them(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Holding { own, previous }) = self.holding.take() else {
             return;
         };
@@ -139,9 +115,6 @@ impl PaneLayer {
         if own.is_focused(window) {
             previous.focus(window, cx);
         }
-        // something that opened over the desk as the hold ended took the box
-        // for what had them (its observer ran before this draw,
-        // `OverlayLayer::moved`): they go back to `previous` when it closes
         let _ = self.window.update(cx, |root, cx| {
             if let Some(layer) = &root.overlay_layer {
                 layer.update(cx, |layer, _| {
@@ -153,7 +126,6 @@ impl PaneLayer {
         });
     }
 
-    /// A key while window `index` is held.
     pub(super) fn held_key(
         &mut self,
         index: usize,
@@ -164,7 +136,7 @@ impl PaneLayer {
         let modifiers = stroke.modifiers;
         let step = match modifiers.shift {
             true => FAR,
-            false => STEP,
+            false => ARROW_MOVE_PIXELS,
         };
         let by = match stroke.key.as_str() {
             "left" => Some((-step, 0.)),
@@ -195,7 +167,6 @@ impl PaneLayer {
                 cx.stop_propagation();
                 self.hold_message(PaneMessage::Release { keep: false }, cx);
             }
-            // it goes on to what it means outside a hold
             _ => self.hold_message(PaneMessage::Release { keep: true }, cx),
         }
     }

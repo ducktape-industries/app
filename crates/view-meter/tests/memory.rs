@@ -15,7 +15,6 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// The system allocator, counting the bytes live and their peak.
 struct Counting;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -58,7 +57,6 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
-/// The most heap `meter` holds at once for `code`, past what was live before.
 fn peak_of(code: &[u8]) -> usize {
     let before = LIVE.load(Ordering::Relaxed);
     PEAK.store(before, Ordering::Relaxed);
@@ -66,8 +64,6 @@ fn peak_of(code: &[u8]) -> usize {
     PEAK.load(Ordering::Relaxed) - before
 }
 
-/// `branches` conditional branches out of a block, each starting a new
-/// block, then a read of each of `locals` locals.
 fn chain(locals: usize, branches: usize) -> Vec<u8> {
     let reads: String = (0..locals)
         .map(|i| format!("local.get {i} drop "))
@@ -85,8 +81,6 @@ fn the_replay_keeps_definitions_as_densely_as_cranelift() {
     let (locals, branches) = (500, 4_000);
     let walrus_and_the_rest = peak_of(&chain(1, branches));
     let peak = peak_of(&chain(locals, branches));
-    // every local defined in every block of the chain: 4 bytes each, twice
-    // that at most with a vector's spare capacity (a map took about 30)
     let definitions = locals * branches;
     assert!(
         peak.saturating_sub(walrus_and_the_rest) <= 8 * definitions,

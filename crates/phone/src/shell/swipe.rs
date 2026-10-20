@@ -35,31 +35,24 @@ static SHOWN: Mutex<Shown> = Mutex::new(Shown {
     claimed: Vec::new(),
 });
 
-/// How long a finger may rest before moving for its move to be a swipe:
-/// gpui's long press (`GestureTuning::long_press_duration`), which what is
-/// under the finger may have taken by then.
 const LONG_PRESS: Duration = Duration::from_millis(500);
 
-/// What this draw shows, for the next swipe to read.
 pub(super) fn publish(shown: Shown) {
     #[cfg(test)]
     PUBLISHED.with_borrow_mut(|published| *published = shown.clone());
     *SHOWN.lock().unwrap_or_else(PoisonError::into_inner) = shown;
 }
 
-// a test's own draws, apart from the other tests' running beside it
 #[cfg(test)]
 thread_local! {
     static PUBLISHED: std::cell::RefCell<Shown> = std::cell::RefCell::default();
 }
 
-/// What the last draw on this thread published.
 #[cfg(test)]
 pub(super) fn published() -> Shown {
     PUBLISHED.with_borrow(Clone::clone)
 }
 
-/// [`begins`] against what the last draw on this thread published.
 #[cfg(test)]
 pub(super) fn begins_here(start: Point<Pixels>, moving: Point<Pixels>) -> bool {
     begins_on(&published(), start, moving, Duration::ZERO, true)
@@ -94,9 +87,6 @@ fn begins_on(
     held: Duration,
     back: bool,
 ) -> bool {
-    // clearly sideways: ViewPager's ratio, the horizontal past twice the
-    // vertical (`onInterceptTouchEvent`, `xDiff * 0.5f > yDiff`), on the
-    // finger's speed; a scroll down is never taken
     let sideways = moving.x.abs() * 0.5 > moving.y.abs();
     let goes = shown.tabs || (back && shown.open && moving.x > px(0.));
     sideways
@@ -105,26 +95,15 @@ fn begins_on(
         && !shown.claimed.iter().any(|claimed| claimed.contains(&start))
 }
 
-/// Whether a swipe let go `x` points along its way, moving at `speed`
-/// points per second along it, goes on (back, to the tab beside, or a
-/// sheet down and closed) over `width` (a screen's width, a sheet's
-/// height): past half of it with its speed counted for 0.3 s of travel
-/// (react-native-screens' rule, `RNSScreenStack.mm`, which the Expo build
-/// ran).
 pub(super) fn crosses(x: f32, speed: f32, width: f32) -> bool {
     x + 0.3 * speed > width / 2.
 }
 
-/// Where a screen `x` points under the finger is drawn when nothing is
-/// beside it to come in (the tab bar's ends): it resists, the less the
-/// further it goes, UIScrollView's rubber band (`(1 - 1 / (|x| c / w +
-/// 1)) w`, c = 0.55), on a screen `width` wide.
 pub(super) fn resisted(x: f32, width: f32) -> f32 {
     let width = width.max(1.);
     (1. - 1. / (x.abs() * 0.55 / width + 1.)) * width * x.signum()
 }
 
-/// The finger's travel [`resisted`] draws `at`: its inverse.
 pub(super) fn unresisted(at: f32, width: f32) -> f32 {
     let width = width.max(1.);
     let share = (at.abs() / width).min(0.99);
@@ -140,10 +119,6 @@ mod tests {
         point(px(x), px(y))
     }
 
-    /// Over plain content a finger moving right begins; one moving more
-    /// down than twice across, one moving left, one that rested first, one
-    /// over what takes a sideways drag, or any while nothing can go back,
-    /// does not.
     #[test]
     fn a_swipe_begins_only_clearly_rightward_over_plain_content() {
         let scroller = Bounds::new(at(0., 300.), size(px(400.), px(120.)));
@@ -184,9 +159,6 @@ mod tests {
         assert!(!begins_on(&closed, at(200., 100.), at(300., 0.), still));
     }
 
-    /// At a tab root a swipe begins clearly sideways either way, never down
-    /// or after a long press; on Android (no swipe back there) only the
-    /// tabs' begins.
     #[test]
     fn the_tabs_swipe_begins_either_way_and_alone_on_android() {
         let tabs = Shown {
@@ -223,8 +195,6 @@ mod tests {
         );
     }
 
-    /// A short swipe let go fast goes on; the same let go slowly, or
-    /// moving back, does not; a long slow one does.
     #[test]
     fn a_fast_short_flick_crosses() {
         let width = 402.;
@@ -234,9 +204,6 @@ mod tests {
         assert!(crosses(250., 0., width), "let go still, past half");
     }
 
-    /// The rubber band follows the finger's way, less than the finger
-    /// moves, and less the further it goes; undone, it gives the finger's
-    /// travel back.
     #[test]
     fn the_rubber_band_resists_more_the_further_it_goes() {
         let width = 400.;

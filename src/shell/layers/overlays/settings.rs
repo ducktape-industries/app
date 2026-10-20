@@ -12,72 +12,48 @@ use gpui_kit::{App, Context, Window};
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// What a Settings control does when picked.
 type Pick = Rc<dyn Fn(&mut App)>;
 
-/// Settings' page as it scrolls: a handle on each row, never a Tab stop
-/// itself, so the row that takes the keys scrolls into view.
 #[derive(Default)]
 pub(super) struct Page {
     scroll: gpui_kit::ScrollHandle,
     rows: Vec<gpui_kit::FocusHandle>,
-    /// The row that held the keys when the page was last laid out.
     held: Rc<Cell<Option<usize>>>,
 }
 
-/// The card: `760 × 680`, hung 74px below the chrome, its title strip 34px.
 const WIDE: f32 = 760.;
 const TALL: f32 = 680.;
 const HANG: f32 = 74.;
 const STRIP: f32 = 34.;
 
-/// Where Settings was put by its title strip: kept while it is closed, so
-/// it opens there again for the rest of the run.
 #[derive(Default)]
 pub(super) struct Moved {
-    /// The card's offset from where it hangs, as it was last put.
     by: (f32, f32),
-    /// The pointer holding the strip: where it pressed, and `by` then.
     held: Option<((f32, f32), (f32, f32))>,
 }
 
-/// Settings' card in a window `size` big, under the chrome's `inset`:
-/// where its top hangs and the height it may take (`dialog_fit`), and the
-/// offset `by` held so the whole card stays inside the scrim's 12px
-/// margins (`dialog_fit` sizes it to fit where it hangs, so it always
-/// can): `(top, tall, by)`.
 fn placed(size: (f32, f32), inset: Inset, by: (f32, f32)) -> (f32, f32, (f32, f32)) {
     let (top, tall) = dialog_fit(size.1, inset, TALL, HANG);
-    // centred across the scrim, inside its 12px sides
     let room = size.0 - inset.left - 2. * DIALOG_EDGE;
     let side = ((room - WIDE.min(room)) / 2.).max(0.);
-    // up to the top margin, down by what the card leaves of its fit
     let (up, down) = (DIALOG_EDGE - top, tall - TALL.min(tall));
     (top, tall, (by.0.clamp(-side, side), by.1.clamp(up, down)))
 }
 
-/// `window`'s size, as `placed` takes it.
 fn size_of(window: &Window) -> (f32, f32) {
     let size = window.viewport_size();
     (size.width.into(), size.height.into())
 }
 
-/// What Settings' picks change, as it stood: the prefs, and what they
-/// drive in memory (the theme, which views are asking). The door's walk
-/// keeps it before its arrows pick a radio group's choices, and a pick
-/// saves, and puts it back after (docs/ax.md §1.1).
 #[cfg(any(test, feature = "ax-door"))]
 pub(crate) struct Kept {
     app: crate::shell::entities::Entities,
-    /// None when the file could not be read: then nothing is put back.
     prefs: Option<serde_json::Value>,
     asking: std::collections::BTreeSet<String>,
 }
 
 #[cfg(any(test, feature = "ax-door"))]
 impl Kept {
-    /// The app behind `window` as it stands; none for a window that is not
-    /// the shell's.
     pub(crate) fn of(window: &Window, cx: &gpui_kit::App) -> Option<Self> {
         let root = window.root::<gpui_kit::component::Root>().flatten()?;
         let view = root
@@ -93,8 +69,6 @@ impl Kept {
         })
     }
 
-    /// Back as it stood: the file written only where it differs, then read
-    /// again into `Prefs` (the theme follows), and the views asking put back.
     pub(crate) fn restore(self, cx: &mut gpui_kit::App) {
         if let Some(prefs) = self.prefs {
             crate::backend::edit_prefs(|now| *now = prefs);
@@ -107,11 +81,6 @@ impl Kept {
 }
 
 impl OverlayLayer {
-    /// The dialog on `shown`: `760 × 680; border: 1.5px solid ink` (the
-    /// board's 540, taller so every view's row fits), a 34px title strip
-    /// with its close, on a scrim below the bar. A click on the scrim, or
-    /// Escape, closes it. Its strip moves it (`Moved`), never out of the
-    /// window (`placed`).
     pub(super) fn settings(
         &mut self,
         shown: SettingsPage,
@@ -119,8 +88,6 @@ impl OverlayLayer {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        // the Settings board: nav `padding: 12px 8px; gap: 2px`, each
-        // entry `padding: 8px 14px; font: 400 14px`; the page `24px 32px`
         let ink = Ink::of(self.prefs.read(cx).get().dark());
         let pages = [
             (
@@ -158,7 +125,6 @@ impl OverlayLayer {
                         false => ink.muted,
                     })
                     .when(on, |row| row.bg(ink.surface))
-                    // a press leaves the keys where they were
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(move |_, _, cx| {
                         overlays.update(cx, |overlays, cx| {
@@ -181,9 +147,6 @@ impl OverlayLayer {
         while page.rows.len() < rows.len() {
             page.rows.push(cx.focus_handle().tab_stop(false));
         }
-        // the row that has the keys scrolls into view when it is another
-        // than last time: found at prepaint, ahead of the page's own (the
-        // door reads the frame a Tab draws, so the row shows in that one)
         let held = {
             let (handles, held) = (page.rows[..rows.len()].to_vec(), page.held.clone());
             let scroll = page.scroll.clone();
@@ -199,7 +162,6 @@ impl OverlayLayer {
                         scroll.scroll_to_item(row);
                     }
                 },
-                // the title strip's hold, followed window-wide
                 move |_, _, window, _| {
                     crate::shell::pane_drag::follow_pointer(this, window, |this, to, window, cx| {
                         let Some((from, start)) = this.settings_moved.held else {
@@ -223,7 +185,6 @@ impl OverlayLayer {
             .size_0()
         };
         let rows = rows.into_iter().zip(&page.rows).map(|(row, handle)| {
-            // a press on a row's words leaves the keys where they were
             row.flex_shrink_0()
                 .track_focus(handle)
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
@@ -244,7 +205,6 @@ impl OverlayLayer {
                     &stop,
                     accesskit::Orientation::Vertical,
                     [at, pages.len()],
-                    // the arrows open the page, as a view's settings do
                     move |to, _, cx| {
                         let page = pages[to].2;
                         picked.update(cx, |overlays, cx| {
@@ -282,7 +242,6 @@ impl OverlayLayer {
         let surface = ink.surface;
         let inset = self.inset(window, cx);
         let (top, tall, by) = placed(size_of(window), inset, self.settings_moved.by);
-        // the strip is the card's handle: a press takes hold of it
         let title = div()
             .h(px(STRIP))
             .flex_shrink_0()
@@ -300,7 +259,6 @@ impl OverlayLayer {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    // a press on the strip leaves the keys where they were
                     window.prevent_default();
                     let at = (event.position.x.into(), event.position.y.into());
                     let (.., by) = placed(
@@ -327,7 +285,6 @@ impl OverlayLayer {
                     .cursor_pointer()
                     .text_color(ink.muted)
                     .hover(move |style| style.bg(surface))
-                    // a press on the close isn't a hold on the strip
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
@@ -356,7 +313,6 @@ impl OverlayLayer {
                     .max_w_full()
                     .max_h(px(tall))
                     .self_start()
-                    // moved by its strip, from where it hangs
                     .left(px(by.0))
                     .top(px(by.1))
                     .child(title)
@@ -366,7 +322,6 @@ impl OverlayLayer {
         )
     }
 
-    /// What a pick does: `call` on the prefs.
     fn on_prefs(
         &self,
         call: impl Fn(&mut Slice<Prefs>, &mut Context<Slice<Prefs>>) + 'static,
@@ -381,7 +336,6 @@ impl OverlayLayer {
             let prefs = self.prefs.read(cx).get();
             (prefs.appearance, prefs.layout_or_default(), prefs.motion)
         };
-        // one look for every choice in Settings: the segmented row
         let theme = self.segmented(
             "theme",
             "Theme",
@@ -443,8 +397,6 @@ impl OverlayLayer {
         ]
     }
 
-    /// The NotifSettings board: the device's say over banners, then each
-    /// view's.
     fn notifications_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use crate::runtime::notify::{self, Permission};
         use gpui_kit::*;
@@ -537,7 +489,6 @@ impl OverlayLayer {
                     &ink,
                     cx,
                 );
-                // one line a view, so the whole roster fits under the fold
                 div()
                     .flex()
                     .items_center()
@@ -605,8 +556,6 @@ impl OverlayLayer {
         .collect()
     }
 
-    /// An on/off setting: on, an ink track with the knob at the right; off,
-    /// a `strong` outline with a muted knob at the left.
     fn switch(
         &self,
         id: &'static str,
@@ -645,9 +594,6 @@ impl OverlayLayer {
         .into_any_element()
     }
 
-    /// A row of choices, the chosen one on `surface` (the NotifSettings
-    /// board's segmented controls): a radio group, one Tab stop, whose
-    /// arrows pick the next choice, as a view's do (`a11y::roving`).
     fn segmented<const N: usize>(
         &mut self,
         id: &str,
@@ -659,7 +605,6 @@ impl OverlayLayer {
         use gpui_kit::*;
         let line = ink.strong;
         let stop = self.stop(id, cx);
-        // the chosen one is the stop; with none chosen yet, the first
         let chosen = choices
             .iter()
             .position(|(_, on, _)| *on)
@@ -702,7 +647,6 @@ impl OverlayLayer {
                     })
                     .when(nth > 0, |cell| cell.border_l_1().border_color(line))
                     .when(on, |cell| cell.bg(ink.surface))
-                    // a press leaves the keys where they were
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(move |_, _, cx| picks[nth](cx))
                     .child(label),
@@ -712,11 +656,6 @@ impl OverlayLayer {
         }))
     }
 
-    /// Settings › Updates: what runs, the channel it follows, whether it
-    /// updates automatically, and where the updater is, with "Check now"
-    /// (saying so while a check runs), "Update now" when that is off and
-    /// something is newer, and "Restart to update" once a release waits. A
-    /// copy that is not an installed one updates nothing and says so.
     fn updates_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use crate::update::{Channel, Updates};
         use gpui_kit::*;
@@ -724,7 +663,6 @@ impl OverlayLayer {
             heading("Updates", ink),
             line("Version", crate::update::version(), ink),
         ];
-        // where the updater is, one row however it is
         let status = |said: String| {
             div()
                 .flex()
@@ -755,7 +693,6 @@ impl OverlayLayer {
                 rows.push(status("Off: this copy is not an installed one".into()));
                 return rows;
             }
-            // installed, and another of its processes runs the updater
             Updates::Elsewhere => {
                 rows.push(status(
                     "Another running Ducktape updates this install".into(),
@@ -791,7 +728,6 @@ impl OverlayLayer {
             }),
             ink,
         );
-        // the status row's actions, outlined in ink
         let button = |id: &'static str, label: &'static str| {
             sans(500, 14.)
                 .id(id)
@@ -806,7 +742,6 @@ impl OverlayLayer {
         let windows = self.app.windows.clone();
         let restart = crate::a11y::keyboard(
             button("updates/restart", "Restart to update").on_click(move |_, _, cx| {
-                // the waiter starts the next start once this one is gone
                 if crate::update::restart().is_ok() {
                     windows.update(cx, |windows, cx| windows.quit(cx));
                 }
@@ -817,14 +752,11 @@ impl OverlayLayer {
             button("updates/now", "Update now").on_click(|_, _, _| crate::update::update_now()),
             ink.ink,
         );
-        // one check at a time: while one runs, the button says so and a
-        // press queues nothing
         let check = match shown.checking {
             true => crate::a11y::Patch::default()
                 .busy()
                 .disabled()
                 .on(crate::a11y::keyboard(
-                    // read at 0.3, as `ink::button` busy
                     button("updates/check", "Checking…")
                         .cursor_default()
                         .opacity(0.3),
@@ -850,7 +782,6 @@ impl OverlayLayer {
             automatic,
             ink,
         ));
-        // when the last check ended, after what it found
         let said = match shown.checked {
             Some(checked) => format!("{} · {checked}", shown.status),
             None => shown.status,
@@ -928,7 +859,6 @@ impl OverlayLayer {
     }
 }
 
-/// A page's title, `400 12px MONO` muted; its words are its id.
 fn heading(text: &'static str, ink: &Ink) -> gpui_kit::Div {
     use gpui_kit::*;
     mono(400, 12.)
@@ -937,9 +867,6 @@ fn heading(text: &'static str, ink: &Ink) -> gpui_kit::Div {
         .child(words(text, text))
 }
 
-/// One row of a settings page: what it is, a line about it, its control
-/// (`gap: 24px; padding: 16px 0`, a hairline under it). The label names
-/// its two lines of text: `<label>` and `<label>/hint`.
 fn setting(
     label: &'static str,
     hint: &'static str,
@@ -972,7 +899,6 @@ fn setting(
         .child(div().flex_shrink_0().child(control))
 }
 
-/// A key and its value, each a Label: `Version`, `0.1.0`.
 fn line(key: &'static str, value: String, ink: &Ink) -> gpui_kit::Div {
     use gpui_kit::*;
     div()

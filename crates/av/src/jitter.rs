@@ -29,10 +29,8 @@ pub enum Pop {
 
 pub struct Jitter {
     held: BTreeMap<u64, Vec<u8>>,
-    /// The sequence to play next; `None` before the first packet.
     next: Option<u64>,
     depth: usize,
-    /// Filled to `depth` once: plays until it runs dry.
     primed: bool,
 }
 
@@ -57,7 +55,6 @@ impl Jitter {
             if seq + RESTART >= next {
                 return;
             }
-            // the sender started over: so does play
             self.held.clear();
             self.next = None;
             self.primed = false;
@@ -72,8 +69,6 @@ impl Jitter {
                 return Pop::Empty;
             }
             self.primed = true;
-            // the oldest held is where play starts (after a dry spell, the
-            // sender has moved on)
             self.next = self.held.keys().next().copied();
         }
         let Some(next) = self.next else {
@@ -84,21 +79,16 @@ impl Jitter {
             return Pop::Packet(packet);
         }
         if self.held.is_empty() {
-            // ran dry: silence until it fills again
             self.primed = false;
             return Pop::Empty;
         }
         if self.held.len() > self.depth {
-            // a burst after a stall: what is held is where the sender is,
-            // play jumps to its oldest rather than losing its way there
             let oldest = *self.held.keys().next().expect("held");
             self.next = Some(oldest);
             return Pop::Lost {
                 next: self.held.get(&oldest).cloned(),
             };
         }
-        // ponytail: the depth only grows; shrinking it back once the path
-        // is clean again is the upgrade if the lag is ever heard
         self.depth = (self.depth + 1).min(MAX_DEPTH);
         self.next = Some(next + 1);
         Pop::Lost {
@@ -115,9 +105,6 @@ mod tests {
         vec![seq as u8]
     }
 
-    /// Nothing plays until three are held; packets out of order play in
-    /// order; one that never comes is told lost with the next one's FEC,
-    /// and the buffer holds one more from then on; a late one is dropped.
     #[test]
     fn reorders_and_conceals_one_loss() {
         let mut jitter = Jitter::default();
@@ -128,7 +115,6 @@ mod tests {
         jitter.push(2, packet(2));
         assert_eq!(jitter.pop(), Pop::Packet(packet(0)));
         assert_eq!(jitter.pop(), Pop::Packet(packet(1)));
-        // 3 is lost; 4 and 5 come
         jitter.push(4, packet(4));
         jitter.push(5, packet(5));
         assert_eq!(jitter.pop(), Pop::Packet(packet(2)));
@@ -146,7 +132,6 @@ mod tests {
             "the late one is dropped"
         );
         assert_eq!(jitter.pop(), Pop::Packet(packet(5)));
-        // dry: silence, then it fills to the deeper depth before it plays
         assert_eq!(jitter.pop(), Pop::Empty);
         for seq in 6..9 {
             jitter.push(seq, packet(seq));
@@ -156,9 +141,6 @@ mod tests {
         assert_eq!(jitter.pop(), Pop::Packet(packet(6)));
     }
 
-    /// A burst that comes after a stall, more than the depth held past a
-    /// gap, is played from its oldest packet after one loss, not one loss
-    /// per missing packet.
     #[test]
     fn a_burst_after_a_stall_jumps_to_its_oldest() {
         let mut jitter = Jitter::default();
@@ -181,8 +163,6 @@ mod tests {
         assert_eq!(jitter.depth, DEPTH, "no deeper for a jump");
     }
 
-    /// A sender that numbers again from the start (a new session) is
-    /// played from its new start, not dropped as late forever.
     #[test]
     fn a_sender_starting_over_is_played_again() {
         let mut jitter = Jitter::default();

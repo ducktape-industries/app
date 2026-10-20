@@ -21,55 +21,32 @@ use gpui_kit::{Action, Context, KeyBinding, KeyContext, Menu, MenuItem};
 gpui_kit::actions!(
     desk,
     [
-        /// ⌘Q.
         Quit,
-        /// ⌘N: an empty window on the desk.
         NewWindow,
-        /// ⌘W: the focused desk window, else this window.
         CloseWindow,
-        /// ⌘` / ctrl-tab: the next window to the front.
         CycleForward,
-        /// ⌘⇧` / ctrl-shift-tab: the previous one.
         CycleBack,
-        /// ⌘⇧↩: the window in front fills the desk, or every window goes
-        /// back.
         FillPane,
-        /// ⌘⇧M: the arrows move the window in front (⌥ sizes it).
         HoldPane,
-        /// ⌘⇧T: this OS window above other apps' windows, or back among
-        /// them (Keep on Top).
         KeepOnTop,
-        /// ⌘K.
         ToggleSpotlight,
-        /// ⌘, : Settings, on any screen.
         OpenSettings,
-        /// ⌘/: the app's help, in a window on the desk.
         OpenHelp,
-        /// Tab in an empty window's field: what it searches (Program | Chat).
         SwitchMode,
-        /// Escape: whatever is open over the desk.
         CloseOverlay,
-        /// Tab in a menu hanging from the bar: on, and past its end out of
-        /// it, which closes it (`layers::Chrome`).
         MenuTab,
-        /// Shift+Tab in a menu: back, and past its start out of it.
         MenuTabBack,
     ]
 );
 
-/// ⌘1…⌘9: the Nth window.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = desk, no_json)]
 pub(crate) struct FocusPane(pub(crate) usize);
 
-/// The app's context, on every window's root.
 pub(super) const CONTEXT: &str = "Ducktape";
 
-/// The context of a menu hanging from the bar, on the box that holds its
-/// keys (`layers::Chrome`).
 pub(super) const MENU: &str = "menu";
 
-/// Every key the app answers, with the context it answers in.
 pub(crate) fn bind(cx: &mut gpui_kit::App) {
     const DESK: Option<&str> = Some("Ducktape && desk");
     let mut bindings = vec![
@@ -88,12 +65,9 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-k", ToggleSpotlight, Some("Ducktape && on_desk")),
         KeyBinding::new("secondary-,", OpenSettings, Some(CONTEXT)),
         KeyBinding::new("escape", CloseOverlay, Some("Ducktape && overlay")),
-        // over the kit's own Tab, which would move the keys and leave the
-        // menu open behind them
         KeyBinding::new("tab", MenuTab, Some(MENU)),
         KeyBinding::new("shift-tab", MenuTabBack, Some(MENU)),
     ];
-    // every window's, pop-outs too; none where the platform can't
     if super::windows::can_keep_above(cx) {
         bindings.push(KeyBinding::new(
             "secondary-shift-t",
@@ -118,8 +92,6 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
     cx.bind_keys(bindings);
 }
 
-/// The macOS menu bar: the app's keys where a Mac user looks for them.
-/// `on_top`: Keep on Top's check, the front window's (`Windows::sync_menu`).
 pub(crate) fn menus(on_top: bool, cx: &mut gpui_kit::App) {
     if !cfg!(target_os = "macos") {
         return;
@@ -127,7 +99,6 @@ pub(crate) fn menus(on_top: bool, cx: &mut gpui_kit::App) {
     cx.set_menus(menu_bar(on_top));
 }
 
-/// The menu bar's menus, Keep on Top checked when `on_top`.
 fn menu_bar(on_top: bool) -> Vec<Menu> {
     vec![
         Menu::new("Ducktape").items([
@@ -152,7 +123,6 @@ fn menu_bar(on_top: bool) -> Vec<Menu> {
 }
 
 impl WindowRoot {
-    /// What this window's root tells the keymap about it.
     pub(super) fn key_context(&self, cx: &gpui_kit::App) -> KeyContext {
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
@@ -174,7 +144,6 @@ impl WindowRoot {
         context
     }
 
-    /// The actions a window answers, on its root.
     pub(super) fn on_keys(
         &self,
         root: gpui_kit::Stateful<gpui_kit::Div>,
@@ -211,8 +180,6 @@ impl WindowRoot {
                 }),
             )
             .on_action(cx.listener(|this, _: &ToggleSpotlight, _, cx| {
-                // over the console, where it draws: the View menu's Search
-                // comes from whichever window is in front
                 let windows = this.app.windows.read(cx);
                 let Some(own) = windows.console().and_then(|key| windows.own(key)) else {
                     return;
@@ -222,15 +189,12 @@ impl WindowRoot {
                     .update(cx, |overlays, cx| overlays.toggle(Overlay::Spotlight, cx));
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
-                // raising the console reaches into this very root: after
-                // this listener
                 let windows = this.app.windows.clone();
                 cx.defer(move |cx| {
                     windows.update(cx, |windows, cx| windows.open_settings(None, cx))
                 });
             }))
             .on_action(cx.listener(|this, _: &OpenHelp, _, cx| {
-                // a menu it was asked from (the app menu's Help) is done
                 this.overlays.entity().update(cx, |overlays, cx| {
                     overlays.close(Overlay::Menu(Popover::Node), cx)
                 });
@@ -252,7 +216,6 @@ impl WindowRoot {
 mod tests {
     use super::*;
 
-    /// What a keystroke does with `contexts` (outermost first) focused.
     fn resolve(
         stroke: &str,
         contexts: &[&str],
@@ -291,7 +254,6 @@ mod tests {
             None,
             "an overlay keeps its keys"
         );
-        // no key halves a window
         assert_eq!(resolve("secondary-d", &[desk], cx), None);
         assert_eq!(resolve("secondary-shift-d", &[desk], cx), None);
         assert_eq!(
@@ -306,8 +268,6 @@ mod tests {
         assert_eq!(resolve("escape", &[desk], cx), None);
     }
 
-    /// ⌘, opens Settings on every screen: the launcher's (before any
-    /// network), the desk, and over what is open.
     #[gpui_kit::test]
     fn settings_answers_on_every_screen(cx: &mut gpui_kit::TestAppContext) {
         cx.update(bind);
@@ -325,8 +285,6 @@ mod tests {
         }
     }
 
-    /// ⌘⇧↩ fills and ⌘⇧M holds, on the desk only, and neither takes the
-    /// plain keys of the chords they sit beside.
     #[gpui_kit::test]
     fn the_pane_chords_answer_on_the_desk_only(cx: &mut gpui_kit::TestAppContext) {
         cx.update(bind);
@@ -351,8 +309,6 @@ mod tests {
         );
     }
 
-    /// ⌘⇧T keeps on top whichever window it is pressed in: the console
-    /// (with something open over it too) and a pop-out alike.
     #[gpui_kit::test]
     fn keep_on_top_answers_in_every_window(cx: &mut gpui_kit::TestAppContext) {
         cx.update(bind);
@@ -370,8 +326,6 @@ mod tests {
         assert_eq!(resolve("secondary-t", &["Ducktape"], cx), None);
     }
 
-    /// The Window menu's Keep on Top is checked as asked (the front
-    /// window's state, `Windows::sync_menu`).
     #[test]
     fn the_window_menus_keep_on_top_is_checked_as_asked() {
         let checked = |on_top| {
@@ -392,8 +346,6 @@ mod tests {
         assert_eq!(checked(false), Some(false));
     }
 
-    /// Tab in an empty window switches to agent chat only once chat is
-    /// built; until then it moves focus, as everywhere (AX-022).
     #[gpui_kit::test]
     fn tab_in_an_empty_window_moves_focus_until_chat_is_built(cx: &mut gpui_kit::TestAppContext) {
         cx.update(bind);

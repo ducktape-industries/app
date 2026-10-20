@@ -21,46 +21,29 @@ use super::*;
 use crate::motion::{self, Tween};
 use gpui_kit::prelude::FluentBuilder as _;
 
-/// What the host keeps of a drawn sheet between frames: the detent it
-/// rests at, the drag in progress, and, for a sheet with no detents, the
-/// height its child gave it at rest, where a drag starts and snaps back to.
 #[derive(Default)]
 pub(super) struct SheetState {
     rest: usize,
     drag: Option<Drag>,
     fit: Option<Pixels>,
-    /// Under touch: the panel coming up as it first draws.
     came: Option<Tween>,
-    /// Under touch: a release settling at its rest, from the height it was
-    /// let go at.
     settle: Option<(Pixels, Tween)>,
-    /// Under touch: the panel's height as last drawn (a drag's, a detent's,
-    /// its child's), which a sheet the view drops goes down from.
     drawn: Option<Pixels>,
 }
 
-/// A docked sheet the view dropped under touch, going down as it was last
-/// drawn: its node and the style table it was drawn with, where it sat in
-/// the tree, its height, its motion (1 in place, 0 gone). It takes no
-/// press, and nothing it draws is a dialog.
 pub(super) struct Leaving {
     node: wire::Node,
     styles: wire::Styles,
-    /// Its scrolls and lists are kept while it goes (`ViewTree::replace`).
     pub(super) path: AuthoredPath,
     height: Pixels,
     tween: Tween,
 }
 
 impl SheetState {
-    /// Whether it was drawn docked under touch, where a sheet moves.
     pub(super) fn moves(&self) -> bool {
         self.drawn.is_some()
     }
 
-    /// What goes down when the view drops the sheet `node` (at `path`, drawn
-    /// with `styles`) this state kept: `None` unless it was drawn docked
-    /// under touch.
     pub(super) fn leave(
         &self,
         node: &wire::Node,
@@ -82,29 +65,21 @@ impl SheetState {
 }
 
 impl SheetState {
-    /// The detent it rests at, by its place in the sheet's `detents`.
     #[cfg(test)]
     pub(super) fn rest(&self) -> usize {
         self.rest
     }
 }
 
-/// A drag of the handle: where the press was, the panel's height then, and
-/// its height now.
 struct Drag {
     from: Pixels,
     start: Pixels,
     now: Pixels,
 }
 
-/// The widest a sheet's panel is drawn: the widest Compact body, so a
-/// sheet reads the same in a centred modal as docked on a phone.
 const WIDEST: f32 = design::width::COMPACT_BELOW as f32;
-/// The handle's band, and the handle in it (the Expo app's `Sheet` handle).
 pub(super) const HANDLE_BAND: f32 = 20.;
 const HANDLE: (f32, f32) = (32., 4.);
-/// The scrim's black, by appearance: the Expo palette's `scrim`
-/// (mobile `src/design/theme.ts`, 0.4 light, 0.55 dark).
 const SCRIM: (f32, f32) = (0.4, 0.55);
 
 impl ViewTree {
@@ -130,17 +105,13 @@ impl ViewTree {
         let body = self.body.unwrap_or_else(|| window.viewport_size());
         let compact = f64::from(f32::from(body.width)) < design::width::COMPACT_BELOW;
         let palette = crate::theme::palette(cx);
-        // under touch a docked sheet moves; a pointer's never does
         let moves = compact && crate::contract::os().facts().touch_first;
         let now = motion::now(cx);
-        // a sheet opened again as it goes down comes up from where it is
         let from = self
             .leaving
             .as_ref()
             .filter(|leaving| leaving.path == path)
             .map_or(0., |leaving| leaving.tween.at(now));
-        // a sheet the view dropped, walked once more as it goes down
-        // (`leaving_sheet`): its height as last drawn, no state of its own
         let leaving = self.leaving_at;
         let mut kept = SheetState::default();
         let state = match leaving {
@@ -150,9 +121,6 @@ impl ViewTree {
         if moves && leaving.is_none() && state.drawn.is_none() && state.came.is_none() {
             state.came = Some(Tween::between(from, 1., motion::idiom().sheet, cx));
         }
-        // sanitize keeps at most eight ascending fractions in (0, 1]; with
-        // none the panel is laid out as tall as its child, and only a drag
-        // gives it a height
         let rest = match detents.len() {
             0 => None,
             len => Some(body.height * detents[state.rest.min(len - 1)]),
@@ -163,15 +131,12 @@ impl ViewTree {
         let height = match (&state.drag, state.settle, leaving) {
             (_, _, Some((_, height, _))) => Some(height),
             (Some(drag), _, None) => Some(drag.now),
-            // a release settling at its rest, a fitted one at its child's
             (None, Some((from, tween)), None) => {
                 let to = rest.or(state.fit).unwrap_or(from);
                 Some(from + (to - from) * tween.frame(window, cx))
             }
             (None, None, None) => rest,
         };
-        // how far in the panel is, and whether it slides there (else, under
-        // Reduce Motion, it fades)
         if state.came.is_some_and(|came| came.done(now)) {
             state.came = None;
         }
@@ -180,7 +145,6 @@ impl ViewTree {
             (None, Some(came)) => Some((came.frame(window, cx), came.motion.slides)),
             (None, None) => None,
         };
-        // down by its own height at 0; unmeasured, below the body
         let lifted = height.or(state.fit).unwrap_or(body.height);
         if moves && leaving.is_none() {
             state.drawn = Some(lifted);
@@ -196,16 +160,11 @@ impl ViewTree {
             .overflow_hidden()
             .bg(crate::theme::hsla(palette.background))
             .text_color(crate::theme::hsla(palette.foreground))
-            // the view's own look (its ground, its padding) is the panel's
             .refine_style(&style)
-            // a press on the panel is the panel's, not the scrim's
             .occlude();
         if compact {
             let view = cx.entity().downgrade();
             let (pressed, moved, released) = (path.clone(), path.clone(), path.clone());
-            // a fitted sheet rests at the height its child gave it, measured
-            // as it last lay at rest, and read as the drag moves and ends:
-            // the frame that first draws it has measured nothing yet
             let heights: Vec<Pixels> = detents.iter().map(|d| body.height * *d).collect();
             let highest = heights.last().copied().unwrap_or(body.height);
             let grab = div()
@@ -229,7 +188,6 @@ impl ViewTree {
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
                         if let Some(state) = this.sheets.get_mut(&pressed) {
-                            // a press takes the panel where it is, settling or not
                             state.settle = None;
                             let start = height.or(state.fit).unwrap_or(highest);
                             state.drag = Some(Drag {
@@ -240,8 +198,6 @@ impl ViewTree {
                         }
                     }),
                 );
-            // the drag goes on over the scrim and past the panel: the
-            // window's moves and release, in capture, while it lasts
             let capture = canvas(
                 |_, _, _| (),
                 move |_, _, window, _| {
@@ -286,8 +242,6 @@ impl ViewTree {
                             let Some(drag) = state.drag.take() else {
                                 return;
                             };
-                            // a fitted sheet's one rest; unmeasured, where
-                            // the press found it, so a tap never dismisses
                             let heights = match fitted {
                                 true => vec![state.fit.unwrap_or(drag.start)],
                                 false => heights.clone(),
@@ -295,16 +249,12 @@ impl ViewTree {
                             match snap(drag.now, &heights) {
                                 Some(rest) => {
                                     state.rest = rest;
-                                    // under touch it settles there from where
-                                    // it was let go; under Reduce Motion it
-                                    // is there at once
                                     if moves && !motion::reduced(cx) {
                                         let settle = Tween::start(motion::idiom().sheet, cx);
                                         state.settle = Some((drag.now, settle));
                                     }
                                 }
                                 None => {
-                                    // back to where it opens: the view closes it
                                     state.rest = 0;
                                     if let Some(message) = dismiss {
                                         this.activate();
@@ -319,8 +269,6 @@ impl ViewTree {
             )
             .absolute()
             .size_0();
-            // the height a fitted panel's child gives it, taken at rest:
-            // mid-drag the panel is as tall as the drag
             let measure = fitted.then(|| {
                 let view = cx.entity().downgrade();
                 let measured = path.clone();
@@ -344,13 +292,11 @@ impl ViewTree {
                 .when_some(height, |panel, height| panel.h(height))
                 .max_h(body.height)
                 .flex_none()
-                // a hairline over the panel, square corners: the Expo sheet
                 .border_t_1()
                 .border_color(crate::theme::hsla(palette.border_strong))
                 .child(grab)
                 .child(capture)
                 .children(measure)
-                // coming up or going down by its own height, or fading
                 .when_some(shown, |panel, (progress, slides)| match slides {
                     true => panel.top(lifted * (1. - progress)),
                     false => panel.opacity(progress),
@@ -359,20 +305,14 @@ impl ViewTree {
             panel = panel
                 .w_full()
                 .max_w(px(WIDEST))
-                // a modal is as tall as its child, at most the body: the
-                // detents are the docked sheet's
                 .max_h(body.height)
                 .rounded(px(8.))
-                // under touch the view leaves the panel's top to the
-                // handle's band; a centred modal does not drag, so the band
-                // stays, empty, and the view's head is never flush
                 .when(crate::contract::os().facts().touch_first, |panel| {
                     panel.child(div().flex_none().h(px(HANDLE_BAND)))
                 });
         }
         let panel = panel
             .child(div().flex_1().min_h_0().child(content))
-            // a sheet going takes no press: a cover over what it draws
             .when(leaving.is_some(), |panel| {
                 panel.child(div().absolute().inset_0().occlude())
             });
@@ -390,8 +330,6 @@ impl ViewTree {
             })
             .role(gpui_kit::Role::Button)
             .aria_label("Close")
-            // a tap on the scrim, or assistive technology's press on Close:
-            // a press, so a gesture
             .when_some(dismiss, |scrim, message| {
                 scrim.on_click(cx.listener(move |this, _, _, cx| {
                     this.activate();
@@ -411,22 +349,16 @@ impl ViewTree {
             false => layer.justify_center().items_center().p(px(16.)),
         };
         let layer = match leaving {
-            // going: no dialog, and what it covers takes presses again
             Some(_) => layer.into_any_element(),
             None => {
-                // what the sheet covers takes no press while it is open
                 let layer = layer.occlude();
                 self.dialog(path, named, nested, layer, dismiss, node, window, cx)
             }
         };
-        // the walk goes on where the node sits; the layer goes over the body
         self.sheet_layer = Some(layer);
         div().absolute().into_any_element()
     }
 
-    /// The sheet the view dropped, walked once more where it sat, with the
-    /// table it was drawn with, as it goes down: its layer, while its motion
-    /// lasts and no other sheet is drawn.
     pub(super) fn leaving_sheet(
         &mut self,
         window: &mut Window,
@@ -438,7 +370,6 @@ impl ViewTree {
         }
         let progress = leaving.tween.frame(window, cx);
         let slides = leaving.tween.motion.slides;
-        // the walk enters the sheet's own scope from where it sat
         let mut path = leaving.path.clone();
         if wire::identity::segment(leaving.node.identity().cloned(), None).is_some() {
             path.pop();
@@ -457,8 +388,6 @@ impl ViewTree {
     }
 }
 
-/// The detent a release at `height` rests at: the nearest of `heights`,
-/// or `None` when the bottom (a dismissal) is nearer than the first.
 fn snap(height: Pixels, heights: &[Pixels]) -> Option<usize> {
     let distance = |to: Pixels| f32::from((height - to).abs());
     let (nearest, by) = heights
@@ -473,8 +402,6 @@ fn snap(height: Pixels, heights: &[Pixels]) -> Option<usize> {
 mod snap_tests {
     use super::*;
 
-    /// A release rests at the nearest detent; nearer the bottom than the
-    /// first, it dismisses.
     #[test]
     fn a_release_rests_at_the_nearest_detent_or_dismisses() {
         let heights = [px(480.), px(800.)];

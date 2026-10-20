@@ -19,15 +19,14 @@ use crate::identity::{admission, submit_signed};
 use crate::relay::{POLL, post, slot, take};
 use crate::{Client, Signer};
 
-/// Crockford's base32: no I, L, O, U to misread.
-const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CROCKFORD_BASE32_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /// A fresh code to type on the other device: 8 characters, 40 bits,
 /// "KQ4M-9XPT".
 pub fn new_code() -> String {
     let bits: u64 = rand::random::<u64>() >> 24;
     let chars: String = (0..8)
-        .map(|nth| ALPHABET[((bits >> (35 - nth * 5)) & 31) as usize] as char)
+        .map(|nth| CROCKFORD_BASE32_ALPHABET[((bits >> (35 - nth * 5)) & 31) as usize] as char)
         .collect();
     format!("{}-{}", &chars[..4], &chars[4..])
 }
@@ -44,7 +43,11 @@ pub fn normalized(code: &str) -> Option<String> {
             other => other,
         })
         .collect();
-    (folded.len() == 8 && folded.bytes().all(|b| ALPHABET.contains(&b))).then_some(folded)
+    (folded.len() == 8
+        && folded
+            .bytes()
+            .all(|b| CROCKFORD_BASE32_ALPHABET.contains(&b)))
+    .then_some(folded)
 }
 
 /// A key's fingerprint, to compare by eye on both screens: "A1F3 09C2".
@@ -63,8 +66,6 @@ pub struct Request {
     pub network: String,
     pub key: Vec<u8>,
 }
-
-// ---------- the new device ----------
 
 /// Puts `signer`'s key up under `code` on the relay at `relay` (the auth
 /// host's origin), then waits for a device on the account to consent, and
@@ -122,8 +123,6 @@ pub fn parse_consent(json: &str) -> Result<Consent, String> {
         proof: hex("proof")?,
     })
 }
-
-// ---------- a device already on the account ----------
 
 /// The request a new device put up under `code` on the relay at `relay`,
 /// asked over `client`'s connection. Taking it empties the slot: one code,

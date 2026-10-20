@@ -9,9 +9,6 @@ fn call(target: &str, body: &[u8]) -> Vec<u8> {
     })
 }
 
-/// A node on a local socket that answers `responses` in order, one
-/// connection each, checking every request line against `expected_path`;
-/// joined, it hands back the request bodies it read.
 pub(super) fn node_server(
     expected_path: &'static str,
     responses: Vec<(&str, Vec<u8>)>,
@@ -385,9 +382,6 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     );
 }
 
-/// `blob.get` replies `Option<Vec<u8>>`, borsh both ends like every method:
-/// the blob when the node holds it, `None` when it does not — absent is not
-/// a refusal.
 #[tokio::test]
 async fn blob_get_answers_the_blob_or_none() {
     let mut framed = b"sha256\0".to_vec();
@@ -408,7 +402,6 @@ async fn blob_get_answers_the_blob_or_none() {
     assert_eq!(methods::decode::<Option<Vec<u8>>>(&answer).unwrap(), None);
 }
 
-/// A core module of custom sections, as a program's code is laid out.
 fn module(sections: &[(&str, &[u8])]) -> Vec<u8> {
     fn leb(mut n: usize, out: &mut Vec<u8>) {
         loop {
@@ -434,12 +427,6 @@ fn module(sections: &[(&str, &[u8])]) -> Vec<u8> {
     bytes
 }
 
-/// `blob.manifest` reads the blob as a seat would: a program's view out of
-/// its `ducktape.view` section with the manifest that view carries, a
-/// view-only blob as the view itself, a program with no section as none,
-/// a view this host cannot read (a program's or a view-only one) as a view
-/// with no manifest, and a blob the node does not hold as `None`. The
-/// blob's bytes never reach the view.
 #[tokio::test]
 async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
     use sha2::Digest as _;
@@ -532,10 +519,6 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
     );
 }
 
-/// `blob.manifest` reads any blob, as `blob.get` does, and keeps only code
-/// a listed program runs: such code is kept under its id, so the next ask
-/// reads the disk, not the node; any other blob (an upload, a scheduled
-/// change's code) is read off the node each time and kept nowhere.
 #[tokio::test]
 async fn blob_manifest_keeps_only_code_the_network_runs() {
     use sha2::Digest as _;
@@ -580,7 +563,6 @@ async fn blob_manifest_keeps_only_code_the_network_runs() {
     let answer = blob_manifest(listed, ask.clone()).await.unwrap();
     assert_eq!(size(answer), Some(program.len() as u64));
     assert!(kept.exists(), "code a program runs was not kept");
-    // the next ask reads the disk: a node with no route answers it
     let empty = fake_node(Vec::new());
     let from_disk = node::Node {
         apart,
@@ -596,9 +578,6 @@ async fn blob_manifest_keeps_only_code_the_network_runs() {
     assert_eq!(empty.accepted.load(SeqCst), 0);
 }
 
-/// A blob id is hex digits only: `+f` (which `from_str_radix` reads as 15)
-/// is a malformed id, refused before the node is asked, so each digest has
-/// one spelling.
 #[tokio::test]
 async fn blob_get_refuses_a_signed_hex_spelling() {
     let held = fake_node(vec![(
@@ -624,8 +603,6 @@ async fn invite_refuses_a_ttl_it_cannot_mint_before_asking_the_node() {
     assert_eq!(held.accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
-/// A view built when its manifest named the programs it addressed (line 7)
-/// still loads: the line is read past, and the rest of the manifest stands.
 #[test]
 fn an_old_manifest_naming_targets_still_loads() {
     let text = "ducktape.view.manifest\nOld\nFrom before.\nop,program,\n480\n0123abcd\nchat,identity,\n\nteal\n";

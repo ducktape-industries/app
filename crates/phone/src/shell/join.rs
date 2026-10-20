@@ -61,7 +61,6 @@ pub fn step(screen: Screen) -> Option<Step> {
     }
 }
 
-/// `origin` without its scheme, as the screens name a node.
 pub(super) fn host_of(origin: &str) -> &str {
     origin
         .strip_prefix("https://")
@@ -77,24 +76,11 @@ pub struct Stayed;
 /// The join's screens.
 pub struct Join {
     shared: Shared,
-    /// The node's address, typed.
     pub(super) node: Entity<InputState>,
-    /// Why the switch did not happen, under the field on Switch network:
-    /// the address refused, or the host's words for a node that did not
-    /// answer (which the window hands here, [`Join::switch_failed`]).
     pub(super) refused: Option<String>,
-    /// The new account's name, on the name step.
     name: Entity<InputState>,
-    /// Where the address screen is scrolled: on Switch network, a pull
-    /// down drags the sheet only from its top.
     pub(super) scroll: ScrollHandle,
-    /// The last code made and when (the wall clock, which runs on while the
-    /// phone sleeps, as the relay's does): the countdown's start, and what a
-    /// failed join shows faded. While it is set the code step shows: a
-    /// failed join takes the host back to its name step, and the phone
-    /// keeps the code up until its Back.
     code: Option<(String, SystemTime)>,
-    /// The countdown's redraw, once a second while a code shows.
     tick: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -102,7 +88,6 @@ pub struct Join {
 impl Join {
     /// The join over the host's entities, its address field in `window`.
     pub fn new(shared: Shared, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // the last node reached, else nothing: the placeholder shows an address
         let last = shared
             .session
             .read(cx)
@@ -122,9 +107,10 @@ impl Join {
                 .text_input(name_keyboard())
         });
         let subscriptions = vec![
-            cx.subscribe_in(&node, window, |this, _, event: &InputEvent, window, cx| {
-                match event {
-                    // a new address makes the last failure stale
+            cx.subscribe_in(
+                &node,
+                window,
+                |this, _, event: &InputEvent, window, cx| match event {
                     InputEvent::Change => {
                         let typed = this.node.read(cx).value().to_string();
                         this.refused = None;
@@ -135,11 +121,12 @@ impl Join {
                     InputEvent::PressEnter { .. } => this.go(cx),
                     InputEvent::Focus => keyboard(window, Some(url_keyboard())),
                     InputEvent::Blur => keyboard(window, None),
-                }
-            }),
-            cx.subscribe_in(&name, window, |this, _, event: &InputEvent, window, cx| {
-                match event {
-                    // the host's refusal goes with the next keystroke
+                },
+            ),
+            cx.subscribe_in(
+                &name,
+                window,
+                |this, _, event: &InputEvent, window, cx| match event {
                     InputEvent::Change => this
                         .shared
                         .account
@@ -147,8 +134,8 @@ impl Join {
                     InputEvent::PressEnter { .. } => this.create(cx),
                     InputEvent::Focus => keyboard(window, Some(name_keyboard())),
                     InputEvent::Blur => keyboard(window, None),
-                }
-            }),
+                },
+            ),
             cx.observe_in(&shared.screen, window, |this, _, window, cx| {
                 this.screen_moved(window, cx)
             }),
@@ -166,16 +153,12 @@ impl Join {
             _subscriptions: subscriptions,
         };
         join.screen_moved(window, cx);
-        // a phone that has reached no node yet opens on the field, its
-        // keyboard up (Expo `autoFocus` with no Recent)
         if last.is_none() && step(*join.shared.screen.read(cx).get()) == Some(Step::Node) {
             join.node.update(cx, |node, cx| node.focus(window, cx));
         }
         join
     }
 
-    /// Continue: the typed address reached, or refused as no address; on a
-    /// network, switched to.
     fn go(&mut self, cx: &mut Context<Self>) {
         let typed = self.node.read(cx).value().trim().to_owned();
         if self.switching(cx) {
@@ -187,8 +170,6 @@ impl Join {
         });
     }
 
-    /// Whether the address screen is Switch network: drawn on a network
-    /// (the desk under it), not before one.
     fn switching(&self, cx: &Context<Self>) -> bool {
         step(*self.shared.screen.read(cx).get()).is_none()
     }
@@ -215,9 +196,6 @@ impl Join {
         cx.notify();
     }
 
-    /// The node at `text` switched to: refused when it is no address; the
-    /// node in hand needs no reach ([`Stayed`]); any other is reached first
-    /// and taken only once it answers (`Session::switch`).
     fn switch_to(&mut self, text: &str, cx: &mut Context<Self>) {
         let Some(origin) = noded_client::endpoint::endpoint_origin(text.trim()) else {
             self.refused = Some(noded_client::endpoint::ENDPOINT_REFUSAL.to_owned());
@@ -241,8 +219,6 @@ impl Join {
         cx.notify();
     }
 
-    /// The step drawn: the host's ([`step`]), but the code while one is up
-    /// ([`Join::code`]).
     fn shown(&self, cx: &App) -> Option<Step> {
         match step(*self.shared.screen.read(cx).get()) {
             Some(Step::Name) if self.code.is_some() => Some(Step::Code),
@@ -275,7 +251,6 @@ impl Join {
             .update(cx, |session, cx| session.disconnect(cx));
     }
 
-    /// A fresh code, the wait under the last one dropped.
     fn new_code(&mut self, cx: &mut Context<Self>) {
         self.shared.account.update(cx, |account, cx| {
             account.link_cancel(cx);
@@ -283,8 +258,6 @@ impl Join {
         });
     }
 
-    /// Create account: the name typed, made by the host, which refuses an
-    /// empty one itself.
     fn create(&mut self, cx: &mut Context<Self>) {
         let name = self.name.read(cx).value().to_string();
         self.shared
@@ -292,8 +265,6 @@ impl Join {
             .update(cx, |account, cx| account.create_submit(name, cx));
     }
 
-    /// "Add this phone from another device": the code; not while a create
-    /// is out, whose answer would land on it.
     fn add_phone(&mut self, cx: &mut Context<Self>) {
         self.shared.account.update(cx, |account, cx| {
             if !account.get().busy {
@@ -303,8 +274,6 @@ impl Join {
     }
 
     fn screen_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // off the account step (joined, made, the network left) its code
-        // goes, and the name typed for that network
         if !matches!(
             step(*self.shared.screen.read(cx).get()),
             Some(Step::Name | Step::Code)
@@ -316,7 +285,6 @@ impl Join {
             }
         }
         let shown = self.shown(cx);
-        // a field off its screen goes, and the keyboard with it
         for (field, on) in [(&self.node, Step::Node), (&self.name, Step::Name)] {
             if shown != Some(on) && field.read(cx).focus_handle(cx).is_focused(window) {
                 window.blur(cx);
@@ -348,16 +316,12 @@ impl Join {
         cx.notify();
     }
 
-    /// Join a network (board 02), or on a network Switch network (Expo
-    /// `join/node.tsx` connected, under the sheet's title).
     fn node_step(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let palette = look::palette(cx);
         let session = self.shared.session.read(cx).get().clone();
         let account = self.shared.account.read(cx).get();
         let switching = self.switching(cx);
         let unlocking = matches!(self.shared.screen.read(cx).get(), Screen::Unlock { .. });
-        // the address refused, the node not reached, or the key or account
-        // not found on the node reached; a switch's own
         let problem = match switching {
             true => self.refused.clone(),
             false => [&session.endpoint_error, &session.error]
@@ -424,8 +388,6 @@ impl Join {
             connect = connect.on_click(cx.listener(|this, _, _, cx| this.go(cx)));
         }
         top = top.child(connect.w_full());
-        // nothing times a reach out: the person can always stop it; a
-        // switch's leaves the network in hand as it is, and Back leaves it
         if busy && !switching {
             top = top.child(
                 div().flex().justify_center().child(
@@ -441,8 +403,6 @@ impl Join {
                 ),
             );
         }
-        // content-sized, growing to the screen it is on: the join fills the
-        // window, Switch network's sheet holds what it shows
         let mut body = div()
             .id("join")
             .flex_grow(1.)
@@ -476,8 +436,6 @@ impl Join {
             .child(body)
     }
 
-    /// A node reached before (Expo `Row`): its network over its address;
-    /// the one in hand says Current, any other can be forgotten.
     fn recent(
         &self,
         at: usize,
@@ -525,8 +483,6 @@ impl Join {
                 }))
                 .into_any_element()
         };
-        // the pick (its icon and words) and the tail are siblings, as the
-        // desktop's Recent rows: a press on × forgets and reaches nothing
         let pick = div()
             .id(SharedString::from(format!("join/recent/{at}")))
             .control(Role::Button, title.clone())
@@ -588,10 +544,6 @@ impl Join {
             .into_any_element()
     }
 
-    /// The account step (the desktop's; the form of Expo's `CreateAccount`):
-    /// a name for a new account, which the host makes, its refusal (an
-    /// empty name's included) in a notice under the field; under the form,
-    /// for an account that exists, the way to this phone's code.
     fn name_step(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let palette = look::palette(cx);
         let session = self.shared.session.read(cx).get();
@@ -677,11 +629,6 @@ impl Join {
             .child(body)
     }
 
-    /// This phone's code, waiting for consent (board 03): the code a
-    /// signed-in device's Add a device types (a computer's account menu, a
-    /// phone's Account tab), the key's fingerprint both screens show, the
-    /// time left; a failure says why, and New code starts over
-    /// with the same key.
     fn code_step(&self, cx: &mut Context<Self>) -> Div {
         let palette = look::palette(cx);
         let session = self.shared.session.read(cx).get();
@@ -853,8 +800,6 @@ impl Render for Join {
     }
 }
 
-/// The account step's header (Expo `Header` with back): the network over
-/// its node, 8 in from the back hit; Back is [`Join::back`].
 fn header(session: &SessionState, palette: Palette, cx: &Context<Join>) -> Div {
     let back = cx.listener(|this, _, _, cx| this.back(cx));
     look::header("back", back, palette).child(
@@ -877,9 +822,6 @@ fn header(session: &SessionState, palette: Palette, cx: &Context<Join>) -> Div {
     )
 }
 
-/// A field (Expo `Field`): its label over the box (the edge 2 in the
-/// foreground focused, in danger with a problem), the text in the data
-/// face when `mono`; what goes under it is the caller's.
 pub(super) fn field(
     input: &Entity<InputState>,
     id: &'static str,
@@ -932,7 +874,6 @@ pub(super) fn field(
         )
 }
 
-/// Under the address field: the problem in danger, else the rule.
 fn under(problem: Option<String>, palette: Palette) -> Div {
     match problem {
         Some(problem) => {
@@ -945,7 +886,6 @@ fn under(problem: Option<String>, palette: Palette) -> Div {
     .mt(px(look::gap::XS))
 }
 
-/// A refusal (Expo `Notice`, danger): 13 in danger on `danger_soft`.
 pub(super) fn notice(id: &'static str, said: String, palette: Palette) -> Stateful<Div> {
     div()
         .id(id)
@@ -956,19 +896,12 @@ pub(super) fn notice(id: &'static str, said: String, palette: Palette) -> Statef
         .child(look::text(look::SECONDARY, FontWeight::NORMAL, palette.danger()).child(said))
 }
 
-/// A button's kind (Expo `Button`).
 pub(super) enum Kind {
-    /// 48, the primary's ground, body medium, the row's width.
     Primary,
-    /// 36, a hairline, secondary medium.
     Small,
-    /// 44, no edge, body regular, muted.
     Quiet,
 }
 
-/// An Expo `Button` named `label`, with `icon` before it (16 small, 18
-/// else), or a spinner while `busy` (a press box of at least 44: the small
-/// one's 36 reaches it unseen).
 pub(super) fn button(
     id: &'static str,
     label: String,
@@ -1022,7 +955,6 @@ pub(super) fn button(
         drawn = drawn.child(svg().path(icon).size(px(glyph)).text_color(tone));
     }
     drawn = drawn.child(look::text(role, weight, tone).child(label.clone()));
-    // a primary button stretches to the row (Expo `wide`)
     if wide {
         drawn = drawn.flex_1();
     }
@@ -1043,7 +975,6 @@ pub(super) fn button(
         .child(drawn)
 }
 
-/// The address field's keyboard: a URL one, nothing corrected or capitalized.
 fn url_keyboard() -> TextInputConfiguration {
     TextInputConfiguration {
         virtual_keyboard: VirtualKeyboard::Url,
@@ -1051,8 +982,6 @@ fn url_keyboard() -> TextInputConfiguration {
     }
 }
 
-/// The name field's keyboard: React Native's default, which Expo's field
-/// keeps (sentences capitalized, corrections and suggestions on).
 fn name_keyboard() -> TextInputConfiguration {
     TextInputConfiguration {
         autocorrect: true,
@@ -1062,9 +991,6 @@ fn name_keyboard() -> TextInputConfiguration {
     }
 }
 
-/// A field's keyboard up as `want` says, or down: gm is told (Android);
-/// gpui_ios raises its own with the focused field, from the field's
-/// `text_input`.
 pub(super) fn keyboard(window: &mut Window, want: Option<TextInputConfiguration>) {
     let want = match want {
         Some(config) => SoftKeyboard::Show(config),
@@ -1078,10 +1004,6 @@ pub(super) mod tests {
     use super::*;
     use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
 
-    /// Every host screen has its place on a phone: the desk; the name for
-    /// the account step, the code once it waits on one; else the address
-    /// (the layout question never comes up on a phone, which has one
-    /// layout).
     #[test]
     fn each_screen_draws_as_the_desk_the_name_the_code_or_the_address() {
         assert_eq!(step(Screen::Desk), None);
@@ -1101,13 +1023,8 @@ pub(super) mod tests {
         );
     }
 
-    /// The node the join reaches: its status is the test's own; anything
-    /// else asked of it is refused at once, on this machine.
     const ORIGIN: &str = "http://127.0.0.1:1";
 
-    /// Runs the window's work until `done` holds: the key and the account
-    /// are found (a node answers) on the host's runtime, off the test's
-    /// thread.
     pub(in crate::shell) fn until(
         cx: &mut VisualTestContext,
         done: impl Fn(&mut VisualTestContext) -> bool,
@@ -1122,9 +1039,6 @@ pub(super) mod tests {
         panic!("the join never got there");
     }
 
-    /// The join over the host's own steps, as a phone reaches the account
-    /// step: a node reached (its status the test's), this phone's key
-    /// opened, the node's word that no account holds it.
     fn on_the_account_step(
         cx: &mut TestAppContext,
     ) -> (Entity<Join>, Shared, &mut VisualTestContext) {
@@ -1140,7 +1054,6 @@ pub(super) mod tests {
         until(cx, |cx| {
             shared.screen.read_with(cx, |s, _| *s.get()) == Screen::Unlock { awaiting: true }
         });
-        // the key let go, so the join that follows asks no relay
         cx.update(|_, cx| {
             cx.background_spawn(ducktape_host::backend::lock_signer())
                 .detach()
@@ -1163,11 +1076,6 @@ pub(super) mod tests {
         cx.run_until_parked();
     }
 
-    /// The account step as a phone walks it: the name step, no code made
-    /// on its own; Create account with no name shows the host's refusal;
-    /// Add this phone… shows a code, New code another; Back goes to the
-    /// name step, Back again leaves for the address with the node under
-    /// Recent; × there forgets it and reaches nothing.
     #[gpui_kit::test]
     fn the_name_step_comes_first_the_code_on_a_tap_and_back_walks_to_the_address(
         cx: &mut TestAppContext,
@@ -1228,9 +1136,6 @@ pub(super) mod tests {
         assert_eq!(screen(cx), Screen::Connect);
     }
 
-    /// A join that failed takes the host back to its name step; the phone
-    /// keeps the code up, its failure with it, until Back, which lands on
-    /// the name step with nothing under the field.
     #[gpui_kit::test]
     fn a_failed_join_stays_on_the_code_until_back_lands_on_a_clear_name_step(
         cx: &mut TestAppContext,

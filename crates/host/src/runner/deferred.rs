@@ -13,10 +13,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// An instance's page is dead.
 type Dead = Arc<AtomicBool>;
 
-/// A page's death, as every call into it lands it.
 fn death() -> Landed {
     Landed::Fault(Fault::Runner("the page died".into()))
 }
@@ -28,11 +26,7 @@ pub struct Pump(Arc<Mutex<Held>>);
 #[derive(Default)]
 struct Held {
     holding: bool,
-    /// The page is dead while this is set: every answer lands as the
-    /// runner's fault, at once.
     dying: bool,
-    /// Each held answer, with the page of the instance it came from (none
-    /// for a seating's).
     answers: VecDeque<(Landing, Landed, Option<Dead>)>,
 }
 
@@ -191,8 +185,6 @@ impl ViewRunner for DeferredRunner {
     }
 }
 
-/// A wasmtime instance whose answers go through the pump, on a page that
-/// may die (`dead`).
 struct DeferredInstance {
     inner: Box<dyn ViewInstance>,
     answers: async_channel::Receiver<Landed>,
@@ -202,8 +194,6 @@ struct DeferredInstance {
 }
 
 impl DeferredInstance {
-    /// `call` on the wasmtime instance, its answer through the pump; on a
-    /// dead page nothing runs and the call lands the runner's fault.
     fn call(&mut self, call: impl FnOnce(&mut dyn ViewInstance)) {
         if self.dead.load(Ordering::Relaxed) {
             self.pump.land(&self.land, death(), Some(&self.dead));

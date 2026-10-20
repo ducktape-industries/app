@@ -106,9 +106,6 @@ pub async fn programs(
     Ok(roster)
 }
 
-/// Warns of the ids left off `network`'s roster, escaped (`{:?}`), when
-/// they are not the ones its last read left off: once, not every block,
-/// with another listed network's roster read in turn.
 fn misspelled_said(network: &str, ids: Vec<String>) {
     static LAST: std::sync::Mutex<std::collections::BTreeMap<String, Vec<String>>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
@@ -187,21 +184,16 @@ pub async fn view_of(
 /// it goes.
 pub struct Blob {
     held: Held,
-    /// Where in `held` this blob, or this part of one, lies.
     range: std::ops::Range<usize>,
 }
 
 enum Held {
-    /// The cache's file at the path, mapped whole.
     Mapped(memmap2::Mmap, PathBuf),
-    /// A file no path names, mapped whole ([`unkept_bytes`]).
     Unnamed(memmap2::Mmap),
-    /// Bytes in memory.
     Read(Vec<u8>),
 }
 
 impl Blob {
-    /// The file at `path`, mapped whole.
     fn mapped(path: &Path) -> std::io::Result<Self> {
         let file = std::fs::File::open(path)?;
         // SAFETY: a map's bytes change under it only when its file is
@@ -216,7 +208,6 @@ impl Blob {
         })
     }
 
-    /// `file`, which no path names, mapped whole.
     fn unnamed(file: &std::fs::File) -> std::io::Result<Self> {
         // SAFETY: no path names the file, and [`unkept_bytes`], which made
         // it, wrote it whole before the map and holds it nowhere after.
@@ -301,7 +292,7 @@ pub async fn program_bytes(
                 .await
                 .map_err(fetch_error)?
                 .ok_or(Fetch::NotHeld)?;
-            if !hashes_to(&framed, code)? {
+            if !framed_blob_hash_matches(&framed, code)? {
                 return Err(Fetch::Corrupt);
             }
             let body = Blob::from(framed).part(unframe).ok_or_else(headless)?;
@@ -310,11 +301,6 @@ pub async fn program_bytes(
     }
 }
 
-/// `code`'s blob in the cache, mapped, its body what derefs, and where it
-/// came from: the cache's copy when it hashes to `code` (`disk`), else the
-/// node's, streamed into the cache first ([`fetched`]; `node`). The outer
-/// error is the cache's (it could not keep the blob: a full disk), the
-/// inner one the node's or the blob's.
 async fn cached(
     client: &RpcClient,
     code: &BlobId,
@@ -323,7 +309,7 @@ async fn cached(
     let kept = {
         let (path, code) = (path.clone(), *code);
         blocking(move || match Blob::mapped(&path) {
-            Ok(blob) => Ok(hashes_to(&blob, &code)?.then_some(blob)),
+            Ok(blob) => Ok(framed_blob_hash_matches(&blob, &code)?.then_some(blob)),
             Err(_) => Ok(None),
         })
         .await
@@ -341,7 +327,6 @@ async fn cached(
     if let Err(error) = fetched(client, code, &path).await? {
         return Ok(Err(error));
     }
-    // hashed as it landed: mapped as it is
     let landed = blocking(move || {
         Blob::mapped(&path)
             .map_err(|error| Fetch::Unreadable(format!("the program's code was not kept: {error}")))
@@ -370,8 +355,6 @@ pub async fn unkept_bytes(client: &RpcClient, code: &BlobId) -> Result<Blob, Fet
         .ok_or_else(headless)
 }
 
-/// `work` on tokio's blocking pool: a map's pages are read from the disk
-/// as they are first touched.
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, Fetch> + Send + 'static,
 ) -> Result<T, Fetch> {
@@ -384,16 +367,6 @@ fn headless() -> Fetch {
     Fetch::Unreadable("the blob carries no git header".into())
 }
 
-/// `code`'s blob streamed off the node into the cache at `path`, hashed as
-/// it lands, never held whole: renamed into place once all of it came and
-/// it hashes to `code`. A short or bad stream leaves no file. The outer
-/// error is the cache's (it could not keep the blob: a full disk), the
-/// inner one the node's. The landing file is named by this process too,
-/// so another instance of the app landing the same code never truncates
-/// it. Each piece goes to the disk as the connection read it, never
-/// copied: a copy (tokio's file takes one of each write, up to 2 MB) is a
-/// second piece-sized block on the reading thread, which glibc keeps in
-/// that thread's arena once freed.
 async fn fetched(
     client: &RpcClient,
     code: &BlobId,
@@ -421,9 +394,6 @@ async fn fetched(
     landed
 }
 
-/// `code`'s blob streamed off the node into `file`, hashed as it lands,
-/// never held whole: `Ok` once all of it came and it hashes to `code`. The
-/// outer error is the file's, the inner one the node's or the blob's.
 async fn streamed(
     client: &RpcClient,
     code: &BlobId,
@@ -455,7 +425,6 @@ async fn streamed(
     })
 }
 
-/// Where the cache keeps `code`'s framed bytes.
 pub(crate) fn cache_path(code: &BlobId) -> PathBuf {
     super::dirs()
         .cache
@@ -463,10 +432,7 @@ pub(crate) fn cache_path(code: &BlobId) -> PathBuf {
         .join(abi::hex(code.digest()))
 }
 
-/// A blob id names the FRAMED bytes (`kind len\0body`), as git's does, and
-/// the cache keeps them framed: the kind is the node's word (a program is
-/// `program`), which the id alone cannot give back.
-fn hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
+fn framed_blob_hash_matches(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
     let hashed = blob::id_of(code.kind(), framed).map_err(|_| Fetch::Collision(*code))?;
     Ok(hashed == *code)
 }
@@ -509,11 +475,6 @@ fn fetch_error(error: noded_client::Error) -> Fetch {
 mod tests {
     use super::*;
 
-    /// A section of a blob mapped from the cache is a part of the map,
-    /// nothing copied: it reads as the section's bytes, and the code it
-    /// hands a runner names the file and where in it the section starts,
-    /// for a compile apart to read there. Bytes in memory name no file;
-    /// a part read out of other bytes is none.
     #[test]
     fn a_section_of_a_mapped_blob_names_where_it_lies_in_the_file() {
         fn leb(mut n: usize) -> Vec<u8> {
@@ -534,7 +495,6 @@ mod tests {
             content.extend_from_slice(data);
             [vec![0], leb(content.len()), content].concat()
         };
-        // a type section, a view past one LEB byte, then the notifier
         let body = [
             b"\0asm\x01\0\0\0".to_vec(),
             vec![1, 4, 1, 0x60, 0, 0],
@@ -565,7 +525,6 @@ mod tests {
 
     #[test]
     fn the_view_section_is_read_out_of_a_core_module() {
-        // a minimal core module: magic, version, one custom section
         let mut module = b"\0asm\x01\0\0\0".to_vec();
         let name = VIEW_SECTION.as_bytes();
         let body = b"view bytes";
@@ -584,8 +543,8 @@ mod tests {
         let hello =
             noded_client::hex::hex_decode("ce013625030ba8dba906f756967f9e9ca394464a").unwrap();
         let hello = BlobId::Sha1(hello.try_into().unwrap());
-        assert!(hashes_to(b"blob 6\0hello\n", &hello).unwrap());
-        assert!(!hashes_to(b"blob 6\0hullo\n", &hello).unwrap());
+        assert!(framed_blob_hash_matches(b"blob 6\0hello\n", &hello).unwrap());
+        assert!(!framed_blob_hash_matches(b"blob 6\0hullo\n", &hello).unwrap());
         let shared =
             noded_client::hex::hex_decode("f92d74e3874587aaf443d1db961d4e26dde13e9c").unwrap();
         let code = BlobId::Sha1(shared.try_into().unwrap());
@@ -593,7 +552,7 @@ mod tests {
             &include_bytes!("fixtures/shattered-1.bin")[..],
             &include_bytes!("fixtures/shattered-2.bin")[..],
         ] {
-            let refused = hashes_to(half, &code).unwrap_err();
+            let refused = framed_blob_hash_matches(half, &code).unwrap_err();
             assert!(matches!(refused, Fetch::Collision(named) if named == code));
             assert!(
                 refused

@@ -21,9 +21,6 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
     seed.center = Default::default();
     seed.screen = Screen::Desk;
     seed.active = Some(PROGRAM);
-    // the console opened and drawn once, its first frame's callbacks run:
-    // the desk measured, the active program seeded into a pane, its seat
-    // made and placed, nothing loaded for it (no node, no override)
     let (app, _key, view, mut native) = open_console(seed, cx);
     let layout = native.update(|_, cx| view.read(cx).layout(cx));
     let desk = layout
@@ -53,8 +50,6 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
         "the pane shows the load"
     );
 
-    // the load lands: a view 900 wide (wider than its frame), its root an
-    // identified box filling whatever it is given
     let card = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("card".into())),
         style: crate::render::test_style(div().size_full().style().clone()),
@@ -73,8 +68,6 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
         "`Seated` widened the frame to the view's minimum"
     );
     assert_eq!(after.h, before.h);
-    // the body the frame lays the view out in, never narrower than the
-    // view's minimum: what the first tick carried
     let body = (
         (before.w - 2. * BORDER).max(900.),
         before.h - 2. * BORDER - TITLE,
@@ -91,7 +84,6 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
         ticks[0]
     );
 
-    // and the body is what the view's root was given to draw in
     native.update(|window, cx| {
         window.draw(cx).clear(cx);
     });
@@ -107,11 +99,6 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
     );
 }
 
-/// A window one view fills (`--live`, a pop-out) lays its pane out edge
-/// to edge, so the body its seat is placed in is the window's: the desk
-/// less the title bar, never the frame share the layout keeps for a
-/// console's desk. (`--live` names its window the app's console for the
-/// dialogs' sake; its pane is still drawn filling it.)
 #[gpui_kit::test]
 fn a_live_windows_view_is_laid_out_in_the_whole_window(cx: &mut TestAppContext) {
     const PROGRAM: &str = "first-frame-live-test";

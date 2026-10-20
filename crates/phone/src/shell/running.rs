@@ -18,12 +18,8 @@ use gpui_kit::{
     Styled as _, div, px, svg,
 };
 
-/// The capsule as drawn: two 42 cells, 36 tall with its border; each
-/// cell's press box is 44 square, reaching past the drawing unseen and
-/// never over the other's.
 const CAPSULE_CELL: f32 = 42.;
 const CAPSULE: f32 = 36.;
-/// Where the capsule sits in the 56 header band, and its gap to the edge.
 const CAPSULE_TOP: f32 = (look::HEADER - CAPSULE) / 2.;
 const CAPSULE_RIGHT: f32 = 8.;
 
@@ -102,9 +98,6 @@ pub fn capsule(
         .child(drawn("icons/ellipsis.svg"))
         .child(div().w(px(1.)).h_full().bg(palette.border()))
         .child(drawn("icons/x.svg"));
-    // the cell under a press box held dims (`look::PRESSED`): the ground
-    // laid over the capsule's height at the rest of the opacity (the frame
-    // is the press boxes' sibling, so it cannot dim itself)
     let held = palette.background().opacity(1. - look::PRESSED);
     let press = |id: &'static str, name: &'static str, left: f32| {
         div()

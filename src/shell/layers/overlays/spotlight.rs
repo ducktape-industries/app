@@ -9,10 +9,6 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 impl OverlayLayer {
-    /// ⌘K: one field, and what it finds among the programs, the networks
-    /// and the things to do. ↑↓ pick, Enter runs, Escape closes. To
-    /// assistive technology the field and its rows are one combo box whose
-    /// active row is the picked one.
     pub(super) fn spotlight(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let ink = Ink::of(self.prefs.read(cx).get().dark());
         let input = self.field.clone();
@@ -33,17 +29,13 @@ impl OverlayLayer {
             .overflow_y_scroll()
             .track_scroll(&self.spotlight_rows)
             .py(px(6.));
-        // each row's place among the list's children (its group's label and
-        // the hairline before it count too), for ↑↓ to scroll it into view
         let mut children = 0;
         let mut at = Vec::with_capacity(count);
-        // a row Help lists with a chord reports it (AX-114)
         let chords = crate::shell::chords();
         let mut group = "";
         for (nth, row) in rows.into_iter().enumerate() {
             if row.group != group {
                 group = row.group;
-                // groups `padding: 6px 0`, a hairline between them
                 if nth > 0 {
                     list = list.child(div().mt(px(6.)).mb(px(6.)).h(px(1.)).bg(ink.line));
                     children += 1;
@@ -69,14 +61,12 @@ impl OverlayLayer {
                 (Spot::Switch(_), true) => "switch",
                 (_, true) => "↵",
             };
-            // the first row brings its group's label back into view with it
             at.push(if nth == 0 { 0 } else { children });
             children += 1;
             list = list.child(
                 sans(400, 13.)
                     .id(SharedString::from(format!("spotlight/{nth}")))
                     .control(Role::ListBoxOption, SharedString::from(row.title.clone()))
-                    // the picked row is the one the field's ↑↓ move
                     .aria_selected(picked)
                     .when(picked, |row| row.aria_active_descendant())
                     .when_some(chord, |row, chord| row.aria_keyshortcuts(chord))
@@ -113,8 +103,6 @@ impl OverlayLayer {
                     .child("Nothing here by that name."),
             );
         }
-        // the field and its rows, one combo box: the field holds the keys,
-        // the picked row is what they pick
         let combo = crate::a11y::combo_box("spotlight/search", &input.read(cx).focus_handle(cx), {
             let input = input.clone();
             move |value, window, cx| {
@@ -137,7 +125,6 @@ impl OverlayLayer {
             )
         };
         let combo = crate::a11y::inspected(combo, native);
-        // the field's box, which wears its ring
         let header = div()
             .h(px(tall(56.)))
             .flex_shrink_0()
@@ -156,7 +143,6 @@ impl OverlayLayer {
         );
         let spotlight = self.spotlight.entity().clone();
         let scroll = self.spotlight_rows.clone();
-        // the field, the longest list and the key hints
         let (top, tall) = dialog_fit(
             f32::from(window.viewport_size().height),
             self.inset(window, cx),

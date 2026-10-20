@@ -32,10 +32,6 @@ fn named(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// Every text or rich text a node's descendants carry, depth first, joined
-/// by spaces: a clickable drawn with text children but no explicit label
-/// is named by them (`#` + `general` is "# general", not "#"), so nothing
-/// in the tree is announced with an empty or truncated name.
 pub(super) fn descendant_text(node: &wire::Node) -> Option<String> {
     fn gather<'a>(node: &'a wire::Node, words: &mut Vec<&'a str>) {
         match node {
@@ -76,22 +72,15 @@ pub fn accessible(node: &wire::Node) -> Accessible {
         ..Default::default()
     };
     match node {
-        // a blank text says nothing: no Label for assistive technology to
-        // land on, as an unlabelled picture is none
         Node::Text(view_wire::TextNode { content, .. }) if content.trim().is_empty() => {
             Accessible::default()
         }
-        // the words are the value too, as gpui's own `Text` has them: the
-        // adapters name a Label by its value
         Node::Text(view_wire::TextNode { content, .. }) => Accessible {
             role: Some(Role::Label),
             name: named(content),
             value: named(content),
             ..Default::default()
         },
-        // the value is the view's word on the text; the mounted field
-        // reads the engine's (`ViewTree::field`). A field with no name is
-        // described by what it shows in place of its text.
         Node::Field {
             options,
             multiline,
@@ -121,12 +110,10 @@ pub fn accessible(node: &wire::Node) -> Accessible {
                 read_only: options.read_only,
             }
         }
-        // only an open named overlay is a dialog; a closed or unnamed one is layout
         Node::Overlay {
             label, children, ..
         } if named_overlay(label, children) => labelled(Role::Dialog, label),
         Node::Sheet { label, .. } if named_sheet(label) => labelled(Role::Dialog, label),
-        // an unlabelled picture is decoration: it stays out of the tree
         Node::Image {
             label,
             interactivity,
@@ -205,9 +192,6 @@ pub fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessi
     })
 }
 
-/// `handle` with the Tab stop and index `interactivity` asks for: gpui
-/// gives an element's tab stop and index only to a handle it makes itself,
-/// so a handle the view names, or one it focuses by id, takes them here.
 pub(super) fn tabbed(handle: FocusHandle, interactivity: &wire::Interactivity) -> FocusHandle {
     handle
         .tab_stop(
@@ -219,19 +203,6 @@ pub(super) fn tabbed(handle: FocusHandle, interactivity: &wire::Interactivity) -
 }
 
 impl ViewTree {
-    /// The one aria mapper: `node`'s `Interactivity` as assistive
-    /// technology receives it, on the element a renderer built. Role,
-    /// focusable, the author id, every `aria.*` gpui has a setter for, the
-    /// rest in one `a11y::Patch`, each advertised action routed back as
-    /// `Event::A11yAction`, then the view focus handle (made once per
-    /// id, kept in `view_focus_targets`), the rest of the interactivity
-    /// through `interactivity::apply`, and `on_click`, which is assistive
-    /// technology's Click on the node too. A picture with no role
-    /// takes `accessible`'s (a labelled one is an Image); a roled node with
-    /// no label is named by the text it draws, and a Status or Alert with no
-    /// value speaks it as its value too (macOS reads the value). Each setter
-    /// is a field write gpui reads once at prepaint, so where the caller
-    /// puts this among its own setters does not matter.
     pub(super) fn view_aria<E: gpui_kit::StatefulInteractiveElement>(
         &mut self,
         mut element: E,
@@ -242,7 +213,6 @@ impl ViewTree {
         let aria = &interactivity.aria;
         let own = accessible(node);
         let role = interactivity.role.or(own.role);
-        // a list's row says where in the list it is, unless the view did
         let row = self.row.take().filter(|_| role.is_some());
         if let Some(role) = role {
             element = element.role(role);
@@ -259,9 +229,6 @@ impl ViewTree {
         } else if let Some(name) = own.name {
             element = element.aria_label(name);
         } else if let Some(text) = drawn() {
-            // A role with no explicit label: a view styling its own button
-            // out of a container still gets a name, taken from the text it
-            // drew inside — not left silent with its label one level down.
             element = element.aria_label(text);
         }
         if let Some(value) = &aria.description {
@@ -325,12 +292,8 @@ impl ViewTree {
         if let Some(value) = aria.orientation {
             element = element.aria_orientation(value);
         }
-        // gpui panics (debug) on a claim by the focused node or on a second
-        // claim under the one it counts claims under (the claimant's nearest
-        // focusable ancestor, when focused): the sanitizer keeps neither
         if aria.active_descendant {
             element = element.aria_active_descendant();
-            // its bounds are measured, and its scroller brought to it, by path
             if node.identity().is_some() {
                 self.claiming.insert(self.authored_path.clone());
             }
@@ -348,9 +311,6 @@ impl ViewTree {
             ..Default::default()
         }
         .on(element);
-        // an action the view advertised goes back to it on the route it
-        // named; every custom action shares CustomAction's, told apart by
-        // its id in the data
         for &(action, handler) in &aria.actions {
             let tree = cx.entity().downgrade();
             element = element.on_a11y_action(action, move |data, _, cx| {
@@ -367,10 +327,8 @@ impl ViewTree {
                 .or_insert_with(|| cx.focus_handle());
             tabbed(handle.clone(), interactivity)
         });
-        // whether the view has built the node's tooltip
         let tooltip_held = (interactivity.tooltip.as_ref())
             .is_some_and(|tooltip| self.tooltips.contains_key(&tooltip.request));
-        // only a node with an id of its own is found again by its path
         let path = node.identity().is_some().then_some(&self.authored_path);
         element = super::interactivity::apply(
             element,
@@ -381,13 +339,6 @@ impl ViewTree {
             tooltip_held,
             cx,
         );
-        // a click the view consumes stops here, as gpui's
-        // `cx.stop_propagation()` in the listener would: no element under
-        // it hears the same press. The click is the release's bubble, and
-        // gpui-base's window selection ends the press it began only on
-        // hearing that release, so the stop ends it first, as gpui-base's
-        // own links do: else every move with no button held drags the
-        // selection on, as if the button were still down
         if let Some(handler) = interactivity.on_click
             && !aria
                 .actions
@@ -415,10 +366,6 @@ impl ViewTree {
             let consumes = interactivity.consumes_click;
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                    // gpui answers a press and a release on one box with a
-                    // click however far the pointer went between them; a
-                    // release that ended a drag selecting words pressed
-                    // nothing (as the links in a paragraph say)
                     if let gpui_kit::ClickEvent::Mouse(click) = event
                         && super::text::dragged_over_words(
                             click.down.position,

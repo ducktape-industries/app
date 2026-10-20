@@ -86,8 +86,6 @@ pub fn server() -> String {
 mod tests {
     use super::*;
 
-    /// The preimage is every field but the signature, in a fixed order:
-    /// a token or an account changed changes it.
     #[test]
     fn the_preimage_names_every_field_but_the_signature() {
         let registration = Registration {

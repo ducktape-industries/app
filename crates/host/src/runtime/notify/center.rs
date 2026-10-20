@@ -79,20 +79,15 @@ pub struct Entry {
 /// banners' tags: no view's.
 pub const HOST: &str = "ducktape";
 
-/// The bit every device row's id carries and no chain row's does: the two
-/// logs number their rows apart.
-const DEVICE: u64 = 1 << 63;
+const DEVICE_ROW_ID_BIT: u64 = 1 << 63;
 
-/// How many carried notices wait for this device's own run of their
-/// notifier ([`Center::carried`]): its catch-up after a launch posts what
-/// came while nothing ran, far fewer than this; older ones go first.
 pub(super) const CARRIED_KEPT: usize = 128;
 
 impl Entry {
     /// One of the host's own rows, the device's ([`Center::post_host`]),
     /// not a view's.
     pub fn host(&self) -> bool {
-        self.id & DEVICE != 0
+        self.id & DEVICE_ROW_ID_BIT != 0
     }
 }
 
@@ -105,50 +100,26 @@ struct Bucket {
 /// policy remembers between notices.
 #[derive(Default)]
 pub struct Center {
-    /// The chain id (`<network>#<salt>`) the log is for.
     network: String,
-    /// Where the log is saved: none with no network in hand, or when its
-    /// file could not be read (nothing then writes over it).
     log: Option<PathBuf>,
     entries: Vec<Entry>,
     next: u64,
-    /// The device's own rows, the host's: kept whichever chain is in hand.
     device: Vec<Entry>,
-    /// Where they are saved: none until the host opens them
-    /// ([`Center::open_device`]), or when their file could not be read.
     device_log: Option<PathBuf>,
     buckets: HashMap<String, Bucket>,
-    /// Notices past the burst limit since the view's last banner.
     more: HashMap<String, u32>,
     /// The window in front and the view focused in it.
     pub front: Option<(WindowKey, &'static str)>,
     /// Views that posted before the person said anything about them.
     pub asking: BTreeSet<String>,
     pub(super) not_now: BTreeSet<String>,
-    /// Views that opened a live track, their window's line not yet put
-    /// away (the consent line, [`Center::went_live`]).
     pub(crate) sharing: BTreeSet<String>,
-    /// Views whose live line the person put away this run.
     told: BTreeSet<String>,
-    /// The `until` of each banner standing under a tag that has one.
     until: HashMap<String, u64>,
-    /// Each program's last call rung, by its tag: it stands while its tag
-    /// is in `until` and not past it.
     calls: HashMap<String, String>,
-    /// The notices the push server carried here ([`Center::carried`]) that
-    /// this device's own run of their notifier has not posted yet: its
-    /// post of one is that notice again ([`Center::log`]). Saved beside the
-    /// log, so a run that only starts after a relaunch still finds them;
-    /// the newest [`CARRIED_KEPT`].
-    // ponytail: one the run here never posts (the program skipped it, on
-    // screen here) waits until newer ones push it out and takes one later
-    // post saying the same; a carried notice's seq in the payload if felt
     carried: Vec<Entry>,
-    /// The copies moved since they were last handed to the disk.
     carried_moved: bool,
-    /// Moves with every change to the log: the bell's list is read again.
     rev: u64,
-    /// The `rev` last handed to the disk ([`Center::flush`]).
     saved: u64,
 }
 
@@ -201,7 +172,6 @@ impl Center {
         wall: i64,
     ) -> (Delivery, Option<Notice>) {
         let until = post.until;
-        // a ring has an end and a tag to take it down by
         let kind = match until != 0 && !post.tag.is_empty() {
             true => post.kind,
             false => NoticeKind::Notice,
@@ -211,7 +181,6 @@ impl Center {
         if permission == Some(Permission::Block) {
             return (Delivery::Blocked, None);
         }
-        // a view's tags are its own: two views never replace each other's
         let notice = Notice {
             title: post.title.clone(),
             body: post.body.clone(),
@@ -236,8 +205,6 @@ impl Center {
                 if !self.not_now.contains(program) {
                     self.asking.insert(program.to_owned());
                 }
-                // a call rings while the person has not said: a missed call
-                // is not one they chose to miss
                 if !call {
                     return (Delivery::Logged, None);
                 }
@@ -286,8 +253,6 @@ impl Center {
         (Delivery::Logged, Some(more))
     }
 
-    /// `notice`'s banner goes up: it stands under its tag until its
-    /// `until`, or with none when it has none.
     fn raised(&mut self, notice: &Notice) {
         if notice.tag.is_empty() {
             return;
@@ -317,14 +282,6 @@ impl Center {
         self.until.remove(tag);
     }
 
-    /// Into the log: a notice under a tag the view already has a row for
-    /// folds into that row and brings it back to the top, unread. Past the
-    /// view's `share` of rows its own oldest go, never another view's.
-    /// Written at the end of the view's redraw ([`Center::flush`]). A post
-    /// saying what a notice the push server carried here said, under its
-    /// tag ([`Center::carried`]), is this device's run of that same notice:
-    /// its row stands as it is, read or not, counted once. Whether it was
-    /// that: the OS showed it.
     fn log(&mut self, program: &str, view: &str, post: Notification, wall: i64) -> bool {
         let twin = self.carried.iter().position(|copy| {
             copy.program == program
@@ -333,7 +290,6 @@ impl Center {
         });
         if let Some(twin) = twin {
             self.carried.remove(twin);
-            // the copies are saved with the log
             (self.carried_moved, self.rev) = (true, self.rev + 1);
             return true;
         }
@@ -408,7 +364,6 @@ impl Center {
         let says = |entry: &Entry| {
             (&entry.title, &entry.body, &entry.link) == (&notice.title, &notice.body, &notice.link)
         };
-        // the row it folds into: its tag's, or with none the newest saying it
         let row = self.entries.iter().rposition(|entry| {
             entry.program == program && entry.tag == tag && (!tag.is_empty() || says(entry))
         });
@@ -452,7 +407,6 @@ impl Center {
                     self.carried.remove(0);
                 }
                 self.carried_moved = true;
-                // newest last, as `entries` reads them: it may be older than rows logged since
                 let place = self
                     .entries
                     .iter()
@@ -477,7 +431,7 @@ impl Center {
             Some(index) => self.device.remove(index).id,
             None => {
                 let last = self.device.iter().map(|entry| entry.id).max();
-                last.map_or(DEVICE | 1, |id| id + 1)
+                last.map_or(DEVICE_ROW_ID_BIT | 1, |id| id + 1)
             }
         };
         self.device.push(Entry {
@@ -504,9 +458,6 @@ impl Center {
         }
     }
 
-    /// The device's rows moved: the bell reads again, and they are handed
-    /// to their file now (no view's redraw writes them), the chain's log
-    /// no dirtier for it.
     fn device_moved(&mut self) {
         let clean = self.saved == self.rev;
         self.rev += 1;
@@ -544,7 +495,6 @@ impl Center {
         self.rows().filter(|entry| !entry.read).count()
     }
 
-    /// Both logs' rows, in no order.
     fn rows(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter().chain(&self.device)
     }
@@ -574,7 +524,6 @@ impl Center {
     /// rows under it are read, and no other view's. Whether any changed.
     /// Written at the end of the view's redraw ([`Center::flush`]).
     pub fn read_tag(&mut self, program: &str, tag: &str) -> bool {
-        // its banner is taken down (`notify::seen`): no timer of its stays
         self.until.remove(&format!("{program}/{tag}"));
         let mut changed = false;
         for entry in &mut self.entries {
@@ -619,8 +568,6 @@ impl Center {
         self.asking.insert(program.to_owned());
     }
 
-    /// `program` opened a live track: its window says so in a line, once a
-    /// run. `true` when the line is new.
     pub(crate) fn went_live(&mut self, program: &str) -> bool {
         !self.told.contains(program) && self.sharing.insert(program.to_owned())
     }
@@ -657,18 +604,11 @@ impl Center {
         &self.network
     }
 
-    /// `network` in hand with its log at `path`, for a test (the app takes
-    /// a chain up through `notifier::take_up`). A log that cannot be read
-    /// leaves the centre empty and with no `log`, so no save replaces it.
-    /// The device's rows stay.
     #[cfg(test)]
     pub(super) fn open_log(&mut self, network: &str, path: Option<PathBuf>) {
         self.put_log(Log::read(network, path));
     }
 
-    /// The chain's log taken out whole, handed to the disk first: this
-    /// centre holds none from then on, and a late flush (a left set's last
-    /// redraw) writes nothing over the file.
     pub(crate) fn take_log(&mut self) -> Log {
         self.flush();
         let log = Log {
@@ -685,9 +625,6 @@ impl Center {
         log
     }
 
-    /// `log` in place of the chain's log this centre holds, which is handed
-    /// back (on its way to the disk): no file read. The device's rows and
-    /// the window in front stay; the policy starts over.
     pub(crate) fn put_log(&mut self, log: Log) -> Log {
         let left = self.take_log();
         *self = Center {
@@ -715,14 +652,11 @@ impl Center {
         self.open_device_log(notifications_dir().join("@device.json"));
     }
 
-    /// The device's rows from the log at `path`. One that cannot be read
-    /// leaves them empty and with no file, so no save replaces it.
     pub(super) fn open_device_log(&mut self, path: PathBuf) {
         (self.device, self.device_log) = match opened(&path) {
             Some(device) => (device, Some(path)),
             None => (Vec::new(), None),
         };
-        // read, not changed: nothing to write back
         let saved = self.saved == self.rev;
         self.rev += 1;
         if saved {
@@ -745,17 +679,12 @@ impl Center {
         if let Some(path) = &self.log {
             save(path.clone(), self.entries.clone());
             if std::mem::take(&mut self.carried_moved) {
-                save(carried_path(path), self.carried.clone());
+                save(pending_carried_copies_path(path), self.carried.clone());
             }
         }
     }
 }
 
-/// One chain's log as a centre holds it, moved whole from one centre to
-/// another (`notifier::take_up`): its rows, where they are saved, the
-/// copies waiting beside them, and the rings standing under it (a timer at
-/// a call's `until` finds them in whichever centre holds the log then,
-/// `notify::withdraw_at`). Always handed over saved ([`Center::take_log`]).
 #[derive(Default)]
 pub(crate) struct Log {
     network: String,
@@ -768,34 +697,28 @@ pub(crate) struct Log {
 }
 
 impl Log {
-    /// `network`'s log off the disk: [`log_path`]'s file.
     pub(crate) fn of(network: &str) -> Self {
         Self::read(network, log_path(network))
     }
 
-    /// `network`'s log from the file at `path`; one that cannot be read is
-    /// empty, with no file, so no save replaces it.
     pub(crate) fn read(network: &str, path: Option<PathBuf>) -> Self {
         let mut log = Log {
             network: network.to_owned(),
             ..Log::default()
         };
         if let Some((entries, path)) = path.and_then(|path| Some((opened(&path)?, path))) {
-            log.carried = opened(&carried_path(&path)).unwrap_or_default();
+            log.carried = opened(&pending_carried_copies_path(&path)).unwrap_or_default();
             (log.entries, log.log) = (entries, Some(path));
         }
         log.next = log.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
         log
     }
 
-    /// The file it is saved to; none for no chain, or one unread.
     pub(crate) fn file(&self) -> Option<&Path> {
         self.log.as_deref()
     }
 }
 
-/// `entries` written whole to `path` on the blocking pool, after every
-/// write to it queued before (`kernel::in_order` under the path).
 fn save(path: PathBuf, entries: Vec<Entry>) {
     let name = path.to_string_lossy().into_owned();
     crate::runtime::kernel::in_order(&name, move || {
@@ -809,8 +732,6 @@ fn save(path: PathBuf, entries: Vec<Entry>) {
     });
 }
 
-/// The rows of the log at `path` ([`read_log`]), or none when it cannot be
-/// read, said in app.log.
 fn opened(path: &Path) -> Option<Vec<Entry>> {
     read_log(path)
         .inspect_err(|error| {
@@ -819,15 +740,11 @@ fn opened(path: &Path) -> Option<Vec<Entry>> {
         .ok()
 }
 
-/// The log at `path`; empty when it is missing. One that will not parse is
-/// set aside as `.bad`, so the next save does not overwrite it. Any other
-/// read error stays an error.
 pub(super) fn read_log(path: &Path) -> std::io::Result<Vec<Entry>> {
     crate::backend::read_or_set_aside(path, |bytes| serde_json::from_slice(bytes))
         .map(Option::unwrap_or_default)
 }
 
-/// `<config>/notifications/<chain>.json`, device-local beside the prefs.
 pub(crate) fn log_path(network: &str) -> Option<PathBuf> {
     if network.is_empty() {
         return None;
@@ -844,15 +761,11 @@ pub(crate) fn log_path(network: &str) -> Option<PathBuf> {
     Some(notifications_dir().join(format!("{file}.json")))
 }
 
-/// Where the copies waiting beside the chain log at `log` are saved
-/// ([`Center::carried`]): `<chain>@carried.json` (`@` is in no chain's file
-/// name, [`log_path`]).
-fn carried_path(log: &Path) -> PathBuf {
+fn pending_carried_copies_path(log: &Path) -> PathBuf {
     let chain = log.file_stem().unwrap_or_default().to_string_lossy();
     log.with_file_name(format!("{chain}@carried.json"))
 }
 
-/// `<config>/notifications`, where every log is.
 fn notifications_dir() -> PathBuf {
     crate::backend::dirs().config.join("notifications")
 }

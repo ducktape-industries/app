@@ -30,8 +30,6 @@ impl View {
     pub fn sync_theme(&mut self, dark: bool) {
         if self.theme_dark != Some(dark) {
             self.theme_dark = Some(dark);
-            // Theme is driver state, shared by every view regardless of its
-            // product-specific props stream. Latest appearance wins per tick.
             self.pending
                 .retain(|event| !matches!(event, wire::Event::Theme { .. }));
             self.pending.push(wire::Event::Theme { dark });
@@ -107,15 +105,11 @@ impl View {
         crate::perf::record(self.perf_key(), "backlog", backlog as u64);
         self.pending
             .extend(kernel::ticked(&mut self.clocks, std::time::Instant::now()));
-        // Queued results precede becoming visible, so a view can distinguish
-        // arrivals while hidden from data received after it returns to screen.
         self.sync_visibility();
         self.sync_placement();
         self.sync_offset(kernel::offset_minutes());
         self.sync_route();
         if self.staged {
-            // a replacement's first tree is already here; only its
-            // requests and cancels are still to route
             self.staged = false;
             return Redraw::Ready;
         }
@@ -160,7 +154,6 @@ impl View {
         for request in std::mem::take(&mut self.frame.requests) {
             self.answer(request, props);
         }
-        // what those requests logged reaches the disk once, off this thread
         self.center().lock().flush();
         for id in std::mem::take(&mut self.frame.cancels) {
             self.clipboard.cancel(id);
@@ -177,8 +170,6 @@ impl View {
                 .retain(|subscription| *subscription != id);
             self.route_subscriptions
                 .retain(|subscription| *subscription != id);
-            // dropping the stream aborts it: the node socket goes with the
-            // subscription the view abandoned
             self.tasks.retain(|(task, _)| *task != id);
             self.clocks.retain(|clock| clock.id != id);
         }
@@ -214,9 +205,6 @@ impl View {
             );
             return;
         };
-        // A view is untrusted code: it reaches only the methods its manifest
-        // declares. Consent (media, notifications) is asked on top of this.
-        // `host.methods` grants nothing: every view may ask it
         let asks_methods = kind == <wire::methods::HostMethods as wire::methods::Method>::KIND;
         if !self.capabilities.contains(&capability) && !asks_methods {
             let name = capability.as_str();
@@ -236,7 +224,6 @@ impl View {
             );
             return;
         }
-        // the kernel contract first: what every view may ask, program-free
         if kernel::answer(self, capability, operation, id, &payload, props) {
             return;
         }
@@ -416,9 +403,6 @@ impl View {
     /// and [`Self::tick_landed`] takes it.
     pub fn begin_tick(&mut self) {
         let key = self.perf_key();
-        // a view reads the events its wire level knows: one built before
-        // J-085 fails on any other, so an event a later level added is
-        // never sent it
         let level = super::level(&self.wire);
         let mut events = std::mem::take(&mut self.pending);
         events.retain(|event| event.level() <= level);
@@ -463,9 +447,6 @@ impl View {
                 false => shape(&frame, &mut self.styles),
             }
         });
-        // a view places a web, camera or microphone piece only by declaring
-        // its capability: the refusal ends the view, as a frame that does
-        // not decode does (sent again, it would be refused again)
         let outcome = outcome.and_then(|shaped| match shaped.0.undeclared(&self.capabilities) {
             Some(capability) => {
                 let name = capability.as_str();
@@ -506,14 +487,9 @@ impl View {
                         reports.merge(report);
                         self.frame_rev += 1;
                         if let Some(root) = &mut frame.root {
-                            // The view remembers its tree without the
-                            // picture bytes; the tree its patches build on
-                            // has to be that one.
                             if self.pictures.adopt(root, self.program) {
                                 self.pending.push(wire::Event::Resync);
                             }
-                            // O(n) over the tree: only with perf on, and
-                            // only on a tick that changed it
                             if perf::on() {
                                 let mut nodes = 0;
                                 root.for_each_mut(&mut |_| nodes += 1);
@@ -522,7 +498,6 @@ impl View {
                             }
                         }
                     }
-                    // the tree shown stays while a full one is asked for
                     Err(refused) => {
                         accepted = false;
                         frame.root = previous;
@@ -543,9 +518,6 @@ impl View {
                     }
                     self.frame_reports = reports;
                     self.report_display_truncation();
-                    // the tooltip content built this tick goes to the tree
-                    // beside its root; its pictures join the store like the
-                    // tree's own, the budget held against the tree
                     for mut response in frame.tooltip_responses.drain(..) {
                         if let (Some(content), Some(root)) =
                             (&mut response.content, &mut frame.root)
@@ -611,8 +583,6 @@ mod tests {
         }
     }
 
-    /// A field five named ancestors deep, the way a composer mounts in a
-    /// real view; the field is targeted by its own key alone.
     fn chat_shaped_tree() -> wire::Node {
         container(
             "chat-viewport",
@@ -632,9 +602,6 @@ mod tests {
         )
     }
 
-    /// The view SDK names a nested field by its whole path, which the
-    /// host finds; the field's own key alone names no node, since a second
-    /// composer could hold it too.
     #[test]
     fn a_target_names_its_editor_by_the_whole_path() {
         let tree = chat_shaped_tree();

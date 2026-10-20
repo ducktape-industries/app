@@ -6,10 +6,6 @@
 
 use super::*;
 
-/// The controls Help lists with a chord, each with the key the platform's
-/// modifier goes with (⇧ leading it: with Shift): each reports its chord
-/// (AX-114). "Fill window", "Move or size window" and "Keep on top" are
-/// Search's rows.
 const CHORDED: [(&str, &str); 6] = [
     ("New window", "N"),
     ("Search", "K"),
@@ -19,8 +15,6 @@ const CHORDED: [(&str, &str); 6] = [
     ("Keep on top", "⇧T"),
 ];
 
-/// `(control name, chord)` for each control Help lists with a chord, as
-/// the platform writes the chord: what the audit is told (AX-114).
 pub(crate) fn chords() -> Vec<(String, String)> {
     CHORDED
         .iter()
@@ -28,10 +22,6 @@ pub(crate) fn chords() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Help's page: greeted (`welcome`, a new account's first sight of the
-/// desk) or titled "Ducktape help", in the dark or light ink, the programs
-/// listed across the top or down the side (`side`), Keep on Top's key
-/// listed where the platform can keep a window on top (`on_top`).
 pub(super) fn help_view(
     welcome: bool,
     dark: bool,
@@ -48,7 +38,6 @@ pub(super) fn help_view(
             .pb(px(8.))
             .child(words(id, title))
     };
-    // each paragraph its own id: `<section>/<n>`
     let lines = |section: &'static str, texts: Vec<String>| {
         texts.into_iter().enumerate().map(move |(n, text)| {
             let id = SharedString::from(format!("{section}/{n}"));
@@ -206,15 +195,12 @@ pub(super) fn help_view(
         .role(Role::Document)
         .aria_label("Help")
         .size_full()
-        // both ways: a narrow window scrolls to what it cuts off
         .overflow_scroll()
         .child(
             div()
                 .id("help/page")
                 .role(Role::Group)
                 .aria_label(heading)
-                // auto margins centre it, and never push it past the
-                // left edge where no scroll could reach it
                 .mx_auto()
                 .w_full()
                 .min_w(px(360.))

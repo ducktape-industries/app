@@ -11,7 +11,6 @@ pub const SHOWN_FOR: Duration = Duration::from_millis(3600);
 
 pub struct Toast {
     text: String,
-    /// Takes the notice down; dropped (cancelled) by the next `show`.
     dismiss: Option<Task<()>>,
     _subscriptions: [Subscription; 2],
 }
@@ -69,7 +68,6 @@ impl Toast {
     }
 }
 
-/// Timed as `reducer.desk`, the name qa's hang rule reads (docs/perf.md).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.desk")
 }

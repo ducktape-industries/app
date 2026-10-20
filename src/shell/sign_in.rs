@@ -9,10 +9,6 @@ use super::entities::{Account, Secret, spawn_on_runtime};
 use crate::backend;
 use gpui_kit::Context;
 
-/// Unlock. With no password typed, it reopens this device's OS-kept key
-/// (after a Lock). With one, it opens a password-locked key from before
-/// keys moved into the OS, and moves it there: the password is asked this
-/// once. A failed try leaves the field as it was.
 pub(crate) fn unlock(account: &mut Account, password: String, cx: &mut Context<Account>) {
     if !account.unlock(cx) || !account.get().key_exists {
         return;
@@ -39,12 +35,10 @@ pub(crate) fn unlock(account: &mut Account, password: String, cx: &mut Context<A
     account.begin_call(call, cx);
 }
 
-/// "Make a recovery key…": new words, to write down.
 pub(crate) fn recovery_key_start(account: &mut Account, cx: &mut Context<Account>) {
     account.recovery_key_start(backend::recovery::new_recovery_phrase().into(), cx);
 }
 
-/// The words typed back: checked, the key they make goes onto the account.
 pub(crate) fn phrase_check(account: &mut Account, answers: [String; 3], cx: &mut Context<Account>) {
     let Some(phrase) = account.phrase_check(answers, cx) else {
         return;
@@ -57,7 +51,6 @@ pub(crate) fn phrase_check(account: &mut Account, answers: [String; 3], cx: &mut
     account.begin_call(call, cx);
 }
 
-/// The 24 words typed: this device joins the account they hold.
 pub(crate) fn recover_submit(account: &mut Account, phrase: String, cx: &mut Context<Account>) {
     let Some(phrase) = account.recover_submit(phrase, cx) else {
         return;
@@ -72,17 +65,14 @@ pub(crate) fn recover_submit(account: &mut Account, phrase: String, cx: &mut Con
     account.begin_call(call, cx);
 }
 
-/// A passkey creates an account named `name`.
 pub(crate) fn passkey_create(account: &mut Account, name: String, cx: &mut Context<Account>) {
     passkey(account, Some(name), cx);
 }
 
-/// A passkey admits this device's key into the account it holds.
 pub(crate) fn passkey_sign_in(account: &mut Account, cx: &mut Context<Account>) {
     passkey(account, None, cx);
 }
 
-/// The ceremony, in the system browser through the auth page.
 fn passkey(account: &mut Account, create: Option<String>, cx: &mut Context<Account>) {
     let Some(name) = account.passkey_begin(create, cx) else {
         return;

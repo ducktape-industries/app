@@ -71,13 +71,10 @@ unsafe extern "C" {
     fn ducktape_phone_keep(path: *const c_char, ticket: u64);
 }
 
-/// The picks and keeps out with the launcher, by ticket, until it answers.
 static PICKS: Mutex<BTreeMap<u64, PickDone>> = Mutex::new(BTreeMap::new());
 static KEEPS: Mutex<BTreeMap<u64, KeepDone>> = Mutex::new(BTreeMap::new());
 static TICKETS: AtomicU64 = AtomicU64::new(0);
 
-/// The launcher's sheet to pick files from (`App.swift` `Files.pick`):
-/// `done` once it answers ([`ducktape_phone_picked`]).
 pub(crate) fn pick(multiple: bool, done: PickDone) {
     let ticket = TICKETS.fetch_add(1, Ordering::Relaxed);
     PICKS
@@ -89,8 +86,6 @@ pub(crate) fn pick(multiple: bool, done: PickDone) {
     unsafe { ducktape_phone_pick(u8::from(multiple), ticket) }
 }
 
-/// `path` to the launcher to keep (`App.swift` `Files.keep`): `done` once
-/// it answers ([`ducktape_phone_kept`]).
 pub(crate) fn keep(path: &Path, done: KeepDone) {
     let Some(path) = path.to_str().and_then(|path| CString::new(path).ok()) else {
         return done(Err("the file's path is not text".into()));
@@ -126,7 +121,12 @@ pub unsafe extern "C" fn ducktape_phone_picked(
         return;
     };
     // SAFETY: the caller's contract above.
-    let (paths, error) = unsafe { (text(paths), text(error)) };
+    let (paths, error) = unsafe {
+        (
+            text_from_optional_nul_terminated_pointer(paths),
+            text_from_optional_nul_terminated_pointer(error),
+        )
+    };
     done(match (error, paths) {
         (Some(error), _) => Err(error),
         (None, None) => Ok(None),
@@ -152,7 +152,7 @@ pub unsafe extern "C" fn ducktape_phone_kept(ticket: u64, kept: u8, error: *cons
         return;
     };
     // SAFETY: the caller's contract above.
-    let error = unsafe { text(error) };
+    let error = unsafe { text_from_optional_nul_terminated_pointer(error) };
     done(match error {
         Some(error) => Err(error),
         None => Ok(kept != 0),
@@ -165,8 +165,6 @@ unsafe extern "C" {
     fn ducktape_phone_banner(json: *const c_char) -> u8;
 }
 
-/// The OS's notices under `tag` out of its list, through the launcher
-/// (`crate::os::withdraw_notice`).
 pub(crate) fn withdraw_notice(tag: &str) {
     match std::ffi::CString::new(tag) {
         // SAFETY: a Swift `@_cdecl` entry taking a C string alive for the
@@ -176,8 +174,6 @@ pub(crate) fn withdraw_notice(tag: &str) {
     }
 }
 
-/// This phone's banner, its payload as JSON, to the launcher's `Ring`:
-/// whether it was handed to the OS.
 pub(crate) fn banner(json: &str) -> bool {
     match std::ffi::CString::new(json) {
         // SAFETY: a Swift `@_cdecl` entry taking a C string alive for the
@@ -190,9 +186,6 @@ pub(crate) fn banner(json: &str) -> bool {
     }
 }
 
-/// A background push, as the app delegate hands it over: to the
-/// launcher, which knows the carrier's payload and answers whether it
-/// took it (a withdrawn call's ring stopped).
 fn remote_notification(json: String) -> bool {
     match std::ffi::CString::new(json) {
         // SAFETY: a Swift `@_cdecl` entry taking a C string alive for the
@@ -205,8 +198,6 @@ fn remote_notification(json: String) -> bool {
     }
 }
 
-/// The call's voice I/O made (`true`) or gone, told to the launcher's
-/// CallKit call.
 #[cfg(feature = "call")]
 fn call_voice(alive: bool) {
     // SAFETY: a Swift `@_cdecl` entry taking one byte, any thread.
@@ -224,7 +215,12 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
         .with_ansi(false)
         .init();
     // SAFETY: the caller's contract above.
-    let (documents, caches) = unsafe { (text(documents), text(caches)) };
+    let (documents, caches) = unsafe {
+        (
+            text_from_optional_nul_terminated_pointer(documents),
+            text_from_optional_nul_terminated_pointer(caches),
+        )
+    };
     let (documents, caches) = (documents.map(PathBuf::from), caches.map(PathBuf::from));
     let (Some(documents), Some(caches)) = (documents, caches) else {
         tracing::error!(target: "ducktape::phone", "the launcher passed no app container");
@@ -238,9 +234,6 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
             let token: String = token.iter().map(|byte| format!("{byte:02x}")).collect();
             crate::os::push_token("apns", token);
         }
-        // without the `aps-environment` entitlement, every launch: no
-        // token, so a withdraw never reaches this phone (the ring's
-        // `until` ends it)
         Err(why) => {
             tracing::warn!(target: "ducktape::phone", %why, "no remote-notification token");
             crate::os::push_token("apns", String::new());
@@ -249,8 +242,6 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
     platform.on_remote_notification(Box::new(remote_notification));
     let app = gpui_kit::Application::with_platform(std::rc::Rc::new(platform))
         .with_assets(crate::assets::PhoneAssets);
-    // a scene's URL contexts, at launch and later (`duck://`, `ducktape://`,
-    // Info.plist `CFBundleURLTypes`)
     app.on_open_urls(|urls| urls.into_iter().for_each(crate::os::link));
     app.run(move |cx| {
         crate::os::start(documents, caches, cx);
@@ -314,7 +305,7 @@ pub extern "C" fn ducktape_phone_swipe_cancel() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ducktape_phone_link(url: *const c_char) {
     // SAFETY: the caller's contract above.
-    match unsafe { text(url) } {
+    match unsafe { text_from_optional_nul_terminated_pointer(url) } {
         Some(url) => {
             tracing::info!(target: "ducktape::phone", %url, "a call was answered: its link opens");
             crate::os::link(url);
@@ -331,7 +322,12 @@ pub unsafe extern "C" fn ducktape_phone_link(url: *const c_char) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ducktape_phone_push_token(kind: *const c_char, token: *const c_char) {
     // SAFETY: the caller's contract above.
-    let (kind, token) = unsafe { (text(kind), text(token)) };
+    let (kind, token) = unsafe {
+        (
+            text_from_optional_nul_terminated_pointer(kind),
+            text_from_optional_nul_terminated_pointer(token),
+        )
+    };
     if let (Some(kind), Some(token)) = (kind, token) {
         crate::os::push_token(&kind, token);
     }
@@ -353,7 +349,7 @@ pub unsafe extern "C" fn ducktape_phone_notice(
     opened: u8,
 ) -> u8 {
     // SAFETY: the caller's contract above.
-    match unsafe { text(payload) } {
+    match unsafe { text_from_optional_nul_terminated_pointer(payload) } {
         Some(payload) => u8::from(crate::os::os_notice(
             &payload,
             at as i64,
@@ -375,11 +371,7 @@ pub extern "C" fn ducktape_phone_call_audio(active: u8) {
     tracing::info!(target: "ducktape::phone", active = active != 0, "CallKit's audio session");
 }
 
-/// A string from the launcher; `None` for null or one that is not UTF-8.
-///
-/// # Safety
-/// `raw` is null or a NUL-terminated string alive for the call.
-unsafe fn text(raw: *const c_char) -> Option<String> {
+unsafe fn text_from_optional_nul_terminated_pointer(raw: *const c_char) -> Option<String> {
     if raw.is_null() {
         return None;
     }

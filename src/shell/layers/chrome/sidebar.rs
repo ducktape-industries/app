@@ -8,7 +8,10 @@
 //! menus hung beside the column (`Chrome::hanging`). The list is one Tab
 //! stop the arrows move along (`a11y::roving`), as the bar's tabs are.
 
-use super::{Bar, Chrome, FOOT, Row, drag_handle, program_name, tab_label};
+use super::{
+    Bar, Chrome, Row, SIDEBAR_FOOTER_HEIGHT, accessible_program_name_with_status_and_unread,
+    drag_handle, tab_label,
+};
 use crate::a11y::Control as _;
 use crate::runtime::{RailRow, WindowKey};
 use crate::shell::entities::Listed;
@@ -17,9 +20,6 @@ use crate::shell::{PaneMessage, layout, theme};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-/// What a window's row says: its title, else its program's label,
-/// counted from the second (`Members 2`) when it is the `ordinal`th
-/// untitled window of its program listed.
 pub(in crate::shell) fn window_label(
     label: &str,
     title: Option<&str>,
@@ -32,37 +32,22 @@ pub(in crate::shell) fn window_label(
     }
 }
 
-/// One row of the sidebar's list.
 #[derive(Clone, Debug, PartialEq)]
 struct Entry {
-    /// What the keys and a click reach.
     row: Row,
     program: &'static str,
-    /// What it says.
     label: String,
     kind: Kind,
-    /// The pop-out the window it stands for is in.
     away: Option<WindowKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
-    /// A program the roster lists. `head`: its windows are listed under
-    /// it; else `alone`, its one window, which its row stands for.
     Program { head: bool, alone: Option<u64> },
-    /// One of a program's windows, under it.
     Window,
-    /// After the hairline: Help, an empty window, or a window of a program
-    /// the roster does not list.
     Loose,
 }
 
-/// The sidebar's list: one row per program the roster lists with a view,
-/// in roster order, each followed by its windows in `open`'s order (the
-/// desk's, then the pop-outs') when it has two or more, or one with a
-/// title or in a pop-out; then the windows none of them lists, in that
-/// order. A window's row says its title, else its program's name, counted
-/// among the program's untitled windows (`window_label`).
 fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
     let mut untitled: Vec<&'static str> = Vec::new();
     let mut said = |label: &str, window: &Listed| {
@@ -139,7 +124,6 @@ impl Entry {
         id.into()
     }
 
-    /// The window in front is the one it stands for.
     fn on(&self, front: Option<u64>) -> bool {
         let stands_for = match (self.row, self.kind) {
             (_, Kind::Program { alone, .. }) => alone,
@@ -151,8 +135,6 @@ impl Entry {
 }
 
 impl Chrome {
-    /// The sidebar (the mock's `.side`): `width: 220px; border-right: 1px
-    /// solid line; font: 400 13px`.
     pub(super) fn sidebar(
         &mut self,
         bar: Bar,
@@ -160,10 +142,7 @@ impl Chrome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // the bar is measured again when it comes back: it never folds here
         self.bar_drawn = None;
-        // the network's row (`.srow.net`: `height: 36px; padding: 0 14px`),
-        // on macOS clear of the traffic lights and the window's handle
         let titlebar = theme::traffic_lights(window);
         let (network, menu) = self.network(&bar, false, ink, cx);
         let network = div()
@@ -176,21 +155,17 @@ impl Chrome {
             .child(network)
             .child(drag_handle("sidebar-handle", titlebar))
             .children(menu);
-        // `.srow.search`: the word muted, the chord at the far end
         let search = self
             .search(false, ink)
             .w_full()
             .px(px(14.))
             .justify_between();
         let line = || div().h(px(1.)).flex_shrink_0().bg(ink.line);
-        // the footer (`.sfoot`: `height: 40px; padding: 0 4px 0 6px`, a
-        // hairline above), each button `height: 40px; padding: 0 8px`, its
-        // menu opening upward from it
         let foot = |(button, menu): (Stateful<Div>, Option<AnyElement>)| {
             Self::footed(button.h_full().px(px(8.)), menu)
         };
         let footer = div()
-            .h(px(FOOT))
+            .h(px(SIDEBAR_FOOTER_HEIGHT))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -227,10 +202,6 @@ impl Chrome {
             .into_any_element()
     }
 
-    /// The programs and their windows (`.mods`: `padding: 8px 0`, scrolling
-    /// when long): one Tab stop, on the row the arrows moved to while it has
-    /// the keys, else the window in front's, else the first; up and down
-    /// move the keys along it, Return opens what the row stands for.
     fn list(&self, bar: &Bar, ink: &Ink, cx: &mut Context<Self>) -> Stateful<Div> {
         let entries = index(&bar.rows, &bar.listed);
         let keys: Vec<Row> = entries.iter().map(|entry| entry.row).collect();
@@ -256,7 +227,6 @@ impl Chrome {
             &self.stop,
             accesskit::Orientation::Vertical,
             [active, keys.len()],
-            // the arrows move the keys; Return opens what the row stands for
             move |to, _, cx| {
                 let row = keys[to];
                 let _ = moved.update(cx, |this, cx| {
@@ -282,13 +252,6 @@ impl Chrome {
         })
     }
 
-    /// A program's row (`.mod`: `height: 30px; padding: 0 8px 0 14px`):
-    /// muted, ink while it has a window open, ink 500 over its
-    /// listed windows, `raised` while it stands for the window in front;
-    /// its unread count and its failed dot at the right, and under the
-    /// pointer a `+` that opens another window of it. A press is the bar's
-    /// tab's (`opening`). The `+` sits beside the tab, not in it: a tab's
-    /// press is the whole of it (AX-119), and the list stays one Tab stop.
     #[allow(clippy::too_many_arguments, reason = "one row, read off the bar")]
     fn program_row(
         &self,
@@ -312,7 +275,10 @@ impl Chrome {
             stop,
             ink.ink,
         )
-        .control(Role::Tab, SharedString::from(program_name(row, badge)))
+        .control(
+            Role::Tab,
+            SharedString::from(accessible_program_name_with_status_and_unread(row, badge)),
+        )
         .aria_selected(on)
         .flex_1()
         .min_w_0()
@@ -403,12 +369,6 @@ impl Chrome {
             .into_any_element()
     }
 
-    /// A window's row: under its program (`.tb`: `height: 28px;
-    /// padding-left: 28px`), or after the hairline (`.mod.open`); ink,
-    /// `raised` while it is the window in front, a pop-out's marked at the
-    /// right. A press brings that window to the front: on the desk, found
-    /// by its instance then (a close moves the others' places); a pop-out's
-    /// OS window.
     fn window_row(
         &self,
         entry: &Entry,
@@ -502,8 +462,6 @@ mod tests {
         }
     }
 
-    /// Each row as `(indent, what it says, what it reaches)`: 0 a program,
-    /// 1 a window under it, 2 after the hairline.
     fn said(entries: &[Entry]) -> Vec<(u8, &str, Row)> {
         entries
             .iter()
@@ -527,12 +485,6 @@ mod tests {
         assert_eq!(window_label("Chat", Some("# design"), Some(3)), "# design");
     }
 
-    /// The fold rule (SPEC §5): a program with no window, or one untitled
-    /// window, is its row alone (the second standing for that window); one
-    /// titled window, or two, are listed under it in desk order, the
-    /// untitled counted from the second. Help and empty windows, and a
-    /// window of a program the roster does not list, come after, in desk
-    /// order; a program that ships no view is not listed.
     #[test]
     fn a_program_lists_its_windows_when_it_has_two_or_a_titled_one() {
         let rows = [
@@ -608,7 +560,6 @@ mod tests {
             ],
             "nothing, standing for its one window, three heads"
         );
-        // the titled window closed: the program is its row alone again
         let open = [window("forge", 4, None)];
         assert_eq!(
             said(&index(&rows[3..4], &open)),
@@ -616,11 +567,6 @@ mod tests {
         );
     }
 
-    /// A window in a pop-out is listed as a desk's is, after the desk's
-    /// (`Bar::listed`), marked with its window: under its program even
-    /// when it is the program's one untitled window, counted among its
-    /// untitled ones; after the hairline when the roster does not list its
-    /// program.
     #[test]
     fn a_pop_out_is_listed_under_its_program_after_the_desk() {
         let rows = [row("chat", "Chat"), row("forge", "Forge")];

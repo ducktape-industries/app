@@ -2,8 +2,6 @@
 //! it as a pointer would, Tab moves on.
 use super::*;
 
-/// The name of the node assistive technology sees focused after `stroke`.
-/// Tab is the app's binding to `focus_next`; a bare window has none.
 fn press(native: &mut gpui_kit::VisualTestContext, stroke: &str) -> Option<String> {
     native.update(|window, cx| {
         match stroke {
@@ -21,10 +19,6 @@ fn press(native: &mut gpui_kit::VisualTestContext, stroke: &str) -> Option<Strin
     })
 }
 
-/// Tab lands on the text with its first link picked; the arrows, Home and
-/// End move the pick along the links without wrapping; a press from
-/// assistive technology on the picked link is its range's click, no
-/// gesture; Enter is the picked range's click, a real gesture; Tab leaves.
 #[gpui_kit::test]
 fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
     cx: &mut gpui_kit::TestAppContext,
@@ -100,12 +94,6 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
     );
 }
 
-/// The view is drawn again on the frame the keys arrive at the text and on
-/// the one they leave: the box is drawn from whether it has the keys, and a
-/// cached view replays paint until something asks for a redraw. A focus
-/// move redraws the view that drew the old focus and the one that draws the
-/// new, with their ancestors (the pinned fork, gpui-pre#9): here the cached
-/// `ViewTree`, which tracks the links' handle.
 #[gpui_kit::test]
 fn the_keys_arriving_at_the_links_redraw_a_cached_view(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -116,8 +104,6 @@ fn the_keys_arriving_at_the_links_redraw_a_cached_view(cx: &mut gpui_kit::TestAp
     let seat = window.root(cx).unwrap();
     let tree = seat.read_with(cx, |seat, _| seat.0.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    // the desk draws its seats again each frame; the view replays unless
-    // something in it asked to be drawn
     let settle = |native: &mut gpui_kit::VisualTestContext| {
         for _ in 0..3 {
             native.update(|window, cx| {
@@ -138,7 +124,6 @@ fn the_keys_arriving_at_the_links_redraw_a_cached_view(cx: &mut gpui_kit::TestAp
     assert!(settle(&mut native) > arrived, "the keys leaving redraw");
 }
 
-/// A rich text without links is no Tab stop.
 #[gpui_kit::test]
 fn a_rich_text_without_links_is_no_tab_stop(cx: &mut gpui_kit::TestAppContext) {
     let wire::Node::RichText {
@@ -175,10 +160,6 @@ fn a_rich_text_without_links_is_no_tab_stop(cx: &mut gpui_kit::TestAppContext) {
     assert!(native.update(|window, cx| window.focused(cx)).is_none());
 }
 
-/// Space on a text's links presses the picked one, as Enter does and as on
-/// any pressable element, and does not bubble to a composite around the
-/// text (a message list whose Space presses its active message), which
-/// hears every other key the box does not take.
 #[gpui_kit::test]
 fn space_on_a_link_box_presses_its_link_and_does_not_reach_the_composite_around_it(
     cx: &mut gpui_kit::TestAppContext,

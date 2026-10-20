@@ -37,8 +37,6 @@ impl ViewTree {
             wire::Anchor::LeftCenter => Anchor::LeftCenter,
             wire::Anchor::RightCenter => Anchor::RightCenter,
         };
-        // every fit mode keeps the popup inside the slot: a view cannot
-        // see its pane's edges, so the host fits to them for it
         let margin = match fit {
             wire::AnchoredFitMode::SnapToWindowWithMargin([top, right, bottom, left]) => Edges {
                 top: px(*top),
@@ -169,10 +167,6 @@ impl Element for Fitted {
     }
 }
 
-/// Where a popup of `size` anchored at `at` (moved by `offset`) sits inside
-/// `limits` less `margin`: on its asked side of `at` when that fits, the
-/// other side when only that fits, then shifted back inside, and pinned to
-/// the top left when it is larger than the room.
 pub(super) fn fit(
     anchor: Anchor,
     at: Point<Pixels>,
@@ -224,7 +218,6 @@ mod tests {
     use super::*;
 
     fn slot() -> Bounds<Pixels> {
-        // a pane in the middle of the window, not the window itself
         Bounds::new(point(px(200.), px(100.)), size(px(400.), px(300.)))
     }
     fn at(x: f32, y: f32) -> Point<Pixels> {
@@ -322,7 +315,6 @@ mod tests {
 
     #[test]
     fn the_window_is_not_the_room_a_pane_has() {
-        // inside the window (0..800) but past the pane's right edge (600)
         let origin = fit(
             Anchor::TopLeft,
             at(500., 150.),

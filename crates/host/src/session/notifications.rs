@@ -10,7 +10,6 @@ use crate::runtime::notify::{self, CenterHandle, Entry, Permission};
 use gpui_kit::{App, Context, Entity};
 use std::collections::BTreeSet;
 
-/// Timed as `reducer.notify`, the name qa's hang rule reads (docs/perf.md).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.notify")
 }
@@ -36,7 +35,6 @@ pub struct Notifications {
     asking: BTreeSet<String>,
     sharing: BTreeSet<String>,
     entries_rev: u64,
-    /// What it is read off; not compared.
     center: CenterHandle,
 }
 
@@ -142,7 +140,6 @@ impl Notifications {
         self.refresh(cx);
     }
 
-    /// The person's word on `program`'s notices, saved (see [`permission`]).
     fn permission(&mut self, program: &str, permission: Permission, cx: &mut Context<Self>) {
         let _timed = timed();
         notify::set_permission(&mut self.center.lock(), program, permission);
@@ -192,7 +189,6 @@ mod tests {
     use crate::runtime::notify::Settings;
     use gpui_kit::{AppContext as _, TestAppContext};
 
-    /// One notice from chat into `center`, logged unread.
     fn post(center: &CenterHandle) {
         let settings = Settings {
             banners: true,
@@ -222,16 +218,12 @@ mod tests {
         assert!(!slice.update(cx, |slice, cx| slice.refresh(cx)));
         assert_eq!(seen.get(), 0, "a centre that moved nothing notified");
 
-        // the read row goes: the count and the askers stay as they were
         center.lock().clear_read();
         assert!(slice.update(cx, |slice, cx| slice.refresh(cx)));
         assert_eq!(seen.get(), 1, "the bell's list lost a row and said nothing");
         assert_eq!(slice.read_with(cx, |slice, _| slice.unread), 0);
     }
 
-    /// A connect takes up the chain's log (`runtime::take_up`) and no
-    /// view posts to say so: the bell reads its count again as the session
-    /// says it connected, not at the next notice.
     #[gpui_kit::test]
     fn a_connect_reads_the_log_it_took_up(cx: &mut TestAppContext) {
         let center = CenterHandle::default();
@@ -239,7 +231,6 @@ mod tests {
             gpui_kit::init(cx);
             crate::session::Shared::for_test(Default::default(), center.clone(), cx)
         });
-        // as `take_up` leaves the centre: a row of the log, unread
         post(&center);
         let unread = |cx: &mut TestAppContext| {
             app.notifications

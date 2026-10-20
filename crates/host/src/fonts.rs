@@ -29,8 +29,6 @@ pub const BUNDLED_FACES: &[&[u8]] = &[
     include_bytes!("../../../assets/fonts/D2Coding-Bold.ttf"),
 ];
 
-/// Tried after the Hangul face, in order: emoji (macOS, then Noto), the
-/// macOS CJK faces, then the Linux ones, then symbols.
 const FALLBACK_FAMILIES: &[&str] = &[
     "Apple Color Emoji",
     "Noto Color Emoji",

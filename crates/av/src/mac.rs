@@ -31,11 +31,6 @@ pub(crate) use crate::devices::{
     ROUTED_IN_PLACE, activate, audio_devices, find, heard, input_name, prepare,
 };
 
-// ---------- what a microphone or speaker is ----------
-
-/// What a listed microphone or speaker is, as Core Audio says: by its
-/// transport, and a built-in one's data source (its speakers or the
-/// headphone jack).
 pub(crate) fn audio_kind(device: &Device, input: bool) -> AudioKind {
     let Some(uid) = device.id.strip_prefix("coreaudio:") else {
         return AudioKind::Other;
@@ -63,11 +58,6 @@ pub(crate) fn audio_kind(device: &Device, input: bool) -> AudioKind {
     )
 }
 
-/// What a device on `transport` with data source `source` is. Only what
-/// is sure: a built-in output is the speakers unless its source is the
-/// headphone jack, a screen's output its speakers, a Bluetooth input a
-/// headset's microphone; a Bluetooth output may be a speaker as well as
-/// headphones, and says `Other`.
 fn kind_of(transport: Option<u32>, source: Option<u32>, input: bool) -> AudioKind {
     const HEADPHONE_JACK: u32 = u32::from_be_bytes(*b"hdpn");
     let on =
@@ -97,8 +87,6 @@ fn kind_of(transport: Option<u32>, source: Option<u32>, input: bool) -> AudioKin
     }
 }
 
-/// A `u32` property of a Core Audio object (asked with a CFString
-/// `qualifier`, as a UID's translation is), `None` where it has none.
 fn property(
     object: AudioObjectID,
     selector: AudioObjectPropertySelector,
@@ -110,8 +98,6 @@ fn property(
         mScope: scope,
         mElement: kAudioObjectPropertyElementMain,
     };
-    // an NSString is its CFString (toll-free bridged); the qualifier is a
-    // pointer to it
     let reference: *const NSString = qualifier.map_or(std::ptr::null(), |string| string);
     let (qualifier_size, qualifier_data) = match qualifier {
         Some(_) => (
@@ -137,7 +123,6 @@ fn property(
     (status == 0 && size == size_of::<u32>() as u32).then_some(value)
 }
 
-/// System Settings' page that allows `kind` for one app.
 pub(crate) fn settings_page(kind: crate::Kind) -> Option<&'static str> {
     Some(match kind {
         crate::Kind::Camera => {
@@ -149,8 +134,6 @@ pub(crate) fn settings_page(kind: crate::Kind) -> Option<&'static str> {
     })
 }
 
-/// How a person allows a camera or a microphone the system refused: on
-/// that page ([`settings_page`]).
 pub(crate) fn allow(kind: crate::Kind) -> &'static str {
     match kind {
         crate::Kind::Camera => {
@@ -162,10 +145,6 @@ pub(crate) fn allow(kind: crate::Kind) -> &'static str {
     }
 }
 
-// ---------- the cameras ----------
-
-/// The cameras the system lists now; the system's default first. Listing
-/// asks for no permission.
 pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
     autoreleasepool(|_| {
         let video = crate::apple::video()?;
@@ -189,7 +168,7 @@ pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
                         name: name.to_string(),
                         id: id.clone(),
                     },
-                    facing: facing(&device),
+                    facing: facing_from_capture_device_type(&device),
                     handle: id,
                 }
             })
@@ -199,12 +178,7 @@ pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
     })
 }
 
-/// Which way `device` looks: where the system says it sits, else a Mac's
-/// own camera (the built-in wide angle type) at the person and any other
-/// plugged in.
-// ponytail: an iPhone as a Continuity Camera lists as the built-in type
-// unless the app opts in to its own type (macOS 14); it lists as Front.
-fn facing(device: &AVCaptureDevice) -> Facing {
+fn facing_from_capture_device_type(device: &AVCaptureDevice) -> Facing {
     // SAFETY: plain properties of a listed device; the type constant is
     // there since macOS 10.15
     let (position, kind) = unsafe { (device.position(), device.deviceType()) };
@@ -220,8 +194,6 @@ fn facing(device: &AVCaptureDevice) -> Facing {
 mod tests {
     use super::*;
 
-    /// Core Audio's transport and data source, as what a device is: only
-    /// what is sure.
     #[test]
     fn a_device_is_what_its_transport_says() {
         let jack = Some(u32::from_be_bytes(*b"hdpn"));
@@ -239,13 +211,10 @@ mod tests {
         assert_eq!(kind_of(None, None, false), AudioKind::Other);
     }
 
-    /// The microphones and speakers Core Audio lists, each with what it
-    /// is; listing opens nothing.
     #[test]
     fn the_audio_devices_say_what_they_are() {
         let (inputs, outputs) = crate::audio_devices().unwrap();
         eprintln!("inputs: {inputs:?}\noutputs: {outputs:?}");
-        // a Mac's own speakers, where it has them, are a speaker
         let own = outputs
             .iter()
             .find(|output| output.device.id.contains("BuiltIn"));
@@ -255,7 +224,6 @@ mod tests {
         );
     }
 
-    /// Listing runs and opens nothing.
     #[test]
     fn the_cameras_are_listed() {
         let listed = cameras().unwrap();

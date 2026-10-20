@@ -12,19 +12,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-/// A pane instance of this test's own, as `ui::layout::Pane::new` hands the
-/// shell one: unique for the process.
 fn instance() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// `(ticks, frame_rev)` of the seated view as the window draws: logged by
-/// the root's render, which gpui runs first in every draw, so it is the
-/// state the seat's tree renders from in that draw.
 type DrawnLog = Rc<RefCell<Vec<(u64, u64)>>>;
 
-/// The window a seat draws in, and the body its view is placed in.
 const WINDOW: (f32, f32) = (400., 300.);
 
 struct Root {
@@ -58,8 +52,6 @@ impl Render for Root {
     }
 }
 
-/// A [`WINDOW`] whose root draws one seat of `program`, placed in it with
-/// the window as its body.
 fn open(
     cx: &mut TestAppContext,
     program: &'static str,
@@ -67,8 +59,6 @@ fn open(
     open_in(cx, program, Some(WINDOW))
 }
 
-/// [`open`], the seat placed with `body`: none is a pane whose desk is not
-/// drawn yet.
 fn open_in(
     cx: &mut TestAppContext,
     program: &'static str,
@@ -99,7 +89,6 @@ fn open_in(
     (seat, drawn, mounted, Opened { native, handle })
 }
 
-/// The opened window: its test context and its handle.
 struct Opened {
     native: VisualTestContext,
     handle: gpui_kit::AnyWindowHandle,
@@ -112,7 +101,6 @@ fn ticks_of(mounted: &Mutex<Mounted>) -> u64 {
     }
 }
 
-/// The events each tick of the seated view carried.
 fn ticked_with(mounted: &Mutex<Mounted>) -> Vec<Vec<wire::Event>> {
     match &lock(mounted).slot {
         Slot::Ready(view) => view.ticked_with.clone(),
@@ -120,8 +108,6 @@ fn ticked_with(mounted: &Mutex<Mounted>) -> Vec<Vec<wire::Event>> {
     }
 }
 
-/// The host's facts among `events`: the theme, the viewport, the offset,
-/// whether the pointer is a finger.
 type Facts = (Option<bool>, Option<(f32, f32)>, Option<i32>, Option<bool>);
 
 fn facts(events: &[wire::Event]) -> Facts {
@@ -138,9 +124,6 @@ fn facts(events: &[wire::Event]) -> Facts {
     facts
 }
 
-/// A view answering `frames` in order, one per tick, the last on every
-/// tick after. `snapshot` hands over its tick count and `restore` takes
-/// one up, so the same code serves as a swap's old and new instance.
 fn frames_in_order(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
     let code = crate::runtime::view::prepared_for_test(frames_wat(frames));
     crate::runtime::seat_code_for_test(program, min_width, code);
@@ -162,12 +145,6 @@ fn boxed(key: &str) -> wire::Node {
     })
 }
 
-/// A view's first tick carries the host's facts: the theme, the body its
-/// pane lays it out in, the reader's offset, whether the device's pointer
-/// is a finger (`OsFacts::touch_first`: the desktop's is not, and says
-/// so, so a view picks its ladder before its first frame). A pane resized before the
-/// draw tells the view the new body ahead of the frame that shows it, and
-/// nothing else: a fact that did not move does not cross again.
 #[gpui_kit::test]
 fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
     const PROGRAM: &str = "first-frame-facts-test";
@@ -200,10 +177,6 @@ fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
     );
 }
 
-/// A manifest's minimum is the narrowest pointer window. Under a finger
-/// a view is laid out at its body's width even when its minimum is wider
-/// (a phone's screen): never widened, so never cut at the screen's edge.
-/// (Under a pointer it is widened: `a_views_viewport_is_never_narrower_than_its_minimum`.)
 #[gpui_kit::test]
 fn under_touch_a_view_is_laid_out_at_its_body_under_its_minimum(cx: &mut TestAppContext) {
     const PROGRAM: &str = "first-frame-touch-minimum-test";
@@ -217,11 +190,6 @@ fn under_touch_a_view_is_laid_out_at_its_body_under_its_minimum(cx: &mut TestApp
     assert_eq!(viewport, Some(WINDOW), "the body, not the 640 minimum");
 }
 
-/// A pane with no body yet (its desk is not drawn: a pane popped out while
-/// its view was loading, any pane of a window before its first frame) does
-/// not tick its view: the view would lay itself out in a viewport nobody
-/// sent, 0 × 0, and keep what it sized from that. The seat turns when the
-/// pane is placed with a body, and that first tick carries it.
 #[gpui_kit::test]
 fn a_view_is_not_ticked_before_its_pane_has_a_body(cx: &mut TestAppContext) {
     const PROGRAM: &str = "first-frame-no-body-test";
@@ -246,8 +214,6 @@ fn a_view_is_not_ticked_before_its_pane_has_a_body(cx: &mut TestAppContext) {
     assert_eq!(*drawn.borrow(), vec![(1, 1)]);
 }
 
-/// A view is never laid out narrower than its own minimum: the pane gives
-/// its body `min_w`, and the viewport the view hears is that width.
 #[gpui_kit::test]
 fn a_views_viewport_is_never_narrower_than_its_minimum(cx: &mut TestAppContext) {
     const PROGRAM: &str = "first-frame-min-width-test";
@@ -258,11 +224,6 @@ fn a_views_viewport_is_never_narrower_than_its_minimum(cx: &mut TestAppContext) 
     assert_eq!(facts(&ticks[0]).1, Some((640., WINDOW.1)), "{:?}", ticks[0]);
 }
 
-/// A deployment swap: the replacement's first tree is made by
-/// `first_frame` knowing the theme, the body and the reader's offset the
-/// drawn view had (`View::seed`), so the tree the install turn mounts is
-/// the one the reader sees, and no corrective tick follows it: the install
-/// draws once, at frame_rev 2, and the view has ticked once.
 #[gpui_kit::test]
 fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAppContext) {
     const PROGRAM: &str = "first-frame-swap-test";
@@ -280,8 +241,6 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
         (old.alive.clone(), old.theme_dark)
     };
     assert!(old_theme.is_some(), "the drawn view heard the theme");
-    // the new deployment's load, as a block starts it: the same code, a
-    // replacement of the same shape, prepared and parked on the seat
     let program = crate::runtime::view::prepared_for_test(frames_wat(&[full(boxed("card"))]));
     let generation = lock(&mounted).start();
     let load = Load {
@@ -299,9 +258,6 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
             shown: load.program.into(),
         })
     });
-    // the install woke the seat: its turn runs the swap (`swap_in`), whose
-    // install wakes it again; that turn mounts the staged tree without a
-    // tick (`staged`), and the harness draws the dirtied window
     native.run_until_parked();
     {
         let locked = lock(&mounted);
@@ -339,7 +295,6 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
         vec![(1, 1), (1, 2)],
         "the staged tree, drawn once"
     );
-    // nothing else wakes the seat, now or a frame later
     native.executor().advance_clock(Duration::from_millis(16));
     native.run_until_parked();
     assert_eq!(
@@ -350,10 +305,6 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     assert_eq!(ticks_of(&mounted), 1);
 }
 
-/// The WAT of [`frames_in_order`]: byte 0 is a result's Ok tag, so
-/// `restore` answers Ok, and `snapshot` Ok(the tick count, one byte at 33
-/// behind the tag at 32), which `restore` takes up; frame `n` sits in slot
-/// `n` above the first page.
 pub(super) fn frames_wat(frames: &[wire::Frame]) -> String {
     assert!(!frames.is_empty());
     const SLOT: usize = 16384;
@@ -396,10 +347,6 @@ pub(super) fn frames_wat(frames: &[wire::Frame]) -> String {
     )
 }
 
-/// Back goes to the root's `on_back` in the frame that landed last, as the
-/// view's next tick; a view whose frame has none (it is at its root) has
-/// nowhere to go back to, and the shell leaves the program: nothing is
-/// sent to it.
 #[gpui_kit::test]
 fn back_goes_to_the_roots_on_back_and_otherwise_leaves(cx: &mut TestAppContext) {
     const PROGRAM: &str = "first-frame-back-test";
@@ -422,7 +369,6 @@ fn back_goes_to_the_roots_on_back_and_otherwise_leaves(cx: &mut TestAppContext) 
     let ticks = ticked_with(&mounted);
     assert_eq!(ticks.len(), 2, "the Back ticked the view");
     assert_eq!(ticks[1], [wire::Event::Back { handler: 3 }]);
-    // the view went back to its root: its frame has no `on_back`
     let back = seat.update(&mut native, |seat, cx| seat.back(cx));
     assert_eq!(back, Back::Leave);
     native.run_until_parked();

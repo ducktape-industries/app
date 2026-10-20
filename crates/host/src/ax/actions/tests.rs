@@ -14,10 +14,6 @@ fn named_id(key: &str) -> wire::ElementIdWire {
 
 fn container(key: &str, children: Vec<wire::Node>) -> wire::Node {
     use gpui_kit::Styled as _;
-    // Every ancestor fills its parent, same as the real chat pane's own
-    // wrappers (`native_root`, the room, the composer's own div): a
-    // percentage size against an unsized ancestor resolves to zero, and
-    // an invisible (zero-bounds) node never reaches the AX door's tree.
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
         style: crate::render::test_style(gpui_kit::div().size_full().style().clone()),
@@ -26,11 +22,6 @@ fn container(key: &str, children: Vec<wire::Node>) -> wire::Node {
     })
 }
 
-/// The real shape a chat composer's field mounts under (see PR #238's
-/// `chat_shaped_tree` in `runtime/view/requests.rs`): `chat-viewport >
-/// chat-root > chat-panes > chat-room > draft-general >
-/// draft-general/editor`. Every one of those named ancestors is owned by
-/// a different file, none of which the field's own key threads through.
 fn chat_shaped_field() -> wire::Node {
     let field = wire::Node::Field {
         id: named_id("draft-general/editor"),
@@ -67,10 +58,6 @@ fn chat_shaped_field() -> wire::Node {
     )
 }
 
-/// Drives `action` with the value "hello" through the AX door path a QA
-/// runner uses (`perform_by_id`) against a tree shaped like the real
-/// composer's nested ancestry, and asserts the view hears the field
-/// reading it.
 fn ax_action_reaches_the_views_field(cx: &mut gpui_kit::TestAppContext, action: &str) {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| {
@@ -108,26 +95,16 @@ fn ax_action_reaches_the_views_field(cx: &mut gpui_kit::TestAppContext, action: 
     );
 }
 
-/// The QA runner's `type` AX action typed into the composer's
-/// AX-visible native field (focus and value both showed it) but the
-/// view never heard of it: Send stayed disabled forever.
 #[gpui_kit::test]
 fn ax_type_on_a_nested_editor_reaches_the_views_document(cx: &mut gpui_kit::TestAppContext) {
     ax_action_reaches_the_views_field(cx, "type");
 }
 
-/// The same drive, through AX `set_value`. `perform` focuses the node
-/// before SetValue, as it does for `type` (#241): typing goes where the
-/// keys are.
 #[gpui_kit::test]
 fn ax_set_value_on_a_nested_editor_reaches_the_views_document(cx: &mut gpui_kit::TestAppContext) {
     ax_action_reaches_the_views_field(cx, "set_value");
 }
 
-/// A view's stepper advertising increment, decrement and one custom
-/// action: the door offers the two it has words for, `/act` performs them,
-/// and each request, the custom one too, reaches the view on the route it
-/// named, with its data (AX-116).
 #[gpui_kit::test]
 fn an_action_a_view_advertises_reaches_the_view(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::accesskit::Action as A;
@@ -184,8 +161,6 @@ fn an_action_a_view_advertises_reaches_the_view(cx: &mut gpui_kit::TestAppContex
     );
 }
 
-/// A control a view draws out of a box: `role`, named `name`, sized by
-/// `style`, its click on route `click`.
 fn pressable(
     key: &str,
     role: Role,
@@ -209,13 +184,6 @@ fn pressable(
     })
 }
 
-/// What the census does to a view: `/act press` on a row scrolled out of
-/// its list is that row's click. Ten 40 px rows in a 100 px scroller put
-/// row 5 at 200..240, outside the list and inside the window, so the door
-/// shows it; a button of the view's lies right there. gpui's own Click was
-/// a pointer press at the row's middle with no hit test: it clicked the
-/// button. The click is the row's own, a keyboard click on its bounds as
-/// Enter's is, and grants user activation, as a pointer's press does.
 #[gpui_kit::test]
 fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
     cx: &mut gpui_kit::TestAppContext,

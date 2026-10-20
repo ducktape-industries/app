@@ -12,9 +12,7 @@ use crate::backend::{self, Ask, MicFeed};
 /// [`crate::State`].
 pub struct Meter {
     feed: Arc<MicFeed>,
-    /// The bar's colour.
     color: Hsla,
-    /// The level drawn: up at once, down slowly, so a word is seen.
     shown: f32,
     speaking: Speaking,
     told: crate::State,
@@ -174,11 +172,9 @@ impl Meter {
 #[derive(Default)]
 pub struct Speaking {
     on: bool,
-    /// Since when the level has said the other thing.
     crossed: Option<std::time::Instant>,
 }
 
-/// -40 dBFS on the feed's 0..1 scale (-60..0 dBFS).
 const SPEAKING_LEVEL: f32 = 20. / 60.;
 const SPEAKING_ON: std::time::Duration = std::time::Duration::from_millis(150);
 const SPEAKING_OFF: std::time::Duration = std::time::Duration::from_millis(600);
@@ -220,25 +216,19 @@ mod tests {
     use super::Speaking;
     use std::time::{Duration, Instant};
 
-    /// Speaking rises after 150 ms over -40 dBFS, holds through a short
-    /// pause, and falls after 600 ms under it; a click raises nothing.
     #[test]
     fn speaking_has_hysteresis() {
         let start = Instant::now();
         let at = |ms: u64| start + Duration::from_millis(ms);
         let mut speaking = Speaking::default();
-        // a click: loud for 100 ms only
         assert!(!speaking.heard(0.8, at(0)));
         assert!(!speaking.heard(0.8, at(100)));
         assert!(!speaking.heard(0.1, at(133)));
-        // a word: loud from 200 ms on
         assert!(!speaking.heard(0.5, at(200)));
         assert!(speaking.heard(0.5, at(350)));
-        // a breath of 400 ms between words keeps it
         assert!(speaking.heard(0.1, at(400)));
         assert!(speaking.heard(0.1, at(799)));
         assert!(speaking.heard(0.5, at(800)));
-        // silence: off 600 ms after it began
         assert!(speaking.heard(0.1, at(900)));
         assert!(speaking.heard(0.1, at(1499)));
         assert!(!speaking.heard(0.1, at(1500)));

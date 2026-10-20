@@ -40,8 +40,6 @@ pub(super) fn answer(
         (Capability::Clipboard, "files") => methods::decode::<()>(payload).map(|()| Request::Files),
         _ => return false,
     };
-    // what the person copied elsewhere is read, and replaced, only on
-    // their activation, which the ask takes; a view on a clock never sees it
     match request {
         Ok(_) if !view.take_activation() => view.refuse(
             id,
@@ -78,11 +76,6 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
     }
 }
 
-/// `clipboard.files`: the clipboard's text, and its files and pictures held
-/// for the view. A picture is written to an unnamed file of its own and
-/// held as a file, named `image.<ext>` by its format; that and opening a
-/// file run on a blocking thread, and one that fails refuses the whole ask
-/// by its name alone, as a pick does.
 #[cfg(feature = "ui")]
 fn files(view: &mut View, id: u64, cx: &mut Context<Seat>) {
     let (mut text, mut paths, mut pictures) = (String::new(), Vec::new(), Vec::new());

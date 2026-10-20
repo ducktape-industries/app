@@ -62,8 +62,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-/// What the phone feeds the host after start (`contract::Inbound`), kept
-/// for the OS callbacks that arrive outside gpui (Android's Java thread).
 static INBOUND: OnceLock<Inbound> = OnceLock::new();
 
 /// Keeps the host's inbound sender for [`send`]. Once: the host starts once
@@ -80,18 +78,10 @@ pub fn send(signal: Signal) {
     }
 }
 
-/// The chain in hand while the session is connected, empty while none is,
-/// as the shell last published it ([`hold_chain`]): what the OS's own
-/// threads read (a push that comes while the app is in front, a banner's
-/// payload) without reaching the app.
 static IN_HAND: Mutex<String> = Mutex::new(String::new());
 
-/// The app in front of the person, as the OS's lifecycle last said
-/// ([`follow`]); it starts there.
 static IN_FRONT: AtomicBool = AtomicBool::new(true);
 
-/// The chain in hand now (`chain`), `""` while the session is not
-/// connected: the shell's word, on each move of the session.
 pub(crate) fn hold_chain(chain: &str) {
     let mut held = IN_HAND.lock().unwrap_or_else(PoisonError::into_inner);
     if *held != chain {
@@ -106,9 +96,6 @@ fn in_hand() -> String {
         .clone()
 }
 
-/// The app's place on screen, to the host and kept for the banners
-/// ([`IN_FRONT`]): in front until it is in the background or its scene
-/// is gone (an inactive app, under Control Centre, is still on screen).
 #[cfg_attr(
     not(any(target_os = "ios", target_os = "android")),
     expect(dead_code, reason = "only a phone's lifecycle calls it")
@@ -122,9 +109,6 @@ fn lifecycle(phase: AppLifecyclePhase) {
     send(Signal::Lifecycle(phase));
 }
 
-/// Links the OS handed the app (an Android intent's data, an iOS scene's
-/// URL), from any thread, for the shell to open; one that comes before the
-/// shell is up waits here.
 static LINKS: OnceLock<(
     async_channel::Sender<String>,
     async_channel::Receiver<String>,
@@ -195,21 +179,11 @@ impl OsNotice {
         })
     }
 
-    /// Whether the OS shows one that came while the app was in front by
-    /// the OS's word: unless this phone banners it itself, which it does
-    /// with the app `in_front` by its own lifecycle on the chain of the
-    /// notice in hand (`in_hand`, `""`: none connected). Those are the
-    /// notifiers this phone runs, and what they post is the banner
-    /// ([`PhoneBanners`]: the same two words); they also leave alone what
-    /// the person is looking at (`host.screen`), which the push server
-    /// cannot see.
     fn shows_in_front(&self, in_hand: &str, in_front: bool) -> bool {
         self.front && !(in_front && self.chain == in_hand)
     }
 }
 
-/// The OS's notices handed over ([`os_notice`]), from any thread, for the
-/// shell to log; those that come before the shell is up wait here.
 static OS_NOTICES: OnceLock<(
     async_channel::Sender<OsNotice>,
     async_channel::Receiver<OsNotice>,
@@ -233,7 +207,6 @@ pub fn os_notice(payload: &str, at: i64, front: bool, opened: bool) -> bool {
         return false;
     };
     let shows = notice.shows_in_front(&in_hand(), IN_FRONT.load(Ordering::Relaxed));
-    // shown, it is logged as any the OS showed
     notice.front &= !shows;
     if let Err(error) = os_notice_channel().0.try_send(notice) {
         tracing::error!(target: "ducktape::phone", %error, "an OS notice was lost");
@@ -252,7 +225,6 @@ pub fn withdraw_notice(tag: &str) {
     android::jni::withdraw_notice(tag);
     #[cfg(test)]
     WITHDRAWN.with(|withdrawn| withdrawn.borrow_mut().push(tag.to_owned()));
-    // a Linux build keeps no OS list
     #[cfg(not(any(target_os = "ios", target_os = "android", test)))]
     let _ = tag;
 }
@@ -263,20 +235,13 @@ thread_local! {
     pub static WITHDRAWN: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The OS's notices to log, in the order they came.
 pub(crate) fn os_notices() -> async_channel::Receiver<OsNotice> {
     os_notice_channel().1.clone()
 }
 
-/// This device's push tokens by kind (`voip`: PushKit's, as hex; `apns`:
-/// the remote-notification token alerts and a withdraw are pushed to, as
-/// hex; `fcm`: Firebase's), as the OS last handed them over, for the
-/// registrar ([`crate::push`]) that hands them to the push server.
 static PUSH_TOKENS: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// One item each time the tokens moved, for the registrar; a bounded
-/// channel of one, so moves coalesce.
 static PUSH_MOVED: OnceLock<(async_channel::Sender<()>, async_channel::Receiver<()>)> =
     OnceLock::new();
 
@@ -287,7 +252,6 @@ fn push_moved() -> &'static (async_channel::Sender<()>, async_channel::Receiver<
 /// Keeps `token` as this device's push token of `kind`; an empty one is
 /// withdrawn. The registrar is woken when the kept one moved.
 pub fn push_token(kind: &str, token: String) {
-    // the token addresses this device: kept out of the log
     tracing::debug!(target: "ducktape::phone", kind, "this device's push token");
     let moved = {
         let mut tokens = PUSH_TOKENS
@@ -299,7 +263,6 @@ pub fn push_token(kind: &str, token: String) {
         }
     };
     if moved {
-        // a full channel already holds a wake
         push_moved().0.try_send(()).ok();
     }
 }
@@ -331,7 +294,6 @@ pub fn push_tokens() -> std::collections::BTreeMap<String, String> {
         .clone()
 }
 
-/// The links to open, in the order they came.
 pub(crate) fn links_to_open() -> async_channel::Receiver<String> {
     links().1.clone()
 }
@@ -360,9 +322,6 @@ pub fn dirs(documents: &Path, caches: &Path) -> Dirs {
     }
 }
 
-/// Makes every directory in `dirs`, the runtime one private to this app
-/// (the `Dirs` rule: the host never makes it, and writes the door's token
-/// there plainly).
 fn made(dirs: &Dirs) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
     for dir in [&dirs.config, &dirs.data, &dirs.remotes, &dirs.cache] {
@@ -382,14 +341,11 @@ pub struct PhoneOs {
 }
 
 impl PhoneOs {
-    /// The phone's [`OsFacts`].
     fn facts_of() -> OsFacts {
         OsFacts {
             mac_modifiers: false,
-            // `getrusage`'s `ru_maxrss`: bytes on Darwin, kibibytes on Linux
             rss_unit: if cfg!(target_os = "ios") { 1 } else { 1024 },
             touch_first: true,
-            // the Expo build's label for this key (mobile `node.rs:344`)
             device_label: "Phone",
             device_noun: "phone",
             one_layout: true,
@@ -399,15 +355,11 @@ impl PhoneOs {
             } else {
                 motion::IOS
             },
-            // iOS's alert prompt, Android 13's POST_NOTIFICATIONS
             os_asks_notices: true,
             feeds_follow_screen: true,
         }
     }
 
-    /// The services over the container's `documents` and `caches`, every
-    /// directory made. A sentence when a directory cannot be made or the
-    /// OS gives no randomness for the reader key.
     pub(crate) fn open(documents: PathBuf, caches: PathBuf) -> Result<Self, String> {
         let dirs = dirs(&documents, &caches);
         made(&dirs).map_err(|error| format!("Could not make the app's folders: {error}"))?;
@@ -420,24 +372,8 @@ impl PhoneOs {
     }
 }
 
-/// The OS's own banners (iOS's, Android's notification), for what this
-/// phone's notifiers post while the app is in front (owner 10-17): what is
-/// a notice, for whom, its words, tag, link and withdrawal are each
-/// program's, decided in its notifier; the host's centre lets it through
-/// (the person's word, the burst); this only shows it. While the app is
-/// not in front, the push server shows the same notices: none here then,
-/// so none shows twice. A call is the ring's (CallKit, `Ring.kt`), never a
-/// banner. A withdraw (its program saw it, or its `until`) takes what
-/// stands under the tag out of the OS's list, this phone's and the push
-/// server's ([`withdraw_notice`]).
 struct PhoneBanners;
 
-/// The launchers' file dialogs: iOS's (`App.swift` `Files`: a sheet of
-/// Photo Library and Files to pick from; a picture kept through Quick Look,
-/// any other file through the share sheet) and Android's (`MainActivity`:
-/// the open-document dialog; a picture in the system's viewer, any other
-/// file through the create-document dialog; on a thread of their own,
-/// since the Activity blocks it until the person answers).
 struct PhoneFiles;
 
 impl ducktape_host::contract::Files for PhoneFiles {
@@ -469,15 +405,12 @@ impl ducktape_host::contract::Files for PhoneFiles {
     }
 }
 
-/// A build for neither phone (the workspace's own, its tests) has no
-/// launcher to open a dialog.
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const NO_DIALOGS: &str = "this build of the phone has no launcher to open a file dialog";
 
 impl Banners for PhoneBanners {
     fn post(&self, notice: &Notice, click: Option<Click>) -> bool {
         let row = match click {
-            // the phone runs the notifiers of the chain in hand alone
             Some(Click::Row { row, .. }) => Some(row_at(row)),
             _ => None,
         };
@@ -493,21 +426,12 @@ impl Banners for PhoneBanners {
     }
 }
 
-/// When the app's centre logged row `id` (now, if it is gone).
 fn row_at(id: u64) -> i64 {
     let center = ducktape_host::runtime::notify::center().lock();
     let row = center.entries().find(|entry| entry.id == id);
     row.map_or_else(ducktape_host::runtime::notify::wall, |entry| entry.at)
 }
 
-/// What this phone's banner of `notice` carries (its `userInfo`, its
-/// notification's extras): the push server's payload for it
-/// (`Push::show` in crates/pushd) on `chain`, so a tap on it is read and
-/// opened as a pushed one's is ([`OsNotice`]), under the same id (a late
-/// push of it replaces it, never stands beside it), and `at`, the time of `row`,
-/// the row it opens. "N more" opens no row: no program's notice, a tap on
-/// it only brings the app up. None for a call, with no chain in hand, or
-/// with the app not in `front`.
 fn banner_payload(
     notice: &Notice,
     row: Option<i64>,
@@ -535,8 +459,6 @@ fn banner_payload(
     Some(payload)
 }
 
-/// `payload` ([`banner_payload`]) up as the OS's own banner; whether it
-/// was handed to the OS.
 fn show_banner(payload: &str) -> bool {
     #[cfg(target_os = "ios")]
     {
@@ -567,8 +489,6 @@ impl OsServices for PhoneOs {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         {
             let key = crate::key::DeviceKey::open(keyring).map_err(KeyRefusal::Denied)?;
-            // the public half only: which key a keyring opened, in the log
-            // the update from the Expo build is checked against (SPEC §4.8)
             let public = noded_client::Signer::public_key(&key);
             let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
             tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
@@ -637,12 +557,8 @@ impl OsServices for PhoneOs {
 
     fn limits(&self) -> Limits {
         Limits {
-            // one Cranelift compile peaks at 200-315 MB; the OS's memory
-            // killer is the owner of this bound (SPEC §4.5)
             loaders: 1,
             preload: Preload::Seat,
-            // iOS's views run in WebKit's content process, which can die
-            // under them (SPEC §6.5); Android's in this one, with the app
             snapshot_every: cfg!(target_os = "ios").then_some(std::time::Duration::from_secs(1)),
             snapshot_to_disk: true,
         }
@@ -688,40 +604,27 @@ pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
     }
 }
 
-/// Where the runner keeps its code under `cache`. On iOS, one folder per
-/// app build (`DUCKTAPE_APP_BUILD`, the commit and any uncommitted change),
-/// the other builds' removed: the code kept there is the meter pass's
-/// output, and another build's pass may differ; a build that knows no
-/// commit (no git) keeps none. wasmtime keys its own cache by its version
-/// and settings, so it shares one across builds.
 fn code_cache(cache: &Path) -> Option<PathBuf> {
     let dir = cache.join("view-code");
     match cfg!(target_os = "ios") {
-        true => option_env!("DUCKTAPE_APP_BUILD").map(|build| per_build(&dir, build)),
+        true => option_env!("DUCKTAPE_APP_BUILD")
+            .map(|build| retain_only_current_build_cache(&dir, build)),
         false => Some(dir),
     }
 }
 
-/// `dir`'s folder for `build`, every other one under `dir` removed.
-fn per_build(dir: &Path, build: &str) -> PathBuf {
+fn retain_only_current_build_cache(dir: &Path, build: &str) -> PathBuf {
     for old in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         if old.file_name() != build {
-            // a folder that stays is read by no build: the OS purges it
             let _gone = std::fs::remove_dir_all(old.path());
         }
     }
     dir.join(build)
 }
 
-/// What a build for neither phone answers for a key: such a build exists
-/// only for the workspace's own checks and tests.
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const NO_STORE: &str = "This build runs on no phone, so it has no key store.";
 
-/// Starts the host over the container's `documents` and `caches`, once
-/// the app's thread runs: what both launchers call. A phone that cannot
-/// make its own folders cannot run; it stops with the reason logged (SPEC
-/// §13.3: a host panic on a phone aborts).
 #[cfg_attr(
     not(any(target_os = "ios", target_os = "android")),
     expect(dead_code, reason = "only a phone's launcher enters")
@@ -751,8 +654,6 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
     }
     #[cfg(target_os = "android")]
     {
-        // the window active is the app in the foreground (SPEC §7.5): the
-        // session's status poll starts again on it
         vec![cx.observe_window_activation(window, |_, window, _| {
             lifecycle(if window.is_window_active() {
                 AppLifecyclePhase::Foreground
@@ -846,7 +747,6 @@ pub fn footprint_bytes() -> (Option<u64>, Option<u64>) {
         if answered != mach2::kern_return::KERN_SUCCESS {
             return (None, None);
         }
-        // an older kernel answers a shorter struct: a field past its answer is not had
         let filled = |end: usize| end <= count as usize * size_of::<mach2::vm_types::natural_t>();
         let now = std::mem::offset_of!(task_vm_info, phys_footprint) + size_of::<u64>();
         let peak =
@@ -897,7 +797,6 @@ pub fn phone() -> String {
                 patch => format!("{}.{}.{patch}", version.majorVersion, version.minorVersion),
             }
         };
-        // a build for no phone (the workspace's checks) has no version
         #[cfg(not(target_os = "ios"))]
         let version = "";
         format!("iPhone · iOS {version}")
@@ -929,8 +828,6 @@ pub fn back_at_root() {
 mod tests {
     use super::*;
 
-    /// A push token is kept by its kind, the next one in its place, and an
-    /// empty one withdraws it.
     #[test]
     fn push_tokens_are_kept_by_kind() {
         push_token("test-voip", "aa".into());
@@ -943,7 +840,6 @@ mod tests {
         push_token("test-voip", String::new());
         assert!(!push_tokens().contains_key("test-voip"));
         assert!(push_tokens().contains_key("test-fcm"));
-        // the registrar was woken, once for the moves so far
         assert!(push_tokens_moved().try_recv().is_ok());
         assert!(push_tokens_moved().try_recv().is_err());
         push_token("test-fcm", "f".into());
@@ -953,9 +849,6 @@ mod tests {
         );
     }
 
-    /// The carrier's notice reads the same as Android keeps it (FCM's
-    /// strings) as iOS does (JSON values); its call and its withdraw are no
-    /// notice for the list, nor is a payload that is not the carrier's.
     #[test]
     fn only_the_carriers_notice_payload_is_a_notice() {
         let fcm = r#"{"kind":"notice","chain":"c#1","program":"chat","tag":"chat/#general",
@@ -988,10 +881,7 @@ mod tests {
         );
     }
 
-    /// The push server's payload for a direct message from `title` on
-    /// `chain` (`Push::payload`, as the OS keeps it), under chat's tag for
-    /// that room.
-    fn pushed(chain: &str, title: &str) -> String {
+    fn direct_message_push_payload(chain: &str, title: &str) -> String {
         serde_json::json!({
             "kind": "notice", "chain": chain, "program": "chat", "tag": format!("chat/@{title}"),
             "title": title, "body": "said", "link": "", "until": 0,
@@ -999,15 +889,11 @@ mod tests {
         .to_string()
     }
 
-    /// A push the OS hands over as in front shows unless this phone
-    /// banners it itself: the app in front by its own lifecycle, on the
-    /// push's chain. Another chain's, one with none connected, and one the
-    /// app's lifecycle already put behind (iOS asks a moment after a move
-    /// to the background) show. Delivered or opened, it is no front's.
     #[test]
     fn a_push_in_front_shows_unless_this_phone_banners_it() {
         let shows = |chain: &str, in_hand: &str, front: bool, in_front: bool| {
-            let notice = OsNotice::of(&pushed(chain, "ada"), 5, front, false).expect("a notice");
+            let notice = OsNotice::of(&direct_message_push_payload(chain, "ada"), 5, front, false)
+                .expect("a notice");
             notice.shows_in_front(in_hand, in_front)
         };
         assert!(
@@ -1032,11 +918,6 @@ mod tests {
         );
     }
 
-    /// This phone's banner carries the push server's payload on the chain
-    /// in hand and its row's time, so the OS's copy of it and a tap on it
-    /// read as a pushed one's at that time (not the OS's, a moment later);
-    /// "N more" opens no row and is no program's notice. A call, the app
-    /// not in front, or no chain in hand: no banner.
     #[test]
     fn this_phones_banner_is_the_pushs_payload_at_its_rows_time() {
         let notice = Notice {
@@ -1051,9 +932,7 @@ mod tests {
         let opened = OsNotice::of(&payload.to_string(), 101, false, true).expect("a notice");
         assert_eq!((opened.chain.as_str(), opened.at), ("garage#1", 100));
         assert_eq!(opened.notice, notice);
-        // the push's own id for it (Android shows none without one)
         assert_eq!(payload["id"], notice.os_id(), "not the push's id");
-        // Android keeps every value a string (`Ring.banner`)
         let strings = payload.as_object().unwrap().iter();
         let strings: serde_json::Map<_, _> = strings
             .map(|(key, value)| (key.clone(), value.to_string().trim_matches('"').into()))
@@ -1070,7 +949,13 @@ mod tests {
             "the shade's copy at the OS's time"
         );
         assert_eq!(
-            OsNotice::of(&pushed("garage#1", "ada"), 101, false, false).map(|it| it.at),
+            OsNotice::of(
+                &direct_message_push_payload("garage#1", "ada"),
+                101,
+                false,
+                false
+            )
+            .map(|it| it.at),
             Some(101)
         );
 
@@ -1101,13 +986,6 @@ mod tests {
         );
     }
 
-    /// What the person sees while the app is in front on a chain, with the
-    /// phone's word on a program they said nothing of (`os_asks_notices`):
-    /// each notice is one banner of the OS's. A push for the chain in hand
-    /// shows nothing, and this phone's notifier's post of it is the banner;
-    /// one for another chain shows itself; one the OS showed before the app
-    /// came up is not bannered again when the notifier here catches up; a
-    /// tap on this phone's banner reads its row.
     #[test]
     fn in_front_each_notice_is_one_os_banner() {
         use ducktape_host::runtime::notify::{CenterHandle, Permission, Settings};
@@ -1130,8 +1008,13 @@ mod tests {
         };
         let mut banners = Vec::new();
 
-        // in front on garage#1: ada's push and this phone's run of it
-        let push = OsNotice::of(&pushed("garage#1", "ada"), 100, true, false).unwrap();
+        let push = OsNotice::of(
+            &direct_message_push_payload("garage#1", "ada"),
+            100,
+            true,
+            false,
+        )
+        .unwrap();
         if push.shows_in_front("garage#1", true) {
             banners.push("ada, pushed");
         }
@@ -1142,15 +1025,24 @@ mod tests {
         if ours.is_some() {
             banners.push("ada, this phone's");
         }
-        // another chain's push
-        if OsNotice::of(&pushed("other#2", "bob"), 110, true, false)
-            .unwrap()
-            .shows_in_front("garage#1", true)
+        if OsNotice::of(
+            &direct_message_push_payload("other#2", "bob"),
+            110,
+            true,
+            false,
+        )
+        .unwrap()
+        .shows_in_front("garage#1", true)
         {
             banners.push("bob, pushed");
         }
-        // cy's push the OS showed while the app was away, then the catch-up
-        let shown = OsNotice::of(&pushed("garage#1", "cy"), 150, false, false).unwrap();
+        let shown = OsNotice::of(
+            &direct_message_push_payload("garage#1", "cy"),
+            150,
+            false,
+            false,
+        )
+        .unwrap();
         center.carried(&settings, &shown.notice, shown.at, false);
         let (_, raised) = center.post(&settings, "chat", "Chat", post("cy"), now, 160);
         if raised.is_some() {
@@ -1158,7 +1050,6 @@ mod tests {
         }
         assert_eq!(banners, ["ada, this phone's", "bob, pushed"]);
 
-        // ada's banner tapped, the OS's time a moment after its row's
         let tapped = OsNotice::of(&ours.unwrap().to_string(), 101, false, true).unwrap();
         center.carried(&settings, &tapped.notice, tapped.at, tapped.opened);
         let ada = center
@@ -1174,24 +1065,23 @@ mod tests {
         );
     }
 
-    /// An app build keeps its code in a folder of its own, and the other
-    /// builds' folders go: no build reads another build's metered code.
     #[test]
     fn each_app_build_keeps_its_code_apart() {
         let cache = tempfile::tempdir().unwrap();
         let dir = cache.path().join("view-code");
-        let old = per_build(&dir, "a1");
+        let old = retain_only_current_build_cache(&dir, "a1");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("code.metered.wasm"), b"old pass").unwrap();
-        assert_eq!(per_build(&dir, "a1"), old, "the same build reads its own");
-        let new = per_build(&dir, "b2");
+        assert_eq!(
+            retain_only_current_build_cache(&dir, "a1"),
+            old,
+            "the same build reads its own"
+        );
+        let new = retain_only_current_build_cache(&dir, "b2");
         assert_eq!(new, dir.join("b2"));
         assert!(!old.exists(), "another build's code stays");
     }
 
-    /// The host's files sit under `ducktape/`, beside the Expo build's
-    /// `store`; the keyrings stay where the Expo build put them; the runtime
-    /// directory is made private.
     #[test]
     fn the_container_holds_the_expo_keyrings_and_the_hosts_own_files() {
         let container = tempfile::tempdir().unwrap();

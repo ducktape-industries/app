@@ -8,8 +8,6 @@ use super::*;
 use gpui_kit::{Context, Window};
 
 impl PaneLayer {
-    /// Takes hold of window `index` at `at`: `sides` follow the pointer;
-    /// none, and the whole window does.
     pub(super) fn hold(
         &mut self,
         index: usize,
@@ -24,15 +22,12 @@ impl PaneLayer {
 }
 
 impl PaneView {
-    /// The edges and corners a window is sized by: each reaches `GRAB`
-    /// out past the border and `IN` over it, a corner further in.
     pub(super) fn grips(
         &self,
         index: usize,
         cx: &mut Context<Self>,
     ) -> Vec<gpui_kit::Stateful<gpui_kit::Div>> {
         use gpui_kit::*;
-        // measured from the outside of the grips' frame, `GRAB` past the border
         const IN: f32 = 4.;
         const EDGE: f32 = layout::GRAB + IN;
         const CORNER: f32 = layout::GRAB + 10.;
@@ -146,7 +141,6 @@ impl PaneView {
     }
 }
 
-/// The sides of a window a hold carries along with the pointer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Sides {
     left: bool,
@@ -156,41 +150,32 @@ pub(super) struct Sides {
 }
 
 impl Sides {
-    /// No side held: the whole window follows.
     pub(super) const NONE: Sides = Sides {
         left: false,
         top: false,
         right: false,
         bottom: false,
     };
-    /// The right edge: the keyboard sizes a window's width by it.
     pub(super) const RIGHT: Sides = Sides {
         right: true,
         ..Sides::NONE
     };
-    /// The bottom edge: the keyboard sizes a window's height by it.
     pub(super) const BOTTOM: Sides = Sides {
         bottom: true,
         ..Sides::NONE
     };
 }
 
-/// A window held by the pointer.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Drag {
     index: usize,
     sides: Sides,
     from: (f32, f32),
     start: layout::Frame,
-    /// The window's [`layout::Pane::min_width`].
     min_w: f32,
 }
 
 impl Drag {
-    /// Window `index` of `layout` held at `from`, once it has a frame. Its
-    /// edges stop at the pane's floor, or at the desk's width where the
-    /// desk is narrower: the frame is capped there, and an edge held past
-    /// it would carry the whole window.
     pub(super) fn of(
         layout: &layout::Layout,
         index: usize,
@@ -208,9 +193,6 @@ impl Drag {
         })
     }
 
-    /// The frame with the pointer at `to`. A side held past the window's
-    /// narrowest (or the smallest window's height), or the left or top
-    /// side past the desk's edge, stops; the side across from it stays put.
     pub(super) fn frame(&self, to: (f32, f32)) -> layout::Frame {
         let (dx, dy) = (to.0 - self.from.0, to.1 - self.from.1);
         let start = self.start;
@@ -245,12 +227,6 @@ impl Drag {
     }
 }
 
-/// A press anywhere in this OS window raises the pane under the pointer,
-/// unless something is open over the desk. Registered on the whole OS
-/// window in the capture phase, before anything under the pointer sees it:
-/// a program's view may swallow the pointer, and must not keep its pane
-/// from rising. The messages go through the window (`pane_message` marks
-/// the layer's panes moved), so the layer is read, never held, here.
 pub(super) fn raise(
     this: gpui_kit::Entity<PaneLayer>,
     desk: gpui_kit::Bounds<gpui_kit::Pixels>,
@@ -267,11 +243,9 @@ pub(super) fn raise(
         );
         let (covered, layout, desk_window) = {
             let this = this.read(cx);
-            // a press on something open over the desk is not on a window
             let covered = this.overlays.read(cx).get().is_some();
             (covered, this.layout(cx), this.window.clone())
         };
-        // a press ends the hold the keyboard has on a window, as it is
         if layout.held.is_some() {
             let _ = desk_window.update(cx, |desk, cx| {
                 desk.hold_message(PaneMessage::Release { keep: true }, cx)
@@ -289,11 +263,6 @@ pub(super) fn raise(
     });
 }
 
-/// The pointer, window-wide, so a fast one can't slip off the window it
-/// holds: while a window is held, a move carries it and a release lets it
-/// go, a release that comes before the next frame too. Every move sets
-/// the frame on the `Desk` (compared: a pointer that stays put moves
-/// nothing).
 pub(super) fn follow(this: gpui_kit::Entity<PaneLayer>, window: &mut Window) {
     follow_pointer(this, window, |this, to, _, cx| {
         let Some(drag) = this.drag else {
@@ -313,12 +282,6 @@ pub(super) fn follow(this: gpui_kit::Entity<PaneLayer>, window: &mut Window) {
     });
 }
 
-/// The pointer, window-wide, for whatever `this` holds by it (a desk
-/// window here, Settings by its title strip): `held` hears each move with
-/// the left button down, where the pointer is now, and `None` once the
-/// hand lets go (a move with the button up, or its release, a release that
-/// comes before the next frame too). Called on every frame, not only once
-/// a hold is drawn: the moves after a press may come before the next frame.
 pub(super) fn follow_pointer<T: 'static>(
     this: gpui_kit::Entity<T>,
     window: &mut Window,
@@ -384,7 +347,6 @@ mod drag_tests {
                 ..start
             }
         );
-        // the left edge past the smallest window: the right edge stays put
         let left = drag(Sides {
             left: true,
             ..Sides::NONE
@@ -397,8 +359,6 @@ mod drag_tests {
         })
         .frame((0., -60.));
         assert_eq!((top.y, top.h), (40., 460.));
-        // the left and top edges past the desk's: they stop at it, the
-        // right and bottom edges stay put
         let past = drag(Sides {
             left: true,
             top: true,
@@ -409,7 +369,6 @@ mod drag_tests {
             (past.x, past.y, past.x + past.w, past.y + past.h),
             (0., 0., 600., 500.)
         );
-        // a window holding a view laid out from 680 stops at 682
         let wide = Frame { w: 900., ..start };
         let left = Drag {
             start: wide,
@@ -423,8 +382,6 @@ mod drag_tests {
         assert_eq!((left.w, left.x + left.w), (682., 1000.));
     }
 
-    /// On a desk narrower than the view the window is the desk: its left
-    /// edge held inwards stays put rather than carrying the window.
     #[test]
     fn an_edge_on_a_desk_narrower_than_the_view_stays_put() {
         crate::runtime::seat_for_test("drag-cramped-view", 680);

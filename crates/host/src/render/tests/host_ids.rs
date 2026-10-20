@@ -37,7 +37,6 @@ fn box_of(id: Option<wire::ElementIdWire>, children: Vec<wire::Node>) -> wire::N
     })
 }
 
-/// A button `name` that reports `handler` when clicked, 80 by 24 px.
 fn button(id: Option<wire::ElementIdWire>, name: &str, handler: u32) -> wire::Node {
     let mut node = box_of(id, Vec::new());
     if let wire::Node::Container(view_wire::ContainerNode {
@@ -63,7 +62,6 @@ fn names(nodes: &[crate::ax::AxNode], role: &str) -> Vec<String> {
         .collect()
 }
 
-/// Route 1: two bare `StyledText`s under one parent, as the SDK makes them.
 #[gpui_kit::test]
 fn two_id_less_rich_texts_are_both_heard(cx: &mut gpui_kit::TestAppContext) {
     let nodes = draw(
@@ -77,7 +75,6 @@ fn two_id_less_rich_texts_are_both_heard(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(names(&nodes, "Label"), ["alpha", "beta"]);
 }
 
-/// The same pair inside a box with no id of its own.
 #[gpui_kit::test]
 fn two_id_less_rich_texts_under_an_id_less_box_are_both_heard(cx: &mut gpui_kit::TestAppContext) {
     let nodes = draw(
@@ -91,8 +88,6 @@ fn two_id_less_rich_texts_under_an_id_less_box_are_both_heard(cx: &mut gpui_kit:
     assert_eq!(names(&nodes, "Label"), ["alpha", "beta"]);
 }
 
-/// A view spelling the host's old numbered id beside an id-less text; the
-/// id-less one's door id is its host name, not a code location.
 #[gpui_kit::test]
 fn a_view_text_spelled_like_a_host_text_id_is_its_own_node(cx: &mut gpui_kit::TestAppContext) {
     let nodes = draw(
@@ -114,8 +109,6 @@ fn a_view_text_spelled_like_a_host_text_id_is_its_own_node(cx: &mut gpui_kit::Te
     assert_eq!(first.id, "t:text-0");
 }
 
-/// An id-less rich text with links, beside a text spelled the way the host
-/// used to name the links' box: the box and the text keep their nodes.
 #[gpui_kit::test]
 fn a_view_text_spelled_like_a_linked_box_is_its_own_node(cx: &mut gpui_kit::TestAppContext) {
     let mut linked = rich(None, "Read the docs or the code");
@@ -146,8 +139,6 @@ fn a_view_text_spelled_like_a_linked_box_is_its_own_node(cx: &mut gpui_kit::Test
     assert!(names(&nodes, "Label").contains(&"beside".to_owned()));
 }
 
-/// An input `i` beside a text spelled the way the host used to name the
-/// input's wrapper; the input's door id is the view's own.
 #[gpui_kit::test]
 fn a_view_text_spelled_like_an_inputs_field_is_its_own_node(cx: &mut gpui_kit::TestAppContext) {
     let nodes = draw(
@@ -173,8 +164,6 @@ fn a_view_text_spelled_like_an_inputs_field_is_its_own_node(cx: &mut gpui_kit::T
     assert_eq!(field.id, "t:i");
 }
 
-/// A named overlay holding another named one, whose base text is spelled
-/// `layer`: both dialogs and the text keep their nodes.
 #[gpui_kit::test]
 fn a_view_text_spelled_layer_keeps_a_nested_dialog_its_node(cx: &mut gpui_kit::TestAppContext) {
     let overlay =
@@ -197,7 +186,6 @@ fn a_view_text_spelled_layer_keeps_a_nested_dialog_its_node(cx: &mut gpui_kit::T
         plain_text(Some(named_id("layer")), "base"),
         inner,
     );
-    // gpui's own tree, not the door's: the door shows only the topmost modal
     cx.update(gpui_kit::init);
     let root = sized("root", outer, Some(fill()), Some(fill()));
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
@@ -224,8 +212,6 @@ fn a_view_text_spelled_layer_keeps_a_nested_dialog_its_node(cx: &mut gpui_kit::T
     assert!(labels.contains(&(gpui_kit::Role::Label, "base".to_owned())));
 }
 
-/// Two clickable containers, the second spelled like the host's old id for
-/// the first: a pointer click on the second reaches its own handler.
 #[gpui_kit::test]
 fn a_click_on_a_container_spelled_like_a_host_id_fires_its_own_handler(
     cx: &mut gpui_kit::TestAppContext,
@@ -251,7 +237,6 @@ fn a_click_on_a_container_spelled_like_a_host_id_fires_its_own_handler(
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(crate::render::draw_frame);
-    // the second button: 24px of the first, an 8px gap, then its own 24px
     let centre = point(px(40.), px(24. + 8. + 12.));
     native.simulate_mouse_move(centre, None, Default::default());
     native.simulate_mouse_down(centre, MouseButton::Left, Default::default());

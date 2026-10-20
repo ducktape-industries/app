@@ -103,9 +103,6 @@ pub fn avatar(name: &str, side: f32, palette: Palette) -> Div {
         )
 }
 
-/// The 56 header of a tab root (Expo `Header` with `root`): the 22 title,
-/// a 12 caption under it; what the root adds (Home's filter) at the right.
-/// No avatar: who is reading is the Account tab's.
 fn root_header(title: String, caption: String, palette: Palette) -> Div {
     let words = div()
         .flex_1()
@@ -134,8 +131,6 @@ fn root_header(title: String, caption: String, palette: Palette) -> Div {
         .child(words)
 }
 
-/// The caption under a root's title: `on` while on the network, else
-/// where the phone is trying to get to.
 pub(super) fn caption(shared: &Shared, on: String, cx: &App) -> String {
     let session = shared.session.read(cx).get();
     if session.connected && session.reconnecting {
@@ -151,7 +146,6 @@ pub(super) fn caption(shared: &Shared, on: String, cx: &App) -> String {
     }
 }
 
-/// A section's head (Expo `SectionHead`): 12 medium muted label.
 fn section_head(label: &'static str, palette: Palette) -> Div {
     div()
         .min_h(px(40.))
@@ -188,14 +182,10 @@ pub fn glyph(row: &RailRow, side: f32, icon: f32, palette: Palette) -> Div {
     }
 }
 
-/// Whether `row` answers the filter `query` (lower case): its name or its
-/// id holds it.
 fn answers(row: &RailRow, query: &str) -> bool {
     query.is_empty() || name_of(row).to_lowercase().contains(query) || row.program.contains(query)
 }
 
-/// The filter field (Expo `Field` with a search lead): a 44 square box, a
-/// 1 `border_strong` edge, 2 in the foreground while it has the keys.
 fn search(field: &Entity<InputState>, focused: bool, palette: Palette) -> Div {
     let (edge, thick) = if focused {
         (palette.foreground(), 2.)
@@ -286,20 +276,11 @@ impl Run {
     }
 }
 
-/// Whether `program`'s row in `rows` is being prepared.
 fn preparing(rows: &[RailRow], program: &str) -> bool {
     rows.iter()
         .any(|row| row.program == program && row.prep != Prep::Settled)
 }
 
-/// The ring around a tile's glyph while a loader prepares its program (the
-/// shell boards' opening spinner, `.opening .gl .spin`): a 2 line in
-/// `border` just outside the 60 square, sharp, with one side's length of it
-/// in the foreground running round once in [`RING_LAP`]; held still on the
-/// top side when the system asks for less motion. It paces itself at 30 fps
-/// (the desktop's status dot does too) and is drawn only on the tile being
-/// prepared, so nothing redraws for it while none is. `id` is its selector,
-/// `{id}/run` its running part's.
 fn ring(
     id: String,
     moving: bool,
@@ -345,20 +326,14 @@ fn ring(
         .into_any_element()
 }
 
-/// The ring's line.
 const RING: f32 = 2.;
-/// Once round the ring.
 const RING_LAP: Duration = Duration::from_millis(1500);
 
-/// The ring's running part, `at` (0..1) of the way round its `side` square
-/// clockwise from the top left corner: one side's length, [`RING`] thick,
-/// in a piece for each side it lies on (left, top, width, height).
 fn segment(at: f32, side: f32) -> impl Iterator<Item = [f32; 4]> {
     let round = 4. * side;
     let head = at.rem_euclid(1.) * round;
     (0..4u8).flat_map(move |edge| {
         let start = f32::from(edge) * side;
-        // the part before the top left corner, and the part past it
         [head, head - round].into_iter().filter_map(move |from| {
             let (a, b) = ((from - start).max(0.), (from + side - start).min(side));
             (b > a).then_some(match edge {
@@ -371,10 +346,6 @@ fn segment(at: f32, side: f32) -> impl Iterator<Item = [f32; 4]> {
     })
 }
 
-/// Home's two sections of `rows`: New, the programs with news (a view
-/// asked about it: a dot) in `rows`' order, empty while none has news; and
-/// the grid, every program of `rows` in its order, those with news too:
-/// New repeats a tile above the grid, never moves it.
 fn sections<'a>(
     rows: &'a [RailRow],
     badges: &BTreeMap<&'static str, i64>,
@@ -386,12 +357,6 @@ fn sections<'a>(
     (new, rows.iter().collect())
 }
 
-/// One program's tile in Home's grid, four across: its glyph on its tint's
-/// ground, a dot when it has news (never a count, Expo `Dot`), the name
-/// under it; while it is on its way, the glyph dimmed and no word, in a
-/// running [`ring`] while a loader prepares it; a failure says so under the
-/// name. `section` keeps
-/// the New section's copy apart from the grid's (`new/chat`, `home/chat`).
 fn tile(
     row: &RailRow,
     section: &'static str,
@@ -413,7 +378,6 @@ fn tile(
     }
     let mut face = face.relative();
     if news {
-        // the board's dot: 10 in a 2 ring of the ground, at -5 / -5
         face = face.child(
             dot(palette)
                 .size(px(14.))
@@ -482,8 +446,6 @@ pub fn home(
     let counting = run.caption(shared.rail.read(cx).rows());
     let all = listed(shared, cx);
     let loading = all.is_empty() || all.iter().any(|row| row.pending);
-    // a program still on its way may ship no view: not a tile until its
-    // code is read
     let shown: Vec<RailRow> = all.into_iter().filter(|row| !row.pending).collect();
     let count = shown.len();
     let rows: Vec<RailRow> = shown
@@ -568,7 +530,6 @@ pub fn home(
         .child(body)
 }
 
-/// The unread dot (Expo `Dot`): 8, the accent.
 fn dot(palette: Palette) -> Div {
     div()
         .size(px(8.))
@@ -608,7 +569,6 @@ pub fn open(
             .truncate()
             .child(text)
     };
-    // the network in hand and the reader's name ("garage · phone test")
     let on = {
         let network = shared.session.read(cx).get().network.clone();
         match me(shared, cx) {
@@ -617,7 +577,6 @@ pub fn open(
         }
     };
     let header = root_header("Open".into(), caption(shared, on, cx), palette);
-    // the whole app, over the list (debug mode)
     let app = readout.map(|readout| {
         div()
             .id("open/app")
@@ -791,7 +750,6 @@ pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) 
     };
     let mut header = root_header("Notifications".into(), caption(shared, on, cx), palette);
     if unread > 0 {
-        // Expo `HitText`: 44 tall, the words in medium
         header = header.child(
             div()
                 .id("notifications/mark-all")
@@ -820,8 +778,6 @@ pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) 
         ));
     }
     let now = wall();
-    // the log keeps every row until it is cleared: read ones go here, as
-    // the desktop bell's footer clears them
     let clear = entries.iter().any(|entry| entry.read).then(|| {
         div()
             .id("notifications/clear-read")
@@ -853,9 +809,6 @@ pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) 
     )
 }
 
-/// One notice's row (Expo `Row`, 56 and up): its program's glyph, the
-/// program's name and how long ago over the notice's title and its words
-/// (two lines at most); unread, the title in medium and a dot at the right.
 fn notice(
     shared: &Shared,
     entry: Entry,
@@ -940,8 +893,6 @@ fn notice(
         }))
 }
 
-/// Nothing to show yet (Expo `EmptyState`): a 28 faint icon, what is
-/// missing (15 medium), what would fill it (13 muted).
 fn empty(icon: &'static str, title: &str, body: &str, palette: Palette) -> Div {
     div()
         .flex_1()
@@ -1110,17 +1061,12 @@ mod tests {
         }
     }
 
-    /// A tile names its program by its manifest once the view is in, by its
-    /// id with a capital until then.
     #[test]
     fn a_tile_names_its_program_by_manifest_else_by_id() {
         assert_eq!(name_of(&row("Chat rooms", None)), "Chat rooms");
         assert_eq!(name_of(&row("forge-view", Some("Loading"))), "Forge view");
     }
 
-    /// New holds the programs with news, in the roster's order, and only
-    /// those: none while no program has a dot (a count of 0 is none). The
-    /// grid is every program as it was: New repeats a tile, never moves it.
     #[test]
     fn new_holds_the_programs_with_news_and_the_grid_keeps_its_order() {
         let rows: Vec<RailRow> = ["arcade", "chat", "files", "forge"]
@@ -1139,17 +1085,8 @@ mod tests {
         assert_eq!(programs(grid), ["arcade", "chat", "files", "forge"]);
     }
 
-    /// A run counts the programs on its way when it begins: those read while
-    /// some are still being read or not shown yet, then the ones with a view
-    /// as they are prepared, the one a loader is at by name; it never grows
-    /// (one that starts meanwhile waits for the next run, which begins as
-    /// this one ends); new code over a view held is read, then prepared; none
-    /// is on once every one is settled.
     #[test]
     fn a_run_counts_them_read_then_prepared_and_ends_when_all_are_settled() {
-        // R its bytes coming, r read and not shown yet, W waiting for a
-        // loader, K a loader at it, S settled, N settled with no view, H a
-        // view held with new code coming
         let rows = |states: &[(&'static str, char)]| -> Vec<RailRow> {
             (states.iter())
                 .map(|&(program, state)| {
@@ -1218,8 +1155,6 @@ mod tests {
         assert_eq!(step(&[("trade", 'S'), ("chat", 'S')]), None);
     }
 
-    /// The ring's running part is one side long wherever it is, on the top
-    /// side at the start, cut in two at a corner.
     #[test]
     fn the_rings_part_is_one_side_long_and_cut_at_a_corner() {
         let side = 64.;
@@ -1231,19 +1166,16 @@ mod tests {
             segment(0., side).collect::<Vec<_>>(),
             [[0., 0., side, RING]]
         );
-        // half way along the top: the top's second half, the right's first
         assert_eq!(
             segment(0.125, side).collect::<Vec<_>>(),
             [[32., 0., 32., RING], [side - RING, 0., RING, 32.]]
         );
-        // past the end: the left side's top half and the top's first half
         assert_eq!(
             segment(0.875, side).collect::<Vec<_>>(),
             [[0., 0., 32., RING], [0., 0., RING, 32.]]
         );
     }
 
-    /// The filter reads a name or an id, in any case.
     #[test]
     fn the_filter_reads_names_and_ids() {
         assert!(answers(&row("Chat rooms", None), ""));
@@ -1252,7 +1184,6 @@ mod tests {
         assert!(!answers(&row("Rooms", None), "forge"));
     }
 
-    /// A row says how long ago its program left the screen.
     #[test]
     fn ago_says_minutes_hours_then_days() {
         let minutes = |m: u64| ago(Duration::from_secs(m * 60));

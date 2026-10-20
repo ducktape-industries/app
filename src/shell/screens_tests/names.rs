@@ -20,7 +20,6 @@ fn names_say_which_one(cx: &mut TestAppContext) {
     seed.active = Some(crate::runtime::intern("names-test"));
     seed.chain.height = 6230;
     let (view, mut native) = open(seed, cx);
-    // a badge, as the view's seat sets it
     let app = crate::shell::layers::tests::entities(&view, &mut native);
     app.rail.update(&mut native, |rail, cx| {
         rail.set_badge(crate::runtime::intern("names-test"), 3, cx)
@@ -46,7 +45,6 @@ fn names_say_which_one(cx: &mut TestAppContext) {
         );
     }
 
-    // a key, and no account on this network yet
     let mut seed = gate::desk();
     seed.account.account = Some(None);
     let (_view, mut native) = open(seed, cx);
@@ -54,12 +52,8 @@ fn names_say_which_one(cx: &mut TestAppContext) {
     find(&nodes, "Button", "Create account");
 }
 
-/// A bar button says what its press opens (AX-113), and a control Help
-/// lists with a chord reports the chord (AX-114): the bar's Search and the
-/// empty desk's three ways out.
 #[gpui_kit::test]
 fn a_button_says_what_it_opens_and_its_chord(cx: &mut TestAppContext) {
-    // a program to open, so the empty desk offers its buttons
     let mut seed = gate::desk();
     seed.roster = crate::runtime::Roster::listing(&["chords-test"]);
     let (_view, mut native) = open(seed, cx);
@@ -86,7 +80,6 @@ fn a_button_says_what_it_opens_and_its_chord(cx: &mut TestAppContext) {
             "{id}"
         );
     }
-    // and the audit, told the chords, finds none of either missing
     let report = native.update(|window, cx| {
         let snap = |window: &mut Window, cx: &mut gpui_kit::App| {
             draw(window, cx);

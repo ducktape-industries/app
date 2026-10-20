@@ -22,7 +22,6 @@ fn opus() {
             }
         }
     }
-    // one archive whatever order the directory lists in
     files.sort();
     cc::Build::new()
         .files(files)
@@ -33,11 +32,8 @@ fn opus() {
         .define("HAVE_LRINT", None)
         .define("HAVE_LRINTF", None)
         .define("FLOAT_APPROX", None)
-        // libopus's own cheap run-time checks, on by its configure's default
         .define("ENABLE_HARDENING", None)
         .define("PACKAGE_VERSION", "\"1.5.2\"")
-        // this crate's dev profile builds unoptimized; a call's voice
-        // must keep real time in a dev build too
         .opt_level(2)
         .warnings(false)
         .compile("opus");

@@ -102,9 +102,6 @@ pub fn user_error(message: String) -> String {
     if node_slow {
         return "The node did not answer in time. Retry in a moment.".into();
     }
-    // A keystore refusal that names a CLI command (`run `ducktape wallet
-    // new <name>``) is a hint for a terminal, not a sentence for a screen —
-    // catch every shape of it here, once, rather than in each caller.
     if message.contains("`ducktape ") {
         return "This device's key needs attention: try again, or read without a key.".into();
     }

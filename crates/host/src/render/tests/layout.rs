@@ -1,9 +1,5 @@
 use super::*;
 
-/// A room column's refusal shape: a bordered, washed notice holding
-/// one long wrapped line, then a Fill space, then the composer. The sidebar
-/// beside it must keep its surface and rule, and the composer must sit at
-/// the bottom of the column.
 #[gpui_kit::test]
 fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     cx: &mut gpui_kit::TestAppContext,
@@ -91,7 +87,6 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         );
     }
     let room = sized("workspace", workspace_row, Some(fill()), Some(fill()));
-    // A room's real root: a viewport sensor around the press area.
     let root = wire::Node::Sensor {
         id: named_id("viewport"),
         on_bounds: Some(1),
@@ -195,7 +190,6 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
             event: wire::click::Click::Mouse { .. }
         }
     )));
-    // gpui files the label under the id the view gave the container
     let label = native.update(|window, _| window.find("interactive-label").path().to_vec());
     assert!(
         label.ends_with(&["interactive".into(), "interactive-label".into()]),
@@ -290,11 +284,6 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
     )));
 }
 
-/// A view tree that did not change is not drawn again: the seat's cache
-/// holds from one frame to the next. An id-less box measured on its named
-/// ancestor's path, and a paragraph's selection refreshed the window each
-/// time a cached frame swept it, so every view on the desk was drawn in
-/// full on every frame. The named box keeps its own bounds.
 #[gpui_kit::test]
 fn an_unchanged_view_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -343,7 +332,6 @@ fn an_unchanged_view_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext) 
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let frame = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            // the desk draws its seats again: `render_frame` would refresh
             seat.update(cx, |_, cx| cx.notify());
             window.draw(cx).clear(cx);
         });
@@ -361,8 +349,6 @@ fn an_unchanged_view_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext) 
     assert_eq!(card.size, size(px(200.), px(100.)));
 }
 
-/// A list box in a plain scroller whose `claim`ed row is its active
-/// descendant: ten rows of 40 px in 100 px.
 fn claiming_list(claim: usize) -> wire::Node {
     let rows = (0..10).map(|n| {
         let mut row = container_with_style(
@@ -398,11 +384,6 @@ fn claiming_list(claim: usize) -> wire::Node {
     list
 }
 
-/// A view opens on a claimed row below the fold (the open room), and its
-/// arrows move the claim; the host scrolls the plain scroller around it by
-/// the least that shows the claimed row, as it opens, up to a row above the
-/// fold and back down to one below it, and leaves the offset alone while
-/// the claim stays (the wheel may move it).
 #[gpui_kit::test]
 fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -411,7 +392,6 @@ fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestApp
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    // the scroller's offset, and the claimed row's top and bottom inside it
     let shown = |native: &mut gpui_kit::VisualTestContext, claim: usize| {
         native.update(|window, cx| {
             for _ in 0..3 {

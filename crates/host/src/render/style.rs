@@ -36,18 +36,14 @@ pub(super) fn native_cursor(cursor: Option<wire::mouse::Cursor>) -> CursorStyle 
     }
 }
 
-/// An Overlay is a dialog when it is open (a modal child after its base) and
-/// has a non-empty label; anything else is plain layout.
 pub(super) fn named_overlay(label: &Option<String>, children: &[wire::Node]) -> bool {
     label.as_deref().is_some_and(|label| !label.is_empty()) && children.len() > 1
 }
 
-/// A Sheet is a dialog when it has a non-empty label: drawn, it is open.
 pub(super) fn named_sheet(label: &Option<String>) -> bool {
     label.as_deref().is_some_and(|label| !label.is_empty())
 }
 
-/// Whether `node` or any descendant is an open dialog.
 pub(super) fn has_named_overlay(node: &wire::Node) -> bool {
     match node {
         wire::Node::Overlay {

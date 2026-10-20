@@ -28,8 +28,6 @@ pub(super) struct Encoder {
     session: Session,
     bitrate: u32,
     fps: u32,
-    /// Nothing encoded yet: OpenH264 starts on its first picture and
-    /// takes no option before.
     fresh: bool,
     size: (usize, usize),
     yuv: YUVBuffer,
@@ -54,8 +52,6 @@ impl Encoder {
             return Ok(());
         }
         let bps = i32::try_from(bitrate).unwrap_or(i32::MAX);
-        // OpenH264 refuses a cap under the target: the cap moves first up,
-        // last down
         let order = match bitrate > self.bitrate {
             true => [ENCODER_OPTION_MAX_BITRATE, ENCODER_OPTION_BITRATE],
             false => [ENCODER_OPTION_BITRATE, ENCODER_OPTION_MAX_BITRATE],
@@ -81,7 +77,6 @@ impl Encoder {
     }
 
     pub(super) fn keyframe(&mut self) {
-        // a fresh encoder's first picture is one anyway
         if !self.fresh {
             self.session.force_intra_frame();
         }
@@ -110,10 +105,6 @@ impl Encoder {
     }
 }
 
-/// A session for a call: the bitrate kept (frames skipped when over it),
-/// spread over `fps` pictures a second (each picture's share is `bitrate /
-/// fps`). OpenH264's default profile is Constrained Baseline with the
-/// parameter sets in front of every IDR picture: the wire's shape.
 fn session(bitrate: u32, fps: u32) -> Result<Session, String> {
     let config = EncoderConfig::new()
         .bitrate(BitRate::from_bps(bitrate))

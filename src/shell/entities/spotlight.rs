@@ -11,7 +11,6 @@ pub(crate) struct SpotlightState {
     pub(crate) pick: usize,
 }
 
-/// One window's ⌘K, a compared write (`Slice`) with the moves below.
 pub(crate) struct Spotlight(Slice<SpotlightState>);
 
 impl Default for Spotlight {
@@ -35,13 +34,11 @@ impl std::ops::DerefMut for Spotlight {
 }
 
 impl Spotlight {
-    /// The text as typed: the pick goes back to the first row.
     pub(crate) fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "reducer.overlay");
         self.set(SpotlightState { query, pick: 0 }, cx);
     }
 
-    /// Up or down a row among `rows` shown, stopping at the ends.
     pub(crate) fn move_pick(&mut self, down: bool, rows: usize, cx: &mut Context<Self>) {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "reducer.overlay");
         self.edit(
@@ -58,12 +55,6 @@ impl Spotlight {
 }
 
 impl SpotlightState {
-    /// What ⌘K offers for the text typed, in the order shown: the
-    /// network's programs, the other networks this device reached, then
-    /// things to do (the window rows while the desk's front window has a
-    /// frame, `framed`; Keep on Top, saying whether the console is
-    /// (`on_top`), wherever the platform can keep a window on top). A row
-    /// matches when its title or detail holds the text, ignoring case.
     pub(crate) fn rows(
         &self,
         rail: &Rail,
@@ -181,7 +172,6 @@ impl SpotlightState {
         rows
     }
 
-    /// The row Enter runs: the picked one.
     pub(crate) fn picked(&self, rows: &[SpotRow]) -> Option<Spot> {
         rows.get(self.pick).map(|row| row.spot.clone())
     }

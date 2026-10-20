@@ -8,11 +8,6 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 impl Chrome {
-    /// The bell's panel (the NotifCenter board): 400 wide under the bell,
-    /// kept inside the window; the rows, newest first, under Today and
-    /// Earlier. The ages count from the wall clock, drawn again by the
-    /// menu's own second; the rows are read again when the log moves
-    /// (`Notifications.entries_rev`).
     pub(super) fn bell_menu(
         &self,
         ink: &Ink,
@@ -129,8 +124,7 @@ impl Chrome {
                     .truncate()
                     .child(text)
             };
-            // when and from where, as the row shows them, after its name
-            let about = format!("{} · {source}", ago(entry.at, now));
+            let about = format!("{} · {source}", compact_notification_age(entry.at, now));
             list = list.child(crate::a11y::keyboard(
                 div()
                     .id(SharedString::from(format!("notif/{id}")))
@@ -145,7 +139,6 @@ impl Chrome {
                     .border_color(ink.line)
                     .cursor_pointer()
                     .hover(move |style| style.bg(surface))
-                    // the bell closes, then the notice opens what it is about
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         overlays.update(cx, |overlays, cx| {
@@ -217,7 +210,7 @@ impl Chrome {
                                         mono(400, 12.)
                                             .flex_shrink_0()
                                             .text_color(ink.muted)
-                                            .child(ago(entry.at, now)),
+                                            .child(compact_notification_age(entry.at, now)),
                                     ),
                             )
                             .when(!entry.body.is_empty(), |text| {
@@ -263,7 +256,6 @@ impl Chrome {
             .flex_shrink_0()
             .border_t_1()
             .border_color(ink.line)
-            // only while something read is there to clear
             .when(entries.iter().any(|entry| entry.read), |footer| {
                 footer.child(
                     small_link(
@@ -275,7 +267,6 @@ impl Chrome {
                 )
             })
             .child(
-                // Settings in the bell's place, on its Notifications page
                 small_link(
                     "notif-settings",
                     "Notification settings",
@@ -303,14 +294,12 @@ impl Chrome {
     }
 }
 
-/// Unix seconds at the start of the local day `wall` falls in.
 fn local_midnight(wall: i64) -> i64 {
     let offset = crate::runtime::local_offset(wall);
     (wall + offset).div_euclid(86_400) * 86_400 - offset
 }
 
-/// "now", "14m", "2h", "Yesterday", "3d".
-fn ago(at: i64, now: i64) -> String {
+fn compact_notification_age(at: i64, now: i64) -> String {
     let seconds = (now - at).max(0);
     match seconds {
         ..60 => "now".into(),
@@ -323,15 +312,15 @@ fn ago(at: i64, now: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ago, local_midnight};
+    use super::{compact_notification_age, local_midnight};
 
     #[test]
     fn times_read_short() {
         let now = local_midnight(1_790_121_600) + 12 * 3_600;
-        assert_eq!(ago(now - 5, now), "now");
-        assert_eq!(ago(now - 14 * 60, now), "14m");
-        assert_eq!(ago(now - 2 * 3_600, now), "2h");
-        assert_eq!(ago(now - 20 * 3_600, now), "Yesterday");
-        assert_eq!(ago(now - 4 * 86_400, now), "4d");
+        assert_eq!(compact_notification_age(now - 5, now), "now");
+        assert_eq!(compact_notification_age(now - 14 * 60, now), "14m");
+        assert_eq!(compact_notification_age(now - 2 * 3_600, now), "2h");
+        assert_eq!(compact_notification_age(now - 20 * 3_600, now), "Yesterday");
+        assert_eq!(compact_notification_age(now - 4 * 86_400, now), "4d");
     }
 }

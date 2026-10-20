@@ -20,38 +20,23 @@ use std::time::{Duration, Instant};
 
 use super::{Data, Object};
 
-/// The chunk header: `ts_ms` (u32 LE), `flags`, `part`.
 pub(crate) const HEADER: usize = 6;
-/// The most of a frame one chunk carries.
 pub(crate) const CHUNK: usize = 60 * 1024;
 const _: () = assert!(HEADER + CHUNK <= live_wire::MAX_STREAM_OBJECT);
-/// The chunk opens a keyframe: a decoder may start here.
 const KEY: u8 = 1;
-/// The chunk ends its frame.
 const LAST: u8 = 2;
-/// Packets in one group of a voice track: one second.
 pub(crate) const AUDIO_GROUP: u32 = 50;
-/// How old a GOP may grow before the next picture is a keyframe: a new
-/// subscriber replays from the group's start, so what it replays is
-/// bounded.
 pub(crate) const GOP: Duration = Duration::from_secs(2);
-/// A GOP younger than this when a subscriber comes is replayed by the node
-/// from its keyframe; an older one is closed with a fresh keyframe.
 pub(crate) const FRESH: Duration = Duration::from_millis(500);
-/// Without a cut this long, the ladder steps up a rung.
 pub(crate) const CLEAN: Duration = Duration::from_secs(15);
 
-/// One encoded picture, as the codec gives it and gets it back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Frame {
-    /// The publisher's clock, milliseconds: kept in the header for a
-    /// later, tighter A/V sync; nothing reads it yet.
     pub(crate) ts_ms: u32,
     pub(crate) keyframe: bool,
     pub(crate) data: Vec<u8>,
 }
 
-/// `frame` as the bodies of its chunks, in order.
 pub(crate) fn chunk(frame: &Frame) -> Vec<Vec<u8>> {
     let parts = frame.data.chunks(CHUNK).count().max(1);
     frame
@@ -65,7 +50,6 @@ pub(crate) fn chunk(frame: &Frame) -> Vec<Vec<u8>> {
             let last = if part + 1 == parts { LAST } else { 0 };
             let key = if frame.keyframe { KEY } else { 0 };
             body.push(key | last);
-            // a frame of more than 256 chunks is 15 MiB: none is
             body.push(part as u8);
             body.extend_from_slice(bytes);
             body
@@ -73,19 +57,13 @@ pub(crate) fn chunk(frame: &Frame) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// A publisher's frames into a stream track's objects: the groups and
-/// their numbering, each GOP a group.
 #[derive(Default)]
 pub(crate) struct Chunker {
-    /// The open GOP: its group, its next object, when it opened.
     open: Option<(u64, u32, Instant)>,
     groups: u64,
 }
 
 impl Chunker {
-    /// The objects `frame` goes out as, at `now`: a keyframe closes the
-    /// open group and opens the next; a delta before any keyframe is
-    /// dropped (nothing could decode it).
     pub(crate) fn push(&mut self, frame: &Frame, now: Instant) -> Vec<Object> {
         let mut out = Vec::new();
         if frame.keyframe {
@@ -115,25 +93,18 @@ impl Chunker {
         out
     }
 
-    /// How long the open GOP has run; `None` before the first keyframe.
     pub(crate) fn age(&self, now: Instant) -> Option<Duration> {
         self.open.map(|(_, _, opened)| now.duration_since(opened))
     }
 
-    /// The open group was cut (the publication's queue was full): the
-    /// next frame must be a keyframe, which opens a new one.
     pub(crate) fn cut(&mut self) {
         self.open = None;
     }
 }
 
-/// A subscriber's objects back into whole frames.
 #[derive(Default)]
 pub(crate) struct Reassembler {
-    /// A keyframe's first chunk has come since the last reset: deltas
-    /// decode.
     armed: bool,
-    /// The frame being gathered: its group, header fields, next part.
     gathering: Option<Gathering>,
 }
 
@@ -146,7 +117,6 @@ struct Gathering {
 }
 
 impl Reassembler {
-    /// One item of the subscription; the frame it completes, if any.
     pub(crate) fn push(&mut self, data: Data) -> Option<Frame> {
         match data {
             Data::GroupEnd { complete, .. } => {
@@ -164,8 +134,6 @@ impl Reassembler {
         let (header, bytes) = match body.split_at_checked(HEADER) {
             Some(split) => split,
             None => {
-                // a group's closing object (empty), or a malformed one:
-                // whatever was being gathered is not whole
                 self.gathering = None;
                 return None;
             }
@@ -173,8 +141,6 @@ impl Reassembler {
         let ts_ms = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         let (flags, part) = (header[4], header[5]);
         if part == 0 {
-            // a frame starts; one left unfinished is lost, and with it
-            // every delta until a keyframe
             if self.gathering.take().is_some() {
                 self.armed = false;
             }
@@ -194,14 +160,10 @@ impl Reassembler {
             });
         }
         let Some(gathering) = &mut self.gathering else {
-            // a later part with no first: that frame is lost, and so is
-            // everything until the next keyframe
             self.armed = false;
             return None;
         };
         if gathering.group != group || gathering.next_part != part {
-            // a part missing or another group's: the frame is lost, and
-            // so is everything until the next keyframe
             self.gathering = None;
             self.armed = false;
             return None;
@@ -219,22 +181,18 @@ impl Reassembler {
         })
     }
 
-    /// Nothing decodes until the next keyframe (the decoder was reset, the
-    /// subscription opened again).
     pub(crate) fn reset(&mut self) {
         self.armed = false;
         self.gathering = None;
     }
 }
 
-/// A voice track's numbering: [`AUDIO_GROUP`] packets a group, from 0.
 #[derive(Default)]
 pub(crate) struct AudioNumbering {
     next: u64,
 }
 
 impl AudioNumbering {
-    /// The next packet's `(group, object)`.
     pub(crate) fn next(&mut self) -> (u64, u32) {
         let at = self.next;
         self.next += 1;
@@ -245,7 +203,6 @@ impl AudioNumbering {
     }
 }
 
-/// One setting of the video encoder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Rung {
     pub(crate) width: u32,
@@ -254,8 +211,6 @@ pub(crate) struct Rung {
     pub(crate) bitrate: u32,
 }
 
-/// Top to bottom. A GOP at the top is about 200 KB, far under the node's
-/// group cap.
 pub(crate) const RUNGS: [Rung; 3] = [
     Rung {
         width: 640,
@@ -277,8 +232,6 @@ pub(crate) const RUNGS: [Rung; 3] = [
     },
 ];
 
-/// Where the publisher's picture stands: down a rung on each cut, up one
-/// after [`CLEAN`] without.
 pub(crate) struct Ladder {
     at: usize,
     clean_since: Instant,
@@ -296,12 +249,10 @@ impl Ladder {
         RUNGS[self.at]
     }
 
-    /// Whether the picture is below the top rung: "sending less picture".
     pub(crate) fn lowered(&self) -> bool {
         self.at > 0
     }
 
-    /// The group was cut at `now`: the rung below, if there is one.
     pub(crate) fn cut(&mut self, now: Instant) -> Option<Rung> {
         self.clean_since = now;
         if self.at + 1 >= RUNGS.len() {
@@ -311,8 +262,6 @@ impl Ladder {
         Some(self.rung())
     }
 
-    /// The clock at `now`: the rung above once [`CLEAN`] passed without a
-    /// cut, if there is one.
     pub(crate) fn tick(&mut self, now: Instant) -> Option<Rung> {
         if self.at == 0 || now.duration_since(self.clean_since) < CLEAN {
             return None;
@@ -347,9 +296,6 @@ mod tests {
             .collect()
     }
 
-    /// A 100 KiB keyframe goes as two chunks under the object cap and
-    /// comes back whole; a small delta as one; an empty frame as one
-    /// chunk flagged last.
     #[test]
     fn a_frame_round_trips_in_chunks() {
         let big = frame(true, 100 * 1024, 7);
@@ -378,9 +324,6 @@ mod tests {
         assert_eq!(chunk(&empty)[0][4] & LAST, LAST);
     }
 
-    /// A delta before any keyframe is dropped; a frame cut short by an
-    /// incomplete group end is dropped, and so is every delta after it
-    /// until a keyframe comes.
     #[test]
     fn a_frame_cut_short_waits_for_the_next_keyframe() {
         let mut back = Reassembler::default();
@@ -412,7 +355,6 @@ mod tests {
         for data in objects_of(3, chunk(&delta)) {
             assert_eq!(back.push(data), Some(delta.clone()));
         }
-        // a part missing mid-frame loses the frame and arms off
         let mut chunks = objects_of(3, chunk(&frame(false, 2 * CHUNK, 6)));
         chunks.remove(1);
         for data in chunks {
@@ -423,11 +365,6 @@ mod tests {
         }
     }
 
-    /// Each keyframe closes the open group with an empty end and opens the
-    /// next; a delta before the first keyframe sends nothing; a cut group
-    /// takes no delta.
-    /// A later part that comes with no first part (the first was lost)
-    /// loses that frame and every delta after it until a keyframe.
     #[test]
     fn a_part_with_no_first_waits_for_the_next_keyframe() {
         let mut frames = Reassembler::default();
@@ -447,7 +384,6 @@ mod tests {
             body,
         };
         assert!(frames.push(object(chunk(&key).remove(0))).is_some());
-        // a second part of a frame whose first part never came
         let mut orphan = chunk(&delta).remove(0);
         orphan[5] = 1;
         assert!(frames.push(object(orphan)).is_none());
@@ -494,7 +430,6 @@ mod tests {
         );
     }
 
-    /// Fifty packets a group, numbered from 0.
     #[test]
     fn voice_packets_are_numbered_a_second_a_group() {
         let mut numbering = AudioNumbering::default();
@@ -506,8 +441,6 @@ mod tests {
         assert_eq!(numbering.next(), (1, 0));
     }
 
-    /// A cut steps the ladder down one rung, to the bottom at most; 15 s
-    /// without a cut steps it up one, to the top at most.
     #[test]
     fn the_ladder_steps_down_on_a_cut_and_up_when_clean() {
         let start = Instant::now();

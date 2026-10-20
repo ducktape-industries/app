@@ -6,9 +6,6 @@ use crate::shell::PaneMessage;
 use crate::shell::layers::tests::pane;
 use crate::ui::layout::{EMPTY, HELP};
 
-/// A desk in the sidebar layout over `programs` (none drawn yet: each is
-/// listed loading, by its id prettified), a window open for each of
-/// `windows` (its program, its title) in that order, the last in front.
 pub(super) fn sidebar(programs: &[&str], windows: &[(&'static str, Option<&str>)]) -> Seed {
     let mut seed = gate::desk();
     seed.prefs.layout = Some(crate::backend::Layout::Sidebar);
@@ -26,13 +23,11 @@ pub(super) fn sidebar(programs: &[&str], windows: &[(&'static str, Option<&str>)
     seed
 }
 
-/// [`draw`], with every node's bounds.
 fn drawn(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     draw(window, cx);
     serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
 }
 
-/// The desk's windows' instances, in desk order.
 fn instances(view: &Entity<WindowRoot>, native: &mut VisualTestContext) -> Vec<u64> {
     view.read_with(native, |view, cx| {
         view.layout(cx)
@@ -43,7 +38,6 @@ fn instances(view: &Entity<WindowRoot>, native: &mut VisualTestContext) -> Vec<u
     })
 }
 
-/// The window in front's instance.
 fn front(view: &Entity<WindowRoot>, native: &mut VisualTestContext) -> u64 {
     view.read_with(native, |view, cx| {
         let layout = view.layout(cx);
@@ -51,8 +45,6 @@ fn front(view: &Entity<WindowRoot>, native: &mut VisualTestContext) -> u64 {
     })
 }
 
-/// The sidebar list's rows, in order: each one's id, name, and whether it
-/// is selected.
 fn rows(nodes: &serde_json::Value) -> Vec<(String, String, bool)> {
     nodes
         .as_array()
@@ -81,25 +73,16 @@ fn node<'a>(nodes: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
         .unwrap_or_else(|| panic!("no {id} in {nodes}"))
 }
 
-/// A node's bounds: `[x0, y0, x1, y1]`.
 fn bounds(nodes: &serde_json::Value, id: &str) -> [f32; 4] {
     let at = |n: usize| node(nodes, id)["bounds"][n].as_f64().unwrap() as f32;
     [at(0), at(1), at(2), at(3)]
 }
 
-/// The middle of a node.
 fn middle(nodes: &serde_json::Value, id: &str) -> gpui_kit::Point<gpui_kit::Pixels> {
     let [x0, y0, x1, y1] = bounds(nodes, id);
     gpui_kit::point(px((x0 + x1) / 2.), px((y0 + y1) / 2.))
 }
 
-/// SPEC §5's rows: each program in roster order; under one, its windows in
-/// desk order when it has two, or one with a title (a title, else the
-/// program's name counted from the second untitled one); a program with no
-/// window or one untitled window is its row alone, the second standing for
-/// that window (selected while it is in front); Help and empty windows after
-/// them. The bar's ids are the sidebar's. Closing windows folds a program
-/// back (Review Focus 4: one titled, one not, then the titled one closed).
 #[gpui_kit::test]
 fn the_sidebar_lists_each_program_and_the_windows_it_has_open(cx: &mut TestAppContext) {
     let seed = sidebar(
@@ -134,7 +117,6 @@ fn the_sidebar_lists_each_program_and_the_windows_it_has_open(cx: &mut TestAppCo
             row(format!("rail-new/{}", at[5]), "New window", false),
         ]
     );
-    // Help and the empty window after a hairline: 1px, 8px either side
     let [.., last] = bounds(&nodes, &format!("shell:rail/side-forge/{}", at[3]));
     let [_, help, ..] = bounds(&nodes, &format!("shell:rail-help/{}", at[4]));
     assert_eq!(help - last, 17., "the hairline before Help");
@@ -149,7 +131,6 @@ fn the_sidebar_lists_each_program_and_the_windows_it_has_open(cx: &mut TestAppCo
     ] {
         node(&nodes, &format!("shell:{id}"));
     }
-    // Members' one window in front: its program's row stands for it
     pane(&view, PaneMessage::Focus(1), &mut native);
     let nodes = native.update(drawn);
     assert!(
@@ -161,7 +142,6 @@ fn the_sidebar_lists_each_program_and_the_windows_it_has_open(cx: &mut TestAppCo
         "{:?}",
         rows(&nodes)
     );
-    // one untitled and one titled Chat window: both listed
     pane(&view, PaneMessage::Close(6), &mut native);
     let chat = |nodes: &serde_json::Value| -> Vec<String> {
         rows(nodes)
@@ -175,15 +155,11 @@ fn the_sidebar_lists_each_program_and_the_windows_it_has_open(cx: &mut TestAppCo
         chat(&nodes),
         ["Side chat · Loading", "Side chat", "# general"]
     );
-    // the titled one closed: Chat folds back to its row alone
     pane(&view, PaneMessage::Close(2), &mut native);
     let nodes = native.update(drawn);
     assert_eq!(chat(&nodes), ["Side chat · Loading"]);
 }
 
-/// A press on a window's row brings that window to the front, found by its
-/// instance at the press: a window closed before it moved its place, and
-/// the program's first window is another.
 #[gpui_kit::test]
 fn a_press_on_a_window_row_brings_that_window_forward(cx: &mut TestAppContext) {
     let seed = sidebar(
@@ -206,10 +182,6 @@ fn a_press_on_a_window_row_brings_that_window_forward(cx: &mut TestAppContext) {
     assert!(rows(&nodes).contains(&(random, "# random".into(), true)));
 }
 
-/// A name a view gives its window after the sidebar was drawn
-/// (`host.title`, which `Seats` hands to `Desk::set_title`) reaches the
-/// list through `Front`: the program's one window is listed under it by
-/// that name; cleared, the program is its row alone again.
 #[gpui_kit::test]
 fn a_title_given_later_lists_the_window_under_its_program(cx: &mut TestAppContext) {
     let (view, mut native) = open(sidebar(&["side-named"], &[("side-named", None)]), cx);
@@ -250,9 +222,6 @@ fn a_title_given_later_lists_the_window_under_its_program(cx: &mut TestAppContex
     assert_eq!(named(&mut native), [program()]);
 }
 
-/// While the desk is filled, a press on a window's row brings that window
-/// forward filled: it covers the desk right of the column, its row is
-/// selected, and fill stays on.
 #[gpui_kit::test]
 fn a_press_on_a_window_row_while_filled_fills_that_window(cx: &mut TestAppContext) {
     let mut seed = sidebar(
@@ -276,11 +245,6 @@ fn a_press_on_a_window_row_while_filled_fills_that_window(cx: &mut TestAppContex
     assert!(rows(&nodes).contains(&(general, "# general".into(), true)));
 }
 
-/// A window popped out of the desk stays listed (owner, 2026-10-11): under
-/// its program, after the desk's windows, marked as in a window of its
-/// own. A press on its row brings that OS window to the front, and its row
-/// is the one selected while it is; a press on its program brings it
-/// forward too, rather than opening the program on the desk again.
 #[gpui_kit::test]
 fn a_popped_out_window_stays_listed_and_its_row_brings_it_forward(cx: &mut TestAppContext) {
     let seed = sidebar(
@@ -350,8 +314,6 @@ fn a_popped_out_window_stays_listed_and_its_row_brings_it_forward(cx: &mut TestA
     );
 }
 
-/// Under the pointer a program's row shows a `+`, and a press on it opens
-/// another window of the program, in front; away from the row it is gone.
 #[gpui_kit::test]
 fn the_plus_on_a_program_row_opens_another_window_of_it(cx: &mut TestAppContext) {
     let seed = sidebar(&["side-plus", "side-other"], &[("side-plus", None)]);
@@ -369,8 +331,6 @@ fn the_plus_on_a_program_row_opens_another_window_of_it(cx: &mut TestAppContext)
     );
     let nodes = native.update(drawn);
     assert_eq!(node(&nodes, plus)["name"], "Open another Side plus window");
-    // shown, the + passes the audit; its walk leaves no row hovered, so
-    // the pointer comes back to this one
     let errors = super::gate::errors(&mut native, "sidebar-plus", false);
     assert!(errors.is_empty(), "{errors:#?}");
     for row in ["shell:rail/side-other", "shell:rail/side-plus"] {
@@ -388,7 +348,6 @@ fn the_plus_on_a_program_row_opens_another_window_of_it(cx: &mut TestAppContext)
     assert_eq!(programs, ["side-plus", "side-plus"]);
     let at = instances(&view, &mut native);
     assert_eq!(front(&view, &mut native), at[1], "the new window in front");
-    // the pointer on another row: this one's + goes
     let nodes = native.update(drawn);
     native.simulate_mouse_move(
         middle(&nodes, "shell:rail/side-other"),
@@ -397,8 +356,6 @@ fn the_plus_on_a_program_row_opens_another_window_of_it(cx: &mut TestAppContext)
     );
     let nodes = native.update(drawn);
     assert!(!ids(&nodes).iter().any(|id| id == plus), "the + stayed");
-    // the pointer on the row, the layout switched to the bar and the
-    // pointer gone to the desk, then back: no row is under it, no +
     native.simulate_mouse_move(
         middle(&nodes, "shell:rail/side-plus"),
         None,
@@ -419,7 +376,6 @@ fn the_plus_on_a_program_row_opens_another_window_of_it(cx: &mut TestAppContext)
     assert!(!ids(&nodes).iter().any(|id| id == plus), "a + left over");
 }
 
-/// The ids in a snapshot.
 fn ids(nodes: &serde_json::Value) -> Vec<String> {
     nodes
         .as_array()
@@ -429,14 +385,10 @@ fn ids(nodes: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// The desk sits right of the sidebar, the window high, and the node's
-/// breath is drawn over the well the sidebar's footer laid out; the layout
-/// switched back, the desk is under the bar and the breath over its well.
 #[gpui_kit::test]
 fn the_desk_and_the_dot_follow_the_sidebar(cx: &mut TestAppContext) {
     use crate::backend::Layout;
     let (view, mut native) = open(sidebar(&[], &[]), cx);
-    // the desk as measured, and where the dot sits
     let placed = |native: &mut VisualTestContext| {
         native.update(drawn);
         native.update(|_, cx| {
@@ -467,10 +419,6 @@ fn the_desk_and_the_dot_follow_the_sidebar(cx: &mut TestAppContext) {
     );
 }
 
-/// A window dragged left by its title bar stops at the sidebar's edge
-/// (owner, 2026-10-11): nothing of it goes over or under the column. A
-/// press on the column at that edge, within reach of the window's grip, is
-/// the column's: it neither raises the window nor takes hold of its edge.
 #[gpui_kit::test]
 fn a_window_dragged_left_stops_at_the_sidebar(cx: &mut TestAppContext) {
     use crate::shell::panes_tests::drag;
@@ -484,7 +432,6 @@ fn a_window_dragged_left_stops_at_the_sidebar(cx: &mut TestAppContext) {
         view.read_with(native, |view, cx| view.layout(cx).panes[0].frame.unwrap())
     };
     let start = frame(&mut native);
-    // its title bar, above the window in front, dragged far past the column
     let title = (220. + start.x + 100., start.y + 15.);
     drag(&mut native, title, (-500., title.1));
     let stopped = frame(&mut native);
@@ -495,7 +442,6 @@ fn a_window_dragged_left_stops_at_the_sidebar(cx: &mut TestAppContext) {
         220.,
         "at the column's edge"
     );
-    // the other window in front, then the column pressed over the left grip
     pane(&view, PaneMessage::Focus(1), &mut native);
     let column = (218., stopped.y + stopped.h / 2.);
     drag(&mut native, column, (column.0 + 80., column.1));
@@ -507,10 +453,6 @@ fn a_window_dragged_left_stops_at_the_sidebar(cx: &mut TestAppContext) {
     assert_eq!(front(&view, &mut native), at[1], "the column raised it");
 }
 
-/// In the sidebar a menu opens beside the column: the network's 4px right
-/// of it at its row's top; the bell's, the node's and the account's upward
-/// from their buttons in the footer, their foot 4px over its hairline, and
-/// no taller than what is left over it.
 #[gpui_kit::test]
 fn the_sidebars_menus_hang_beside_it(cx: &mut TestAppContext) {
     let [x0, y0, _, _] = {

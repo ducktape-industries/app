@@ -35,7 +35,6 @@ impl From<&Failure> for Standin {
     }
 }
 
-/// The words a loading pane says for its stage.
 pub(super) fn stage_words(slot: &Slot) -> String {
     let size = |bytes: u64| match bytes < 1_000_000 {
         true => format!("{} KB", bytes.div_ceil(1000)),
@@ -82,22 +81,14 @@ impl Standin {
             loading,
             retry: offers_retry,
         } = self.clone();
-        // a stable id per kind, so the tree tells a load on its way from a
-        // view that is not there
         let (id, words_id) = match loading {
             true => ("view-loading", "view-loading-stage"),
             false => ("view-unavailable", "view-unavailable-reason"),
         };
-        // a failure is announced like any other alert (the connect
-        // screen's connect-error, the key screen's unlock-error): a name,
-        // not just a role, or the AX door's compact filter drops it
         let alert_label = match &title {
             Some(title) => format!("{title}: {words}"),
             None => words.clone(),
         };
-        // the whole sentence, wrapped inside the pane: one line wider than
-        // the pane is centred off both edges, and a reader loses its start
-        // and its end — what failed, and what to do about it
         let reason = div().id(id).max_w_full().flex().flex_col().gap_2();
         let reason = match loading {
             true => reason,

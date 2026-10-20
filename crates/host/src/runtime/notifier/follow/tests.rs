@@ -4,8 +4,6 @@ use super::super::tests::{allow, blob_carrying, mention, notifier_posting, rows,
 use super::*;
 use crate::runtime::seat::tests::{FakeNode, blob_id, eventually};
 
-/// A node of its own on `network` listing `program` with `blob` as its
-/// code, the chain it serves, and a set following it.
 fn followed(network: &str, program: &str, blob: &[u8]) -> (FakeNode, String, Followed) {
     let entry = ::programs::Entry {
         program: program.into(),
@@ -21,14 +19,12 @@ fn followed(network: &str, program: &str, blob: &[u8]) -> (FakeNode, String, Fol
     (node, chain, followed)
 }
 
-/// `program`'s rows in `center`, and how many notices each folds.
 fn counted(center: &CenterHandle, program: &str) -> Vec<u32> {
     let center = center.lock();
     let rows = center.entries().filter(|entry| entry.program == program);
     rows.map(|entry| entry.count).collect()
 }
 
-/// Settings that let every program's banner through.
 fn allowing() -> Settings {
     Settings {
         banners: true,
@@ -39,10 +35,6 @@ fn allowing() -> Settings {
     }
 }
 
-/// Another listed network's notifier runs on that network's own node, into
-/// that chain's own log and out the OS's banners under its chain, never the
-/// app's centre; a connect of the network in hand stops the person's
-/// notifiers there and leaves the set's running.
 #[test]
 fn a_set_answers_on_its_own_node_and_a_connect_leaves_it_running() {
     let _serial = serial();
@@ -54,7 +46,6 @@ fn a_set_answers_on_its_own_node_and_a_connect_leaves_it_running() {
     let center = set.recipient().center.clone();
     eventually("its notifier posted", || counted(&center, program) == [1]);
     assert_eq!(center.lock().network(), chain);
-    // the banner goes out on its queue after the row is logged
     handle().block_on(crate::runtime::kernel::drain());
     let tag = format!("{program}/#general");
     let banner = crate::contract::testing::banners_asked()
@@ -69,8 +60,6 @@ fn a_set_answers_on_its_own_node_and_a_connect_leaves_it_running() {
     assert!(!lock(&set.connection).stale());
 }
 
-/// One run per chain: no set follows the chain in hand, nor a chain a set
-/// follows already; dropped, a set lets its chain be followed again.
 #[test]
 fn follow_refuses_the_chain_in_hand_and_a_second_set() {
     let _serial = serial();
@@ -90,10 +79,6 @@ fn follow_refuses_the_chain_in_hand_and_a_second_set() {
     assert!(handle().block_on(follow(url)).is_some(), "followed again");
 }
 
-/// Taking a followed chain up in hand trades logs in memory: its set's rows
-/// come over to the app's centre, the chain left parks its own (taken up
-/// again with no file read), the set stops, a late post of its notifier is
-/// refused, and a late flush of its centre writes nothing over the file.
 #[test]
 fn take_up_trades_logs_and_refuses_the_left_sets_post() {
     let _serial = serial();
@@ -146,7 +131,6 @@ fn take_up_trades_logs_and_refuses_the_left_sets_post() {
     let file = notify::log_file(&chain).unwrap();
     handle().block_on(super::super::kernel::drain());
     let _ = std::fs::remove_file(&file);
-    // whatever moves it now (here, a mark read), it has no file to write
     source.lock().mark_all_read();
     handle().block_on(super::super::kernel::drain());
     assert!(!file.exists(), "the left set wrote over its chain's log");
@@ -158,8 +142,6 @@ fn take_up_trades_logs_and_refuses_the_left_sets_post() {
     take_up(&center, "");
 }
 
-/// A Block on a program stops its notifier on every network, a followed
-/// one's too; let through again, it starts there on the set's own roster.
 #[test]
 fn a_block_stops_a_followed_notifier() {
     let _serial = serial();
@@ -180,10 +162,6 @@ fn a_block_stops_a_followed_notifier() {
     assert_eq!(followed.0.notifiers.running(), [program]);
 }
 
-/// A followed node that answers again after it did not (a blip, a laptop
-/// asleep) starts its set's notifiers over on it, as a connect does in
-/// hand: each catches up again, where a feed that closed meanwhile would
-/// have left it deaf.
 #[test]
 fn a_set_restarts_its_notifiers_when_its_node_answers_again() {
     let _serial = serial();
@@ -207,9 +185,6 @@ fn a_set_restarts_its_notifiers_when_its_node_answers_again() {
     });
 }
 
-/// A followed set keeps its notifiers' files where the run in hand keeps
-/// them, so a switch finds each one's cursor (no notice posted twice), and
-/// its banners queue as the run in hand's do.
 #[test]
 fn a_switch_finds_the_sets_cursor() {
     let _serial = serial();
@@ -222,10 +197,6 @@ fn a_switch_finds_the_sets_cursor() {
     );
 }
 
-/// A call's banner raised on a chain, then that chain left for another
-/// and followed: the timer at its `until` asks the centre holding the
-/// chain's log then (the set's), not the one it was posted into (now
-/// another chain's), and takes the banner down.
 #[test]
 fn a_banners_until_fires_on_the_chains_centre_after_a_switch() {
     let _serial = serial();
@@ -258,9 +229,6 @@ fn a_banners_until_fires_on_the_chains_centre_after_a_switch() {
     take_up(&center, "");
 }
 
-/// A set followed while the app is locked hands its notifiers no key and
-/// no account from its first turn, not once the follower gets to it; an
-/// unlock hands them back.
 #[test]
 fn a_set_followed_while_locked_starts_with_no_key() {
     let _serial = serial();
@@ -272,10 +240,6 @@ fn a_set_followed_while_locked_starts_with_no_key() {
     assert_eq!(followed.handed(), ("ab".into(), Some(7)));
 }
 
-/// A set's log comes off its file on the blocking pool, never on the
-/// thread the follow runs on (in the app, the views' one runtime thread),
-/// and so never under the registry's lock: that thread asks for no block
-/// anywhere near the log's size.
 #[test]
 fn a_set_reads_its_log_off_the_following_thread() {
     use super::super::tests::largest;

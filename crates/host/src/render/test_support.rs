@@ -6,8 +6,6 @@ use super::*;
 use std::cell::RefCell;
 
 thread_local! {
-    /// The style table of the test on this thread: every style one of its
-    /// nodes names, as the view numbers them and the host holds them.
     static STYLES: RefCell<(wire::Interner, wire::Styles)> = Default::default();
 }
 
@@ -53,7 +51,6 @@ pub fn sanitize_whole(frame: &mut wire::Frame) -> Result<wire::SanitizeReport, w
 pub fn answered(
     responses: impl IntoIterator<Item = wire::TooltipResponse>,
 ) -> Vec<(wire::TooltipResponse, wire::Styles)> {
-    // the answers first: building one may name a style
     let responses: Vec<_> = responses.into_iter().collect();
     let styles = test_styles();
     responses
@@ -62,7 +59,6 @@ pub fn answered(
         .collect()
 }
 
-/// A test's tree is drawn with the test's table.
 impl From<wire::Node> for Tree {
     fn from(root: wire::Node) -> Self {
         Self {

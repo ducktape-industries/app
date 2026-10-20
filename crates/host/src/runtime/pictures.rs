@@ -36,7 +36,6 @@ pub(super) fn charge(bytes: u64, pictures: usize) -> u64 {
 pub struct Pictures {
     held: Arc<PictureBytes>,
     bytes: u64,
-    /// The first eviction is logged; later ones are the same story.
     evicted: bool,
 }
 
@@ -51,18 +50,11 @@ impl Pictures {
         self.bytes
     }
 
-    /// Moves every picture's bytes out of `root`, leaving the hashes: the
-    /// tree as the view remembers it. A hash already held keeps its first
-    /// bytes. Then holds the budget against `root`; `true` when it evicted,
-    /// and the view is owed a `Resync`.
     pub(super) fn adopt(&mut self, root: &mut wire::Node, program: &str) -> bool {
         self.join(bytes_of(root));
         self.hold(root, program)
     }
 
-    /// Moves the pictures' bytes out of a tooltip's `content` the same way,
-    /// the budget held against `root`, the tree drawn (a tooltip's pictures
-    /// go first when it is over). `true` when it evicted.
     pub(super) fn take(
         &mut self,
         content: &mut wire::Node,
@@ -73,16 +65,11 @@ impl Pictures {
         self.hold(root, program)
     }
 
-    /// The drawn view's store, carried to its replacement across a hot
-    /// swap: `fresh`, the replacement's own, joins it (the drawn view's
-    /// bytes win a shared hash), and the budget holds against `root`, the
-    /// replacement's first tree. `true` when it evicted.
     pub(super) fn carry(&mut self, fresh: Pictures, root: &mut wire::Node, program: &str) -> bool {
         self.join(Arc::unwrap_or_clone(fresh.held));
         self.hold(root, program)
     }
 
-    /// Takes in the pictures of `fresh` whose hash is not held yet.
     fn join(&mut self, fresh: PictureBytes) {
         let held = &self.held;
         let raster: Vec<_> = (fresh.raster.into_iter())
@@ -94,7 +81,6 @@ impl Pictures {
         if raster.is_empty() && vector.is_empty() {
             return;
         }
-        // the trees drawing the old map keep it until they are handed this one
         let held = Arc::make_mut(&mut self.held);
         for (hash, data) in raster {
             self.bytes += data.byte_len() as u64;
@@ -106,8 +92,6 @@ impl Pictures {
         }
     }
 
-    /// Past the budget, keeps what `root` names, in tree order, while it
-    /// fits, and evicts the rest. `true` when it evicted.
     fn hold(&mut self, root: &mut wire::Node, program: &str) -> bool {
         let budget = crate::backend::memory_bounds().picture_bytes;
         let count = self.held.raster.len() + self.held.vector.len();
@@ -160,13 +144,11 @@ impl Pictures {
     }
 }
 
-/// One picture node: its hash, and the bytes it brings.
 enum Picture<'a> {
     Raster(u64, &'a mut Option<wire::ImageData>),
     Vector(u64, &'a mut Option<Vec<u8>>),
 }
 
-/// Every picture in `root`, in tree order.
 fn each_picture(root: &mut wire::Node, visit: &mut dyn FnMut(Picture<'_>)) {
     root.for_each_mut(&mut |node| match node {
         wire::Node::Image { hash, data, .. } => visit(Picture::Raster(*hash, data)),
@@ -178,7 +160,6 @@ fn each_picture(root: &mut wire::Node, visit: &mut dyn FnMut(Picture<'_>)) {
     });
 }
 
-/// Every picture's bytes moved out of `root`, by hash, the hashes left.
 fn bytes_of(root: &mut wire::Node) -> PictureBytes {
     let mut raster = Vec::new();
     let mut vector = Vec::new();
@@ -239,8 +220,6 @@ mod tests {
         assert_eq!(pictures.bytes(), 5);
     }
 
-    /// A tooltip's content is drawn from the same store: its pictures are
-    /// taken in, and named, like the tree's own.
     #[test]
     fn a_tooltips_pictures_are_held_and_named() {
         let mut root = wire::Node::empty();
@@ -256,9 +235,6 @@ mod tests {
         assert_eq!(named, [(9, false)], "named by hash alone");
     }
 
-    /// A hot swap carries the drawn view's pictures to its replacement:
-    /// the replacement's own join them, and the drawn view's bytes win a
-    /// hash both hold.
     #[test]
     fn a_swap_carries_the_drawn_views_pictures_and_the_first_bytes_win() {
         let mut old = Pictures::default();

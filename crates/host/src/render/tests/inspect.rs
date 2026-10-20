@@ -1,7 +1,5 @@
 use super::*;
 
-/// A form: a heading, a button the view hears on 31 and a field it hears
-/// on 1, the field submitting on 41.
 fn form() -> wire::Node {
     let mut send = button("send", "Send");
     if let wire::Node::Container(view_wire::ContainerNode {
@@ -30,8 +28,6 @@ fn mounted(
     (tree, native)
 }
 
-/// The inspector reads the view's own tree: every node by its authored
-/// path, what it is called and shows, and what pressing it can send.
 #[gpui_kit::test]
 fn the_inspector_reads_the_views_tree_by_path(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(form(), cx);
@@ -55,7 +51,6 @@ fn the_inspector_reads_the_views_tree_by_path(cx: &mut gpui_kit::TestAppContext)
     assert_eq!(field.presses, ["type", "submit"]);
 }
 
-/// A secure field's text never leaves through the inspector.
 #[gpui_kit::test]
 fn a_secure_fields_text_is_not_read(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(container("form", [input("PIN", true, false)]), cx);
@@ -64,9 +59,6 @@ fn a_secure_fields_text_is_not_read(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(field.value, None);
 }
 
-/// A press sends the node's own handler event and records the view's
-/// activation, with no pointer: a node something covers is pressed all
-/// the same. A press the node does not take is refused in words.
 #[gpui_kit::test]
 fn a_press_sends_the_nodes_own_event(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(form(), cx);
@@ -94,8 +86,6 @@ fn a_press_sends_the_nodes_own_event(cx: &mut gpui_kit::TestAppContext) {
     assert!(tree.read_with(&native, |tree, _| tree.take_activation().is_some()));
 }
 
-/// Typing goes into the engine at its caret, which tells the view as
-/// typing on a keyboard does.
 #[gpui_kit::test]
 fn typing_reaches_the_view_as_its_text(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(form(), cx);

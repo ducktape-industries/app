@@ -64,7 +64,6 @@ use ducktape_host::contract::{CodeSource, Failure};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-/// `mutex`, locked; one poisoned by a panic is taken as it was left.
 #[cfg_attr(
     not(target_os = "ios"),
     allow(dead_code, reason = "the iOS runner's; tested everywhere")
@@ -75,9 +74,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The memory a describe module may reach: `program.describe`'s own bound
-/// (`describe::host::MEMORY`, which wasmtime's describe runs under; a test
-/// pins the two equal), baked in as a view's `view_bytes` is.
 #[cfg_attr(
     not(target_os = "ios"),
     allow(dead_code, reason = "the iOS runner's; tested everywhere")
@@ -96,7 +92,6 @@ const DESCRIBE_FUEL: u64 = 250_000_000;
 )]
 const VIEW_FUEL: i64 = i64::MAX;
 
-/// The name the page loads metered code by, and the file it is kept in.
 #[cfg_attr(
     not(target_os = "ios"),
     allow(dead_code, reason = "the iOS runner's; tested everywhere")
@@ -106,14 +101,6 @@ fn file_name(hash: &[u8; 32], view_bytes: u64) -> String {
     format!("{hex}-{view_bytes}.metered.wasm")
 }
 
-/// `code` (sha256 `hash`) metered for `view_bytes`: read back from `cache`
-/// when it was metered before, else taken through `view_meter::accepts` and
-/// `view_meter::meter` and kept there. A file is written whole or not at
-/// all (a sibling, renamed into place), so a half-written one is never
-/// read. A cache that cannot be written costs the next launch the pass
-/// again, nothing else. The file's name says the input and the budget, not
-/// the pass: the shell gives each app build a `cache_dir` of its own (the
-/// phone's `os::code_cache`).
 #[cfg_attr(
     not(target_os = "ios"),
     allow(dead_code, reason = "the iOS runner's; tested everywhere")
@@ -167,7 +154,6 @@ mod tests {
         assert_eq!(cold, view_meter::meter(&code, 4 << 16).unwrap());
         let (disk, source) = metered(Some(&dir), &hash, &code, 4 << 16).unwrap();
         assert_eq!((disk, source), (cold, CodeSource::Disk));
-        // another budget is other code
         let (_, source) = metered(Some(&dir), &hash, &code, 8 << 16).unwrap();
         assert_eq!(source, CodeSource::Cold);
         assert!(dir.join(file_name(&hash, 4 << 16)).is_file());
@@ -194,7 +180,6 @@ mod tests {
         ));
     }
 
-    // `describe::host` is wasmtime's, which iOS does not link
     #[cfg(not(target_os = "ios"))]
     #[test]
     fn a_describe_module_is_bounded_as_program_describe_bounds_it() {

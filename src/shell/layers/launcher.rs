@@ -34,45 +34,27 @@ mod key;
 mod layout;
 mod recovery;
 
-/// The launcher window's size; it does not change.
 pub(in crate::shell) const LAUNCHER_SIZE: (f32, f32) = (960., 640.);
 
-/// The narrowest the reading column goes beside the drawing: its 40px sides
-/// around a 360px field, the address and its button on one line. Narrower,
-/// the drawing steps aside and the column takes the window.
 const COLUMN_MIN: f32 = 440.;
 
-/// The drawing's panel, `width: 380px`.
 const FIGURE_W: f32 = 380.;
 
-// the launcher's own window keeps its drawing
 const _: () = assert!(LAUNCHER_SIZE.0 >= FIGURE_W + COLUMN_MIN);
 
-/// A quiet link above a screen: its element id, its words, what it does.
 type Back = (&'static str, &'static str, Box<dyn Fn(&mut App)>);
 
-/// What a launcher screen puts in the frame (`LauncherLayer::frame`).
 struct LauncherScreen {
-    /// The reading column's element id: the screen's name to the AX tree.
     id: &'static str,
-    /// A tighter column (`padding-top: 24px; gap: 16px`) for a long body
-    /// (the phrase's 24 words).
     tight: bool,
-    /// The mono line under the drawing.
     caption: String,
-    /// The small link above the column, if the screen has a way back.
     back: Option<Back>,
-    /// The step tag over the headline: `[02 / 04] Key`.
     label: String,
-    /// The `<h1>`.
     headline: String,
-    /// The paragraph under it.
     lead: Option<String>,
-    /// The screen's own controls, after the lead.
     body: Vec<AnyElement>,
 }
 
-/// The drawing on the left of `screen`.
 fn figure(screen: Screen) -> Figure {
     match screen {
         Screen::Connect | Screen::Layout | Screen::Desk => Figure::Roll,
@@ -82,38 +64,26 @@ fn figure(screen: Screen) -> Figure {
     }
 }
 
-/// The launcher's text fields: each owns what is typed into it.
 pub(in crate::shell) struct Fields {
     pub(in crate::shell) endpoint: NativeInput,
     pub(in crate::shell) password: NativeInput,
     pub(in crate::shell) restore: NativeInput,
-    /// The three words the phrase check asks back.
     pub(in crate::shell) words: [NativeInput; 3],
     pub(in crate::shell) name: NativeInput,
 }
 
-/// The console's launcher screens.
 pub(in crate::shell) struct LauncherLayer {
     key: WindowKey,
     screen: Observed<Slice<Screen>>,
     session: Observed<Session>,
     account: Observed<Account>,
     prefs: Observed<Slice<Prefs>>,
-    /// The figure on the left, written from the observers and a frame
-    /// after a screen change (`render`).
     pub(in crate::shell) spin: Entity<Spin>,
     pub(in crate::shell) fields: Fields,
-    /// The address the endpoint field and `Session` last agreed on: what it
-    /// sent on its last change, or what the session last put in it.
     endpoint: String,
-    /// A new recovery key's words while its screens show: `Account`'s,
-    /// copied as the screen comes and wiped as it goes.
     phrase: Option<Secret>,
-    /// The screen the observers last saw.
     shown: Screen,
-    /// The layout step's card picked, saved only by its Continue.
     layout: crate::backend::Layout,
-    /// The layout step's one Tab stop (`a11y::roving`).
     layout_stop: FocusHandle,
     _subscriptions: [Subscription; 3],
 }
@@ -137,13 +107,11 @@ impl LauncherLayer {
             let (motion, ink) = (prefs.motion, Ink::of(prefs.dark()).figure);
             cx.new(|cx| Spin::new(figure(shown), motion, ink, cx))
         };
-        // a keystroke in a sign-in field clears the step's failure
         let typed = |this: &mut Self, _: String, cx: &mut Context<Self>| {
             this.account
                 .entity()
                 .update(cx, |account, cx| account.clear_error(cx));
         };
-        // Enter in a field: what its button does, the field's text in the call
         let enter = |field: fn(&Fields) -> &NativeInput,
                      submit: fn(&mut Account, String, &mut Context<Account>)| {
             move |this: &mut Self, cx: &mut Context<Self>| {
@@ -247,7 +215,6 @@ impl LauncherLayer {
         this
     }
 
-    /// What a press does: `call` on the session.
     fn on_session(
         &self,
         call: impl Fn(&mut Session, &mut Context<Session>) + 'static,
@@ -256,7 +223,6 @@ impl LauncherLayer {
         move |cx| session.update(cx, |session, cx| call(session, cx))
     }
 
-    /// What a press does: `call` on the account.
     fn on_account(
         &self,
         call: impl Fn(&mut Account, &mut Context<Account>) + 'static,
@@ -265,8 +231,6 @@ impl LauncherLayer {
         move |cx| account.update(cx, |account, cx| call(account, cx))
     }
 
-    /// What a press does: `call` on the account, with `field`'s text (a
-    /// typed secret travels in the call, never through an entity).
     fn with_field(
         &self,
         field: &NativeInput,
@@ -279,12 +243,10 @@ impl LauncherLayer {
         }
     }
 
-    /// The three words typed back for the phrase check.
     fn answers(&self, cx: &App) -> [String; 3] {
         std::array::from_fn(|nth| self.fields.words[nth].state.read(cx).value().to_string())
     }
 
-    /// "Confirm": the three words typed back, checked against the phrase.
     fn check_phrase(&self) -> impl Fn(&mut App) + 'static {
         let account = self.account.entity().clone();
         let words: [_; 3] = std::array::from_fn(|nth| self.fields.words[nth].state.clone());
@@ -296,8 +258,6 @@ impl LauncherLayer {
         }
     }
 
-    /// The figure as the screen and the preferences say: compared, so an
-    /// equal write draws nothing.
     fn draw_figure(&mut self, cx: &mut Context<Self>) {
         let prefs = self.prefs.read(cx).get();
         let (motion, ink) = (prefs.motion, Ink::of(prefs.dark()).figure);
@@ -306,19 +266,12 @@ impl LauncherLayer {
             .update(cx, |spin, cx| spin.set(figure, motion, ink, cx));
     }
 
-    /// Another screen: its figure, and the fields emptied as the last one
-    /// went (a step's secrets go with it; the account's name goes only when
-    /// the account steps do, "← Back" from the recovery key brings it
-    /// back).
     fn screen_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = *self.screen.read(cx).get();
         let was = std::mem::replace(&mut self.shown, now);
         if was == now {
             return;
         }
-        // from the desk the figure is drawn afresh (no last frame of it to
-        // keep), so it comes with its screen; between launcher screens it
-        // follows a frame late (`render`)
         if was == Screen::Desk {
             self.draw_figure(cx);
         }
@@ -335,8 +288,6 @@ impl LauncherLayer {
         self.phrase = self.phrase_words(cx);
     }
 
-    /// The address moved in `Session` other than by typing here (the node
-    /// reached, a switch that did not land): the field shows it.
     fn session_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let endpoint = &self.session.read(cx).get().endpoint;
         if *endpoint != self.endpoint {
@@ -345,15 +296,10 @@ impl LauncherLayer {
         }
     }
 
-    /// A new recovery key's words, while its screens show.
     fn phrase_words(&self, cx: &App) -> Option<Secret> {
         self.account.read(cx).phrase().cloned()
     }
 
-    /// One launcher screen in the canvas's frame: on the left a 380px panel,
-    /// `padding: 20px; gap: 12px`, the drawing on `surface` and its mono
-    /// caption; on the right the reading column, `padding: 32px 40px 0;
-    /// gap: 22px`.
     fn frame(&self, screen: LauncherScreen, window: &mut Window, cx: &App) -> AnyElement {
         let LauncherScreen {
             id,
@@ -366,11 +312,6 @@ impl LauncherLayer {
             body,
         } = screen;
         let ink = Ink::of(self.prefs.read(cx).get().dark());
-        // The canvas draws a title bar. macOS lends the window's own
-        // (transparent, the traffic lights in it); elsewhere the system's
-        // title bar is that bar. It is the desk's menu bar height: one
-        // window serves both, and its traffic lights sit where they were
-        // put when it opened.
         let titlebar = theme::traffic_lights(window).map(|lights| {
             div()
                 .id("launcher-titlebar")
@@ -456,7 +397,6 @@ impl LauncherLayer {
             .into_any_element()
     }
 
-    /// The node reached, as the drawing's caption: "testkit · 127.0.0.1:8844".
     fn node_caption(&self, cx: &App) -> String {
         let session = self.session.read(cx).get();
         let host = noded_client::endpoint::host_of(&session.connected_rpc);
@@ -476,16 +416,8 @@ impl Render for LauncherLayer {
             Screen::Recover => self.recover(window, cx),
             Screen::Account { .. } => self.account_step(window, cx),
             Screen::Layout => self.layout_step(window, cx),
-            // the root draws the desk instead
             Screen::Desk => return div(),
         };
-        // A new screen's first frame keeps the last screen's figure; the new
-        // one is written after that frame. Its glyphs then enter the atlas
-        // after the screen's text, as they always have: within one draw
-        // order gpui sorts sprites by atlas tile, so a figure written with
-        // its screen moves the unlock screen's pixels by 1 LSB (the look
-        // rule). Asked for here, the callback runs after this frame (asked
-        // from an observer, before it); it writes, the draw does not.
         if self.spin.read(cx).figure() != figure(shown) {
             let this = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
@@ -496,7 +428,6 @@ impl Render for LauncherLayer {
     }
 }
 
-/// The canvas's button row: `display: flex; gap: 12px; margin-top: 4px`.
 fn buttons(children: impl IntoIterator<Item = AnyElement>) -> Div {
     div()
         .flex()
@@ -506,8 +437,6 @@ fn buttons(children: impl IntoIterator<Item = AnyElement>) -> Div {
         .children(children)
 }
 
-/// The canvas's closing links: `gap: 10px; padding-top: 20px;
-/// border-top: 1px solid line`.
 fn closing(children: impl IntoIterator<Item = AnyElement>, ink: &Ink) -> Div {
     div()
         .flex()

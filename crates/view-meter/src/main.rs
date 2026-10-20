@@ -3,7 +3,6 @@
 //! day-1 replays. A refusal is the exit status and its one line.
 use std::error::Error;
 
-/// A failure, shown as its one line (`main` prints an error's `Debug`).
 struct Failed(Box<dyn Error>);
 
 impl std::fmt::Debug for Failed {

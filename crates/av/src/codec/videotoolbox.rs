@@ -35,36 +35,25 @@ use objc2_video_toolbox::{
 use super::{NAL_PPS, NAL_SPS, VideoPacket, nal_type, nal_units};
 use crate::Picture;
 
-/// The clock the pictures are stamped in: milliseconds.
-const TIMESCALE: i32 = 1000;
+const MILLISECOND_TIMESCALE: i32 = 1000;
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
-/// kVTInvalidSessionErr: the session died under us (iOS took the codec
-/// while the app was in the background); a new one is made.
 const INVALID_SESSION: i32 = -12903;
-/// The profile keys by their value rather than their symbol: the
-/// Constrained Baseline one exists from macOS 12 on, and a symbol the OS
-/// lacks stops the app at launch (the app runs on macOS 11).
 const CONSTRAINED_BASELINE: &str = "H264_ConstrainedBaseline_AutoLevel";
 const BASELINE: &str = "H264_Baseline_AutoLevel";
 
-/// What the encoder's callback leaves: the packets of the frames completed
-/// (one a call, in practice), or the first error.
 #[derive(Default)]
 struct Encoded {
     packets: Vec<VideoPacket>,
-    /// The status and its words.
     error: Option<(i32, String)>,
 }
 
 pub(super) struct Encoder {
     session: CFRetained<VTCompressionSession>,
-    /// What the callback writes into; freed after the session is gone.
     out: *mut Mutex<Encoded>,
     width: u32,
     height: u32,
     bitrate: u32,
     fps: u32,
-    /// The next packet must be a keyframe: held until one comes out.
     force_key: bool,
 }
 
@@ -109,27 +98,27 @@ impl Encoder {
         };
         // SAFETY: static keys
         unsafe {
-            encoder.set(kVTCompressionPropertyKey_RealTime, CFBoolean::new(true))?;
-            encoder.set(
+            encoder.set_compression_property(
+                kVTCompressionPropertyKey_RealTime,
+                CFBoolean::new(true),
+            )?;
+            encoder.set_compression_property(
                 kVTCompressionPropertyKey_AllowFrameReordering,
                 CFBoolean::new(false),
             )?;
-            // Constrained Baseline is the wire's profile; an OS or an
-            // encoder without it gives Baseline (with reordering off, the
-            // same stream)
             if encoder
-                .set(
+                .set_compression_property(
                     kVTCompressionPropertyKey_ProfileLevel,
                     &CFString::from_static_str(CONSTRAINED_BASELINE),
                 )
                 .is_err()
             {
-                encoder.set(
+                encoder.set_compression_property(
                     kVTCompressionPropertyKey_ProfileLevel,
                     &CFString::from_static_str(BASELINE),
                 )?;
             }
-            encoder.set(
+            encoder.set_compression_property(
                 kVTCompressionPropertyKey_ExpectedFrameRate,
                 &CFNumber::new_i32(fps as i32),
             )?;
@@ -145,21 +134,16 @@ impl Encoder {
         Ok(encoder)
     }
 
-    /// The average the rate control keeps to. No `DataRateLimits` cap
-    /// with it: a cap lowered mid-session holds, one raised again does
-    /// not (macOS 27, 1 Mb/s -> 100 kb/s -> 1 Mb/s with the cap at 1.0,
-    /// 1.5 and 2.0 times the average: the stream stayed at the lowered
-    /// cap's 8, 12 and 17 kB/s), so a call would never climb back.
     pub(super) fn set_bitrate(&mut self, bitrate: u32) -> Result<(), String> {
         let average = CFNumber::new_i64(i64::from(bitrate));
         // SAFETY: a static key
-        unsafe { self.set(kVTCompressionPropertyKey_AverageBitRate, &average)? };
+        unsafe {
+            self.set_compression_property(kVTCompressionPropertyKey_AverageBitRate, &average)?
+        };
         self.bitrate = bitrate;
         Ok(())
     }
 
-    /// A new session in place of one that died: its first packet is a
-    /// keyframe.
     fn renew(&mut self) -> Result<(), String> {
         *self = Self::new(self.width, self.height, self.bitrate, self.fps)?;
         Ok(())
@@ -184,7 +168,7 @@ impl Encoder {
         });
         // SAFETY: a BGRA buffer of the session's size; the options are
         // VideoToolbox's own
-        let at = unsafe { CMTime::new(at.as_millis() as i64, TIMESCALE) };
+        let at = unsafe { CMTime::new(at.as_millis() as i64, MILLISECOND_TIMESCALE) };
         let frame = unsafe {
             self.session.encode_frame(
                 &image,
@@ -220,9 +204,6 @@ impl Encoder {
             }
             return Err(error);
         }
-        // a frame the rate control dropped leaves none; two would be a
-        // frame held from before, which VideoToolbox does not do with
-        // reordering off: the last is the newest
         let packet = lock(unsafe { &*self.out }).packets.drain(..).next_back();
         if packet.as_ref().is_some_and(|packet| packet.keyframe) {
             self.force_key = false;
@@ -230,9 +211,11 @@ impl Encoder {
         Ok(packet)
     }
 
-    /// # Safety
-    /// `key` is a VideoToolbox compression property key.
-    unsafe fn set(&self, key: &CFString, value: &CFType) -> Result<(), String> {
+    unsafe fn set_compression_property(
+        &self,
+        key: &CFString,
+        value: &CFType,
+    ) -> Result<(), String> {
         // SAFETY: the same object, VTSession being every session's type
         let session: &VTSession =
             unsafe { &*(&*self.session as *const VTCompressionSession).cast() };
@@ -253,8 +236,6 @@ impl Drop for Encoder {
     }
 }
 
-/// The compression callback: the sample buffer's NAL units as Annex B,
-/// the parameter sets in front when it is a keyframe.
 unsafe extern "C-unwind" fn encoded(
     out: *mut c_void,
     _frame: *mut c_void,
@@ -275,7 +256,7 @@ unsafe extern "C-unwind" fn encoded(
     let Some(sample) = (unsafe { sample.as_ref() }) else {
         return;
     };
-    match unsafe { packet(sample) } {
+    match unsafe { annex_b_packet_from_h264_sample(sample) } {
         Ok(Some(packet)) => out.packets.push(packet),
         Ok(None) => {}
         Err(error) => {
@@ -284,9 +265,9 @@ unsafe extern "C-unwind" fn encoded(
     }
 }
 
-/// # Safety
-/// `sample` is a compressed H.264 sample buffer.
-unsafe fn packet(sample: &CMSampleBuffer) -> Result<Option<VideoPacket>, String> {
+unsafe fn annex_b_packet_from_h264_sample(
+    sample: &CMSampleBuffer,
+) -> Result<Option<VideoPacket>, String> {
     // SAFETY: the sample's own attachments, read only
     let keyframe = unsafe {
         let attachments = sample.sample_attachments_array(false);
@@ -307,7 +288,6 @@ unsafe fn packet(sample: &CMSampleBuffer) -> Result<Option<VideoPacket>, String>
             let format = sample
                 .format_description()
                 .ok_or("a compressed sample without a format description")?;
-            // as many sets as the description holds (the SPS and the PPS)
             let mut count = 1usize;
             let mut index = 0;
             while index < count {
@@ -339,7 +319,6 @@ unsafe fn packet(sample: &CMSampleBuffer) -> Result<Option<VideoPacket>, String>
         if copied != 0 {
             return Err(format!("CMBlockBufferCopyDataBytes: {copied}"));
         }
-        // AVCC: each unit after its 4-byte big-endian length
         let mut rest = &avcc[..];
         while rest.len() >= 4 {
             let len = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
@@ -353,7 +332,6 @@ unsafe fn packet(sample: &CMSampleBuffer) -> Result<Option<VideoPacket>, String>
     Ok(Some(VideoPacket { data, keyframe }))
 }
 
-/// A BGRA pixel buffer of `bgra` at `width` by `height`.
 fn pixel_buffer(bgra: &[u8], width: u32, height: u32) -> Result<CFRetained<CVPixelBuffer>, String> {
     let (w, h) = (width as usize, height as usize);
     let mut raw = std::ptr::null_mut();
@@ -389,7 +367,6 @@ fn pixel_buffer(bgra: &[u8], width: u32, height: u32) -> Result<CFRetained<CVPix
     Ok(image)
 }
 
-/// A dictionary of `pairs`, keyed by CoreFoundation strings.
 fn dictionary(pairs: &[(&CFString, &CFType)]) -> CFRetained<CFDictionary<CFString, CFType>> {
     let keys: Vec<&CFString> = pairs.iter().map(|(key, _)| *key).collect();
     let values: Vec<&CFType> = pairs.iter().map(|(_, value)| *value).collect();
@@ -402,16 +379,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// What the decoder's callback leaves: the picture of the frame decoded,
-/// or the first error.
 #[derive(Default)]
 struct Decoded {
     picture: Option<Picture>,
     error: Option<String>,
 }
 
-/// A session at one stream's parameter sets; invalidated when replaced
-/// or dropped.
 struct Stream {
     sps: Vec<u8>,
     pps: Vec<u8>,
@@ -427,7 +400,6 @@ impl Drop for Stream {
 }
 
 pub(super) struct Decoder {
-    /// None before the first keyframe.
     stream: Option<Stream>,
     out: *mut Mutex<Decoded>,
 }
@@ -447,7 +419,6 @@ impl Decoder {
             match nal_type(unit) {
                 NAL_SPS => sps = Some(unit),
                 NAL_PPS => pps = Some(unit),
-                // slices: 1 to 5; the rest (SEI, delimiters) carry no picture
                 1..=5 => {
                     avcc.extend((unit.len() as u32).to_be_bytes());
                     avcc.extend(unit);
@@ -475,7 +446,6 @@ impl Decoder {
             format, session, ..
         }) = &self.stream
         else {
-            // before the first keyframe: nothing to decode with
             return Ok(None);
         };
         if avcc.is_empty() {
@@ -500,9 +470,6 @@ impl Decoder {
         let error = error
             .or((decoded != 0).then(|| format!("VTDecompressionSessionDecodeFrame: {decoded}")));
         if let Some(error) = error {
-            // a slice the decoder refused (a peer's bytes), or a session
-            // that died (iOS took it in the background): the next keyframe
-            // opens a new one
             self.stream = None;
             return Err(error);
         }
@@ -549,7 +516,6 @@ impl Drop for Decoder {
     }
 }
 
-/// The decompression callback: the frame's BGRA picture.
 unsafe extern "C-unwind" fn decoded(
     out: *mut c_void,
     _frame: *mut c_void,
@@ -574,7 +540,6 @@ unsafe extern "C-unwind" fn decoded(
     }
 }
 
-/// A format description of the parameter sets, with 4-byte lengths.
 fn format(sps: &[u8], pps: &[u8]) -> Result<CFRetained<CMFormatDescription>, String> {
     let mut pointers = [
         NonNull::from(sps).cast::<u8>(),
@@ -600,7 +565,6 @@ fn format(sps: &[u8], pps: &[u8]) -> Result<CFRetained<CMFormatDescription>, Str
     Ok(unsafe { CFRetained::from_raw(format) })
 }
 
-/// One sample of `avcc` in `format`.
 fn sample(avcc: &[u8], format: &CMFormatDescription) -> Result<CFRetained<CMSampleBuffer>, String> {
     let mut raw = std::ptr::null_mut();
     // SAFETY: a block CoreMedia allocates (no memory block given, the
@@ -656,7 +620,6 @@ fn sample(avcc: &[u8], format: &CMFormatDescription) -> Result<CFRetained<CMSamp
 mod tests {
     use super::*;
 
-    /// A session made anew (what a dead one gets) starts with a keyframe.
     #[test]
     fn a_renewed_session_starts_with_a_keyframe() {
         let mut encoder = Encoder::new(64, 48, 300_000, 30).unwrap();

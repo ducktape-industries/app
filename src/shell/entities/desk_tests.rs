@@ -7,8 +7,6 @@ use gpui_kit::{AppContext as _, Entity, TestAppContext};
 
 const DESK: (f32, f32) = (1280., 764.);
 
-/// A measured desk with "chat" on it, as the console's first frame lands
-/// it: sized, then seeded with the active program.
 fn desk(cx: &mut TestAppContext) -> Entity<Desk> {
     let desk = cx.new(|_| Desk::new(Layout::default()));
     desk.update(cx, |desk, cx| {
@@ -57,9 +55,6 @@ fn a_drag_and_a_double_press_move_frames_on_the_measured_desk(cx: &mut TestAppCo
     assert_eq!(layout(&desk, cx).panes[0].frame, Some(small));
 }
 
-/// A move that changes nothing notifies nobody: the pointer that stays
-/// put, a hold dropped where there is none, a settle with nothing to
-/// widen.
 #[gpui_kit::test]
 fn a_move_that_changes_nothing_notifies_nobody(cx: &mut TestAppContext) {
     let desk = desk(cx);
@@ -78,15 +73,10 @@ fn a_move_that_changes_nothing_notifies_nobody(cx: &mut TestAppContext) {
     assert_eq!(seen.get(), 1);
 }
 
-/// A window is placed before its view comes (60% of the desk, centred);
-/// once the view is seated, it widens to the view's minimum and its
-/// border, pulled left as far as it takes to stay on the desk, and on a
-/// desk narrower than that it is the desk.
 #[gpui_kit::test]
 fn a_window_widens_to_its_view_once_the_view_is_seated(cx: &mut TestAppContext) {
     for (program, width, min_width, placed, widened) in [
         ("seated-wide-view", 1000., 680, (200., 600.), (200., 682.)),
-        // the console at its smallest, forge opening in it
         ("seated-console-view", 720., 640, (144., 432.), (78., 642.)),
         ("seated-cramped-view", 600., 680, (120., 360.), (0., 600.)),
     ] {
@@ -98,7 +88,6 @@ fn a_window_widens_to_its_view_once_the_view_is_seated(cx: &mut TestAppContext) 
         let frame = layout(&desk, cx).panes[0].frame.unwrap();
         assert_eq!((frame.x, frame.w), placed, "{program}");
         crate::runtime::seat_for_test(program, min_width);
-        // `Seats` routes the seat's `Seated` to every desk holding it
         assert!(desk.read_with(cx, |desk, _| desk.holds(program)));
         desk.update(cx, |desk, cx| desk.settle(cx));
         let frame = layout(&desk, cx).panes[0].frame.unwrap();
@@ -107,8 +96,6 @@ fn a_window_widens_to_its_view_once_the_view_is_seated(cx: &mut TestAppContext) 
     }
 }
 
-/// Leaving the network empties the desk, keeping its measure; it opens
-/// the active program again once there is one.
 #[gpui_kit::test]
 fn a_cleared_desk_keeps_its_measure_and_seeds_again(cx: &mut TestAppContext) {
     let desk = desk(cx);

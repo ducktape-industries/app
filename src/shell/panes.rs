@@ -7,7 +7,6 @@
 use super::*;
 use gpui_kit::{Context, Window};
 
-/// A pane's name: its program's, as the rail lists it (`Rail`).
 pub(in crate::shell) fn label(rail: &[crate::runtime::RailRow], program: &str) -> String {
     if program == layout::EMPTY {
         return "Empty".to_owned();
@@ -24,10 +23,6 @@ pub(in crate::shell) fn label(rail: &[crate::runtime::RailRow], program: &str) -
 }
 
 impl WindowRoot {
-    /// Something done to this window's panes: its `Desk` moves them (or
-    /// `Windows`, for what crosses windows: a close that takes a pop-out
-    /// with it, a pop-out, a pop-in, a program that may be in a pop-out),
-    /// and the keys go to the focused one (`PaneLayer::drawn`).
     pub(super) fn pane_message(
         &mut self,
         message: PaneMessage,
@@ -42,7 +37,6 @@ impl WindowRoot {
                 windows.update(cx, |windows, cx| windows.close_pane(key, index, cx))
             }
             PaneMessage::PopOut { index, at } => {
-                // it opens where it sat on the desk
                 let at = at.or_else(|| {
                     let layout = self.layout(cx);
                     let pane = layout.panes.get(index);
@@ -69,15 +63,10 @@ impl WindowRoot {
             }
             message => self.desk.update(cx, |desk, cx| desk.moved_by(message, cx)),
         }
-        // never from inside the layer's own update: its listeners send
-        // through here, so a nested update would hold it twice
         self.panes.update(cx, |panes, _| panes.panes_moved = true);
         cx.notify();
     }
 
-    /// A press on a row of empty window `index`: that window takes the keys
-    /// first, as a pointer's press on it does (`pane_drag::raise`), so the
-    /// program opens there, not in the window that had them.
     pub(super) fn open_here(
         &mut self,
         index: usize,
@@ -89,7 +78,6 @@ impl WindowRoot {
         self.open_view(program, window, cx);
     }
 
-    /// A menu bar click, or a pick in an empty window: see `Layout::open`.
     pub(super) fn open_view(
         &mut self,
         program: &'static str,

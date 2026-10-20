@@ -15,8 +15,6 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Text, div, px,
 };
 
-/// The phone's spacing ladder (the design crate's, which the Expo kit's
-/// `gap` is), and the 20 its confirm card insets its lines by.
 const XS: f32 = design::spacing::XS as f32;
 const SM: f32 = design::spacing::SM as f32;
 const MD: f32 = design::spacing::MD as f32;
@@ -50,10 +48,7 @@ pub fn sheet(
             .text_size(px(size))
             .line_height(px(line))
     };
-    // words assistive technology reads: a `Label` whose value is the text
     let words = |id: String, text: String| Text::new(id.into(), text.into());
-    // the kit's `Text` roles: title 17/21, small 14/19, body 15/21,
-    // secondary 13/18, caption 12/16, eyebrow mono 11/14 uppercase
     let head = div()
         .flex()
         .flex_col()
@@ -61,8 +56,6 @@ pub fn sheet(
         .px(px(INSET))
         .pb(px(MD))
         .child(
-            // drawn in capitals, read as written, as a view's text with a
-            // transform is: one Label node, the drawn words in no node
             face(11., 14., 400, true)
                 .id("consent-title")
                 .role(Role::Label)
@@ -75,7 +68,6 @@ pub fn sheet(
                 .text_color(color(palette.foreground))
                 .child(words("consent-card-title".into(), card.title)),
         );
-    // the kit's `KeyValue`: a 96 wide label, the value beside it
     let facts = card.facts.into_iter().enumerate().map(|(at, fact)| {
         div()
             .min_h(px(44.))
@@ -106,9 +98,6 @@ pub fn sheet(
         .pt(px(MD))
         .text_color(color(palette.warning))
         .child(words("consent-warning".into(), card.warning));
-    // the kit's `Button`: Cancel quiet at the primary's 48, the verb
-    // twice its width, 48 as a primary and 44 in danger, as the kit's
-    // own heights put them (`size.primary`, `size.control`)
     let pressable = |id: &'static str,
                      label: &'static str,
                      ground: Option<design::Color>,

@@ -11,12 +11,8 @@ use serde_json::Value;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// How often the numbers are read while shown.
 const EVERY: Duration = Duration::from_secs(1);
-/// The readings a rate spans: now and up to three seconds back.
 const WINDOW: usize = 4;
-/// The perf stages the app's iOS footprint, now and at its peak, is kept
-/// under (`/perf` too).
 const FOOTPRINT: &str = "footprint";
 const FOOTPRINT_PEAK: &str = "footprint.peak";
 
@@ -59,7 +55,6 @@ impl Readout {
     fn read(&mut self, now: Instant) {
         use ducktape_host::perf;
         perf::sample_rss();
-        // iOS's own figure, which the OS-blind host does not read
         let (footprint, peak) = crate::os::footprint_bytes();
         for (stage, bytes) in [(FOOTPRINT, footprint), (FOOTPRINT_PEAK, peak)] {
             if let Some(bytes) = bytes {
@@ -95,8 +90,6 @@ impl Readout {
         let at = |reading: &Value, stage: &str, field: &str| {
             reading["views"][name.as_str()][stage][field].as_u64()
         };
-        // per second between the first reading and the last; a stage not
-        // there yet was never written: nothing since the counters came on
         let rate = |stage: &str, field: &str| {
             let ((then, first), (now, last)) = (self.readings.front()?, self.readings.back()?);
             let seconds = now.saturating_duration_since(*then).as_secs_f64();
@@ -150,7 +143,6 @@ impl Cost {
     }
 }
 
-/// Bytes in MiB, one decimal; `n/a` for none.
 fn mib(bytes: Option<u64>) -> String {
     match bytes {
         Some(bytes) => format!("{:.1} MiB", bytes as f64 / (1024. * 1024.)),
@@ -162,9 +154,6 @@ fn mib(bytes: Option<u64>) -> String {
 mod tests {
     use super::*;
 
-    /// A number not to be had reads `n/a`, never 0; each says its unit, and
-    /// the app's memory says which figure it is: iOS's footprint where
-    /// there is one, else the resident pages.
     #[test]
     fn a_number_not_had_reads_n_a_and_each_says_its_unit() {
         let none = Readout::default();

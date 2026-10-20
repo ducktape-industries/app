@@ -19,7 +19,6 @@ pub struct Camera {
     feed: Arc<CameraFeed>,
     shown: Option<Arc<RenderImage>>,
     fit: ObjectFit,
-    /// A redraw was asked for a waiting picture and has not come yet.
     asked: bool,
     told: crate::State,
     _poll: Task<()>,
@@ -43,9 +42,7 @@ impl Camera {
         Self::on(feed, fit, cx)
     }
 
-    /// A camera over `feed`, whoever fills it.
     fn on(feed: Arc<CameraFeed>, fit: ObjectFit, cx: &mut Context<Self>) -> Self {
-        // the last picture shown leaves the atlas with the piece
         cx.on_release(|this: &mut Self, cx| {
             if let Some(shown) = this.shown.take() {
                 cx.drop_image(shown, None);
@@ -115,9 +112,6 @@ impl Camera {
         self.feed.stop.load(Ordering::Relaxed)
     }
 
-    /// A new state emitted; a redraw asked when a picture waits. Asked
-    /// once and not drawn since: nothing draws the piece, so the thread
-    /// stops converting until a draw comes.
     fn poll(&mut self, cx: &mut Context<Self>) {
         let (status, device) = self.feed.status.lock().expect("feed status").clone();
         let state = crate::State {
@@ -150,10 +144,8 @@ impl Drop for Camera {
 
 impl Render for Camera {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // drawn: the pictures are wanted again
         self.asked = false;
         self.feed.wanted.store(true, Ordering::Relaxed);
-        // the newest picture in, the one it replaces out of the atlas
         let fresh = self.feed.picture.lock().expect("feed picture").take();
         if let Some(picture) = fresh
             && let Some(pixels) =
@@ -171,7 +163,6 @@ impl Render for Camera {
             move |bounds, (), window, _| {
                 let Some(image) = image else { return };
                 let at = fit.get_bounds(bounds, image.size(0));
-                // a covering picture is cut at the box's edges
                 window.with_content_mask(Some(ContentMask { bounds }), |window| {
                     let _ = window.paint_image(at, at, Corners::default(), image, 0, false);
                 });
@@ -181,7 +172,6 @@ impl Render for Camera {
     }
 }
 
-/// `fit` once more: gpui's `ObjectFit` is not `Clone`.
 fn again(fit: &ObjectFit) -> ObjectFit {
     match fit {
         ObjectFit::Fill => ObjectFit::Fill,

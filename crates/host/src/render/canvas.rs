@@ -5,9 +5,6 @@
 //! them.
 use super::*;
 
-/// Whether every command paints natively: a solid (undashed) Draw of a
-/// rectangle with one radius, a circle, or a line that is not square-capped.
-/// Anything else (a Path, a dash, a Push/Pop) needs the SVG fallback.
 pub(super) fn native_canvas_commands(commands: &[wire::CanvasCommand]) -> bool {
     commands.iter().all(|command| {
         let wire::CanvasCommand::Draw { shape, stroke, .. } = command else {
@@ -26,10 +23,6 @@ pub(super) fn native_canvas_commands(commands: &[wire::CanvasCommand]) -> bool {
     })
 }
 
-/// Paints `commands` in their order with gpui's own primitives. Not to be
-/// called inside a `Window::paint_layer`: there a line keeps the outer
-/// layer's draw order while a run of quads takes a new one, so every line
-/// would lie under every quad.
 pub(super) fn paint_canvas_commands(
     commands: &[wire::CanvasCommand],
     origin: Point<Pixels>,
@@ -37,12 +30,6 @@ pub(super) fn paint_canvas_commands(
 ) {
     let mut rest = commands;
     while let Some(first) = rest.first() {
-        // A run of rectangles and circles takes one draw order between
-        // them: gpui paints the quads of one order in the order they came,
-        // which is the commands' own, and a quad that asks for its own
-        // order pays a search of everything painted so far. The layer is
-        // the box around the whole run, so what was painted before lies
-        // under every quad of it and what comes after lies over.
         let mut run = 0;
         let mut around: Option<Bounds<Pixels>> = None;
         for quad in rest.iter().map_while(|command| quad(command, origin)) {
@@ -64,9 +51,6 @@ pub(super) fn paint_canvas_commands(
             continue;
         };
         let position = |p: [f32; 2]| origin + point(px(p[0]), px(p[1]));
-        // Butt-capped lines that go on from each other's end with one
-        // stroke are one path: a subpath a line, so the triangles are the
-        // ones each line had alone (no joins), built and ordered once.
         let mut run = 1;
         let mut end = to;
         if stroke.cap == wire::CanvasLineCap::Butt {
@@ -106,7 +90,6 @@ pub(super) fn paint_canvas_commands(
 
 pub(super) const LINES_PER_PATH: usize = (u16::MAX as usize + 1) / 4;
 
-/// The line a command strokes; nothing else is one.
 fn line(command: &wire::CanvasCommand) -> Option<([f32; 2], [f32; 2], &wire::CanvasStroke)> {
     match command {
         wire::CanvasCommand::Draw {
@@ -118,7 +101,6 @@ fn line(command: &wire::CanvasCommand) -> Option<([f32; 2], [f32; 2], &wire::Can
     }
 }
 
-/// The quad a rectangle or a circle paints as; nothing else is one.
 fn quad(command: &wire::CanvasCommand, origin: Point<Pixels>) -> Option<gpui_kit::PaintQuad> {
     let wire::CanvasCommand::Draw {
         shape,
@@ -148,7 +130,6 @@ fn quad(command: &wire::CanvasCommand, origin: Point<Pixels>) -> Option<gpui_kit
         ),
         wire::CanvasShape::Line { .. } | wire::CanvasShape::Path(_) => return None,
     };
-    // SVG strokes straddle the geometry; native quad borders are inset.
     let border = stroke.as_ref().map_or(0., |s| s.width);
     let expanded = Bounds::new(
         bounds.origin - point(px(border / 2.), px(border / 2.)),
@@ -175,9 +156,6 @@ fn svg_color(color: Hsla) -> String {
     )
 }
 
-/// The commands as an SVG document of `width` by `height`. Push opens a
-/// transformed group (and a clip group, always paired so Pop closes both);
-/// unclosed groups are closed at the end.
 pub(super) fn canvas_svg(commands: &[wire::CanvasCommand], width: f32, height: f32) -> Vec<u8> {
     use std::fmt::Write;
     let mut svg =

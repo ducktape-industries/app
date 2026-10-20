@@ -7,44 +7,25 @@
 use std::f32::consts::TAU;
 use std::sync::OnceLock;
 
-/// Dark to light, in twelve steps: a drawn cell is an index into it.
 pub(super) const RAMP: [char; 12] = [' ', '.', '·', ':', ';', '-', '=', '+', '*', '#', '%', '@'];
 pub(super) const COLS: usize = 69;
 pub(super) const ROWS: usize = 45;
-/// The glyph box: the mono face's advance at `SIZE`, and a line exactly
-/// `SIZE` tall. A cell is taller than wide; the projection squares it up.
-/// Two thirds of the canvas's cell: half again its grid in the same box.
 pub(super) const SIZE: f32 = 11. / 1.5;
-/// The canvas sets 11px with `letter-spacing: 0.5px`: a 7.1px cell. gpui
-/// has no letter spacing, so the glyphs are drawn a touch larger instead
-/// (`GLYPH`, whose advance is the cell).
 pub(super) const ADVANCE: f32 = 7.1 / 1.5;
 pub(super) const GLYPH: f32 = ADVANCE / 0.6;
-/// Frames a second.
 pub(super) const FPS: u64 = 30;
-/// Toward the light: from the upper left, in front. The eye looks down +z.
-const LIGHT: [f32; 3] = [-0.55, -0.6, -0.58];
-/// The points' spacing on a surface: under a cell at any turn, so a
-/// surface never shows holes.
-const STEP: f32 = 0.016;
-/// Half the grid's width, in the figures' units.
-const SPAN: f32 = 1.25;
+const UPPER_LEFT_FRONT_LIGHT: [f32; 3] = [-0.55, -0.6, -0.58];
+const SURFACE_SAMPLE_SPACING: f32 = 0.016;
+const GRID_HALF_WIDTH: f32 = 1.25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Figure {
-    /// A roll of duct tape, its loose end trailing: the app itself.
     Roll,
-    /// A ring: a key.
     Ring,
-    /// A written card: the recovery phrase on paper.
     Card,
-    /// A sphere and its small moon: you, and the network you joined.
     Pair,
 }
 
-/// A point on a figure's surface, its outward normal, how light its
-/// surface is (`0..=1`), how glossy (its highlight's weight), and whether
-/// it is the moon (which orbits).
 #[derive(Clone, Copy)]
 struct Dot {
     at: [f32; 3],
@@ -54,8 +35,6 @@ struct Dot {
     moon: bool,
 }
 
-/// How it turns on its own, radians a second about x, y and z: speeds
-/// that never line up, so it never shows the same turn twice.
 pub(super) const TUMBLE: [f32; 3] = [0.61, 0.93, 0.29];
 
 impl Figure {
@@ -73,19 +52,15 @@ impl Figure {
         })
     }
 
-    /// The figure held at `turn`, `t` seconds into its own motion (the
-    /// moon's orbit): each cell's ramp step, row by row, 0 where nothing is.
     pub(super) fn frame(self, turn: Rotation, t: f32) -> Vec<u8> {
-        // the moon's orbit: round the sphere, its plane tipped
         let orbit = TAU * t / 5.;
         let moon = rotation(0.5, 0., 0.).apply([0.95 * orbit.cos(), 0., 0.95 * orbit.sin()]);
-        let light = unit(LIGHT);
+        let light = unit(UPPER_LEFT_FRONT_LIGHT);
         let half = unit([light[0], light[1], light[2] - 1.]);
-        let ux = SPAN / (COLS as f32 / 2.);
+        let ux = GRID_HALF_WIDTH / (COLS as f32 / 2.);
         let uy = ux * SIZE / ADVANCE;
         let dots = self.dots();
         let mut depth = [f32::INFINITY; COLS * ROWS];
-        // the dot nearest the eye in each cell: only it is lit
         let mut nearest = [u32::MAX; COLS * ROWS];
         for (i, dot) in dots.iter().enumerate() {
             let at = match dot.moon {
@@ -113,7 +88,6 @@ impl Figure {
                 true => dot.normal,
                 false => turn.apply(dot.normal),
             };
-            // a thin sheet shows either face: light the one toward the eye
             if normal[2] > 0. {
                 normal = normal.map(|v| -v);
             }
@@ -129,11 +103,9 @@ impl Figure {
     }
 }
 
-/// A turn about x, then y, then z, as a matrix.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Rotation([[f32; 3]; 3]);
 
-/// How a figure is first held: a little turned, so it reads as solid.
 pub(super) fn start() -> Rotation {
     rotation(0.4, 0.7, 0.25)
 }
@@ -153,8 +125,6 @@ impl Rotation {
         self.0.map(|row| dot3(row, v))
     }
 
-    /// This turn, then `step` on top of it, as the eye sees the axes;
-    /// squared up again, so a long run of small steps never shears it.
     pub(super) fn then(self, step: Rotation) -> Rotation {
         let [x, y, _] = mul(step.0, self.0);
         let x = unit(x);
@@ -185,12 +155,10 @@ fn unit(v: [f32; 3]) -> [f32; 3] {
     v.map(|x| x / n)
 }
 
-/// How many samples cover `length` at `STEP` apart.
 fn count(length: f32) -> usize {
-    (length / STEP).ceil().max(1.) as usize
+    (length / SURFACE_SAMPLE_SPACING).ceil().max(1.) as usize
 }
 
-/// `n` evenly spaced values across `from..=to`.
 fn across(from: f32, to: f32, n: usize) -> impl Iterator<Item = f32> {
     (0..n).map(move |i| from + (to - from) * (i as f32 + 0.5) / n as f32)
 }
@@ -235,9 +203,6 @@ fn sphere(centre: [f32; 3], r: f32, moon: bool) -> Vec<Dot> {
     dots
 }
 
-/// A roll of duct tape: a thick short tube of glossy tape with rounded
-/// edges, its wound layers showing as bands on its faces, a card core
-/// inside, and the loose end peeling off its side.
 fn roll() -> Vec<Dot> {
     let (outer, inner, core, half, bevel) = (0.72, 0.42, 0.36, 0.24, 0.05);
     let tape = |at, normal, tone| Dot {
@@ -254,7 +219,6 @@ fn roll() -> Vec<Dot> {
         for y in across(-half + bevel, half - bevel, count(2. * (half - bevel))) {
             dots.push(tape([outer * c, y, outer * s], [c, 0., s], 1.));
         }
-        // the rounded edges: a quarter round where the wall meets a face
         for a in across(0., TAU / 4., 6) {
             for side in [1., -1.] {
                 let normal = [a.cos() * c, side * a.sin(), a.cos() * s];
@@ -271,7 +235,6 @@ fn roll() -> Vec<Dot> {
             dots.push(tape([r * c, half, r * s], [0., 1., 0.], band));
             dots.push(tape([r * c, -half, r * s], [0., -1., 0.], band));
         }
-        // the card core: its rim flush with the tape, its wall facing in
         for r in across(core, inner, count(inner - core) * 2) {
             dots.push(card([r * c, half, r * s], [0., 1., 0.]));
             dots.push(card([r * c, -half, r * s], [0., -1., 0.]));
@@ -280,8 +243,6 @@ fn roll() -> Vec<Dot> {
             dots.push(card([core * c, y, core * s], [-c, 0., -s]));
         }
     }
-    // the loose end: a strip leaving the outer face along its tangent,
-    // curling away from the roll as it peels
     let curl = 0.35;
     for x in across(0., 0.55, count(0.6)) {
         let normal = unit([-2. * curl * x, 0., 1.]);
@@ -292,7 +253,6 @@ fn roll() -> Vec<Dot> {
     dots
 }
 
-/// A card with thickness, lines of writing across both faces.
 fn card() -> Vec<Dot> {
     let (w, h, thick) = (0.62, 0.84, 0.03);
     let mut dots = Vec::new();
@@ -331,8 +291,6 @@ mod tests {
         cells.iter().filter(|&&step| step > 0).count()
     }
 
-    /// `cargo test show_frames -- --ignored --nocapture` prints frames to
-    /// look at, and what one costs.
     #[test]
     #[ignore]
     fn show_frames() {
@@ -347,8 +305,6 @@ mod tests {
         }
     }
 
-    /// Every frame is steps on the ramp, never empty and never spilling
-    /// off the grid's edge, and the figure keeps moving.
     #[test]
     fn every_figure_tumbles_inside_its_box() {
         for figure in ALL {
@@ -375,15 +331,12 @@ mod tests {
         }
     }
 
-    /// A closed surface shows no holes: inside its outline every cell is
-    /// inked.
     #[test]
     fn the_ring_is_solid_where_it_is_seen() {
         let cells = Figure::Ring.frame(start(), 1.);
         for row in cells.chunks(COLS) {
             let inked: Vec<usize> = (0..COLS).filter(|&col| row[col] > 0).collect();
             if let (Some(&first), Some(&last)) = (inked.first(), inked.last()) {
-                // a ring's row crosses its hole at most once: two runs
                 let runs = (first..=last)
                     .filter(|&col| row[col] > 0 && (col == first || row[col - 1] == 0))
                     .count();
@@ -392,7 +345,6 @@ mod tests {
         }
     }
 
-    /// A long run of small turns stays a turn: no shear, no shrink.
     #[test]
     fn many_small_turns_stay_a_rotation() {
         let mut turn = start();
@@ -408,7 +360,6 @@ mod tests {
         }
     }
 
-    /// A frame costs well under the frame it fills, even unoptimised.
     #[test]
     fn a_frame_is_cheap() {
         for figure in ALL {

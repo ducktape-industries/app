@@ -2,8 +2,6 @@
 //! it with its paths, which the seat opens for the view.
 use super::*;
 
-/// A drop on a node with `on_file_drop` is emitted with its route and the
-/// paths dropped, for the seat to open and hold.
 #[gpui_kit::test]
 fn files_dropped_on_a_listening_node_reach_the_seat_with_its_route(
     cx: &mut gpui_kit::TestAppContext,

@@ -12,9 +12,6 @@ use gpui_kit::{AssetSource, SharedString};
 /// What the launchers register (`os/ios/ffi.rs`, `os/android/jni.rs`).
 pub struct PhoneAssets;
 
-/// Lucide's stroke, an attribute of the root `<svg>`. The kit's own icons
-/// (`resize-corner`, `window-*`, `github`) do not carry it there and are
-/// served as they are.
 const LUCIDE: &str = r#"stroke-width="2""#;
 const PHONE: &str = r#"stroke-width="1.75""#;
 
@@ -31,8 +28,6 @@ impl AssetSource for PhoneAssets {
     }
 }
 
-/// `svg` at the phone's stroke; `None` when its root carries no Lucide
-/// stroke (not an icon, or not Lucide's).
 fn thinner(svg: &[u8]) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(svg).ok()?;
     let root = &text[..text.find('>')?];

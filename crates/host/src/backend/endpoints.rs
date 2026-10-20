@@ -79,7 +79,6 @@ pub fn forget_endpoint(endpoint: &str) {
     edit_endpoints(|recent| recent.retain(|known| known.url != endpoint));
 }
 
-/// The list read, changed and written back in one prefs edit.
 fn edit_endpoints(change: impl FnOnce(&mut Vec<RecentEndpoint>)) {
     edit_prefs(|prefs| {
         let mut recent = endpoints_of(prefs);
@@ -106,8 +105,6 @@ fn entries_of(recent: &[RecentEndpoint]) -> Vec<serde_json::Value> {
 mod tests {
     use super::*;
 
-    /// A prefs file from before this shape — bare strings, entries without
-    /// a network, junk — loses those entries and nothing else.
     #[test]
     fn an_unreadable_recent_entry_is_dropped_and_the_rest_kept() {
         let list = serde_json::json!([

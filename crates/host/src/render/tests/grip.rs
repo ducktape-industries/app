@@ -1,6 +1,5 @@
 use super::*;
 
-/// A 1px divider between two panes, the right one clickable.
 fn split() -> wire::Node {
     let mut row = div().flex().flex_row().size_full();
     let row = row.style().clone();
@@ -33,15 +32,12 @@ fn split() -> wire::Node {
     )
 }
 
-/// Presses at `x`, drags 30px right and lets go: how far the divider moved,
-/// and whether the pane under the press heard a click.
 fn drag_from(x: f32, cx: &mut gpui_kit::TestAppContext) -> (f64, bool) {
     let window = cx.open_window(size(px(300.), px(80.)), |_, _| ViewTree::new(split()));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(crate::render::draw_frame);
-    // the list's first settled report is the mount's, not the wheel's
     native.update(|window, cx| _ = window.simulate_next_frame(cx));
     events.borrow_mut().clear();
     let at = point(px(x), px(40.));
@@ -66,14 +62,9 @@ fn drag_from(x: f32, cx: &mut gpui_kit::TestAppContext) -> (f64, bool) {
     (moved, clicked)
 }
 
-/// A divider styled by its group, as any node is: the split it sits in is
-/// the group, and a pointer over the left pane lights the divider. Its
-/// hover, active and group styles go through the one apply every node
-/// takes, where the divider's own used to be dropped.
 #[gpui_kit::test]
 fn a_divider_wears_its_group_hover(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    // eight bits a channel, as a colour crosses the wire
     let lit: gpui_kit::Hsla = gpui_kit::rgb(0x4073bf).into();
     let mut root = split();
     let wire::Node::Container(view_wire::ContainerNode {
@@ -117,9 +108,6 @@ fn a_divider_wears_its_group_hover(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(lit_quads(&mut native), 1, "the pointer is in the split");
 }
 
-/// A view that asks for the keys on a divider by its path hears the host say
-/// no: the divider takes no focus, and the id-less line it draws sits on the
-/// divider's path without being the node that path names.
 #[gpui_kit::test]
 fn a_focus_on_a_divider_is_refused(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -194,8 +182,6 @@ fn scrolled_beside_the_divider(x: f32, cx: &mut gpui_kit::TestAppContext) -> usi
         path: vec![named_id("split"), named_id("rows")],
         item_count: 40,
         alignment: wire::ListAlignment::Bottom,
-        // two rows measured above the fold: what a wheel can move into
-        // (unmeasured rows have no height to scroll through)
         overdraw: 40.,
         sizing: wire::ListSizingBehavior::Auto,
         following_tail: true,
@@ -213,7 +199,6 @@ fn scrolled_beside_the_divider(x: f32, cx: &mut gpui_kit::TestAppContext) -> usi
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(crate::render::draw_frame);
-    // the list's first settled report is the mount's, not the wheel's
     native.update(|window, cx| _ = window.simulate_next_frame(cx));
     events.borrow_mut().clear();
     let at = point(px(x), px(40.));

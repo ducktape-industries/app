@@ -27,7 +27,6 @@ pub enum Tab {
 }
 
 impl Tab {
-    /// The tabs as the bar lists them, left to right.
     const BAR: [Tab; 4] = [Tab::Home, Tab::Open, Tab::Notifications, Tab::Account];
 
     /// The tab beside this one in the bar: the one to its right when
@@ -58,9 +57,7 @@ pub struct Opened {
 pub struct Stack {
     tab: Tab,
     pushed: Vec<&'static str>,
-    /// Every program opened, the latest first.
     open: Vec<Opened>,
-    /// The layout instance the next program opened gets.
     next: u64,
 }
 
@@ -205,9 +202,6 @@ impl Stack {
 mod tests {
     use super::*;
 
-    /// Back pops a program (its seat kept, marked left), then leaves a
-    /// non-Home tab (any of the other three) for Home, then is refused at
-    /// Home.
     #[test]
     fn back_pops_then_goes_home_then_stops() {
         let now = Instant::now();
@@ -228,7 +222,6 @@ mod tests {
         assert!(!stack.back(now));
     }
 
-    /// Each tab's neighbours are the bar's, and nothing is past its ends.
     #[test]
     fn a_tab_has_the_bars_neighbours_and_none_past_its_ends() {
         assert_eq!(Tab::Home.beside(false), None);
@@ -238,8 +231,6 @@ mod tests {
         assert_eq!(Tab::Account.beside(true), None);
     }
 
-    /// The capsule's × lands on Home with the programs still open, the
-    /// latest first; one opened again comes back in the seat it left.
     #[test]
     fn home_keeps_the_programs_open_in_their_seats() {
         let now = Instant::now();
@@ -255,8 +246,6 @@ mod tests {
         assert_eq!(stack.open()[0].left, None);
     }
 
-    /// Memory pressure lets go of what is not on the stack; closing one
-    /// from Open lets it go; leaving the network lets go of all.
     #[test]
     fn trim_close_and_clear_let_seats_go() {
         let now = Instant::now();

@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 pub struct Rail {
     rows: Vec<RailRow>,
     badges: BTreeMap<&'static str, i64>,
-    /// What the rows are read off; not compared.
     roster: Roster,
     _drain: Task<()>,
     _session: Subscription,
@@ -117,7 +116,6 @@ impl Rail {
         }
     }
 
-    /// Each view's unread count; notifies only when one moved.
     fn set_badges(&mut self, badges: BTreeMap<&'static str, i64>, cx: &mut Context<Self>) -> bool {
         if badges == self.badges {
             return false;
@@ -151,10 +149,6 @@ pub enum Opening {
     Nothing(String),
 }
 
-/// `duck://<chain>/<program>/<tail>` on this chain, or the short
-/// `duck://<view>/<route>`: the seat opens and its view is handed the
-/// route. The seat coming forward is the answer; a notice only says what
-/// there is nothing to see of.
 fn opening(parsed: Link, lists: impl Fn(&str) -> bool, chain: &str) -> Opening {
     let seat = |program, route, notice| Opening::Seat {
         program,
@@ -181,8 +175,6 @@ fn opening(parsed: Link, lists: impl Fn(&str) -> bool, chain: &str) -> Opening {
                 seat(program, None, Some(said))
             }
         }
-        // to the view that declares `web`, if one is listed and this build
-        // has a web view; else the system browser
         Link::Web(url) => match crate::render::web::view_for(&url).filter(|view| lists(view)) {
             Some(program) => seat(program, Some(url), None),
             None => Opening::Browser(url),
@@ -196,9 +188,6 @@ mod tests {
     use super::*;
     use gpui_kit::{AppContext as _, TestAppContext};
 
-    /// A chain link opens its program on this chain with its route, and is
-    /// told apart on another chain; one no view lists, or no link at all,
-    /// opens nothing and says why.
     #[test]
     fn a_link_opens_its_program_on_this_chain_only() {
         let lists = |program: &str| program == "chat";
@@ -257,7 +246,6 @@ mod tests {
         let note = |cx: &mut TestAppContext| rail.read_with(cx, |rail, _| rail.rows()[0].note);
         assert_eq!(note(cx), Some("Loading"));
 
-        // the view landed on a loader thread, which says so on the channel
         crate::runtime::seat_for_test(PROGRAM, 400);
         send.unbounded_send(()).unwrap();
         cx.run_until_parked();
@@ -265,7 +253,6 @@ mod tests {
         assert_eq!(note(cx), None, "the rail still says the view loads");
         assert!(rail.read_with(cx, |rail, _| rail.rows() == roster.rail()));
 
-        // a change that leaves the rows as they are, twice: read, not told
         send.unbounded_send(()).unwrap();
         send.unbounded_send(()).unwrap();
         cx.run_until_parked();

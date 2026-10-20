@@ -77,7 +77,6 @@ pub struct Filter {
 }
 
 impl Filter {
-    /// A node's `in`, or the scope of the element the fork refused.
     fn keeps(&self, scope: &str) -> bool {
         let (window, view) = match scope.split_once('/') {
             Some((window, view)) => (window, Some(view)),
@@ -131,8 +130,6 @@ impl Wait {
             })
     }
 
-    /// The answer once the wait is decided: the match (or its absence, for
-    /// `gone`), or 408 with the compact tree when `expired`.
     fn step(&self, nodes: &[AxNode], expired: bool) -> Option<Reply> {
         let found = nodes.iter().find(|node| self.matches(node));
         match (found, self.gone) {
@@ -163,12 +160,10 @@ pub struct Key {
     keys: String,
     #[serde(default)]
     text: String,
-    /// the window that gets them; else the one holding focus, else the first
     #[serde(default)]
     window: Option<String>,
     #[serde(default)]
     deadline_ms: Option<u64>,
-    /// answer with the tree's delta, as ever; false presses without reading
     #[serde(default = "yes")]
     delta: bool,
 }
@@ -186,10 +181,8 @@ pub struct Drag {
     id: Option<String>,
     from: [f32; 2],
     to: [f32; 2],
-    /// moves between press and release, 4 unless given, never 0
     #[serde(default)]
     steps: Option<u32>,
-    /// without `id`: the window that gets it; else as `/key` picks one
     #[serde(default)]
     window: Option<String>,
     #[serde(default)]
@@ -197,8 +190,6 @@ pub struct Drag {
 }
 
 impl Drag {
-    /// The move count once the request is checked: 400 for a coordinate
-    /// that is not a finite position on the window, or zero steps.
     fn checked(&self) -> Result<u32, Reply> {
         let refuse = |error: &str| Reply::new(400, json!({ "error": error }));
         if self
@@ -267,7 +258,6 @@ pub struct Reveal {
 pub struct Reply {
     status: u16,
     body: String,
-    /// `X-Ax-Revision`
     revision: Option<u64>,
 }
 
@@ -284,7 +274,6 @@ impl Reply {
         Self::new(200, body)
     }
 
-    /// The reply, answered off the trees of `revision` ([`Seen`]).
     #[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
     fn revised(self, revision: u64) -> Self {
         Self {
@@ -345,18 +334,12 @@ pub struct Door<'a> {
 
 const POLL: Duration = Duration::from_millis(50);
 
-/// Longest the audit's arrow probe waits for a view to move its active
-/// row after one key: a composite whose arrows do nothing costs it once
-/// for each pair it tries and once more (`audit::arrow_pairs`).
-const ARROW_WAIT: Duration = Duration::from_millis(500);
+const ACTIVE_ROW_ARROW_PROBE_WAIT: Duration = Duration::from_millis(500);
 
-/// A call's deadline, `ms` from now, as the client picked it; `None` when
-/// that is past the clock's range, which is never.
 fn deadline(ms: u64) -> Option<Instant> {
     Instant::now().checked_add(Duration::from_millis(ms))
 }
 
-/// Whether `deadline` has passed.
 fn passed(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|deadline| Instant::now() >= deadline)
 }
@@ -429,7 +412,6 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
         }
         Request::Key(key) => {
             let until = key.deadline_ms.and_then(deadline);
-            // no tree to read: the window comes from the list alone
             let before = match key.delta {
                 true => read(door, &all, false, until, seen, cx).await,
                 false => Vec::new(),
@@ -511,9 +493,6 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
                 .unwrap_or_default();
             let gone = || Reply::new(404, json!({ "error": "no such window" }));
             let opened = handle.update(cx, |_, window, cx| {
-                // the probe's arrows pick Settings' choices, and a pick
-                // saves: what they change goes back once the walk ends,
-                // however it ends
                 let kept = walk.then(|| (door.keep)(window, cx)).flatten();
                 let observer = audit::Observer::open(
                     window,
@@ -529,17 +508,13 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
                 return gone();
             };
             let reply = async {
-                // a key per update, as `POST /key` presses it: a view hears
-                // a key once the update that pressed it ends, and answers
-                // on the draw a read makes; the probe's arrows wait for
-                // that answer
                 loop {
                     match handle.update(cx, |_, window, cx| observer.press(window, cx)) {
                         Ok(true) => {}
                         Ok(false) => break,
                         Err(_) => return gone(),
                     }
-                    let deadline = Instant::now() + ARROW_WAIT;
+                    let deadline = Instant::now() + ACTIVE_ROW_ARROW_PROBE_WAIT;
                     loop {
                         settled(door, None, cx).await;
                         let moved = handle
@@ -580,7 +555,6 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
             let served = cx.update(|cx| (door.windows)(cx));
             let mut windows = Vec::with_capacity(served.len());
             for (name, key, handle) in served {
-                // a11y read, never a draw: the cached path must stay cached
                 let read = handle.update(cx, |_, window, _| {
                     (window.is_a11y_active(), gpui_perf(window))
                 });
@@ -603,7 +577,6 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
             Reply::ok(json!({}))
         }
         Request::Reveal(Reveal { id }) => {
-            // a window's tree is switched on by the read
             let _ = read(door, &all, false, None, seen, cx).await;
             let name = id.split_once(':').map_or("", |(name, _)| name).to_owned();
             cx.update(|cx| (door.windows)(cx))
@@ -619,13 +592,10 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
     }
 }
 
-/// What `/perf` reads of one served window without drawing it.
 struct ServedPerf {
     name: String,
     key: crate::runtime::WindowKey,
-    /// The window's a11y tree is on: a door read has drawn in it.
     a11y: bool,
-    /// gpui's own histograms, with the `perf-deep` feature; else `Null`.
     gpui: serde_json::Value,
 }
 
@@ -636,7 +606,6 @@ fn perf_off() -> Reply {
     )
 }
 
-/// `POST /perf/reset`: the counters and samples back to zero; 409 while off.
 fn perf_reset_reply() -> Reply {
     if !crate::perf::on() {
         return perf_off();
@@ -645,10 +614,6 @@ fn perf_reset_reply() -> Reply {
     Reply::ok(json!({ "reset": true }))
 }
 
-/// The registry as the door gives it: 409 while off, so a gate fails
-/// loudly instead of passing on empty data; `cache_on` says no served
-/// window's tree is on, so no door read drew in any (the layers draw
-/// cached either way).
 fn perf_reply(by_instance: bool, windows: &[ServedPerf]) -> Reply {
     if !crate::perf::on() {
         return perf_off();
@@ -668,13 +633,8 @@ fn perf_reply(by_instance: bool, windows: &[ServedPerf]) -> Reply {
     Reply::ok(snapshot)
 }
 
-/// gpui's frame and input histograms for one window, `perf-deep` only: the
-/// end-to-end frame time (dirty to present), the draw, the present
-/// interval and the input-to-frame latency the registry cannot see. They
-/// cover the window's life: `POST /perf/reset` does not reach them.
 #[cfg(feature = "perf-deep")]
 fn gpui_perf(window: &Window) -> serde_json::Value {
-    // the histograms hold nanoseconds; gpui does not re-export their type
     macro_rules! us {
         ($histogram:expr) => {
             json!({
@@ -702,21 +662,12 @@ fn gpui_perf(_: &Window) -> serde_json::Value {
     serde_json::Value::Null
 }
 
-/// Every seat turned, and the door parked until no seat's tick is in
-/// flight (`Door::settle`), on the polls `/wait` parks on, or until the
-/// client's own deadline for its call (`until`, its `deadline_ms`) passed:
-/// the read then goes on with the tree as it stands. No deadline of the
-/// host's: a tick that never lands is a cause to find, and a client
-/// bounds its own call.
 pub(crate) async fn settled(door: &Door<'_>, until: Option<Instant>, cx: &mut AsyncApp) {
     while !cx.update(|cx| (door.settle)(cx)) && !passed(until) {
         cx.background_executor().timer(POLL).await;
     }
 }
 
-/// The next settled frame after an input: the tree unchanged for three polls
-/// (or `deadline_ms`, 2 s unless given), its reads parked no later than the
-/// client's own deadline for the call (`until`).
 async fn settle(
     before: &[AxNode],
     (deadline_ms, until): (Option<u64>, Option<Instant>),
@@ -740,10 +691,6 @@ async fn settle(
     after
 }
 
-/// The window a keyboard types into: `named`, else the one whose tree
-/// holds focus, else the first served. With no `nodes` (a press that reads
-/// no tree, `POST /key` with `"delta": false`) there is no focus to find,
-/// so the unnamed window is the first served.
 fn keyboard_window(
     named: Option<&str>,
     nodes: &[AxNode],
@@ -769,15 +716,12 @@ fn keyboard_window(
 mod tests {
     use super::*;
 
-    /// The client names the deadline, however far off: the call waits that
-    /// long for its answer.
     #[test]
     fn a_deadline_is_the_clients() {
         assert!(!passed(deadline(u64::MAX)));
         assert!(passed(deadline(0)));
     }
 
-    /// A drag takes as many moves as it asks for, but never zero.
     #[test]
     fn drag_steps_are_the_callers() {
         let drag = |steps| Drag {
@@ -792,8 +736,6 @@ mod tests {
         assert_eq!(drag(0).checked().map_err(|reply| reply.status), Err(400));
     }
 
-    /// A served window under a key no window of a test running beside
-    /// this one can have.
     fn served(name: &str, a11y: bool) -> ServedPerf {
         ServedPerf {
             name: name.to_owned(),
@@ -803,8 +745,6 @@ mod tests {
         }
     }
 
-    /// Off, `/perf` is a 409 rather than empty numbers; on, the registry as
-    /// JSON with each served window named and `cache_on` from the a11y state.
     #[test]
     fn perf_is_refused_off_and_json_on() {
         let off = {
@@ -831,7 +771,6 @@ mod tests {
         assert_eq!(body["cache_on"], true);
     }
 
-    /// A reset is refused off; on, it zeroes what `/perf` then shows.
     #[test]
     fn perf_reset_is_refused_off_and_clears_on() {
         let off = {
@@ -855,8 +794,6 @@ mod tests {
         );
     }
 
-    /// The door's answer to `request`, from a fresh window it serves as
-    /// `console`, and whether that window's a11y is on afterwards.
     async fn served_answer(
         request: impl FnOnce() -> Request + 'static,
         cx: &mut gpui_kit::TestAppContext,
@@ -896,11 +833,6 @@ mod tests {
         (answered, perf, active)
     }
 
-    /// A key press asked to read nothing still reaches the window, and
-    /// leaves its a11y off, so no read drew in it and `/perf` says
-    /// `cache_on`; the answer is `{}`, and an unnamed window is the first
-    /// served. Any read (here a tree) switches a11y on and `cache_on` off:
-    /// the check can tell them apart.
     #[gpui_kit::test]
     async fn a_press_without_a_read_keeps_the_cache_on(cx: &mut gpui_kit::TestAppContext) {
         let _on = crate::perf::on_for_test();
@@ -941,8 +873,6 @@ mod tests {
         assert_eq!(perf["cache_on"], false);
     }
 
-    /// `POST /motion` sets the system's ask for less motion, as the OS
-    /// would, and takes it back: answered `{}`.
     #[gpui_kit::test]
     async fn motion_asks_for_less_motion_and_takes_it_back(cx: &mut gpui_kit::TestAppContext) {
         for reduce in [true, false] {
@@ -953,11 +883,6 @@ mod tests {
         }
     }
 
-    /// A read turns the seats first: what a view has answered since its
-    /// last turn is in the tree the read draws, as the draw itself took it
-    /// in while the view was stepped on the draw path. Here the seat's
-    /// view holds an intent its next turn hands over; the read delivers
-    /// it, the same request with the seats left alone does not.
     #[gpui_kit::test]
     async fn a_read_turns_the_seats_first(cx: &mut gpui_kit::TestAppContext) {
         const PROGRAM: &str = "door-read-turns-view";
@@ -979,8 +904,6 @@ mod tests {
         });
         cx.run_until_parked();
         let instance = seat.read_with(cx, |seat, _| seat.instance());
-        // the seat's pane, with a body and drawn: a seat is ticked once its
-        // pane has a body, and turns again once the tree it made has drawn
         struct Pane {
             seat: gpui_kit::Entity<crate::runtime::Seat>,
             _watch: gpui_kit::Subscription,

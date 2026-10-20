@@ -17,10 +17,10 @@ use ducktape_host::backend::AUTH_PAGE;
 use ducktape_host::backend::auth_page;
 
 pub(super) enum Request {
-    /// `navigator.credentials.create()`; the challenge is pass-through.
-    Create { user: [u8; 40], name: String },
-    /// `navigator.credentials.get()` with `allowCredentials: []`; `step`
-    /// is its place in the flow (`"1/2"`), for the page's words.
+    Create {
+        user: [u8; 40],
+        name: String,
+    },
     Get {
         challenge: [u8; 32],
         step: &'static str,
@@ -29,7 +29,6 @@ pub(super) enum Request {
 
 pub(super) fn request_url(page: &str, request: &Request, callback: &str) -> String {
     let fields = match request {
-        // a passkey is always made first of two touches (`passkey`)
         Request::Create { user, name } => format!(
             "op=create&challenge={}&user={}&name={}&step=1/2",
             B64.encode(rand::random::<[u8; 32]>()),
@@ -45,7 +44,6 @@ pub(super) fn request_url(page: &str, request: &Request, callback: &str) -> Stri
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Outcome {
-    /// the 33-byte compressed SEC1 point
     Created(Vec<u8>),
     Asserted(Assertion),
 }
@@ -54,13 +52,11 @@ pub(super) enum Outcome {
 pub(super) struct Assertion {
     authenticator_data: Vec<u8>,
     client_data_json: Vec<u8>,
-    /// raw `R‖S`
     signature: Vec<u8>,
     pub(super) user_handle: Option<Vec<u8>>,
 }
 
 impl Assertion {
-    /// `keyscheme`'s `Secp256r1` proof bytes.
     pub(super) fn proof(&self) -> Vec<u8> {
         keyscheme::webauthn_proof(
             &self.authenticator_data,
@@ -100,7 +96,6 @@ pub(super) fn parse_result(json: &str) -> Result<Outcome, String> {
     }
 }
 
-/// A sentence for the page's `DOMException` name.
 fn ceremony_error(name: &str) -> String {
     match name {
         "NotAllowedError" | "AbortError" => {
@@ -129,9 +124,6 @@ pub(super) async fn asserted(challenge: [u8; 32], step: &'static str) -> Result<
     }
 }
 
-/// One touch: open `request` in this device's browser and take the page's
-/// answer on loopback, for as long as the page takes; the person's cancel
-/// drops the wait.
 async fn ceremony(request: Request) -> Result<Outcome, String> {
     let page = auth_page();
     let listener = Listener::bind(&page)
@@ -141,8 +133,6 @@ async fn ceremony(request: Request) -> Result<Outcome, String> {
     listener.wait().await
 }
 
-/// The system browser, or `DUCKTAPE_BROWSER <url>` when set (a test's
-/// headless browser).
 fn open_browser(url: &str) -> Result<(), String> {
     match std::env::var_os("DUCKTAPE_BROWSER") {
         Some(command) => std::process::Command::new(command)
@@ -163,11 +153,8 @@ fn open_browser(url: &str) -> Result<(), String> {
     }
 }
 
-/// What opens a page in the system browser: the shell's, handed over at
-/// startup ([`on_open_url`]) so this layer never calls up into it.
 static OPEN_URL: std::sync::OnceLock<fn(String)> = std::sync::OnceLock::new();
 
-/// The shell says how a page reaches the system browser.
 pub(crate) fn on_open_url(open: fn(String)) {
     let _ = OPEN_URL.set(open);
 }
@@ -220,9 +207,7 @@ mod tests {
 
     #[test]
     fn an_answer_that_fails_verification_is_refused() {
-        // a key no P-256 verifier accepts
         let bad_key = format!(r#"{{"op":"create","publicKey":"{}"}}"#, B64.encode([2; 32]));
-        // an assertion by another passkey than the frame's signer
         let body = passkey_body(
             &testkit::passkey_pubkey(&testkit::passkey(3)),
             "testkit",

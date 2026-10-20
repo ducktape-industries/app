@@ -4,20 +4,11 @@
 use super::*;
 use crate::render::native_id;
 
-/// A Sensor's retained state, per authored path.
 pub(super) struct SensorState {
-    /// The child's bounds as last told, in the window's pixels; `None`
-    /// while it is out of view or nothing listens, so the next sight of it
-    /// tells them again.
     pub(super) told: Option<Bounds<Pixels>>,
     pub(super) on_bounds: Option<u32>,
 }
 
-/// The invisible hit area of a ResizeHandle: its own box widened by
-/// [`crate::render::GRAB`] px on both sides of the axis it resizes (both axes
-/// for other cursors), the same reach desk window borders have, so a press
-/// just beside a 1px divider still starts a resize. Absolutely positioned
-/// over the neighbouring panes.
 pub(super) fn grip(cursor: CursorStyle) -> gpui_kit::Stateful<Div> {
     let (x, y) = grip_reach(cursor);
     div()
@@ -31,7 +22,6 @@ pub(super) fn grip(cursor: CursorStyle) -> gpui_kit::Stateful<Div> {
         .block_mouse_except_scroll()
 }
 
-/// How far a grip reaches past its handle, across and along.
 pub(super) fn grip_reach(cursor: CursorStyle) -> (f32, f32) {
     let grab = crate::render::GRAB;
     match cursor {
@@ -123,9 +113,6 @@ impl ViewTree {
         .absolute()
         .inset_0();
         let cursor = native_cursor(*cursor);
-        // capture phase: the grip overlaps the neighbouring panes, so claim
-        // the left press here, before a pane underneath turns it into a click
-        // or a text selection
         let grip = grip(cursor).capture_any_mouse_down(cx.listener(
             move |this, event: &MouseDownEvent, _, cx| {
                 if event.button != MouseButton::Left {
@@ -207,8 +194,6 @@ impl ViewTree {
         )
         .absolute()
         .inset_0();
-        // A sensor is layout-transparent. In particular, a fill spacer
-        // must not collapse inside an auto-sized measurement wrapper.
         div()
             .id(native_id(id))
             .relative()

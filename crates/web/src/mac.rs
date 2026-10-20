@@ -10,7 +10,6 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// CEF's framework beside this binary, if it is there.
 pub(crate) fn framework() -> Option<PathBuf> {
     let path = std::env::current_exe()
         .ok()?
@@ -19,8 +18,6 @@ pub(crate) fn framework() -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
-/// Loads CEF's library, once per process, for good: `false` when it is
-/// not there or does not load, and then no CEF call may be made.
 pub(crate) fn load() -> bool {
     static LOADED: OnceLock<bool> = OnceLock::new();
     *LOADED.get_or_init(|| {
@@ -34,9 +31,6 @@ pub(crate) fn load() -> bool {
     })
 }
 
-/// In a child, before CEF loads: enters the seatbelt sandbox the app
-/// started it with (nothing to enter when the app runs without one), from
-/// the framework's `libcef_sandbox.dylib`. `false`: the child must not run.
 pub(crate) fn sandbox(args: &cef::MainArgs) -> bool {
     unsafe extern "C" {
         fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
@@ -70,13 +64,7 @@ fn c_path(path: &Path) -> Option<CString> {
     CString::new(path.as_os_str().as_bytes()).ok()
 }
 
-/// A key as macOS has it, for a gpui key name `key` (the names
-/// `page::windows_key_code` knows): its virtual key code and its
-/// character. CEF rebuilds each key event as an `NSEvent` from these two
-/// and reads Chromium's key from them, not from `windows_key_code`; a key
-/// with no character reads as a modifier change.
 pub(crate) fn key(key: &str) -> Option<(i32, u16)> {
-    // `kVK_ANSI_*`, by letter and by digit
     const LETTERS: [i32; 26] = [
         0x00, 0x0B, 0x08, 0x02, 0x0E, 0x03, 0x05, 0x04, 0x22, 0x26, 0x28, 0x25, 0x2E, 0x2D, 0x1F,
         0x23, 0x0C, 0x0F, 0x01, 0x11, 0x20, 0x09, 0x0D, 0x07, 0x10, 0x06,
@@ -88,7 +76,6 @@ pub(crate) fn key(key: &str) -> Option<(i32, u16)> {
         "enter" => (0x24, 0x0D),
         "escape" => (0x35, 0x1B),
         "space" => (0x31, 0x20),
-        // the rest carry AppKit's function-key characters
         "pageup" => (0x74, 0xF72C),
         "pagedown" => (0x79, 0xF72D),
         "end" => (0x77, 0xF72B),

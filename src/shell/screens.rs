@@ -2,10 +2,6 @@
 //! account name's initials. (screens_tests.rs pins `screens::initials`;
 //! the file keeps its name until that test moves.)
 
-/// A raw program id read as a tab label before its manifest arrives, or
-/// after it failed to: hyphens to spaces, first letter capitalised —
-/// "chat-bridge" reads "Chat bridge" instead of flashing the kebab
-/// id and then the manifest name.
 pub(super) fn prettify(id: &str) -> String {
     let spaced = id.replace('-', " ");
     let mut chars = spaced.chars();
@@ -15,8 +11,6 @@ pub(super) fn prettify(id: &str) -> String {
     }
 }
 
-/// The avatar's letters for an account `name`: the first letter of its
-/// first two words ("Ada Lovelace" → "AL", "ada" → "A"), "?" for none.
 pub(super) fn initials(name: &str) -> String {
     let letters: String = name
         .split_whitespace()

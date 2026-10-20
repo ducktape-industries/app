@@ -29,8 +29,6 @@ impl ViewTree {
         if let Some(modal) = children.get(1) {
             let named = named_overlay(label, children);
             let nested = has_named_overlay(modal);
-            // a popover anchored to the view covers nothing, in place or
-            // deferred over what follows it
             let shown = match modal {
                 wire::Node::Deferred { content, .. } => &**content,
                 modal => modal,
@@ -50,16 +48,12 @@ impl ViewTree {
                 .inset_0()
                 .refine_style(&style)
                 .flex()
-                // what the overlay covers takes no press, hover or wheel
-                // while it is open: a press outside what it shows is the
-                // layer's alone, as one outside an open native menu is
                 .occlude();
             if let Some(message) = on_dismiss {
                 let message = *message;
                 layer = layer.on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
-                        // the press outside is a press: a gesture
                         this.activate();
                         cx.emit(wire::Event::Message(message))
                     }),
@@ -91,14 +85,6 @@ impl ViewTree {
         element.into_any_element()
     }
 
-    /// A dialog's layer (an overlay's, a sheet's) made one: the dialogs
-    /// map's entry at `path` (focus enters it as it opens, if the view may
-    /// move the keys, `Seat::keys_free`; the opener gets it back as it
-    /// closes, `replace`), its accessible node, a modal dialog named by
-    /// `node`, and the focus trap around it. Unnamed, the layer is plain
-    /// layout; with a dialog open inside it (`nested`), that one holds the
-    /// keys. Escape is `dismiss` on the outermost of them: under touch focus
-    /// rests on the trap's own entry, above the layer.
     #[allow(
         clippy::too_many_arguments,
         reason = "one dialog for the overlay and the sheet: each passes its own layer and node"
@@ -115,8 +101,6 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if named && nested {
-            // The focus-trap registry keeps weak handles until another
-            // trap registers; drop an obscured ancestor before that pass.
             self.dialogs.remove(&path);
         }
         let opened = named && !self.dialogs.contains_key(&path);
@@ -130,9 +114,6 @@ impl ViewTree {
                 .0
                 .clone()
         });
-        // a dialog takes the keyboard when it opens, if its view may
-        // move the keys (`Seat::keys_free`); a popup's view moves
-        // focus itself (widget commands)
         if let Some(entry) = entry.as_ref().filter(|_| opened && self.keys_grant) {
             dialog_entry(entry, window, cx);
         }
@@ -150,8 +131,6 @@ impl ViewTree {
     }
 }
 
-/// Escape on `element` asks the view to close the dialog: a dismissal is
-/// no gesture, as Escape is not on the web.
 fn escape<E: gpui_kit::InteractiveElement>(
     element: E,
     dismiss: Option<u32>,
@@ -168,10 +147,6 @@ fn escape<E: gpui_kit::InteractiveElement>(
     }
 }
 
-/// Whether the host dims what an overlay covers. A popover anchored to the
-/// view (an `Anchored`) covers nothing, and an overlay whose view asked for a
-/// backdrop (its style's background, drawn on the layer) has one already;
-/// only a bare dialog gets the host's shade.
 pub(super) fn shades(anchored: bool, style: &gpui_kit::StyleRefinement) -> bool {
     let asked = style
         .background
@@ -186,8 +161,6 @@ pub(super) fn shades(anchored: bool, style: &gpui_kit::StyleRefinement) -> bool 
 mod shade_tests {
     use gpui_kit::{Styled as _, hsla};
 
-    /// A popover anchored to the view is not shaded; a bare dialog is; a
-    /// view's own backdrop replaces the host's shade.
     #[test]
     fn only_a_bare_dialog_is_shaded() {
         let bare = gpui_kit::StyleRefinement::default();

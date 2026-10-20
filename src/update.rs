@@ -80,21 +80,15 @@ use std::sync::{Mutex, PoisonError};
 
 use ducktape_updater::{Phase, Sha, state};
 
-/// The log target every update event is under.
 const TARGET: &str = "ducktape::update";
 const APP_EXE: &str = "ducktape-app";
 const BUNDLE: &str = "Ducktape.app";
 const PARTIAL_SUFFIX: &str = ".partial";
-/// The releases dir's name: on macOS one Spotlight never indexes, so no
-/// staged or parked bundle is offered as an app.
 const RELEASES: &str = match cfg!(target_os = "macos") {
     true => "releases.noindex",
     false => "releases",
 };
 
-/// What this build calls itself, as Settings › Updates and › About show
-/// it and the "installed" notice says it: its version, and the build that
-/// made it when one is named (`0.1.0 (<build>)`).
 pub(crate) fn version() -> String {
     match option_env!("DUCKTAPE_APP_BUILD") {
         Some(build) => format!("{} ({build})", env!("CARGO_PKG_VERSION")),
@@ -102,31 +96,20 @@ pub(crate) fn version() -> String {
     }
 }
 
-/// The sequence this binary is published at: its commit's committer time
-/// (`build.rs`), 0 for a build without git. An install pins it, so a channel
-/// publishing this same commit reads as what already runs, and only a newer
-/// commit, on either channel, is downloaded.
 fn own_sequence() -> u64 {
     option_env!("DUCKTAPE_APP_COMMIT_TIME")
         .and_then(|sequence| sequence.parse().ok())
         .unwrap_or(0)
 }
 
-/// Where everything is. Built from the process env once ([`Layout::host`]);
-/// a test builds one over a scratch root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Layout {
-    /// `<config>/ducktape/updates`.
     pub(crate) updates: PathBuf,
-    /// Linux: `<data>/ducktape`, holding `releases/`, `current`, `previous`.
-    /// macOS: the directory holding the installed `Ducktape.app`.
     pub(crate) install: PathBuf,
-    /// Linux: `<data>`, for the desktop entry and its icon.
     pub(crate) data_home: PathBuf,
 }
 
 impl Layout {
-    /// This user's layout, or `None` with no home to put it in.
     pub(crate) fn host() -> Option<Layout> {
         let updates = crate::backend::config_dir().ok()?.join("updates");
         let data = crate::backend::data_dir().ok()?;
@@ -148,19 +131,14 @@ impl Layout {
         self.updates.join("state.json")
     }
 
-    /// The channel this device follows, a device setting kept with the
-    /// update state: Settings writes it, nothing else does.
     fn channel_path(&self) -> PathBuf {
         self.updates.join("channel")
     }
 
-    /// Whether updates download on their own, a device setting beside the
-    /// channel: Settings writes it, nothing else does.
     fn automatic_path(&self) -> PathBuf {
         self.updates.join("automatic")
     }
 
-    /// The replay guard's marks ([`channel`]'s `against_seen`).
     fn seen_path(&self) -> PathBuf {
         self.updates.join("seen.json")
     }
@@ -169,12 +147,10 @@ impl Layout {
         self.updates.join("keys").join("successor.json")
     }
 
-    /// macOS: what a bundle swap wrote before `RENAME_SWAP`.
     fn journal_path(&self) -> PathBuf {
         self.updates.join("swap.json")
     }
 
-    /// macOS: each kept release's executable digest ([`macos::describes`]).
     fn executables_path(&self) -> PathBuf {
         self.updates.join("executables.json")
     }
@@ -194,7 +170,6 @@ impl Layout {
         self.releases_dir().join(format!("{sha}{PARTIAL_SUFFIX}"))
     }
 
-    /// A release's executable, where it is staged.
     pub(crate) fn release_exe(&self, sha: Sha) -> PathBuf {
         match cfg!(target_os = "macos") {
             true => bundle_exe(&self.staged_bundle(sha)),
@@ -202,17 +177,14 @@ impl Layout {
         }
     }
 
-    /// macOS: `<updates>/releases.noindex/<sha>/Ducktape.app`.
     fn staged_bundle(&self, sha: Sha) -> PathBuf {
         self.release_dir(sha).join(BUNDLE)
     }
 
-    /// macOS: the installed bundle, which IS the current release.
     fn installed_bundle(&self) -> PathBuf {
         self.install.join(BUNDLE)
     }
 
-    /// Linux: the install path, a symlink into `releases/`.
     pub(crate) fn current_link(&self) -> PathBuf {
         self.install.join("current")
     }
@@ -224,13 +196,10 @@ impl Layout {
         }
     }
 
-    /// What `current`/`previous` point at: relative, so the root can move.
     pub(crate) fn link_target(sha: Sha) -> PathBuf {
         PathBuf::from(RELEASES).join(sha.to_string())
     }
 
-    /// The executable the install path runs: `current/ducktape-app`, or the
-    /// installed bundle's.
     pub(crate) fn app_exe(&self) -> PathBuf {
         match cfg!(target_os = "macos") {
             true => bundle_exe(&self.installed_bundle()),
@@ -238,9 +207,6 @@ impl Layout {
         }
     }
 
-    /// Whether `exe` is this install's: under `releases/` (Linux) or inside
-    /// the installed bundle (macOS). Anything else — `target/debug`, a bare
-    /// binary, a translocated copy — is not, and runs with the updater off.
     pub(crate) fn owns(&self, exe: &Path) -> bool {
         let root = match cfg!(target_os = "macos") {
             true => self.installed_bundle(),
@@ -252,28 +218,22 @@ impl Layout {
         exe.starts_with(root)
     }
 
-    /// Linux: the desktop entry that points the session at `current`.
     fn desktop_entry(&self) -> PathBuf {
         self.data_home
             .join("applications")
             .join("dev.ducktape.app.desktop")
     }
 
-    /// Linux: the icon the desktop entry names (`Icon=ducktape`).
     fn icon(&self) -> PathBuf {
         self.data_home
             .join("icons/hicolor/scalable/apps/ducktape.svg")
     }
 }
 
-/// `Contents/MacOS/ducktape-app` of a bundle.
 fn bundle_exe(bundle: &Path) -> PathBuf {
     bundle.join("Contents").join("MacOS").join(APP_EXE)
 }
 
-/// Why an update step stopped short: a stable snake_case `reason` (the log
-/// field a grep counts) and a human `detail`. Never argv (it may carry a
-/// `duck://` token).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Refusal {
     pub(crate) reason: &'static str,
@@ -288,7 +248,6 @@ impl Refusal {
         }
     }
 
-    /// An I/O error at a named path.
     fn io(reason: &'static str, path: &Path, error: &std::io::Error) -> Self {
         Refusal::new(reason, format!("{}: {error}", path.display()))
     }
@@ -300,15 +259,6 @@ impl fmt::Display for Refusal {
     }
 }
 
-// ---- the few writers and probes every path goes through -------------------
-//
-// Symlink policy: nothing here follows a symlink it did not write.
-// `state.json`, the journal, every `releases/<sha>` and the executables in it
-// are opened only after `symlink_metadata` says they are not links;
-// `current`/`previous` are the only links, by construction, and their
-// targets are checked against the exact `releases/<sha>` they must name.
-
-/// Fail on a symlink at `path` itself; an absent path is fine.
 fn refuse_symlink(path: &Path) -> Result<(), Refusal> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(Refusal::new(
@@ -319,8 +269,6 @@ fn refuse_symlink(path: &Path) -> Result<(), Refusal> {
     }
 }
 
-/// What `state.json` holds; `None` when there is no file, an error for a
-/// link or unparsable contents.
 fn read_state(path: &Path) -> Result<Option<Phase>, Refusal> {
     refuse_symlink(path)?;
     let text = match std::fs::read_to_string(path) {
@@ -333,7 +281,6 @@ fn read_state(path: &Path) -> Result<Option<Phase>, Refusal> {
         .map_err(|error| Refusal::new("state_invalid", format!("{}: {error}", path.display())))
 }
 
-/// Write a file whole: tmp beside it, fsync, rename over.
 fn persist(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
     refuse_symlink(path)?;
     let parent = path.parent().ok_or_else(|| {
@@ -361,8 +308,6 @@ fn persist_phase(layout: &Layout, phase: &Phase) -> Result<(), Refusal> {
     persist(&layout.state_path(), state::encode(phase).as_bytes())
 }
 
-/// `Gc`: every release and partial not in `keep`, a `previous` link
-/// naming one that went, and (macOS) their recorded executables.
 fn collect(layout: &Layout, keep: &[Sha]) {
     stage::collect(&layout.releases_dir(), keep);
     if cfg!(target_os = "macos")
@@ -379,7 +324,6 @@ fn collect(layout: &Layout, keep: &[Sha]) {
     }
 }
 
-/// `link -> target`, atomically: a symlink at a temp name, renamed over.
 fn replace_symlink(link: &Path, target: &Path) -> Result<(), Refusal> {
     let tmp = tmp_name(link);
     let _ = std::fs::remove_file(&tmp);
@@ -391,8 +335,6 @@ fn replace_symlink(link: &Path, target: &Path) -> Result<(), Refusal> {
         })
 }
 
-/// Where a link points, or `None` when there is none; a non-link is a
-/// refusal (the install path is a link by construction).
 fn read_link(path: &Path) -> Result<Option<PathBuf>, Refusal> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -407,7 +349,6 @@ fn read_link(path: &Path) -> Result<Option<PathBuf>, Refusal> {
     }
 }
 
-/// sha256 of a file's bytes, streamed.
 fn digest_file(path: &Path) -> Result<Sha, Refusal> {
     use sha2::Digest as _;
     refuse_symlink(path)?;
@@ -419,7 +360,6 @@ fn digest_file(path: &Path) -> Result<Sha, Refusal> {
     Ok(Sha::from_bytes(hasher.finalize().into()))
 }
 
-/// A regular, executable, non-link file.
 fn require_executable(path: &Path) -> Result<(), Refusal> {
     refuse_symlink(path)?;
     let executable = std::fs::metadata(path)
@@ -433,15 +373,11 @@ fn require_executable(path: &Path) -> Result<(), Refusal> {
     }
 }
 
-/// A release dir the boot step may flip to: not a link, its executable in
-/// place.
 fn require_release(layout: &Layout, sha: Sha) -> Result<(), Refusal> {
     refuse_symlink(&layout.release_dir(sha))?;
     require_executable(&layout.release_exe(sha))
 }
 
-/// A file's `(device, inode)`: what tells the image that runs from the one
-/// the install path names, whatever path either was reached by.
 fn file_id(path: &Path) -> Result<(u64, u64), Refusal> {
     use std::os::unix::fs::MetadataExt as _;
     std::fs::metadata(path)
@@ -449,7 +385,6 @@ fn file_id(path: &Path) -> Result<(u64, u64), Refusal> {
         .map_err(|error| Refusal::io("executable_missing", path, &error))
 }
 
-/// Whether this user may create and rename entries in `dir`.
 fn require_writable(dir: &Path) -> Result<(), Refusal> {
     let writable = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes())
         // SAFETY: a NUL-terminated path and a flag constant; access(2)
@@ -471,9 +406,6 @@ fn require_writable(dir: &Path) -> Result<(), Refusal> {
     }
 }
 
-/// Remove a file, link or tree at `path`; nothing there is fine. On macOS
-/// a bundle it removes (`path` itself, or the `Ducktape.app` in it) is
-/// unregistered first, so LaunchServices keeps no app at a deleted path.
 fn remove_leftover(path: &Path) -> Result<(), Refusal> {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return Ok(());
@@ -492,18 +424,8 @@ fn remove_leftover(path: &Path) -> Result<(), Refusal> {
     removed.map_err(|error| Refusal::io("leftover_not_removed", path, &error))
 }
 
-/// Each install's `<updates>/lock` this process holds ([`hold_install`]).
 static HELD: Mutex<Vec<(PathBuf, std::fs::File)>> = Mutex::new(Vec::new());
 
-/// One updater per install. Two processes of one install (on Linux every
-/// `duck://` link starts one) would each step the machine from what they
-/// read at their own start: the second flips while the first runs, and the
-/// first then writes back a phase that names the release it runs and
-/// collects the one `current` names. So the process holding
-/// `<updates>/lock` is the install's one updater, and `install` its one
-/// writer; a start that finds it held runs with the updater off and touches
-/// nothing. `true` once this process holds it, for the rest of its life:
-/// exit and `exec` let it go, and so does [`let_go_install`].
 fn hold_install(layout: &Layout) -> Result<bool, Refusal> {
     let path = layout.updates.join("lock");
     let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
@@ -531,9 +453,6 @@ fn hold_install(layout: &Layout) -> Result<bool, Refusal> {
     Ok(true)
 }
 
-/// Let `<updates>/lock` go while this process still runs: the macOS boot
-/// step hands the install to the launch it starts before this process
-/// exits, and a start that finds the lock held runs with the updater off.
 fn let_go_install(layout: &Layout) {
     let path = layout.updates.join("lock");
     HELD.lock()
@@ -541,9 +460,6 @@ fn let_go_install(layout: &Layout) {
         .retain(|(at, _)| *at != path);
 }
 
-/// Wait until no other process holds `<updates>/lock`: the open file that
-/// holds it now. The restart's waiter lets it go at once, handing the
-/// install over free; [`wait_install`] keeps it.
 fn await_install(layout: &Layout) -> Result<std::fs::File, Refusal> {
     let path = layout.updates.join("lock");
     refuse_symlink(&path)?;
@@ -570,7 +486,6 @@ fn wait_install(layout: &Layout) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// rename(2), or a copy and remove across volumes.
 fn move_tree(from: &Path, to: &Path) -> Result<(), Refusal> {
     match std::fs::rename(from, to) {
         Ok(()) => Ok(()),
@@ -582,7 +497,6 @@ fn move_tree(from: &Path, to: &Path) -> Result<(), Refusal> {
     }
 }
 
-/// A per-process temp name beside `path`.
 fn tmp_name(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
@@ -604,7 +518,6 @@ mod layout_tests {
         }
     }
 
-    /// The tree every reader takes from one place, written out in full.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_linux_tree_is_spelled_once() {
@@ -708,9 +621,6 @@ mod layout_tests {
         );
     }
 
-    /// The updater is on only for the install's own executable: a binary
-    /// anywhere else — `target/debug`, the tarball's — is not it, even with
-    /// a `state.json` on disk.
     #[cfg(target_os = "linux")]
     #[test]
     fn only_an_executable_inside_the_install_is_owned() {

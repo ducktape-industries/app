@@ -12,23 +12,16 @@
 //! with the range from before the move, so it is not used.
 use super::*;
 
-/// A List's retained state, per authored path.
 pub(super) struct VariableList {
     pub(super) state: ListState,
     pub(super) rows: HashMap<usize, wire::Node>,
     item_count: usize,
-    /// The view's command-batch revision; commands replay only when it
-    /// changes.
     revision: u64,
-    /// The rows to ask for in the request already scheduled this frame.
     requested: Option<std::ops::Range<usize>>,
     request_scheduled: bool,
     alignment: ListAlignment,
-    /// The scroll state last reported to the view; the next frame reports
-    /// only a change from it.
     reported: Option<wire::ListScroll>,
     settle_scheduled: bool,
-    /// Rows remeasured, summed over renders.
     #[cfg(test)]
     pub(super) remeasured: usize,
 }
@@ -61,9 +54,6 @@ impl ViewTree {
             unreachable!()
         };
         let key = path.clone();
-        // gpui's list has no id, so its rows are drawn under the list's
-        // own, as its path files them: two lists' rows never share gpui's
-        // element state or an accessibility node
         let scope = native_id(id);
         let native_alignment = match alignment {
             wire::ListAlignment::Top => ListAlignment::Top,
@@ -160,8 +150,6 @@ impl ViewTree {
         if let Some(handler) = *scroll_handler
             && !list.settle_scheduled
         {
-            // after this frame is painted: where the list settled, if it
-            // moved since the last report (one callback per render)
             list.settle_scheduled = true;
             let weak = cx.entity().downgrade();
             let settle_key = key.clone();
@@ -179,8 +167,6 @@ impl ViewTree {
             }
             .into_any_element()
         } else {
-            // gpui's list is no interactive element: a list the view roled,
-            // named or wired is a box in the list's place, holding it whole
             let mut host = div();
             *host.style() = std::mem::take(native.style());
             let host = host.id(scope.clone()).child(native.size_full());
@@ -193,8 +179,6 @@ impl ViewTree {
 }
 
 impl ViewTree {
-    /// The frame after a render: the list's scroll state as it settled,
-    /// reported when it differs from the last report.
     fn settle_list(&mut self, key: &AuthoredPath, handler: u32, cx: &mut Context<Self>) {
         let Some(list) = self.variable_lists.get_mut(key) else {
             return;
@@ -212,11 +196,6 @@ impl ViewTree {
     }
 }
 
-/// The list's scroll state after its last paint, in the wheel report's
-/// fields: the rows from the logical top through the last one whose top
-/// is above the viewport's bottom, the count, whether it is off its
-/// resting place (the top, or the end of a bottom-aligned list), whether
-/// it follows the tail, and the logical offset.
 fn settled(state: &ListState, alignment: ListAlignment) -> wire::ListScroll {
     let count = state.item_count();
     let top = state.logical_scroll_top();
@@ -242,8 +221,6 @@ fn settled(state: &ListState, alignment: ListAlignment) -> wire::ListScroll {
     }
 }
 
-/// Moves `list` as a scroll `command` says; a command on its rows moves
-/// nothing here.
 fn scroll(list: &mut VariableList, command: &wire::ListCommand) {
     match *command {
         wire::ListCommand::ScrollTo(offset) => list.state.scroll_to(gpui_kit::ListOffset {

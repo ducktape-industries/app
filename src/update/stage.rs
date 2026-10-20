@@ -19,10 +19,6 @@ use tracing::{info, warn};
 
 use super::{APP_EXE, BUNDLE, PARTIAL_SUFFIX, TARGET};
 
-/// `Verify`: hash the archive again, extract it into `release_dir`, check
-/// the release is whole (and, on macOS, that its bundle signature holds).
-/// `release_dir` is replaced whole if something is already there — a dir at
-/// a sha the machine has not verified is a leftover, never a release.
 pub(super) fn stage(archive: &Path, sha: Sha, release_dir: &Path) -> Result<(), String> {
     let landed = super::digest_file(archive).map_err(|refusal| refusal.reason.to_string())?;
     if landed != sha {
@@ -43,8 +39,6 @@ pub(super) fn stage(archive: &Path, sha: Sha, release_dir: &Path) -> Result<(), 
     Ok(())
 }
 
-/// A release dir is a real directory the app creates: a link at its path
-/// is refused, a leftover directory is removed.
 fn clear_release_dir(release_dir: &Path) -> Result<(), String> {
     let Ok(meta) = std::fs::symlink_metadata(release_dir) else {
         return Ok(());
@@ -70,13 +64,9 @@ fn extract(archive: &Path, release_dir: &Path) -> Result<(), String> {
         let destination = entry_destination(release_dir, &entry_path)?;
         let kind = entry.header().entry_type();
         admit(kind)?;
-        // `./`: the release dir itself
         let Some(parent) = destination.parent().filter(|_| destination != release_dir) else {
             continue;
         };
-        // where the entry's directory is on disk, not what its path reads:
-        // a link an earlier entry made can lead a path that reads inside
-        // to anywhere
         let parent = parent.canonicalize().map_err(|_| "extract_failed")?;
         if !parent.starts_with(&root) {
             return Err("path_escapes".into());
@@ -86,8 +76,6 @@ fn extract(archive: &Path, release_dir: &Path) -> Result<(), String> {
             links.push(destination);
         }
     }
-    // with every entry in place: each link, through any chain of links,
-    // resolves to something inside
     for link in links {
         let inside = link
             .canonicalize()
@@ -99,17 +87,14 @@ fn extract(archive: &Path, release_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether one entry is a kind a release is made of.
 fn admit(kind: tar::EntryType) -> Result<(), String> {
     match kind {
         tar::EntryType::Regular | tar::EntryType::Directory | tar::EntryType::Symlink => Ok(()),
         tar::EntryType::Link => Err("hard_link".into()),
-        // devices, fifos, sparse and extension headers: none is a release file
         _ => Err("unsupported_entry".into()),
     }
 }
 
-/// Where an entry lands: under `root`, through normal components only.
 fn entry_destination(root: &Path, entry_path: &Path) -> Result<PathBuf, String> {
     let mut destination = root.to_path_buf();
     for component in entry_path.components() {
@@ -123,12 +108,6 @@ fn entry_destination(root: &Path, entry_path: &Path) -> Result<PathBuf, String> 
     Ok(destination)
 }
 
-// ---- gc --------------------------------------------------------------------
-
-/// `Gc`: remove every `releases/<sha>` whose sha is not in `keep`, and every
-/// `<sha>.partial` — once the machine collects, nothing is downloading, so a
-/// partial is a leftover whatever its name. Only entries named by a sha are
-/// touched; anything else in the directory is not this module's.
 pub(super) fn collect(releases_dir: &Path, keep: &[Sha]) {
     let Ok(entries) = std::fs::read_dir(releases_dir) else {
         return;
@@ -168,7 +147,6 @@ pub(super) mod tests {
     #[cfg(target_os = "linux")]
     use std::os::unix::fs::PermissionsExt as _;
 
-    /// A `.tar.gz` from a list of entries.
     pub(in crate::update) enum Item {
         File(&'static str, Vec<u8>, u32),
         Dir(&'static str),
@@ -223,7 +201,6 @@ pub(super) mod tests {
         encoder.finish().unwrap()
     }
 
-    /// A release tree with a nested directory and links that stay inside.
     pub(in crate::update) fn whole_release(app: &[u8]) -> Vec<Item> {
         vec![
             Item::File(APP_EXE, app.to_vec(), 0o755),
@@ -234,9 +211,7 @@ pub(super) mod tests {
         ]
     }
 
-    /// A raw entry the `tar` builder itself refuses to write (`..`, a
-    /// leading `/`): the header's name bytes set directly.
-    fn raw_entry(name: &[u8]) -> Vec<u8> {
+    fn raw_entry_with_unchecked_header_name(name: &[u8]) -> Vec<u8> {
         let mut header = tar::Header::new_gnu();
         header.set_size(1);
         header.set_mode(0o644);
@@ -249,7 +224,7 @@ pub(super) mod tests {
     }
 
     fn staged_raw(name: &[u8]) -> Result<(), String> {
-        let bytes = raw_entry(name);
+        let bytes = raw_entry_with_unchecked_header_name(name);
         let root = tempfile::tempdir().unwrap();
         let archive = root.path().join("raw.partial");
         std::fs::write(&archive, &bytes).unwrap();
@@ -325,9 +300,6 @@ pub(super) mod tests {
         assert_eq!(outcome, Err("symlink_escapes".into()));
     }
 
-    /// `a/b -> ..` is the release dir itself, so `a/b/c -> ..` reads as
-    /// inside and is the release dir's parent on disk: nothing is written
-    /// through it, and a link that resolves there is refused.
     #[test]
     fn a_path_through_an_earlier_link_never_lands_outside() {
         let chain = |last: Option<Item>| {

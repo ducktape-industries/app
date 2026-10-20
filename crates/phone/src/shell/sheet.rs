@@ -89,7 +89,6 @@ pub fn frame(
                 .rounded(px(2.))
                 .bg(palette.border_strong()),
         );
-    // down by its own height at 0; below the window until it is laid out
     let down = match (at.slides, at.height.get()) {
         (false, _) => px(0.),
         (true, Some(height)) => height * (1. - at.progress),
@@ -118,7 +117,6 @@ pub fn frame(
         .bg(palette.background())
         .border_t_1()
         .border_color(palette.border_strong())
-        // a press on the panel is not one on the scrim
         .on_click(|_, _, cx| cx.stop_propagation())
         .child(measure)
         .child(handle)
@@ -135,8 +133,6 @@ pub fn frame(
         .flex_col()
         .justify_end();
     if at.leaving {
-        // what it drew open, under a cover that takes its presses; the
-        // screen under the scrim takes them already
         panel = panel.child(div().absolute().inset_0().occlude());
         return scrim.child(panel).into_any_element();
     }
@@ -146,8 +142,6 @@ pub fn frame(
                 root.sheet_panned(event, begins, cx)
             })
         };
-        // every step of a pan comes where it began: once the panel has
-        // moved off that point the scrim hears the rest
         panel = panel.on_scroll_wheel(pan(true));
         scrim = scrim.on_scroll_wheel(pan(false));
     }
@@ -227,12 +221,8 @@ pub fn row(
     row
 }
 
-/// The shortest stretch a drag's speed is read over: a finger's steps come
-/// a point or two apart, too few to read a speed from alone.
 const SAMPLE: Duration = Duration::from_millis(16);
 
-/// A finger that rests this long before letting go throws nothing (gpui's
-/// own rule for a pan's fling, `VELOCITY_ASSUME_STOPPED_GAP`).
 const RESTED: Duration = Duration::from_millis(40);
 
 /// A finger dragging the sheet: how far down it has come from where the
@@ -257,7 +247,6 @@ impl Drag {
         }
     }
 
-    /// The finger `step` points further down (up when negative) at `now`.
     fn step(&mut self, step: f32, now: Instant) {
         self.down += step;
         if step != 0. {
@@ -271,7 +260,6 @@ impl Drag {
         }
     }
 
-    /// Its speed down let go at `now`: none after a rest.
     fn thrown(&self, now: Instant) -> f32 {
         match now.saturating_duration_since(self.moved) > RESTED {
             true => 0.,
@@ -281,13 +269,6 @@ impl Drag {
 }
 
 impl Root {
-    /// A pan on the sheet (gpui hands a touch pan on as scroll steps, all
-    /// at where it began, and runs a fling on after it): one begun downward
-    /// on the panel (`begins`; else heard on the scrim) drags the sheet
-    /// under the finger, unless the scroller in it is off its top (Switch
-    /// network's Recent, which the pan scrolls instead); its end lets go
-    /// ([`Root::sheet_let_go`]). The fling's steps after the release, and
-    /// a pan begun any other way, are left alone.
     pub(super) fn sheet_panned(
         &mut self,
         event: &ScrollWheelEvent,
@@ -311,8 +292,6 @@ impl Root {
                 drag.step(step, now);
                 cx.notify();
             }
-            // the release's step is no speed sample: it repeats the last
-            // move later (gpui's own tracker leaves it out too)
             (TouchPhase::Ended, Some(drag)) => {
                 drag.down += step;
                 self.sheet_let_go(true, cx);
@@ -322,18 +301,10 @@ impl Root {
         }
     }
 
-    /// Whether the sheet's scroller is off its top. Its step was taken
-    /// before the panel heard it (the inner listener first), so a pull at
-    /// the top reads past it, never under.
     fn sheet_scrolled(&self, cx: &App) -> bool {
         self.sheet == Some(Sheet::Switch) && self.join.read(cx).scroll.offset().y < px(0.)
     }
 
-    /// The drag let go (`goes`; else ended short of a release): past half
-    /// the panel with its speed counted ([`swipe::crosses`]) the sheet
-    /// closes, going on down from where the finger left it at the
-    /// finger's speed; short of it, it springs back up, from there. Under
-    /// Reduce Motion it never followed: the close fades as Back's does.
     fn sheet_let_go(&mut self, goes: bool, cx: &mut Context<Self>) {
         let Some(drag) = self.sheet_drag.take() else {
             return;
@@ -356,9 +327,6 @@ impl Root {
         }
     }
 
-    /// How far in the sheet is drawn while a finger holds it (0 gone, 1 in
-    /// place): `None` while none does, or under Reduce Motion, where
-    /// nothing follows a finger.
     pub(super) fn sheet_held(&self, cx: &App) -> Option<f32> {
         let drag = self.sheet_drag?;
         let height = f32::from(self.sheet_height.get()?).max(1.);

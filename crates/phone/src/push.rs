@@ -33,15 +33,10 @@ use gpui_kit::{App, AppContext as _, Context, Entity, Subscription, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-/// How long after a send the server did not take for now (408, 429, 5xx,
-/// no answer) before the next try.
 const RETRY: Duration = Duration::from_secs(30);
 
-/// How long a listed node has to say who this phone is there.
 const REACH_WITHIN: Duration = Duration::from_secs(15);
 
-/// Where the prefs keep what was registered and which chain each listed
-/// node serves.
 const PREF: &str = "push_registrar";
 
 /// One registration as this phone means it, before it is timed and signed:
@@ -177,9 +172,6 @@ pub fn plan(
     due
 }
 
-/// The first of `listed` to reach: not heard from this run, not missed
-/// since the inputs moved, and not on a chain another node of which
-/// answered this run (`nodes`: the chain each served when last heard).
 fn unheard(
     listed: &[String],
     reached: &BTreeMap<String, Network>,
@@ -219,8 +211,6 @@ pub fn answered(status: u16, reason: String) -> Result<(), Failed> {
     }
 }
 
-/// The inputs a send refused for good, or a node not reached, waits on:
-/// the listed nodes, the account in hand, the tokens.
 type Inputs = (Vec<String>, Option<u64>, BTreeMap<String, String>);
 
 /// The registrar: watches the session, the account and the tokens, and
@@ -228,31 +218,15 @@ type Inputs = (Vec<String>, Option<u64>, BTreeMap<String, String>);
 /// has not heard from between.
 pub struct Registrar {
     shared: Shared,
-    /// What the server holds for this phone, as far as its sends went; kept
-    /// in the prefs, for the leaves.
     kept: Sent,
-    /// What was sent and taken this run: each registration goes once a run.
     sent: Sent,
-    /// The chain each listed node serves, as last heard; kept in the prefs.
-    /// A tapped notice finds its network by it ([`Registrar::node_of`]).
     nodes: BTreeMap<String, String>,
-    /// What each node said this run, by its URL; the node in hand's is read
-    /// off the session and the account.
     reached: BTreeMap<String, Network>,
-    /// The nodes not reached since the inputs last moved, or the app last
-    /// came back to the front.
     missed: BTreeSet<String>,
-    /// The kinds the OS handed a token for this run: one taken back since
-    /// is a leave, one not handed yet is no word at all.
     heard: BTreeSet<String>,
-    /// Sends refused for good since the inputs last moved: not sent again
-    /// as they stand.
     stopped: Sent,
-    /// Sends not taken for now, each with its wait: not sent again as they
-    /// stand until [`RETRY`] is up, the rest going past them.
     again: BTreeMap<(String, String), (Wanted, Task<()>)>,
     inputs: Option<Inputs>,
-    /// The send or the reach out now.
     busy: Option<Task<()>>,
     http: reqwest::Client,
     _observing: Vec<Subscription>,
@@ -267,11 +241,6 @@ impl Registrar {
             let observing = vec![
                 cx.observe(&shared.session, |this: &mut Self, _, cx| this.sync(cx)),
                 cx.observe(&shared.account, |this: &mut Self, _, cx| this.sync(cx)),
-                // back in front, the nodes missed (a launch offline, or on
-                // a locked phone) are tried again: on each word of it, not
-                // only a change, since a scene let go behind says "not
-                // behind" before the front does, and a launch behind may
-                // say nothing before it
                 cx.observe_global::<Backgrounded>(|this: &mut Self, cx| {
                     if !cx.global::<Backgrounded>().0 {
                         this.missed.clear();
@@ -325,14 +294,11 @@ impl Registrar {
             .cloned()
     }
 
-    /// `url` heard serving `chain` last, for a shell's test.
     #[cfg(test)]
     pub(crate) fn heard(&mut self, url: &str, chain: &str) {
         self.nodes.insert(url.into(), chain.into());
     }
 
-    /// What is due, the first of it sent; the rest follows as each lands.
-    /// Nothing due: the first listed node not heard from is reached.
     fn sync(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
@@ -357,8 +323,6 @@ impl Registrar {
             .map(|node| node.url.clone())
             .collect();
         if !session.chain.is_empty() {
-            // the network in hand, listed or not, as the session and the
-            // account have it
             if !listed.contains(&session.connected_rpc) {
                 listed.insert(0, session.connected_rpc.clone());
             }
@@ -393,8 +357,6 @@ impl Registrar {
         }
     }
 
-    /// The first of `due` neither refused for good nor waiting to be tried
-    /// again, as it stands.
     fn next(&self, due: Vec<Wanted>) -> Option<Wanted> {
         due.into_iter().find(|want| {
             let at = (want.chain.clone(), want.kind.clone());
@@ -403,8 +365,6 @@ impl Registrar {
         })
     }
 
-    /// The chain each node reached serves, kept for the listed nodes only;
-    /// saved when that moved.
     fn remember(&mut self, listed: &[String]) {
         let mut nodes = self.nodes.clone();
         for (url, network) in &self.reached {
@@ -417,7 +377,6 @@ impl Registrar {
         }
     }
 
-    /// `want` sent; [`Registrar::landed`] takes the answer.
     fn send(&mut self, want: Wanted, cx: &mut Context<Self>) {
         let (http, server) = (self.http.clone(), push::server());
         let work = async move {
@@ -430,8 +389,6 @@ impl Registrar {
         }));
     }
 
-    /// The node at `url` asked who this phone is there, given
-    /// [`REACH_WITHIN`]; heard or not, the sync goes on.
     fn reach(&mut self, url: String, cx: &mut Context<Self>) {
         let work = reach(url.clone());
         self.busy = Some(cx.spawn(async move |this, cx| {
@@ -458,12 +415,6 @@ impl Registrar {
         }));
     }
 
-    /// A send came back. Taken, it is what the server holds now (kept in
-    /// the prefs) and the next due one goes. Refused for good, it waits on
-    /// its inputs; a leave refused so has nothing left to leave (pushd holds
-    /// no live row: the chain unfollowed, the key off the account), and goes
-    /// from the prefs. Not taken for now, it waits [`RETRY`]. Either way the
-    /// next due one goes.
     fn landed(&mut self, want: Wanted, sent: Result<(), Failed>, cx: &mut Context<Self>) {
         self.busy = None;
         let at = (want.chain.clone(), want.kind.clone());
@@ -511,7 +462,6 @@ impl Registrar {
         self.sync(cx);
     }
 
-    /// What was sent and the nodes' chains, into the prefs.
     fn save(&self) {
         let sent: Vec<serde_json::Value> = self.kept.values().map(json_of).collect();
         let kept = serde_json::json!({ "sent": sent, "nodes": self.nodes });
@@ -521,8 +471,6 @@ impl Registrar {
     }
 }
 
-/// What the prefs kept: what the server holds, and the chain each listed
-/// node served. An entry that does not read is dropped.
 fn load() -> (Sent, BTreeMap<String, String>) {
     let prefs = ducktape_host::backend::read_prefs().unwrap_or_default();
     let kept = &prefs[PREF];
@@ -567,11 +515,6 @@ fn wanted_of(value: &serde_json::Value) -> Option<Wanted> {
     })
 }
 
-/// Who this phone is on the network of the node at `url`: the chain it
-/// serves (as the session derives it, `session/node.rs`), this phone's key
-/// there, and the account identity says the key acts as, asked with the
-/// shell's reader key. Light: a status and an identity query, no session,
-/// no views; the key is opened, never seated.
 async fn reach(url: String) -> Result<Network, String> {
     let os = ducktape_host::contract::os();
     let client = ducktape_host::backend::rpc_client(url);
@@ -602,12 +545,8 @@ async fn reach(url: String) -> Result<Network, String> {
     })
 }
 
-/// What a phone with no key for a network's keyring says.
 const NO_KEY: &str = "this phone keeps no key for that network";
 
-/// `work` on the runtime's blocking pool, off the window thread: a key
-/// store may take its time or prompt (`OsServices::device_key`), as the
-/// host's own open does (`session/account.rs`).
 async fn off_window<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, String> {
@@ -617,10 +556,6 @@ async fn off_window<T: Send + 'static>(
         .map_err(|_| "the key store's work did not finish".to_owned())
 }
 
-/// The signature over `preimage` of the key `opened` for a registration of
-/// `key`, hex. A key that would not open or sign is tried again (an iPhone
-/// keeps it locked away while it is locked); only another key kept for the
-/// network is final.
 fn signed(
     opened: Result<
         Option<std::sync::Arc<dyn noded_client::Signer>>,
@@ -643,9 +578,6 @@ fn signed(
     Ok(noded_client::hex::hex_encode(&signature))
 }
 
-/// `want` timed, signed by its network's key (opened from its keyring:
-/// the seated one's for the network in hand, another network's own, never
-/// seated) and posted to `server`.
 async fn send(http: &reqwest::Client, server: &str, want: &Wanted) -> Result<(), Failed> {
     let mut registration = Registration {
         chain: want.chain.clone(),
@@ -703,7 +635,6 @@ mod tests {
             .collect()
     }
 
-    /// A network on `chain` where key `key` acts as `account`.
     fn on(chain: &str, account: Option<u64>, key: &str) -> Network {
         Network {
             chain: chain.into(),
@@ -719,9 +650,6 @@ mod tests {
             .collect()
     }
 
-    /// Every token is due on a chain with an account and a key, an APNs
-    /// one with the build's env and an fcm one with none; nothing is due
-    /// off a network, with no key, or before the account is known.
     #[test]
     fn every_token_is_due_once_the_phone_is_on_an_account() {
         let have = tokens(&[("voip", "v1"), ("apns", "a1"), ("fcm", "f1")]);
@@ -751,9 +679,6 @@ mod tests {
         }
     }
 
-    /// What the server holds as sent is not sent again; a token that moved
-    /// is, and a kind the OS withdrew goes as a leave once, on the chain
-    /// and key it was sent for; a kind not handed yet is not a withdrawal.
     #[test]
     fn only_what_moved_is_sent_again_and_a_withdrawn_token_leaves() {
         let here = [on("testkit#0a1b2c3d", Some(15), "ab")];
@@ -777,19 +702,12 @@ mod tests {
         let due = plan(&here, &withdrawn, "production", &sent, &sent);
         assert_eq!(due.len(), 1);
         assert_eq!((due[0].kind.as_str(), due[0].token.as_str()), ("voip", ""));
-        // a relaunch before the OS handed a kind's token: no word, no leave
         let unhanded = tokens(&[("fcm", "f1")]);
         assert!(plan(&here, &unhanded, "production", &sent, &sent).is_empty());
-        // the account moved under the same key: sent again
         let moved = on("testkit#0a1b2c3d", Some(16), "ab");
         assert_eq!(plan(&[moved], &have, "production", &sent, &sent).len(), 2);
     }
 
-    /// Two listed networks, each with an account: every token is due on
-    /// each, under that network's own key, account and keyring; the node in
-    /// hand's first. A listed node whose account is not known (not
-    /// reached, or its key acts as none there) is due nothing, and two
-    /// nodes of one chain are one network, the first standing for it.
     #[test]
     fn every_listed_network_with_an_account_is_due() {
         let have = tokens(&[("apns", "a1"), ("voip", "v1")]);
@@ -836,11 +754,6 @@ mod tests {
         );
     }
 
-    /// A network forgotten, after a relaunch even (what was sent read back
-    /// from the prefs' shape), leaves: each kind sent on its chain, signed
-    /// by the key and keyring it was sent with. A switch is no leave: a
-    /// chain still listed, reached or not, keeps its rows, and so does one
-    /// another listed node still serves.
     #[test]
     fn a_forgotten_network_leaves_and_a_listed_one_stays() {
         let have = tokens(&[("apns", "a1")]);
@@ -858,7 +771,6 @@ mod tests {
         let relaunched: Sent = sent_of(&kept.iter().filter_map(wanted_of).collect::<Vec<_>>());
         assert_eq!(relaunched, sent, "what was sent did not survive a relaunch");
 
-        // away's node forgotten: home in hand, away in no list
         let nodes = BTreeMap::from([("http://a".to_owned(), "home#0a0a0a0a".to_owned())]);
         let reached = BTreeMap::from([("http://a".to_owned(), home.clone())]);
         let after = networks(&["http://a".to_owned()], &reached, &nodes);
@@ -875,7 +787,6 @@ mod tests {
             ("bb", "bb-ring", 3)
         );
 
-        // switched to home, away still listed but not reached this run
         let nodes = BTreeMap::from([
             ("http://a".to_owned(), "home#0a0a0a0a".to_owned()),
             ("http://b".to_owned(), "away#0b0b0b0b".to_owned()),
@@ -883,7 +794,6 @@ mod tests {
         let listed = ["http://a", "http://b"].map(String::from);
         let still = networks(&listed, &reached, &nodes);
         assert!(plan(&still, &have, "production", &relaunched, &relaunched).is_empty());
-        // one of away's two nodes forgotten: the other still serves it
         let nodes = BTreeMap::from([
             ("http://a".to_owned(), "home#0a0a0a0a".to_owned()),
             ("http://b2".to_owned(), "away#0b0b0b0b".to_owned()),
@@ -893,7 +803,6 @@ mod tests {
         assert!(plan(&still, &have, "production", &relaunched, &relaunched).is_empty());
     }
 
-    /// A 4xx is final but 408 and 429; 5xx and the rest are tried again.
     #[test]
     fn a_4xx_stops_and_a_5xx_is_tried_again() {
         let said = |status| answered(status, format!("{status}"));
@@ -906,9 +815,6 @@ mod tests {
         }
     }
 
-    /// A remembered node of a chain that did not answer this run hides no
-    /// node of that chain that did: the one with a known account stands for
-    /// the chain, and its tokens are due there.
     #[test]
     fn a_remembered_node_hides_no_reached_one_of_its_chain() {
         let reached =
@@ -926,9 +832,6 @@ mod tests {
         );
     }
 
-    /// Each registration goes once a run: after a relaunch, what the server
-    /// held is sent again (a row it lost comes back), and once taken it is
-    /// not sent again in the run.
     #[test]
     fn a_relaunch_sends_each_registration_once_again() {
         let have = tokens(&[("apns", "a1"), ("voip", "v1")]);
@@ -949,9 +852,6 @@ mod tests {
         assert!(plan(&here, &have, "production", &kept, &sent_of(&due)).is_empty());
     }
 
-    /// A send and a reach each open this phone's key off the thread that
-    /// polls them (the window thread, in the app): a key store may take its
-    /// time or prompt.
     #[test]
     fn a_key_is_opened_off_the_window_thread() {
         use std::io::{BufRead as _, Write as _};
@@ -963,7 +863,6 @@ mod tests {
         };
         let runtime = ducktape_host::runtime::handle();
 
-        // a send: its key opened, and found another, before anything is posted
         let to_send = Wanted {
             keyring: "send-off-window".into(),
             ..want("away#0b0b0b0b", "a1")
@@ -976,8 +875,6 @@ mod tests {
         assert!(!sent.is_empty(), "the send opened no key");
         assert!(!sent.contains(&caller), "the send opened its key here");
 
-        // a reach: a node that answers its status, then is gone (the
-        // identity query after the key is not answered)
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let status = ducktape_host::backend::NodeStatus {
@@ -987,8 +884,6 @@ mod tests {
         let body = abi::encode(&status);
         let node = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            // the request read first: a socket closed on unread bytes
-            // resets the connection under the answer
             let mut reader = std::io::BufReader::new(&stream);
             let mut line = String::new();
             while reader.read_line(&mut line).unwrap_or(0) > 2 {
@@ -1008,9 +903,6 @@ mod tests {
         assert!(!reached.contains(&caller), "the reach opened its key here");
     }
 
-    /// A key that would not open, is not there, or would not sign is tried
-    /// again (a locked iPhone); another key kept for the network is final;
-    /// the key kept signs.
     #[test]
     fn a_key_that_will_not_open_or_sign_is_tried_again() {
         use ducktape_host::contract::KeyRefusal;
@@ -1054,9 +946,6 @@ mod tests {
         noded_client::hex::hex_encode(bytes)
     }
 
-    /// A listed node on a chain another node of which answered this run is
-    /// not reached (a status and an identity query saved); one on another
-    /// chain, or never heard, is.
     #[test]
     fn a_second_node_of_a_reached_chain_is_not_reached() {
         let reached = BTreeMap::from([("http://a".to_owned(), on("away#0b0b0b0b", Some(3), "bb"))]);
@@ -1077,7 +966,6 @@ mod tests {
         );
     }
 
-    /// A registrar over a session of the test's own.
     fn registrar(cx: &mut gpui_kit::TestAppContext) -> (Shared, Entity<Registrar>) {
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
@@ -1098,8 +986,6 @@ mod tests {
         }
     }
 
-    /// A send refused for good is not sent again while it stands as it
-    /// was, until an input moves (here, the list).
     #[gpui_kit::test]
     fn a_refused_send_waits_on_its_inputs(cx: &mut gpui_kit::TestAppContext) {
         use ducktape_host::session::SessionState;
@@ -1129,9 +1015,6 @@ mod tests {
         });
     }
 
-    /// A send not taken for now waits [`RETRY`] aside: the next pick goes
-    /// past it, to the networks after it and the leaves, and nothing is held
-    /// busy; once its wait is up it is due again.
     #[gpui_kit::test]
     fn a_send_waiting_to_be_tried_again_lets_the_rest_go(cx: &mut gpui_kit::TestAppContext) {
         let (_, registrar) = registrar(cx);
@@ -1158,9 +1041,6 @@ mod tests {
         });
     }
 
-    /// A leave refused for good leaves nothing behind: pushd holds no live
-    /// row to take back, so it goes from what the server holds (and the
-    /// prefs), not tried again each time the inputs move.
     #[gpui_kit::test]
     fn a_leave_refused_for_good_is_forgotten(cx: &mut gpui_kit::TestAppContext) {
         let (_, registrar) = registrar(cx);
@@ -1185,9 +1065,6 @@ mod tests {
         );
     }
 
-    /// A tapped notice of another network switches to a node of it that
-    /// answered this run, not to a more recent one that did not; with none
-    /// answered, to one not tried yet before one that missed.
     #[gpui_kit::test]
     fn a_tap_switches_to_a_node_that_answered(cx: &mut gpui_kit::TestAppContext) {
         use ducktape_host::backend::RecentEndpoint;
@@ -1222,11 +1099,6 @@ mod tests {
         });
     }
 
-    /// A node missed is reached again each time the app comes to the front
-    /// (a launch offline, or on a locked phone), not while it is behind:
-    /// at the first word of the front, with none of the back before it (a
-    /// launch behind), and at a second (a scene let go behind said "not
-    /// behind" first).
     #[gpui_kit::test]
     fn a_missed_node_is_tried_again_back_in_front(cx: &mut gpui_kit::TestAppContext) {
         use ducktape_host::backend::RecentEndpoint;
@@ -1244,7 +1116,6 @@ mod tests {
         shared
             .session
             .update(cx, |session, cx| session.seed(listed, cx));
-        // the node missed and no reach out
         let missed = |cx: &mut gpui_kit::TestAppContext| {
             registrar.update(cx, |this, _| {
                 this.busy = None;

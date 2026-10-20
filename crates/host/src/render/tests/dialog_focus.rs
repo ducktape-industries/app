@@ -1,7 +1,6 @@
 //! A view dialog gives the keyboard back to what opened it (AX-120).
 use super::*;
 
-/// `button`, which the view names by focus `handle`.
 fn handled(key: &str, name: &str, handle: u64) -> wire::Node {
     let mut node = button(key, name);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
@@ -11,8 +10,6 @@ fn handled(key: &str, name: &str, handle: u64) -> wire::Node {
     node
 }
 
-/// The opener (focus handle 1) beside an overlay whose dialog, Save (2)
-/// and Cancel (3), shows when `open`.
 fn screen(open: bool) -> wire::Node {
     let mut children = vec![container("base", [handled("open", "Rename", 1)])];
     if open {
@@ -31,10 +28,6 @@ fn screen(open: bool) -> wire::Node {
     sized("root", overlay, Some(fill()), Some(fill()))
 }
 
-/// The dialog takes the keyboard as it opens, and once it closes the
-/// button that opened it has it again, not nothing. With `fallback`, the
-/// window's root takes the keys back when the focused element vanishes in
-/// a draw, as the app's `WindowRoot::focus_lost` does (shell/layers/root.rs).
 fn close_gives_focus_back_to_the_opener(cx: &mut gpui_kit::TestAppContext, fallback: bool) {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
@@ -85,19 +78,11 @@ fn a_closed_dialog_gives_focus_back_to_its_opener(cx: &mut gpui_kit::TestAppCont
     close_gives_focus_back_to_the_opener(cx, false);
 }
 
-/// Under the window's own fallback, which every console window has: the
-/// draw that drops the dialog drops its focused control, and focus moved to
-/// the opener in that draw's render is never lost, so the root never takes
-/// it. Before, the way back waited until after the draw, found the root
-/// focused, and left the keys there: the next Tab started the window over.
 #[gpui_kit::test]
 fn a_closed_dialog_gives_focus_back_under_a_focus_lost_fallback(cx: &mut gpui_kit::TestAppContext) {
     close_gives_focus_back_to_the_opener(cx, true);
 }
 
-/// A dialog whose view may not move the keys (`ViewTree::keys_grant`
-/// false: a background pane, or under Spotlight, with no gesture) opens
-/// without taking them: the keys stay where they were.
 #[gpui_kit::test]
 fn a_dialog_takes_no_keys_without_the_grant(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -121,7 +106,6 @@ fn a_dialog_takes_no_keys_without_the_grant(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
-/// The view focus handle that has the keys, if one has.
 fn holder(
     tree: &gpui_kit::Entity<ViewTree>,
     native: &mut gpui_kit::VisualTestContext,
@@ -134,9 +118,6 @@ fn holder(
     })
 }
 
-/// Under the kit's root (what answers Tab), a view dialog opens with the
-/// keys on its first control, and Tab and Shift+Tab go round its controls,
-/// never out to the opener behind it.
 #[gpui_kit::test]
 fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::AppContext as _;
@@ -178,10 +159,6 @@ fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext)
     );
 }
 
-/// On a touch device a dialog opens with the keys on its trap and on none
-/// of its controls: a first stop that is a field would bring the soft
-/// keyboard up over a sheet nobody has touched. A hardware keyboard's Tab
-/// still goes in.
 #[gpui_kit::test]
 fn under_touch_a_view_dialog_opens_on_no_control(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::AppContext as _;
@@ -208,10 +185,6 @@ fn under_touch_a_view_dialog_opens_on_no_control(cx: &mut gpui_kit::TestAppConte
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// A screen whose dialog the view wraps around it only once it opens
-/// (chat's Create channel, chat-view `ui/mod.rs` `with_create`): the
-/// opener, a button with no view focus handle, moves under the overlay,
-/// so its path changes — and its host focus handle dies — as it opens.
 fn wrapped(open: bool) -> wire::Node {
     let base = container("base", [button("open", "New channel")]);
     if !open {
@@ -237,8 +210,6 @@ fn wrapped(open: bool) -> wire::Node {
     sized("root", overlay, Some(fill()), Some(fill()))
 }
 
-/// Whether the keys are in the one open dialog (its trap's handle contains
-/// the focused element).
 fn inside(tree: &gpui_kit::Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext) -> bool {
     let entry = tree.read_with(native, |tree, _| {
         tree.dialogs.values().next().map(|(entry, _)| entry.clone())
@@ -246,10 +217,6 @@ fn inside(tree: &gpui_kit::Entity<ViewTree>, native: &mut gpui_kit::VisualTestCo
     native.update(|window, cx| entry.is_some_and(|entry| entry.contains_focused(window, cx)))
 }
 
-/// In a window whose root takes the keys back when the focused element
-/// vanishes (as the app's `WindowRoot::focus_lost` does, shell/layers/root.rs),
-/// a dialog wrapped around its opener as it opens still takes the keyboard:
-/// it opens on its first control and Tab goes round it.
 #[gpui_kit::test]
 fn a_dialog_wrapped_around_its_opener_takes_the_keys(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::AppContext as _;
@@ -306,10 +273,6 @@ fn a_dialog_wrapped_around_its_opener_takes_the_keys(cx: &mut gpui_kit::TestAppC
     drop(fallback);
 }
 
-/// An opener whose dialog hangs from it as a deferred popover (forge's
-/// Finish your review), Submit (2) and Cancel (3), with a pane (4) drawn
-/// after it. Deferred, the dialog paints after the pane, and so do its Tab
-/// places: gpui orders Tab stops as they paint.
 fn popover(open: bool) -> wire::Node {
     let mut children = vec![handled("open", "Finish", 1)];
     if open {
@@ -342,9 +305,6 @@ fn popover(open: bool) -> wire::Node {
     sized("root", page, Some(fill()), Some(fill()))
 }
 
-/// A dialog drawn as a deferred popover opens with the keys on its first
-/// control, not on the pane painted between its opener and it, and a
-/// view's `focus_next`/`focus_prev` go round it as Tab does.
 #[gpui_kit::test]
 fn a_popover_dialog_takes_the_keys_and_keeps_them(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -388,9 +348,6 @@ fn a_popover_dialog_takes_the_keys_and_keeps_them(cx: &mut gpui_kit::TestAppCont
     );
 }
 
-/// A dialog drawn as a deferred popover holds its controls for assistive
-/// technology: Submit and Cancel are in the Dialog node's subtree, not hung
-/// off the window beside an empty dialog that hides everything else.
 #[gpui_kit::test]
 fn a_popover_dialog_holds_its_controls_for_assistive_technology(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -427,9 +384,6 @@ fn a_popover_dialog_holds_its_controls_for_assistive_technology(cx: &mut gpui_ki
     );
 }
 
-/// Under the kit's root, Tab and Shift+Tab go round a dialog drawn as a
-/// deferred popover, never out to the pane painted after its opener, and
-/// Escape dismisses it.
 #[gpui_kit::test]
 fn tab_and_escape_hold_in_a_popover_dialog(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::AppContext as _;

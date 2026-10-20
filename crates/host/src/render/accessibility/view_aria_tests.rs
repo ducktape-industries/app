@@ -27,8 +27,6 @@ fn boxed() -> gpui_kit::StyleRefinement {
     div().w(px(200.)).h(px(96.)).style().clone()
 }
 
-/// Every aria field set to a value of its own, a role, focusable, the
-/// active-descendant claim, and `label` as the pass asks.
 fn every_aria(author_id: &str, label: Option<&str>) -> wire::Interactivity {
     wire::Interactivity {
         role: Some(Role::Button),
@@ -63,8 +61,6 @@ fn every_aria(author_id: &str, label: Option<&str>) -> wire::Interactivity {
     }
 }
 
-/// `every_aria` on a node nothing can focus: the one that may claim the
-/// active descendant.
 fn unfocusable(label: Option<&str>) -> wire::Interactivity {
     wire::Interactivity {
         focusable: false,
@@ -72,8 +68,6 @@ fn unfocusable(label: Option<&str>) -> wire::Interactivity {
     }
 }
 
-/// Where the aria is put: on a Container, an Image, a UniformList itself,
-/// the one row of a UniformList, a ResizeHandle or a (variable) List.
 #[derive(Debug)]
 enum Site {
     Container,
@@ -92,7 +86,6 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             interactivity: Some(Box::new(interactivity)),
             children: vec![text("child-text")],
         }),
-        // no picture yet: the loading child, a text, is what is drawn
         Site::Image => wire::Node::Image {
             id: Some(key("child")),
             hash: 0,
@@ -175,11 +168,8 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     }
 }
 
-/// The child under a focusable, roled parent that holds the view focus
-/// handle: the composite an active descendant is announced within.
 fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     let mut child = child(site, interactivity);
-    // a list's path is the one the walk takes to it, through the parent
     child.for_each_mut(&mut |node| {
         if let wire::Node::UniformList { path, .. } | wire::Node::List { path, .. } = node {
             path.insert(0, key("parent"));
@@ -203,7 +193,6 @@ fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     })
 }
 
-/// `root` as the host takes it from a view: through the sanitizer.
 fn sanitized(root: wire::Node) -> wire::Node {
     let mut frame = wire::Frame {
         root: Some(root),
@@ -213,7 +202,6 @@ fn sanitized(root: wire::Node) -> wire::Node {
     frame.root.expect("the tree stays")
 }
 
-/// Everything gpui writes onto a node from the view's aria.
 #[derive(Debug, PartialEq)]
 struct Heard {
     role: Role,
@@ -305,10 +293,6 @@ fn expected(name: &str, focusable: bool) -> Heard {
     }
 }
 
-/// Renders `root`, focuses the parent through its view focus handle,
-/// and returns the child's node as heard (None when the tree has no node
-/// for it) plus whether the tree reports the child as the focused
-/// (active descendant) node.
 fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Heard>, bool) {
     let root = sanitized(root);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
@@ -342,13 +326,6 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
     })
 }
 
-/// Every renderer announces the view's aria alike, a roled node with no
-/// label named by the text it draws; a focusable node never claims the
-/// active descendant (gpui panics, in debug, when the claimant is the
-/// focused node): the sanitizer drops its claim, so focus stays on the
-/// parent. A UniformList itself has
-/// no node at all: gpui's `UniformList` element reports no `a11y_role`, so
-/// its aria is dead until the fork gives it one.
 #[gpui_kit::test]
 fn view_aria_announces_what_each_renderer_did(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -368,9 +345,6 @@ fn view_aria_announces_what_each_renderer_did(cx: &mut gpui_kit::TestAppContext)
     }
 }
 
-/// The same Aria on a row of a UniformList and on an Image is what it is
-/// on a Container: every property, the name from the drawn text when
-/// unlabelled, and the active descendant within the focused parent.
 #[gpui_kit::test]
 fn a_uniform_list_row_and_an_image_get_the_aria_a_container_gets(
     cx: &mut gpui_kit::TestAppContext,
@@ -388,8 +362,6 @@ fn a_uniform_list_row_and_an_image_get_the_aria_a_container_gets(
     }
 }
 
-/// A picture the view labelled and gave no role is an Image named by its
-/// label, as `accessible` says; an unlabelled one stays out of the tree.
 #[gpui_kit::test]
 fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -397,7 +369,6 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
         let aria = wire::Interactivity {
             aria: wire::Aria {
                 author_id: Some("picture".into()),
-                // the SDK sends the label on the node and in its aria
                 label: label.map(Into::into),
                 ..Default::default()
             },
@@ -446,9 +417,6 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
     }
 }
 
-/// A view's own focus handle is a Tab stop when the view says the element
-/// is one, as gpui makes the handle of an element it gives one; one the
-/// view left out of the Tab order stays out.
 #[gpui_kit::test]
 fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -484,7 +452,6 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
     native.update(|window, cx| {
         window.activate_a11y();
         crate::render::draw_frame(window, cx);
-        // Tab is the app's binding to `focus_next`; a bare window has none
         window.focus_next(cx);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
@@ -494,9 +461,6 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
     });
 }
 
-/// A pressable button that is `focusable`, with the Tab stop `tab_stop`,
-/// alone in a row: whether its node offers focus to assistive technology,
-/// and whether the first Tab lands on it.
 fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>) -> (bool, bool) {
     cx.update(gpui_kit::init);
     let button = wire::Node::Container(view_wire::ContainerNode {
@@ -529,7 +493,6 @@ fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>
     native.update(|window, cx| {
         window.activate_a11y();
         crate::render::draw_frame(window, cx);
-        // Tab is the app's binding to `focus_next`; a bare window has none
         window.focus_next(cx);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
@@ -539,18 +502,11 @@ fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>
     })
 }
 
-/// A view control as the SDK lowers `focusable()` (option B: `tab_stop:
-/// Some(true)` unless the view said otherwise) is a Tab stop the host
-/// honours: Tab lands on it.
 #[gpui_kit::test]
 fn a_lowered_focusable_with_tab_stop_takes_tab(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(pressable_after_tab(cx, Some(true)), (true, true));
 }
 
-/// A raw-wire view's `focusable` without a `tab_stop` is taken at its
-/// word: the node offers focus to assistive technology and Tab skips it.
-/// The host adds no stop the wire did not ask for (79b524d3); the SDK's
-/// lint faults such a control as `Unreachable`.
 #[gpui_kit::test]
 fn a_raw_focusable_without_tab_stop_offers_focus_but_tab_skips_it(
     cx: &mut gpui_kit::TestAppContext,
@@ -560,9 +516,6 @@ fn a_raw_focusable_without_tab_stop_offers_focus_but_tab_skips_it(
     assert!(!reached, "Tab skips a focusable the wire left out");
 }
 
-/// A container the view focuses by id (a menu frame it opens) stays in the
-/// Tab order: the handle the host makes for it takes the wire's Tab stop,
-/// as the handle gpui makes for an element does.
 #[gpui_kit::test]
 fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -614,7 +567,6 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
         });
     });
     assert_eq!(focused(&mut native), Some("menu"), "the view focused it");
-    // Tab is the app's binding to `focus_next`; a bare window has none
     native.update(|window, cx| window.focus_next(cx));
     assert_eq!(focused(&mut native), Some("next"));
     native.update(|window, cx| window.focus_next(cx));
@@ -625,8 +577,6 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
     );
 }
 
-/// A focusable composite `id` of three `item` rows whose second is its
-/// active descendant, as the SDK builds one.
 fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
     let rows = (0..3)
         .map(|n| {
@@ -669,12 +619,6 @@ fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
     })
 }
 
-/// During a hold (⌘⇧M) the shell's pane box has the keys and is an
-/// ancestor of every claim its view makes. With two composites on the
-/// screen each claiming its active row (Forge's Code: a tab list and the
-/// tree), neither has the keys, so neither claim counts: the pane box is
-/// what assistive technology hears focused, not a row, and no build
-/// panics on two claims under one focused box.
 #[gpui_kit::test]
 fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
     cx: &mut gpui_kit::TestAppContext,
@@ -751,13 +695,8 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
 }
 
 mod phase_two {
-    //! What phase 2 added to the one mapper: the aria gpui has no setter for,
-    //! through one `a11y::Patch`; a Status's words as its value; a List and a
-    //! ResizeHandle carrying a view's interactivity.
     use super::*;
 
-    /// Every phase-2 field a view sets that gpui has no setter for, on a
-    /// roled, named node.
     fn phase_two(role: Role) -> wire::Interactivity {
         wire::Interactivity {
             role: Some(role),
@@ -778,7 +717,6 @@ mod phase_two {
         }
     }
 
-    /// The node `root` builds for author id `child`, once the tree is on.
     fn built(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Option<accesskit::Node> {
         let root = sanitized(root);
         let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
@@ -796,9 +734,6 @@ mod phase_two {
         })
     }
 
-    /// Each phase-2 aria field reaches the node, all of them through one
-    /// patch (a second closure would replace the first), on every renderer
-    /// that carries a view's interactivity: a ResizeHandle and a List too.
     #[gpui_kit::test]
     fn every_renderer_puts_the_phase_two_aria_on_its_node(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -830,7 +765,6 @@ mod phase_two {
         }
     }
 
-    /// A list the view left plain is gpui's list alone: no box, no node.
     #[gpui_kit::test]
     fn a_plain_list_has_no_node(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -845,8 +779,6 @@ mod phase_two {
         );
     }
 
-    /// A Status or Alert the view did not give a value speaks the words it
-    /// draws as its value as well as its name: macOS reads the value.
     #[gpui_kit::test]
     fn a_status_speaks_its_drawn_words_as_its_value(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -866,8 +798,6 @@ mod phase_two {
         }
     }
 
-    /// A divider as the SDK builds it is a named Splitter Tab reaches, and a
-    /// key pressed on it goes to the view.
     #[gpui_kit::test]
     fn a_resize_handle_takes_focus_and_keys(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -889,7 +819,6 @@ mod phase_two {
         let tree = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         let (events, _subscription) = emitted(&tree, &mut native);
-        // Tab is the app's binding to `focus_next`; a bare window has none
         native.update(|window, cx| {
             window.activate_a11y();
             crate::render::draw_frame(window, cx);
@@ -918,12 +847,6 @@ mod phase_two {
         );
     }
 
-    /// A divider's arrows move it, end to end: Tab reaches it, each arrow
-    /// reaches the view's key route as the keystroke the SDK's divider reads,
-    /// and the view, stepping as `design::divider` does (8 px, 32 with
-    /// shift), draws its pane that much wider or narrower. No built view
-    /// wasm is loadable here, so the view is this test, re-rendering from
-    /// its key route.
     #[gpui_kit::test]
     fn a_dividers_arrows_move_its_pane_by_eight_or_thirty_two(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -1004,7 +927,6 @@ mod phase_two {
                 )
             })
         };
-        // Tab is the app's binding to `focus_next`; a bare window has none
         native.update(|window, cx| {
             window.activate_a11y();
             crate::render::draw_frame(window, cx);
@@ -1015,7 +937,6 @@ mod phase_two {
         for (keystroke, moved) in [("right", 208), ("shift-right", 240), ("left", 232)] {
             native.simulate_keystrokes(keystroke);
             for event in events.borrow_mut().drain(..) {
-                // the view: design::divider's step, on the event it is handed
                 let wire::Event::KeyDown {
                     handler: ROUTE,
                     event,
@@ -1046,8 +967,6 @@ mod phase_two {
         }
     }
 
-    /// A handle a view names on a divider or a list outlives the frame that
-    /// made it: a new frame keeps focus where it was.
     #[gpui_kit::test]
     fn a_view_focus_handle_on_a_divider_or_a_list_survives_a_frame(
         cx: &mut gpui_kit::TestAppContext,
@@ -1076,7 +995,6 @@ mod phase_two {
         }
     }
 
-    /// A roled row named `row-<n>`, maybe wrapping a roled child `inner-<n>`.
     fn row(n: usize, role: Option<Role>) -> wire::Node {
         let named = |id: String| wire::Interactivity {
             role: Some(Role::ListBoxOption),
@@ -1104,7 +1022,6 @@ mod phase_two {
         })
     }
 
-    /// `(author id, position, size)` of every node the rows built.
     fn set_places(
         cx: &mut gpui_kit::TestAppContext,
         root: wire::Node,
@@ -1131,9 +1048,6 @@ mod phase_two {
         })
     }
 
-    /// Each row a virtualized list draws says where it is in the whole list,
-    /// 1-based, unless the view said; what a row holds says nothing of it, and
-    /// a row with no role has no node to say it on (AX-112).
     #[gpui_kit::test]
     fn a_list_row_says_where_it_is_in_the_list(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);

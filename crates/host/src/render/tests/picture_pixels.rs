@@ -4,15 +4,12 @@
 use super::*;
 use gpui_kit::{HeadlessAppContext, PlatformHeadlessRenderer};
 
-/// A square filling its whole box.
 const SQUARE: &[u8] =
     br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0 0h24v24H0z"/></svg>"#;
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const RED: [u8; 4] = [255, 0, 0, 255];
 const BLUE: [u8; 4] = [0, 0, 255, 255];
 
-/// An app whose windows draw through wgpu's headless renderer, so its
-/// atlas is a GPU's and `capture_screenshot` reads back what it drew.
 pub(in crate::render) fn rendering_app() -> HeadlessAppContext {
     let text = Arc::new(gpui_wgpu::CosmicTextSystem::new_without_system_fonts(
         "fallback",
@@ -26,7 +23,6 @@ pub(in crate::render) fn rendering_app() -> HeadlessAppContext {
     cx
 }
 
-/// A 30px view Svg of [`SQUARE`] with `style` on top.
 fn glyph(style: gpui_kit::Div) -> wire::Node {
     wire::Node::Svg {
         id: Some(named_id("glyph")),
@@ -45,9 +41,6 @@ fn glyph(style: gpui_kit::Div) -> wire::Node {
     }
 }
 
-/// `child` at the top left of a white 60px page, read back as the
-/// renderer drew it: the pixel at the middle of the glyph's box, and one
-/// outside it.
 fn painted(page: gpui_kit::Div, child: wire::Node) -> ([u8; 4], [u8; 4]) {
     let [glyph, outside] = painted_at(page, child, [(15, 15), (45, 45)]);
     (glyph, outside)
@@ -114,7 +107,6 @@ fn a_round_picture_paints_round() {
     assert_near(corner, WHITE, "the page past the picture's round edge");
 }
 
-/// A view Svg with its own colour draws in it.
 #[test]
 fn a_view_svg_paints_in_its_own_colour() {
     let (glyph, outside) = painted(div(), glyph(div().text_color(rgb(0xff0000))));
@@ -122,8 +114,6 @@ fn a_view_svg_paints_in_its_own_colour() {
     assert_near(glyph, RED, "the glyph's middle");
 }
 
-/// A view Svg with no colour of its own draws in the colour it inherits
-/// (CSS `currentColor`), as text does, not nothing.
 #[test]
 fn a_view_svg_with_no_colour_paints_in_the_one_it_inherits() {
     let (glyph, outside) = painted(div().text_color(rgb(0x0000ff)), glyph(div()));
@@ -131,9 +121,6 @@ fn a_view_svg_with_no_colour_paints_in_the_one_it_inherits() {
     assert_near(glyph, BLUE, "the glyph's middle");
 }
 
-/// A view's gradient background crosses the host's sanitizer and paints
-/// as gpui draws one: red at its left, blue at its right, where the
-/// sanitizer once dropped it and left the page white.
 #[test]
 fn a_view_gradient_background_paints() {
     let gradient = gpui_kit::linear_gradient(
@@ -158,8 +145,6 @@ fn a_view_gradient_background_paints() {
     );
 }
 
-/// The canvas painter as it was before a run of quads took one draw order:
-/// every command painted by itself, each with a draw order of its own.
 fn painted_one_by_one(
     commands: &[wire::CanvasCommand],
     origin: Point<Pixels>,
@@ -220,7 +205,6 @@ fn painted_one_by_one(
             }
             wire::CanvasShape::Path(_) => continue,
         };
-        // SVG strokes straddle the geometry; native quad borders are inset.
         let border = stroke.as_ref().map_or(0., |s| s.width);
         let expanded = Bounds::new(
             bounds.origin - point(px(border / 2.), px(border / 2.)),
@@ -239,7 +223,6 @@ fn painted_one_by_one(
 
 type Painter = fn(&[wire::CanvasCommand], Point<Pixels>, &mut Window);
 
-/// `commands` on a white page, painted by `painter`.
 struct Painted(Rc<[wire::CanvasCommand]>, Painter);
 
 impl Render for Painted {
@@ -255,7 +238,6 @@ impl Render for Painted {
     }
 }
 
-/// `commands` as the renderer draws what `painter` paints, 240 by 140.
 fn picture(commands: &[wire::CanvasCommand], painter: Painter) -> image::RgbaImage {
     let mut cx = rendering_app();
     let commands: Rc<[wire::CanvasCommand]> = commands.into();
@@ -309,10 +291,6 @@ fn rectangle(x: f32, y: f32, width: f32, height: f32) -> wire::CanvasShape {
     }
 }
 
-/// The quads of a chart as a view draws one: rules, then for each candle a
-/// wick, a body wider than the step (neighbours overlap) and a half-clear
-/// volume bar, all at fractions of a pixel; ringed half-clear discs and a
-/// rounded box over them; and rules laid over everything.
 fn chart(candles: usize) -> Vec<wire::CanvasCommand> {
     let grey = gpui_kit::rgba(0x80808080);
     let mut commands = Vec::new();
@@ -322,7 +300,6 @@ fn chart(candles: usize) -> Vec<wire::CanvasCommand> {
             grey,
         ));
     }
-    // a small deterministic scatter
     let mut seed = 7_u32;
     let mut next = move || {
         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -384,7 +361,6 @@ fn chart(candles: usize) -> Vec<wire::CanvasCommand> {
     commands
 }
 
-/// The pixels of two pictures that differ: where, and both colours.
 fn difference(
     one: &image::RgbaImage,
     other: &image::RgbaImage,
@@ -397,9 +373,6 @@ fn difference(
         .collect()
 }
 
-/// A line painted before a run of quads lies under every quad of the run,
-/// the far ones too: the run's layer is the box around all of it, not
-/// around the quad that begins it.
 #[test]
 fn a_line_before_a_run_lies_under_every_quad_of_it() {
     let yellow = gpui_kit::rgba(0xffcc00ff);
@@ -434,9 +407,6 @@ fn a_line_before_a_run_lies_under_every_quad_of_it() {
     );
 }
 
-/// A run of rectangles and circles under one draw order is the picture the
-/// same commands were with a draw order each: overlapping candles, discs
-/// with rings, half-clear fills, at two densities.
 #[test]
 fn quads_under_one_draw_order_are_the_picture_they_were_one_by_one() {
     for candles in [40, 160] {
@@ -453,12 +423,6 @@ fn quads_under_one_draw_order_are_the_picture_they_were_one_by_one() {
     }
 }
 
-/// Lines between two runs of quads lie over the run before them and under
-/// the run after, as they did when every quad had a draw order of its own.
-/// Every edge here is on a whole pixel and the lines are solid, so nothing
-/// is anti-aliased and the picture is only which shape lies over which.
-/// The steps go on from each other, so they are one path: its corners are
-/// as open as they were, no join drawn between two steps.
 #[test]
 fn lines_between_runs_of_quads_lie_over_the_run_before_and_under_the_run_after() {
     let ink = gpui_kit::rgba(0x202020ff);
@@ -466,7 +430,6 @@ fn lines_between_runs_of_quads_lie_over_the_run_before_and_under_the_run_after()
         filled(rectangle(20., 20., 120., 80.), gpui_kit::rgba(0xd03030ff)),
         filled(rectangle(100., 10., 100., 60.), gpui_kit::rgba(0x20a06080)),
     ];
-    // a staircase, each step from the last one's end
     let corners = [
         [10., 30.],
         [60., 30.],
@@ -512,8 +475,6 @@ fn lines_between_runs_of_quads_lie_over_the_run_before_and_under_the_run_after()
     );
 }
 
-/// A line as a chart draws an average: a command a segment, each from the
-/// last one's end, at fractions of a pixel.
 fn average(
     segments: usize,
     color: gpui_kit::Rgba,
@@ -545,10 +506,6 @@ fn average(
         .collect()
 }
 
-/// One path with a subpath a line has the triangles its lines have alone,
-/// in their order: two a line, no join between two lines. So what a line
-/// in one path changes in the picture is the renderer's doing, not the
-/// geometry's.
 #[test]
 fn one_path_has_the_triangles_its_lines_have_alone() {
     let points = [[10.3, 20.7], [14.1, 18.2], [18.9, 19.4], [23.2, 25.1]];
@@ -566,14 +523,6 @@ fn one_path_has_the_triangles_its_lines_have_alone() {
     assert_eq!(triangles(&points), alone);
 }
 
-/// A butt-capped line alone, as one path, loses no ink it had as a path a
-/// segment: no pixel is lighter. (With quads ordered between its segments
-/// the old batches were cut elsewhere, and a pixel at a joint can be
-/// lighter.) It is not the same picture: the renderer drops a
-/// path's pixel whose middle is outside that path's own box, which trims
-/// the partly covered pixels at a short segment's edge and not those of
-/// the whole line, so the one path adds ink there. How many pixels that is
-/// depends on the renderer, so no count is held here.
 #[test]
 fn a_line_in_one_path_loses_no_ink_its_segments_had() {
     for segments in [40, 160] {
@@ -597,8 +546,6 @@ fn a_line_in_one_path_loses_no_ink_its_segments_had() {
     }
 }
 
-/// A line that goes on from the last one's end with another stroke is not
-/// of its run: it keeps its own colour and its own width.
 #[test]
 fn a_line_of_another_stroke_stays_out_of_the_run() {
     let (black, red) = (gpui_kit::rgba(0x000000ff), gpui_kit::rgba(0xff0000ff));
@@ -635,8 +582,6 @@ fn a_line_of_another_stroke_stays_out_of_the_run() {
     );
 }
 
-/// Round-capped lines stay a path each, their caps laid over its ends
-/// before the next one's path, so they are the picture they were.
 #[test]
 fn round_capped_lines_are_the_picture_they_were() {
     for segments in [40, 160] {

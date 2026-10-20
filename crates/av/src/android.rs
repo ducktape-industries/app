@@ -46,10 +46,7 @@ use crate::backend::{
 #[link(name = "camera2ndk")]
 unsafe extern "C" {}
 
-/// `call` with this thread's JNI env and the app's Context, as the glue
-/// handed them to `ndk-context`; the thread is attached for good the
-/// first time (a device's thread lives as long as its piece).
-fn java<T>(
+fn with_attached_jni_env_and_app_context<T>(
     call: impl FnOnce(&mut jni::Env, &JObject) -> jni::errors::Result<T>,
 ) -> Result<T, String> {
     let context = ndk_context::android_context();
@@ -68,7 +65,6 @@ fn java<T>(
     .map_err(|error: jni::errors::Error| error.to_string())
 }
 
-/// The app's `AudioManager`.
 fn audio_manager<'local>(
     env: &mut jni::Env<'local>,
     app: &JObject,
@@ -83,15 +79,10 @@ fn audio_manager<'local>(
     .l()
 }
 
-/// A call's voice I/O is coming (`on`) or went: the `AudioManager`'s mode
-/// set to in-communication (the system routes and tunes as for a call) and
-/// back to normal, a hint beside the app's own echo cancelling
-/// (`crate::voice`).
 #[cfg(feature = "call")]
 pub(crate) fn call(on: bool) {
-    // AudioManager.MODE_NORMAL, MODE_IN_COMMUNICATION
     let mode = if on { 3 } else { 0 };
-    let set = java(|env, app| {
+    let set = with_attached_jni_env_and_app_context(|env, app| {
         let manager = audio_manager(env, app)?;
         env.call_method(
             &manager,
@@ -105,8 +96,6 @@ pub(crate) fn call(on: bool) {
         tracing::warn!(target: "ducktape::av", %error, "audio mode not set");
     }
 }
-
-// ---------- the permission ----------
 
 /// How the app asks the person for an Android permission (by its manifest
 /// name, `android.permission.CAMERA`): whether it is granted, asking first
@@ -125,23 +114,18 @@ fn allowed(permission: &str) -> bool {
     ASKER.get().is_some_and(|ask| ask(permission))
 }
 
-/// The camera permission, asked the first time.
 pub(crate) fn camera_allowed() -> bool {
     allowed("android.permission.CAMERA")
 }
 
-/// The microphone permission, asked the first time.
 pub(crate) fn microphone_allowed() -> bool {
     allowed("android.permission.RECORD_AUDIO")
 }
 
-/// The app's own page in Settings, which allows both: Android has no page
-/// per permission for an app. As the `package:` URI that page's intent
-/// carries (the glue opens it).
 pub(crate) fn settings_page(_: crate::Kind) -> Option<&'static str> {
     static PAGE: OnceLock<Option<String>> = OnceLock::new();
     PAGE.get_or_init(|| {
-        java(|env, app| {
+        with_attached_jni_env_and_app_context(|env, app| {
             let name = env
                 .call_method(
                     app,
@@ -158,8 +142,6 @@ pub(crate) fn settings_page(_: crate::Kind) -> Option<&'static str> {
     .as_deref()
 }
 
-/// How a person allows a camera or a microphone Android refused: on the
-/// app's page ([`settings_page`]).
 pub(crate) fn allow(kind: crate::Kind) -> &'static str {
     match kind {
         crate::Kind::Camera => {
@@ -171,14 +153,8 @@ pub(crate) fn allow(kind: crate::Kind) -> &'static str {
     }
 }
 
-// ---------- microphones and speakers ----------
-
-/// A stream here is opened on its device and ends with it: an invalidated
-/// one is gone.
 pub(crate) const ROUTED_IN_PLACE: bool = false;
 
-/// The microphones (`input`) or the speakers a person picks among those
-/// Android lists now ([`recognizable`]), each with the cpal device it is.
 fn listed(host: &cpal::Host, input: bool) -> Result<Vec<(AudioDevice, cpal::Device)>, String> {
     let devices = match input {
         true => host.input_devices(),
@@ -200,8 +176,6 @@ fn listed(host: &cpal::Host, input: bool) -> Result<Vec<(AudioDevice, cpal::Devi
         .collect())
 }
 
-/// The microphones and the speakers a person picks among those Android
-/// lists now.
 pub(crate) fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), String> {
     let host = cpal::default_host();
     let rows =
@@ -209,8 +183,6 @@ pub(crate) fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), St
     Ok((rows(true)?, rows(false)?))
 }
 
-/// The microphone (`input`) or speaker a piece names: `None` Android's
-/// default, else only one [`listed`], its id compared whole.
 pub(crate) fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device> {
     match id {
         Some(id) => listed(host, input)
@@ -223,9 +195,6 @@ pub(crate) fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<c
     }
 }
 
-/// The name a person knows the opened microphone `input` by: its row's,
-/// or the default row's for Android's default (cpal's "Default Device",
-/// which Android lists as no device of its own).
 pub(crate) fn input_name(input: &cpal::Device) -> String {
     let id = input.id().map(|id| id.to_string()).ok();
     let listed = listed(&cpal::default_host(), true).unwrap_or_default();
@@ -238,7 +207,6 @@ pub(crate) fn input_name(input: &cpal::Device) -> String {
         .unwrap_or_default()
 }
 
-/// The microphone Android records from by default now, as listed.
 pub(crate) fn heard() -> Option<Device> {
     listed(&cpal::default_host(), true)
         .ok()?
@@ -247,12 +215,8 @@ pub(crate) fn heard() -> Option<Device> {
         .find(|device| device.default)
 }
 
-/// An open microphone's watcher ([`activate`]), stopped and joined when
-/// this drops; nothing for the chime.
 pub(crate) struct Active(Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>);
 
-/// With a microphone's feed, its watcher until the returned hold drops:
-/// Android holds no session to activate.
 pub(crate) struct Prepared;
 
 impl Prepared {
@@ -280,22 +244,15 @@ impl Drop for Active {
     }
 }
 
-/// How often an open microphone's watcher looks.
-const LOOK: Duration = Duration::from_millis(500);
+const MICROPHONE_ROUTE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Looks every [`LOOK`] at what Android tells only when asked: a
-/// recording it silenced ends the microphone (its streams closed before
-/// it is told so: [`MicFeed::end`]), and a monitor whose sound fell onto
-/// the loudspeaker from elsewhere (a headset pulled out, the loudspeaker
-/// picked) is turned off ([`MicFeed::silence`]). One turned on there is
-/// its view's call.
 fn watch(feed: Arc<MicFeed>) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) {
     let (stop, stopped) = mpsc::channel::<()>();
     let watcher = std::thread::spawn(move || {
-        // whether the monitor's sound was on the loudspeaker when last
-        // looked (`None`: the monitor off)
         let mut loud = None;
-        while stopped.recv_timeout(LOOK) == Err(mpsc::RecvTimeoutError::Timeout) {
+        while stopped.recv_timeout(MICROPHONE_ROUTE_POLL_INTERVAL)
+            == Err(mpsc::RecvTimeoutError::Timeout)
+        {
             if silenced() {
                 return feed.end(Status::Gone(crate::MICROPHONE_TAKEN.into()));
             }
@@ -303,9 +260,6 @@ fn watch(feed: Arc<MicFeed>) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) 
                 loud = None;
                 continue;
             }
-            // ponytail: the speakers are listed again each look while the
-            // monitor plays (a JNI call); Android's AudioDeviceCallback is
-            // the upgrade if that ever shows
             let output = feed.output.lock().expect("feed output").clone();
             let now = listed(&cpal::default_host(), false).is_ok_and(|listed| {
                 let outputs: Vec<_> = listed.into_iter().map(|(row, _)| row).collect();
@@ -320,14 +274,11 @@ fn watch(feed: Arc<MicFeed>) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) 
     (stop, watcher)
 }
 
-/// Whether Android silenced this app's recording (Android 10 on): a call
-/// took the microphone, or another app it puts first, or this app left the
-/// screen. Android tells an app only of its own recordings.
 fn silenced() -> bool {
-    if sdk().is_none_or(|sdk| sdk < 29) {
+    if cached_sdk_version().is_none_or(|sdk| sdk < 29) {
         return false;
     }
-    java(|env, app| {
+    with_attached_jni_env_and_app_context(|env, app| {
         let audio = audio_manager(env, app)?;
         let active = env
             .call_method(
@@ -366,13 +317,12 @@ fn silenced() -> bool {
     .unwrap_or(false)
 }
 
-/// `Build.VERSION.SDK_INT`, kept once read; `None` while it cannot be.
-fn sdk() -> Option<i32> {
+fn cached_sdk_version() -> Option<i32> {
     static SDK: OnceLock<i32> = OnceLock::new();
     if let Some(sdk) = SDK.get() {
         return Some(*sdk);
     }
-    let read = java(|env, _| {
+    let read = with_attached_jni_env_and_app_context(|env, _| {
         env.get_static_field(
             jni::jni_str!("android/os/Build$VERSION"),
             jni::jni_str!("SDK_INT"),
@@ -384,9 +334,6 @@ fn sdk() -> Option<i32> {
     Some(*SDK.get_or_init(|| read))
 }
 
-// ---------- the cameras ----------
-
-/// A Camera2 status, as an error a person reads.
 fn camera_error(status: ffi::camera_status_t) -> Status {
     match status {
         ffi::camera_status_t::ACAMERA_ERROR_PERMISSION_DENIED => Status::Denied,
@@ -410,7 +357,6 @@ fn checked(status: ffi::camera_status_t) -> Result<(), Status> {
     }
 }
 
-/// The system's camera manager, deleted when dropped.
 struct Manager(*mut ffi::ACameraManager);
 
 impl Manager {
@@ -423,7 +369,6 @@ impl Manager {
         }
     }
 
-    /// The cameras' ids, as the system lists them.
     fn ids(&self) -> Result<Vec<String>, String> {
         let mut list = ptr::null_mut();
         // SAFETY: a live manager; the list is ours until deleted below
@@ -445,7 +390,6 @@ impl Manager {
         Ok(ids)
     }
 
-    /// What the system says of the camera `id`.
     fn characteristics(&self, id: &CStr) -> Option<Characteristics> {
         let mut metadata = ptr::null_mut();
         // SAFETY: a live manager and a C string id; the metadata is ours
@@ -494,19 +438,12 @@ impl Drop for Manager {
     }
 }
 
-/// What opening a camera needs to know of it.
 struct Characteristics {
     facing: Facing,
-    /// The clockwise turn that stands its pictures upright on the phone
-    /// held as it is made to be held.
     sensor: u32,
-    /// The picture size asked ([`size`]).
     size: Option<(i32, i32)>,
 }
 
-/// The cameras the system lists now, the front one first (a call's
-/// camera), then the back ones, then any plugged in; the first is the
-/// default. Listing asks for no permission.
 pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
     let manager = Manager::new()?;
     let mut found: Vec<(String, Facing)> = manager
@@ -542,8 +479,6 @@ pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
         .collect())
 }
 
-/// What the camera's callbacks and its reader's listener tell the stream
-/// loop: a frame came, or the camera went.
 type Events = mpsc::Sender<Result<(), Status>>;
 
 unsafe extern "C" fn disconnected(context: *mut c_void, _: *mut ffi::ACameraDevice) {
@@ -559,8 +494,6 @@ unsafe extern "C" fn failed(context: *mut c_void, _: *mut ffi::ACameraDevice, er
     let tell = unsafe { &*context.cast::<Events>() };
     let status = match u32::try_from(error).unwrap_or(0) {
         ffi::ERROR_CAMERA_IN_USE | ffi::ERROR_MAX_CAMERAS_IN_USE => Status::Busy,
-        // open already: the system turned it off under the piece (a policy
-        // refuses it only at open, `camera_error`)
         ffi::ERROR_CAMERA_DISABLED => Status::Gone("The system took the camera.".into()),
         _ => {
             tracing::warn!(target: "ducktape::av", error, "the camera stopped");
@@ -572,9 +505,6 @@ unsafe extern "C" fn failed(context: *mut c_void, _: *mut ffi::ACameraDevice, er
 
 unsafe extern "C" fn session_state(_: *mut c_void, _: *mut ffi::ACameraCaptureSession) {}
 
-/// One camera running: the device, its session repeating a preview into
-/// the reader, and everything that feeds the stream loop. Dropped, the
-/// session and the device close (the light off), then the rest is freed.
 pub(crate) struct Camera {
     window: ndk::native_window::NativeWindow,
     reader: ImageReader,
@@ -584,20 +514,14 @@ pub(crate) struct Camera {
     session: *mut ffi::ACameraCaptureSession,
     target: *mut ffi::ACameraOutputTarget,
     request: *mut ffi::ACaptureRequest,
-    /// The device callbacks' context, freed once the device closed.
     tell: *mut Events,
     events: mpsc::Receiver<Result<(), Status>>,
     front: bool,
     sensor: u32,
-    /// The display's turn, and when it was read: read again each second,
-    /// so a phone turned on its side gets its pictures turned too.
     display: (u32, Instant),
     _manager: Manager,
 }
 
-/// Opens the listed camera whose id is `id` (its `CameraDevice::handle`)
-/// and starts its preview. The permission is asked before
-/// ([`camera_allowed`]).
 pub(crate) fn open(id: &str) -> Result<Camera, Status> {
     let manager = Manager::new().map_err(Status::Failed)?;
     let id = CString::new(id).map_err(|_| Status::NoDevice)?;
@@ -628,10 +552,9 @@ pub(crate) fn open(id: &str) -> Result<Camera, Status> {
         events,
         front: characteristics.facing == Facing::Front,
         sensor: characteristics.sensor,
-        display: (display_turn(), Instant::now()),
+        display: (display_rotation_degrees(), Instant::now()),
         _manager: manager,
     };
-    // each step's result lands in `camera`, whose drop undoes what was done
     let window = camera
         .window
         .ptr()
@@ -703,8 +626,6 @@ impl Source for Camera {
             Err(mpsc::RecvTimeoutError::Timeout) => return Ok(Got::Nothing),
             Err(mpsc::RecvTimeoutError::Disconnected) => return Err(Status::Gone(String::new())),
         }
-        // the frames that came meanwhile: the newest is taken below; the
-        // camera's going among them ends the stream
         while let Ok(event) = self.events.try_recv() {
             event?;
         }
@@ -717,7 +638,7 @@ impl Source for Camera {
             return Ok(Got::Frame);
         }
         if self.display.1.elapsed() > Duration::from_secs(1) {
-            self.display = (display_turn(), Instant::now());
+            self.display = (display_rotation_degrees(), Instant::now());
         }
         let turn = upright(self.sensor, self.display.0, self.front);
         Ok(picture(&image, turn, mirror).map_or(Got::Frame, Got::Picture))
@@ -751,14 +672,11 @@ impl Drop for Camera {
             }
             drop(Box::from_raw(self.tell));
         }
-        // then the fields: the window, the reader (its listener), the manager
     }
 }
 
-/// The display's turn from the phone's natural way up, in degrees
-/// (`Display.getRotation()`); 0 where it cannot be read.
-fn display_turn() -> u32 {
-    java(|env, app| {
+fn display_rotation_degrees() -> u32 {
+    with_attached_jni_env_and_app_context(|env, app| {
         let name = env.new_string("display")?;
         let displays = env
             .call_method(
@@ -787,8 +705,6 @@ fn display_turn() -> u32 {
     .map_or(0, |rotation| (rotation.rem_euclid(4) * 90) as u32)
 }
 
-/// A camera image's picture, turned `turn` degrees clockwise and then
-/// mirrored if asked; none for an image whose planes do not read.
 fn picture(image: &Image, turn: u32, mirror: bool) -> Option<Picture> {
     let plane = |at| -> Option<Plane<'_>> {
         Some(Plane {

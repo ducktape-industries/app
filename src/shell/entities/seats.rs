@@ -16,17 +16,12 @@ use std::collections::BTreeMap;
 
 pub(crate) struct DeskSeats {
     seats: Entity<Seats>,
-    /// The windows the seats are placed in. Weak: `Windows` holds the
-    /// roots it opens.
     windows: WeakEntity<Windows>,
-    /// One observer per window's desk, dropped with the window.
     desks: BTreeMap<WindowKey, Subscription>,
     _observing: Vec<Subscription>,
 }
 
 impl DeskSeats {
-    /// The seats follow `windows` from now on: a window coming or going,
-    /// and every desk's move, reconciles them.
     pub(crate) fn new(
         seats: &Entity<Seats>,
         windows: &Entity<Windows>,
@@ -49,8 +44,6 @@ impl DeskSeats {
         this
     }
 
-    /// The window list moved: a desk observer for every window that has
-    /// none yet, none for a window that went, and the seats reconciled.
     fn windows_moved(&mut self, windows: &Entity<Windows>, cx: &mut Context<Self>) {
         let desks: Vec<_> = windows
             .read(cx)
@@ -68,8 +61,6 @@ impl DeskSeats {
         self.reconcile(cx);
     }
 
-    /// A seat for every view pane the windows' desks hold, placed in the
-    /// window whose desk holds it, and none for a pane they no longer hold.
     fn reconcile(&mut self, cx: &mut Context<Self>) {
         let Some(windows) = self.windows.upgrade() else {
             return;
@@ -77,11 +68,6 @@ impl DeskSeats {
         let keeps_above = crate::shell::windows::can_keep_above(cx);
         let (layouts, handles, front) = {
             let windows = windows.read(cx);
-            // the body is the frame's on a console's desk, where the pane
-            // is drawn framed; a window one view fills (a pop-out, `--live`)
-            // lays its pane out edge to edge, whatever frame the layout
-            // keeps. And what the window is beyond holding its panes:
-            // floated by a view, kept on top
             let layouts: BTreeMap<WindowKey, (Layout, bool, Placed)> = windows
                 .by_window()
                 .iter()
@@ -118,14 +104,11 @@ impl DeskSeats {
         self.seats.update(cx, |seats, cx| seats.place(wanted, cx));
     }
 
-    /// What a seat asked of the windows.
     fn answer(&mut self, event: &SeatsEvent, cx: &mut Context<Self>) {
         let Some(windows) = self.windows.upgrade() else {
             return;
         };
         match event {
-            // its own window's name, wherever that pane is now (a pane
-            // gone from every desk names nothing)
             SeatsEvent::Title(instance, title) => {
                 if let Some(desk) = holding(&windows, *instance, cx) {
                     desk.update(cx, |desk, cx| desk.set_title(*instance, title.clone(), cx));
@@ -138,7 +121,6 @@ impl DeskSeats {
                     });
                 }
             }
-            // a window placed before its view came is widened to it
             SeatsEvent::Seated(program) => {
                 let desks: Vec<_> = windows
                     .read(cx)
@@ -151,7 +133,6 @@ impl DeskSeats {
                     desk.update(cx, |desk, cx| desk.settle(cx));
                 }
             }
-            // from this pane: a link into its own program stays in it
             SeatsEvent::OpenLink(program, instance, link) => {
                 windows.update(cx, |windows, cx| {
                     windows.open_link(link, Some((program, *instance)), cx)
@@ -162,12 +143,9 @@ impl DeskSeats {
                     windows.open_link_window(link, Some((program, *instance)), cx)
                 });
             }
-            // the reader's account: the console bar's account menu
             SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => {
                 windows.update(cx, |windows, cx| windows.show_account(cx));
             }
-            // a refused camera's or microphone's system settings: the
-            // kernel shows only a place this host has a page for
             SeatsEvent::Show(
                 _,
                 _,
@@ -178,8 +156,6 @@ impl DeskSeats {
                     cx.open_url(page);
                 }
             }
-            // its own pane into a window of its own, the view laid out at
-            // the float's size, or back
             SeatsEvent::Float(instance, float) => {
                 let body = size(px(float.width as f32), px(float.height as f32));
                 let min = size(px(float.min_width as f32), px(float.min_height as f32));

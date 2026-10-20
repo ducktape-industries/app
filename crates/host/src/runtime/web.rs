@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 use view_wire::methods::Capability;
 
-/// The programs whose view's manifest declares `web`, as last read.
 fn web_views() -> &'static Mutex<BTreeSet<&'static str>> {
     static VIEWS: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
     &VIEWS

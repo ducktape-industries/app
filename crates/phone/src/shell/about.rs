@@ -24,8 +24,6 @@ pub fn page(
     cx: &mut Context<Root>,
 ) -> Div {
     let program = row.program;
-    // the Expo `Header` of a page that is not a root: back, nothing in the
-    // middle, the right hit
     let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
     let header = look::header("about/back", back, palette)
         .justify_between()
@@ -65,7 +63,6 @@ pub fn page(
             look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(description),
         );
     }
-    // the board's `.phead`: gap 12, the words centred on the glyph
     let hero = div()
         .flex()
         .items_center()
@@ -73,7 +70,6 @@ pub fn page(
         .p(px(look::GUTTER))
         .child(home::glyph(row, 56., 28., palette))
         .child(words);
-    // the kit's primary `Button`: 48, the primary's ground, body medium
     let open = div()
         .id("about/open")
         .control(Role::Button, "Open")
@@ -131,8 +127,6 @@ pub fn page(
         .child(body)
 }
 
-/// A section's head (Expo `SectionHead`): 12 medium muted label, a count
-/// at the right.
 pub(super) fn section(
     label: impl Into<SharedString>,
     count: Option<String>,
@@ -152,8 +146,6 @@ pub(super) fn section(
         }))
 }
 
-/// A fact (Expo `KeyValue`): a 96 wide label, its value beside it, 14 / 19,
-/// a hairline under.
 fn fact(label: &str, value: &str, mono: bool, palette: Palette) -> Div {
     let mut shown = look::text(look::SMALL, FontWeight::NORMAL, palette.foreground())
         .flex_1()

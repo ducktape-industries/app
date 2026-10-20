@@ -11,14 +11,9 @@ use crate::shell::status_bar::pulse;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-/// The program whose view is Account (the account, its keys, agents and
-/// invites), which the account menu opens.
 const ACCOUNT_VIEW: &str = "programs";
 
 impl Chrome {
-    /// What the breath means (the NodeStatus board): in sync or not, and
-    /// the node's own numbers, `padding: 7px 16px` each. The ages count
-    /// from the wall clock, drawn again by the menu's own second.
     pub(super) fn node_menu(
         &self,
         ink: &Ink,
@@ -37,7 +32,6 @@ impl Chrome {
         let host = noded_client::endpoint::host_of(&session.connected_rpc).to_owned();
         let now = crate::runtime::notify::wall();
         let (block_age, heard_age) = (now - chain.block_seen, now - chain.heard);
-        // the key and its value, each a Label: `Height`, `6,230`
         let row = |key: &'static str, value: String, code: bool| {
             div()
                 .flex()
@@ -72,7 +66,6 @@ impl Chrome {
                 }
             }
         }
-        // down: when it was last heard, and that the numbers are from then
         let heard = match (ok, &chain.node) {
             (false, Some(node)) => Some(
                 div().px(px(16.)).pb(px(10.)).child(
@@ -135,7 +128,6 @@ impl Chrome {
                     .control(Role::Menu, "Node actions")
                     .flex()
                     .flex_col()
-                    // the bottom bar's Retry now: the same status poll, now
                     .children((!ok).then(|| {
                         self.menu_row(
                             "node-retry",
@@ -155,7 +147,6 @@ impl Chrome {
         self.popover(Popover::Node, 340., body, ink, window, cx)
     }
 
-    /// Who is signed in, and the ways out.
     pub(super) fn account_menu(
         &self,
         ink: &Ink,
@@ -174,7 +165,6 @@ impl Chrome {
             Some(number) => format!("account {number} · {network}"),
             None => network,
         };
-        // Account shows a key with no account too: its key, and Create account
         let menu = Overlay::Menu(Popover::Account);
         let mut rows = div().flex().flex_col().child(self.menu_row(
             "account-view",
@@ -209,8 +199,6 @@ impl Chrome {
                     "add-device",
                     "Add a device…",
                     {
-                        // the dialog opens in the menu's place, then the model
-                        // forgets the last code
                         let open =
                             self.overlaying(|overlays, cx| overlays.open(Overlay::Approve, cx));
                         let forget = self.on_account(Account::approve_open);
@@ -275,7 +263,6 @@ impl Chrome {
                             .child(self.menu_row(
                                 "disconnect",
                                 "Switch node…",
-                                // as the node menu's: the networks this device reached
                                 self.overlaying(|overlays, cx| overlays.open(Overlay::Network, cx)),
                                 ink,
                             )),
@@ -284,10 +271,6 @@ impl Chrome {
         self.popover(Popover::Account, 300., body, ink, window, cx)
     }
 
-    /// The switcher's menu: each node this device reached (its network, its
-    /// host, a check on the one in hand, and which one is a different chain
-    /// sharing a name), then "Add a network" for the Connect screen. A
-    /// click anywhere outside, or Escape, closes it.
     pub(super) fn network_menu(
         &self,
         narrow: bool,
@@ -297,7 +280,6 @@ impl Chrome {
         let session = self.session.read(cx).get();
         let surface = ink.surface;
         let overlays = self.overlays.entity().clone();
-        // a row closes the switcher, then asks the session
         let item = |id: SharedString, role: Role, name: String, run: Box<dyn Fn(&mut App)>| {
             let overlays = overlays.clone();
             let run = std::cell::Cell::new(Some(run));
@@ -309,7 +291,6 @@ impl Chrome {
                     .hover(move |style| style.bg(surface))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        // a click after this one finds the menu closed
                         if let Some(run) = run.take() {
                             overlays
                                 .update(cx, |overlays, cx| overlays.close(Overlay::Network, cx));
@@ -319,9 +300,6 @@ impl Chrome {
                 ink.ink,
             )
         };
-        // The NetworkSwitcher board: `padding: 12px 16px; gap: 12px`, a
-        // hairline above each row; the name `500 15px` in a `110px` column,
-        // the host in mono.
         let rows: Vec<_> = session
             .recent_endpoints
             .iter()
@@ -427,8 +405,7 @@ impl Chrome {
     }
 }
 
-/// `6230` → "6,230".
-fn grouped(number: u64) -> String {
+fn comma_grouped_count(number: u64) -> String {
     let digits = number.to_string();
     let mut out = String::new();
     for (nth, digit) in digits.chars().enumerate() {
@@ -440,7 +417,6 @@ fn grouped(number: u64) -> String {
     out
 }
 
-/// The first and last few bytes of a hash, enough to tell two apart.
 fn short_hex(bytes: &[u8]) -> String {
     let hex = noded_client::hex::hex_encode(bytes);
     match hex.len() > 14 {
@@ -449,14 +425,12 @@ fn short_hex(bytes: &[u8]) -> String {
     }
 }
 
-/// The popover's rows in the words and formats Nodes uses: label, value,
-/// and whether the value is mono. Last block only while it answers.
 fn node_facts(
     node: &crate::backend::NodeStatus,
     block_age: i64,
     answering: bool,
 ) -> Vec<(&'static str, String, bool)> {
-    let mut facts = vec![("Height", grouped(node.height), true)];
+    let mut facts = vec![("Height", comma_grouped_count(node.height), true)];
     if answering {
         let last = match block_age {
             ..=0 => "just now".to_owned(),
@@ -476,14 +450,11 @@ fn node_facts(
         ("State root", short_hex(&node.root.0), true),
         ("Node identity", short_hex(&node.identity), true),
         ("Contract version", node.contract.to_string(), true),
-        ("Chain founded", founded(node.time), false),
+        ("Chain founded", founding_timestamp_as_day(node.time), false),
     ]);
     facts
 }
 
-/// How many blocks into its epoch the tip is, and the epoch's length. A
-/// block closes epoch `e` when `height + 1` reaches `(e + 1) × length`, so
-/// right after a close it reads 0.
 fn epoch_into(node: &crate::backend::NodeStatus) -> (u64, u64) {
     match node.epoch_length {
         0 => (0, 0),
@@ -498,20 +469,14 @@ fn epoch_share(node: &crate::backend::NodeStatus) -> f32 {
     }
 }
 
-/// The down popover's line: `Last heard at block 4,295, 38s ago. The
-/// numbers below are what it said then.` The age counts from the node's
-/// last answer, not from the last block: a chain that stood still for
-/// minutes under a node that went quiet just now was heard just now.
 fn last_heard(height: u64, heard_age: i64) -> String {
     format!(
         "Last heard at block {}, {} ago. The numbers below are what it said then.",
-        grouped(height),
+        comma_grouped_count(height),
         ago(heard_age)
     )
 }
 
-/// An age in seconds as Nodes writes it (the view SDK's `design::ago`):
-/// `13s`, `3m`, `4h`, `5d`.
 fn ago(seconds: i64) -> String {
     match seconds.max(0) {
         seconds @ ..60 => format!("{seconds}s"),
@@ -521,9 +486,7 @@ fn ago(seconds: i64) -> String {
     }
 }
 
-/// The chain's founding time as a day: `27 Sep 2026`. The node's clock
-/// reads in milliseconds; a value that small is taken as seconds.
-fn founded(time: u64) -> String {
+fn founding_timestamp_as_day(time: u64) -> String {
     crate::runtime::day(match time > 100_000_000_000 {
         true => time / 1000,
         false => time,
@@ -532,18 +495,21 @@ fn founded(time: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ago, epoch_into, founded, grouped, last_heard, node_facts, short_hex};
+    use super::{
+        ago, comma_grouped_count, epoch_into, founding_timestamp_as_day, last_heard, node_facts,
+        short_hex,
+    };
 
     #[test]
     fn node_numbers_read_short() {
-        assert_eq!(grouped(6230), "6,230");
-        assert_eq!(grouped(999), "999");
-        assert_eq!(grouped(1_000_000), "1,000,000");
+        assert_eq!(comma_grouped_count(6230), "6,230");
+        assert_eq!(comma_grouped_count(999), "999");
+        assert_eq!(comma_grouped_count(1_000_000), "1,000,000");
         assert_eq!(short_hex(&[0xab; 32]), "abababab…abab");
         assert_eq!(short_hex(&[1, 2]), "0102");
-        assert_eq!(founded(0), "1 Jan 1970");
-        assert_eq!(founded(1_790_121_600), "23 Sep 2026");
-        assert_eq!(founded(1_790_121_600_000), "23 Sep 2026");
+        assert_eq!(founding_timestamp_as_day(0), "1 Jan 1970");
+        assert_eq!(founding_timestamp_as_day(1_790_121_600), "23 Sep 2026");
+        assert_eq!(founding_timestamp_as_day(1_790_121_600_000), "23 Sep 2026");
     }
 
     fn node() -> crate::backend::NodeStatus {
@@ -563,8 +529,6 @@ mod tests {
         }
     }
 
-    /// Nodes' words: Node identity, Contract version and its number, the
-    /// day the chain was founded, the epoch by core's rule.
     #[test]
     fn the_popover_says_what_nodes_says() {
         let facts: Vec<(&str, String)> = node_facts(&node(), 0, true)
@@ -587,7 +551,6 @@ mod tests {
             .map(|(key, value)| (*key, value.to_string()))
             .collect();
         assert_eq!(facts, expected);
-        // the block that closes epoch 67 leaves the tip 0 into epoch 68
         let closed = crate::backend::NodeStatus {
             height: 4351,
             epoch: 68,
@@ -596,7 +559,6 @@ mod tests {
         assert_eq!(epoch_into(&closed), (0, 64));
     }
 
-    /// Down: no Last block, and the line that says when it was last heard.
     #[test]
     fn a_node_not_answering_says_when_it_was_last_heard() {
         let keys: Vec<&str> = node_facts(&node(), 38, false)
@@ -608,7 +570,6 @@ mod tests {
             last_heard(4295, 38),
             "Last heard at block 4,295, 38s ago. The numbers below are what it said then."
         );
-        // the same age format as Nodes: `13s ago`, then minutes
         assert_eq!(node_facts(&node(), 13, true)[1].1, "13s ago");
         assert!(last_heard(4295, 150).starts_with("Last heard at block 4,295, 2m ago."));
         assert_eq!(ago(-1), "0s");

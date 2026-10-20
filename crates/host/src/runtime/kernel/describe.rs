@@ -19,21 +19,14 @@ use crate::backend::views::{self, Fetch};
 
 type Description = Option<methods::Description>;
 
-/// One code id's describe module: its sha256, its bytes (small: kept, the
-/// blob's map is not) and where they lie in the cache's file, for a
-/// compile apart to read there; `None` where the code carries none. Set
-/// once, by the first ask that fetched it, while every ask that came
-/// meanwhile waits for it.
 type Module = Option<([u8; 32], Arc<[u8]>, Option<(std::path::PathBuf, u64)>)>;
 type Compiled = Arc<OnceCell<Module>>;
 
-/// Describe modules by code id.
 fn modules() -> &'static Mutex<HashMap<abi::BlobId, Compiled>> {
     static MODULES: OnceLock<Mutex<HashMap<abi::BlobId, Compiled>>> = OnceLock::new();
     MODULES.get_or_init(Mutex::default)
 }
 
-/// Answers by (code id, sha256 of the op).
 type Answers = HashMap<(abi::BlobId, [u8; 32]), Description>;
 
 fn answers() -> &'static Mutex<Answers> {
@@ -53,7 +46,6 @@ pub(super) async fn described(
     program: &str,
     op: Vec<u8>,
 ) -> Result<Description, wire::Error> {
-    // a view-only entry is no program: it runs no ops
     let Some((code, false)) = node.roster().code(program) else {
         return Ok(None);
     };
@@ -81,10 +73,6 @@ pub(super) async fn described(
     Ok(described)
 }
 
-/// The module in `code`'s describe section: fetched and read out once per
-/// id, however many ask at once (a page of ops by one program
-/// asks together). An ask that ends with nothing to keep (the node not
-/// reached, the blob not held yet) sets nothing, and the next one tries.
 async fn module(node: &Node, code: abi::BlobId) -> Result<Module, wire::Error> {
     let compiled = modules()
         .lock()
@@ -96,11 +84,9 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Module, wire::Error> {
         .get_or_try_init(|| async {
             let blob = match views::program_bytes(&node.client, &code).await {
                 Ok((blob, _)) => blob,
-                // the transport: the ask's answer, and the next ask tries again
                 Err(Fetch::Unreachable(reason)) => {
                     return Err(Some(wire::Error::new(refusal::RPC_CLIENT, reason)));
                 }
-                // not held yet, or not the code asked for: nothing now, asked again later
                 Err(_) => return Err(None),
             };
             Ok(tokio::task::spawn_blocking(move || {
@@ -134,8 +120,6 @@ pub(super) mod tests {
         }
     }
 
-    /// `program` listed at code `[seed; 32]`, whose describe module is `wat`
-    /// (already compiled, so nothing is fetched).
     pub(in crate::runtime) fn list_program(program: &str, seed: u8, bare: bool, wat: Option<&str>) {
         let code = abi::BlobId::Sha256([seed; 32]);
         super::super::super::roster::roster()
@@ -153,12 +137,10 @@ pub(super) mod tests {
         modules().lock().unwrap().insert(code, kept(module));
     }
 
-    /// A code id's entry, its module already read out (or known absent).
     fn kept(module: Module) -> Compiled {
         Arc::new(OnceCell::new_with(Some(module)))
     }
 
-    /// Answers `Description { title: "hi", fields: [] }` for any op.
     pub(in crate::runtime) const HI: &str = r#"(module
         (memory (export "memory") 1)
         (data (i32.const 1024) "\02\00\00\00hi\00\00\00\00")
@@ -175,7 +157,6 @@ pub(super) mod tests {
         list_program("describe-good", 0xd1, false, Some(HI));
         let first = described(&node(), "describe-good", vec![1, 2]).await;
         assert_eq!(first.unwrap().unwrap().title, "hi");
-        // kept per (code, op): the module is not entered again
         modules()
             .lock()
             .unwrap()
@@ -204,10 +185,6 @@ pub(super) mod tests {
         }
     }
 
-    /// Asks for one code that arrive together share one fetch and one
-    /// compile: the first does both, the rest wait for its module. Before,
-    /// each ask that found no module fetched and compiled its own (the
-    /// explorer's first Transactions page asked 38 at once).
     #[tokio::test]
     async fn asks_for_one_code_at_once_fetch_and_compile_it_once() {
         use super::super::tests::{Mode, fake_node};
@@ -221,8 +198,6 @@ pub(super) mod tests {
         let mut framed = format!("blob {}\0", program.len()).into_bytes();
         framed.extend_from_slice(&program);
         let code = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
-        // the fetch keeps the blob in the developer's own cache: not there
-        // before (it would answer instead of the node), gone after
         let cached = crate::backend::dirs()
             .cache
             .join("programs")
@@ -247,9 +222,6 @@ pub(super) mod tests {
         );
     }
 
-    /// An op is described by the code the asking request's roster lists: a
-    /// followed set's own (another network's), never the app's, and the
-    /// app's for a view.
     #[tokio::test]
     async fn describe_reads_the_requests_own_roster() {
         let program = "describe-apart";
@@ -292,10 +264,6 @@ pub(super) mod tests {
     }
 }
 
-/// The qa check: every op in a running stage's archive, through this method's
-/// own path (roster, code blob, section, module), and none of the programs
-/// that ship a describe module falls back to bytes. Against a stage:
-/// `DESCRIBE_STAGE=http://<listen> cargo test --release every_op_on_a_stage -- --ignored --nocapture`
 #[cfg(test)]
 mod stage {
     use super::*;

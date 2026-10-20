@@ -41,9 +41,6 @@ pub enum Facing {
 pub struct CameraDevice {
     pub device: Device,
     pub facing: Facing,
-    /// The system's own name for it, which opens it (`platform::open`):
-    /// the V4L2 node (`video0`) on Linux, the unique id on macOS, the
-    /// Camera2 id on Android. Only a listing fills it.
     pub(crate) handle: String,
 }
 
@@ -148,12 +145,8 @@ pub struct MicFeed {
     /// The level, 0 to 1 (-60 to 0 dBFS), as `f32` bits.
     pub level: AtomicU32,
     pub playback: Mutex<Playback>,
-    /// The monitor as its piece asks it ([`MicFeed::ask_monitor`]).
     monitor: AtomicBool,
-    /// The monitor turned off under its piece ([`MicFeed::silence`]).
     silenced: AtomicBool,
-    /// How the microphone ended under its piece, not yet told
-    /// ([`MicFeed::end`]).
     ended: Mutex<Option<Status>>,
     /// The speaker a recording and the monitor play on (an id this crate
     /// listed; `None`: the default), read each time one starts: another
@@ -200,50 +193,30 @@ impl MicFeed {
         self.silenced.load(Ordering::Relaxed)
     }
 
-    /// Turns the monitor off under its piece: its sound fell to the
-    /// loudspeaker, where it would howl, or its speaker failed.
     pub(crate) fn silence(&self) {
         self.silenced.store(true, Ordering::Relaxed);
     }
 
-    /// Ends the microphone under its piece (a call took it): its thread
-    /// closes every stream, then tells `why`, as a camera's does, so a
-    /// piece told so has its device let go already. The first reason
-    /// wins: what follows it (the stream failing once the system took
-    /// the microphone) is its consequence.
     pub(crate) fn end(&self, why: Status) {
         self.ended.lock().expect("feed ended").get_or_insert(why);
     }
 
-    /// How the microphone was ended, not yet told.
     #[cfg(test)]
     pub(crate) fn ended(&self) -> Option<Status> {
         self.ended.lock().unwrap().clone()
     }
 
-    /// How the microphone was ended, taken: told once.
     #[cfg(feature = "call")]
     pub(crate) fn take_ended(&self) -> Option<Status> {
         self.ended.lock().expect("feed ended").take()
     }
 }
 
-/// Where a microphone's route moved under it, as the system tells it
-/// ([`moved`]).
 pub(crate) struct Moved {
-    /// The microphone heard now, as listed.
     pub(crate) heard: Option<Device>,
-    /// Whether its sound fell to the device's own loudspeaker from
-    /// elsewhere (the headphones gone, the loudspeaker picked).
     pub(crate) to_loudspeaker: bool,
 }
 
-/// A microphone's route moved under it: a piece that named its
-/// microphone (`named`) and hears another now ends Gone, saying so (the
-/// system never swaps it silently), told once its streams closed
-/// ([`MicFeed::end`]); one on the default takes the new one's name. A
-/// monitor playing when the sound fell to the loudspeaker stops, until
-/// its piece turns it off and on.
 pub(crate) fn moved(feed: &MicFeed, named: Option<&str>, moved: Moved) {
     if moved.to_loudspeaker && feed.monitoring() {
         feed.silence();
@@ -266,10 +239,6 @@ fn set(status: &Mutex<(Status, String)>, to: Status) {
     status.lock().expect("feed status").0 = to;
 }
 
-// ---------- one holder of a device at a time ----------
-
-/// A piece's feed, as its thread's hold on a device reads it: whether the
-/// piece let the device go, and the piece letting it go.
 pub(crate) trait Held: Send + Sync {
     fn let_go(&self) -> bool;
     fn stop(&self);
@@ -293,8 +262,6 @@ impl Held for MicFeed {
     }
 }
 
-/// A microphone piece's hold on its device, ordered after every piece
-/// that let its go ([`Holders::hold`]), for the voice I/O of a call.
 #[cfg(feature = "call")]
 pub(crate) fn hold_microphone(held: Arc<dyn Held>) -> Holding {
     MICROPHONES.hold(held)
@@ -313,14 +280,6 @@ impl Drop for Release {
     }
 }
 
-/// The threads of one kind of piece that hold a device or are opening
-/// one, by their feeds. A thread opens its device only once every thread
-/// whose piece let go has closed its own: a piece made again (Try again,
-/// its view's layout moving it to another place or window, another device
-/// picked) never finds this process still holding the device, which an
-/// exclusive one (ALSA's `hw`, a UVC camera) refuses as busy. A piece's
-/// drop only asks its thread to stop (the window thread never waits on a
-/// device), so the order is kept here, where the next one opens.
 struct Holders {
     held: Mutex<Vec<Arc<dyn Held>>>,
     closed: Condvar,
@@ -329,9 +288,7 @@ struct Holders {
 static CAMERAS: Holders = Holders::new();
 static MICROPHONES: Holders = Holders::new();
 
-/// The longest a thread waits for the ones let go to close: past it, it
-/// opens anyway, and the device says what it says.
-const LET_GO: Duration = Duration::from_secs(2);
+const DEVICE_RELEASE_WAIT: Duration = Duration::from_secs(2);
 
 impl Holders {
     const fn new() -> Self {
@@ -341,11 +298,8 @@ impl Holders {
         }
     }
 
-    /// Once every holder whose piece let go has closed its device (at
-    /// most [`LET_GO`]), `feed` holds one until the guard drops: after
-    /// its own device has.
     fn hold(&'static self, feed: Arc<dyn Held>) -> Holding {
-        let deadline = Instant::now() + LET_GO;
+        let deadline = Instant::now() + DEVICE_RELEASE_WAIT;
         let mut held = self.held.lock().expect("holders");
         while held.iter().any(|holder| holder.let_go()) {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -362,8 +316,6 @@ impl Holders {
     }
 }
 
-/// A thread's hold on its device: dropped once the device is closed, it
-/// lets the next opener go.
 pub(crate) struct Holding {
     holders: &'static Holders,
     feed: Arc<dyn Held>,
@@ -377,23 +329,14 @@ impl Drop for Holding {
     }
 }
 
-// ---------- cameras ----------
-
-/// The longest device id this crate lists or opens, in bytes. A device
-/// whose id is longer is not listed, so a longer id, which a view's frame
-/// can carry, names no device.
 const MAX_ID_BYTES: usize = 256;
 
-/// Whether a piece can name `device` back: its id at most
-/// [`MAX_ID_BYTES`].
 pub(crate) fn nameable(device: &Device) -> bool {
     device.id.len() <= MAX_ID_BYTES
 }
 
 /// The cameras the system lists now; the first is the default.
 pub fn cameras() -> Result<Vec<CameraDevice>, String> {
-    // listing asks for no permission (AVFoundation lists without it);
-    // opening does
     let found = platform::cameras()?;
     Ok(found
         .into_iter()
@@ -413,9 +356,7 @@ pub fn start_camera(device: Option<String>, feed: Arc<CameraFeed>) {
 }
 
 fn run_camera(device: Option<String>, feed: Arc<CameraFeed>) {
-    // dropped last, after the camera
     let _held = CAMERAS.hold(feed.clone());
-    // its piece went before this opened anything: nothing to open
     if feed.let_go() {
         return;
     }
@@ -425,8 +366,6 @@ fn run_camera(device: Option<String>, feed: Arc<CameraFeed>) {
         feed.status.lock().expect("feed status").1 = "Fake camera".into();
         return stream(crate::fake::Bars::new(), feed);
     }
-    // listed once: the one listed is the one opened, by the system's own
-    // handle, never by the view's string
     let mut listed = cameras().unwrap_or_default().into_iter();
     let found = match &device {
         Some(id) => listed.find(|camera| &camera.device.id == id),
@@ -438,8 +377,6 @@ fn run_camera(device: Option<String>, feed: Arc<CameraFeed>) {
     if !platform::camera_allowed() {
         return set(&feed.status, Status::Denied);
     }
-    // a permission prompt can take the person a while: a piece gone
-    // meanwhile opens nothing (no light comes on)
     if feed.let_go() {
         return;
     }
@@ -450,37 +387,20 @@ fn run_camera(device: Option<String>, feed: Arc<CameraFeed>) {
     }
 }
 
-/// One opened camera as the stream loop drives it: the platform's, or a
-/// test's. Dropping it releases the device (the camera's light off).
 pub(crate) trait Source {
-    /// Waits at most `wait` for the camera's next frame. While `wanted`
-    /// a frame comes back as a picture (mirrored if `mirror`); otherwise
-    /// it is only taken from the camera, so it keeps delivering.
     fn next(&mut self, wait: Duration, wanted: bool, mirror: bool) -> Result<Got, Status>;
 }
 
-/// What a camera gave in one wait.
 pub(crate) enum Got {
-    /// No frame came.
     Nothing,
-    /// A frame came and was let go (not wanted, or it did not decode).
     Frame,
     Picture(Picture),
 }
 
-/// How long one wait for a frame lasts: how soon the loop sees `stop`.
-pub(crate) const SLICE: Duration = Duration::from_millis(100);
-/// A live camera that sends nothing this long has gone away (unplugged,
-/// its driver or its feeder stopped). A webcam in the dark still sends
-/// several frames a second.
-pub(crate) const QUIET: Duration = Duration::from_millis(1500);
-/// How long an opened camera may take to send its first frame (a USB
-/// camera settles its exposure first).
-pub(crate) const FIRST: Duration = Duration::from_secs(5);
+pub(crate) const CAMERA_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+pub(crate) const CAMERA_FRAME_SILENCE_TIMEOUT: Duration = Duration::from_millis(1500);
+pub(crate) const CAMERA_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Feeds `camera`'s pictures into `feed` until `feed.stop`, an error, or
-/// [`QUIET`] without a frame (Gone). The camera is released before its
-/// end is told: a view that sees Gone finds the device free.
 pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
     let opened = Instant::now();
     let mut last: Option<Instant> = None;
@@ -489,12 +409,18 @@ pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
             break None;
         }
         let wanted = feed.wanted.load(Ordering::Relaxed) || feed.tapped.load(Ordering::Relaxed);
-        let got = camera.next(SLICE, wanted, feed.mirror.load(Ordering::Relaxed));
+        let got = camera.next(
+            CAMERA_STOP_POLL_INTERVAL,
+            wanted,
+            feed.mirror.load(Ordering::Relaxed),
+        );
         match got {
             Err(status) => break Some(status),
             Ok(Got::Nothing) => match last {
-                Some(at) if at.elapsed() > QUIET => break Some(Status::Gone(String::new())),
-                None if opened.elapsed() > FIRST => {
+                Some(at) if at.elapsed() > CAMERA_FRAME_SILENCE_TIMEOUT => {
+                    break Some(Status::Gone(String::new()));
+                }
+                None if opened.elapsed() > CAMERA_FIRST_FRAME_TIMEOUT => {
                     break Some(Status::Failed("the camera sent no picture".into()));
                 }
                 _ => {}
@@ -519,8 +445,6 @@ pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
     }
 }
 
-// ---------- microphones and speakers ----------
-
 /// Opens `device` (the default microphone when `None`) on a thread of its
 /// own: its level into `feed`, a recording asked through `feed.ask`
 /// played back on `feed.output`, and the monitor while `feed.monitor`,
@@ -534,20 +458,13 @@ pub fn start_microphone(device: Option<String>, feed: Arc<MicFeed>) {
     }
 }
 
-/// The recording being made, mono: the samples so far and how many are
-/// wanted.
 type Recording = Arc<Mutex<Option<(Vec<f32>, usize)>>>;
 
-/// The longest recording a piece makes, in seconds: it waits whole in
-/// memory for its playback, so a longer ask records this long.
 pub(crate) const MAX_RECORD_SECONDS: u8 = 10;
 
-/// The samples a recording of `seconds` holds at `rate`: one second at
-/// least, [`MAX_RECORD_SECONDS`] at most.
 fn recorded(rate: u32, seconds: u8) -> usize {
     rate as usize * usize::from(seconds.clamp(1, MAX_RECORD_SECONDS))
 }
-/// Mono samples on their way to a speaker.
 type Queue = Arc<Mutex<VecDeque<f32>>>;
 
 pub(crate) fn audio_fault(error: &cpal::Error, open: bool) -> Status {
@@ -566,9 +483,7 @@ pub(crate) fn audio_fault(error: &cpal::Error, open: bool) -> Status {
 }
 
 fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
-    // dropped last, after the microphone and the speaker
     let _held = MICROPHONES.hold(feed.clone());
-    // its piece went before this opened anything: nothing to open
     if feed.let_go() {
         return;
     }
@@ -588,13 +503,9 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     if !platform::microphone_allowed() {
         return set(&feed.status, Status::Denied);
     }
-    // a permission prompt can take the person a while: a piece gone
-    // meanwhile opens nothing
     if feed.let_go() {
         return;
     }
-    // the system's audio session (a phone's) held while the microphone is
-    // open, its ends told to the feed
     let _session = match platform::activate(Some((feed, device.as_deref()))) {
         Ok(session) => session,
         Err(status) => return set(&feed.status, status),
@@ -606,7 +517,6 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     };
     let rate = config.sample_rate();
     let recording = Recording::default();
-    // what the microphone hears, for the monitor's speaker while it runs
     let heard = Queue::default();
     let stream = match capture(
         &input,
@@ -626,15 +536,6 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     feed.level.store(0f32.to_bits(), Ordering::Relaxed);
 }
 
-/// Serves an open microphone, `input` its stream, until its piece lets it
-/// go or the device ends: Live from the start, unless something ended it
-/// already (an interruption told before), and over the moment its status
-/// is anything but Live (Gone, Busy, a failure), as a camera's [`stream`]
-/// is: a microphone the system took never comes back on by itself. One
-/// ended under its piece ([`MicFeed::end`]) is told so once every stream
-/// closed. What its piece asks (a recording played back, the monitor)
-/// plays on its speaker meanwhile. Every stream, `input` and the
-/// speaker's, is closed when this returns: the device let go.
 fn serve<S>(
     input: S,
     host: &cpal::Host,
@@ -651,13 +552,10 @@ fn serve<S>(
         }
     }
     let live = || feed.status.lock().expect("feed status").0 == Status::Live && !ended();
-    // the speaker's streams: a recording's playback, the monitor (with
-    // the output it plays on)
     let mut playing: Option<(cpal::Stream, Queue)> = None;
     let mut monitoring: Option<(cpal::Stream, Option<String>)> = None;
     let output = || feed.output.lock().expect("feed output").clone();
     let playback = |to: Playback| *feed.playback.lock().expect("feed playback") = to;
-    // a speaker stream on the output `on` names, found as it starts
     let play = |on: Option<&str>, queue: Queue| {
         let device = platform::find(host, on, false).ok_or(Status::Failed("no speaker".into()))?;
         speaker(&device, rate, queue)
@@ -702,13 +600,10 @@ fn serve<S>(
             .as_ref()
             .is_some_and(|(_, queue)| queue.lock().expect("playback").is_empty())
         {
-            // ponytail: the last callback's buffer may still be sounding;
-            // a short tail is cut rather than waited on
             std::thread::sleep(Duration::from_millis(100));
             playing = None;
             playback(Playback::Idle);
         }
-        // the monitor follows the output: another speaker picked moves it
         let monitor = feed.monitoring().then(output);
         if monitoring.as_ref().map(|(_, on)| on) != monitor.as_ref() {
             monitoring = None;
@@ -727,17 +622,15 @@ fn serve<S>(
         }
     }
     drop((input, playing, monitoring));
-    // taken before the status is locked: `moved` locks the two the other
-    // way round
     let why = feed.ended.lock().expect("feed ended").take();
     if let Some(why) = why {
         set(&feed.status, why);
     }
 }
 
-/// `config` with a 20 ms buffer where the device takes one: a live loop
-/// through the defaults (ALSA's run to a second) queues and drops.
-pub(crate) fn short(config: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
+pub(crate) fn with_twenty_millisecond_buffer(
+    config: &cpal::SupportedStreamConfig,
+) -> cpal::StreamConfig {
     let mut short = config.config();
     if let cpal::SupportedBufferSize::Range { min, max } = config.buffer_size() {
         let frames = config.sample_rate() / 50;
@@ -746,9 +639,6 @@ pub(crate) fn short(config: &cpal::SupportedStreamConfig) -> cpal::StreamConfig 
     short
 }
 
-/// The microphone's stream (`input`, the one its piece `named`, or the
-/// default): its level into `feed`, its samples (mono) into the
-/// recording being made and, while the monitor runs, `heard`.
 fn capture(
     input: &cpal::Device,
     named: Option<&str>,
@@ -760,8 +650,6 @@ fn capture(
     let channels = usize::from(config.channels()).max(1);
     let rate = config.sample_rate() as usize;
     let errors = feed.clone();
-    // ponytail: a Vec per callback on the audio thread; a preallocated
-    // buffer if a glitch is ever heard
     let on_samples = move |mono: &mut dyn Iterator<Item = f32>| {
         let mono: Vec<f32> = mono.collect();
         let power = mono.iter().map(|s| s * s).sum::<f32>() / mono.len().max(1) as f32;
@@ -773,8 +661,6 @@ fn capture(
             samples.extend(mono.iter().take(room));
         }
         if feed.monitoring() {
-            // ponytail: at most a fifth of a second behind; drift between
-            // the two clocks is dropped here, not resampled
             let mut heard = heard.lock().expect("heard");
             heard.extend(&mono);
             let over = heard.len().saturating_sub(rate / 5);
@@ -783,13 +669,8 @@ fn capture(
     };
     let named = named.map(str::to_owned);
     let on_error = move |error: cpal::Error| match error.kind() {
-        // a phone's session routes the stream in place and tells a route
-        // change (another speaker picked, a headset in or out) as a
-        // changed or invalidated stream, though it plays on: it tells
-        // its moves and ends itself (`platform::activate`)
         cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::StreamInvalidated
             if platform::ROUTED_IN_PLACE => {}
-        // the stream followed the system's default to another microphone
         cpal::ErrorKind::DeviceChanged => {
             let to = Moved {
                 heard: platform::heard(),
@@ -797,7 +678,6 @@ fn capture(
             };
             moved(&errors, named.as_deref(), to);
         }
-        // the microphone gone under its piece: told once its streams closed
         cpal::ErrorKind::DeviceNotAvailable
         | cpal::ErrorKind::BackendError
         | cpal::ErrorKind::StreamInvalidated => errors.end(audio_fault(&error, true)),
@@ -806,7 +686,7 @@ fn capture(
     macro_rules! typed {
         ($t:ty) => {
             input.build_input_stream::<$t, _, _>(
-                short(config),
+                with_twenty_millisecond_buffer(config),
                 move |data: &[$t], _| {
                     on_samples(&mut data.chunks(channels).map(|frame| {
                         frame
@@ -856,8 +736,6 @@ fn play_made(
     };
     let host = cpal::default_host();
     let found = platform::find(&host, output, false).ok_or("no such speaker")?;
-    // the system's audio session (a phone's) held while the chime plays,
-    // once the speaker is known: an id that names none activates nothing
     let _session = platform::activate(None).map_err(said)?;
     let (samples, rate) = made(
         found
@@ -867,9 +745,6 @@ fn play_made(
     );
     let length = Duration::from_secs_f32(samples.len() as f32 / rate.max(1) as f32);
     let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
-    // on the speaker found above: found again, the id could name none
-    // once the session left recording (a Bluetooth headset's hands-free
-    // id, listed among the inputs)
     let stream = speaker(&found, rate, queue.clone()).map_err(said)?;
     let deadline = std::time::Instant::now() + length + Duration::from_secs(2);
     while !queue.lock().expect("chime").is_empty() {
@@ -878,15 +753,11 @@ fn play_made(
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    // ponytail: the last callback's buffer may still be sounding, as for
-    // a playback; a short tail is cut rather than waited on
     std::thread::sleep(Duration::from_millis(100));
     drop(stream);
     Ok(())
 }
 
-/// The test chime, mono at `rate`: 0.3 s of 440 Hz then 0.3 s of 660 Hz
-/// at -12 dBFS, each note faded in and out over 10 ms so it does not click.
 pub(crate) fn chime(rate: u32) -> Vec<f32> {
     let rate = rate.max(1) as f32;
     let note = (rate * 0.3) as usize;
@@ -904,20 +775,14 @@ pub(crate) fn chime(rate: u32) -> Vec<f32> {
         .collect()
 }
 
-/// A stream on `speaker` playing `queue` (mono at `rate`) on every
-/// channel, silent once it is empty.
 fn speaker(speaker: &cpal::Device, rate: u32, queue: Queue) -> Result<cpal::Stream, Status> {
     let config = speaker
         .default_output_config()
         .map_err(|error| audio_fault(&error, false))?;
     let channels = usize::from(config.channels()).max(1);
-    // ponytail: nearest-sample rate conversion; a resampler when the two
-    // rates differ and it is heard
-    let step = f64::from(rate) / f64::from(config.sample_rate());
+    let nearest_sample_rate_step = f64::from(rate) / f64::from(config.sample_rate());
     let mut due = 0.0f64;
     let mut sample = 0.0f32;
-    // a jitter buffer: silence until 60 ms wait, and again after the queue
-    // ran dry, so a live loop fed in bursts plays in runs, not in crumbs
     let primed_at = rate as usize * 6 / 100;
     let mut primed = false;
     let mut next = move || {
@@ -926,7 +791,7 @@ fn speaker(speaker: &cpal::Device, rate: u32, queue: Queue) -> Result<cpal::Stre
         if !primed {
             return 0.0;
         }
-        due += step;
+        due += nearest_sample_rate_step;
         while due >= 1.0 {
             due -= 1.0;
             sample = queue.pop_front().unwrap_or(0.0);
@@ -936,7 +801,7 @@ fn speaker(speaker: &cpal::Device, rate: u32, queue: Queue) -> Result<cpal::Stre
     macro_rules! typed {
         ($t:ty) => {
             speaker.build_output_stream::<$t, _, _>(
-                short(&config),
+                with_twenty_millisecond_buffer(&config),
                 move |data: &mut [$t], _| {
                     for frame in data.chunks_mut(channels) {
                         let value = <$t as cpal::FromSample<f32>>::from_sample_(next());
@@ -970,11 +835,6 @@ fn tracing_error(what: &str, error: &dyn std::fmt::Display) {
 mod tests {
     use super::*;
 
-    /// A microphone's route moved under it: a piece that named its
-    /// microphone and hears another ends Gone, saying so; one on the
-    /// default takes the new one's name. A monitor playing when the sound
-    /// fell to the loudspeaker stops, and asked on again stays off until
-    /// its piece asks it off; one off is not held off.
     #[test]
     fn a_moved_microphone_is_told_and_its_monitor_stops_on_the_loudspeaker() {
         let live = || {
@@ -1024,7 +884,6 @@ mod tests {
         assert!(feed.monitoring(), "a monitor off is not held off");
     }
 
-    /// A recording holds one to ten seconds, whatever its piece asks.
     #[test]
     fn a_recording_is_one_to_ten_seconds() {
         assert_eq!(recorded(48_000, 0), 48_000);
@@ -1032,10 +891,6 @@ mod tests {
         assert_eq!(recorded(48_000, u8::MAX), 10 * 48_000);
     }
 
-    /// Against the system's own audio devices: ALSA's `null` plugin, which
-    /// cpal lists and this crate does not, and plugins that write a file or
-    /// run a program, open nothing, and a microphone piece that names one
-    /// is told there is no such device, its file never written.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_name_this_crate_did_not_list_reaches_no_device() {
@@ -1058,8 +913,6 @@ mod tests {
         assert!(!written.exists(), "a plugin wrote {path}");
     }
 
-    /// A device whose id is past the bound is not listed: no piece could
-    /// name it back.
     #[test]
     fn a_device_id_past_the_bound_is_not_listed() {
         let device = |id: String| Device {
@@ -1081,8 +934,6 @@ mod tests {
         assert_eq!(kept, ["video0".to_owned(), longest]);
     }
 
-    /// The chime is 0.6 s, two notes, never louder than -12 dBFS, and
-    /// starts and ends in silence.
     #[test]
     fn the_chime_is_two_short_quiet_notes() {
         let samples = chime(48_000);
@@ -1091,7 +942,6 @@ mod tests {
         assert!(peak <= 0.252 && peak > 0.24, "{peak}");
         assert_eq!(samples[0], 0.);
         assert!(samples[samples.len() - 1].abs() < 1e-3);
-        // zero crossings: 440 Hz then 660 Hz, each for 0.3 s
         let crossings = |half: &[f32]| half.windows(2).filter(|w| w[0] < 0. && w[1] >= 0.).count();
         let (low, high) = samples.split_at(14_400);
         assert!((130..=133).contains(&crossings(low)), "{}", crossings(low));
@@ -1102,16 +952,11 @@ mod tests {
         );
     }
 
-    /// THE ROOT FIX: a piece made again while its old self's thread is
-    /// still closing the device (Try again, the pane moved, another place
-    /// in its view) opens only once that one has closed it; a holder whose
-    /// piece is still there holds nobody up.
     #[test]
     fn a_device_opens_only_once_the_one_let_go_has_closed() {
         static HOLDERS: Holders = Holders::new();
         let old = Arc::new(MicFeed::default());
         let closing = HOLDERS.hold(old.clone());
-        // its piece let go; its thread has not closed the device yet
         old.stop.store(true, Ordering::Relaxed);
         let (opened, heard) = std::sync::mpsc::channel();
         let next = std::thread::spawn(move || {
@@ -1136,15 +981,11 @@ mod tests {
         );
     }
 
-    /// A camera that delivers `frames` frames, then nothing.
     struct Fake {
         frames: usize,
         run: Run,
     }
 
-    /// What a test reads off a fake camera's run: whether it was released,
-    /// when it delivered its first and last frames, and how many waits
-    /// began after its piece let go.
     #[derive(Clone)]
     struct Run {
         feed: Arc<CameraFeed>,
@@ -1184,7 +1025,6 @@ mod tests {
         }
     }
 
-    /// Runs `stream` over a fake camera on a thread of its own.
     fn streaming(frames: usize, wanted: bool) -> Run {
         let run = Run {
             feed: Arc::new(CameraFeed::default()),
@@ -1206,9 +1046,6 @@ mod tests {
         feed.status.lock().unwrap().0.clone()
     }
 
-    /// Waits for `what` to hold, and returns when it was seen: the event is
-    /// waited on, however loaded the machine (a failsafe of 30 s ends a
-    /// test that would wait forever).
     fn until(what: &str, holds: impl Fn() -> bool) -> Instant {
         let failsafe = Instant::now() + Duration::from_secs(30);
         loop {
@@ -1220,11 +1057,6 @@ mod tests {
         }
     }
 
-    /// THE CONSENT RULE: a microphone whose status goes anything but Live
-    /// (Gone: a call took it) lets its device go though its piece still
-    /// holds it, as a camera does: nothing that restarts the device under
-    /// it (iOS resumes its audio unit after a call) records again. One
-    /// ended before it is served never comes on.
     #[test]
     fn a_microphone_no_longer_live_lets_its_device_go() {
         struct Stream(Arc<AtomicBool>);
@@ -1261,16 +1093,11 @@ mod tests {
         assert_eq!(status(&ended), took);
     }
 
-    /// A microphone ended under its piece (a call took it, the microphone
-    /// its piece picked is no longer heard) is told so only once its
-    /// streams closed, as a camera is: no Gone card over a device still
-    /// recording. The first reason is the one told.
     #[test]
     fn a_microphone_ended_under_its_piece_is_told_once_let_go() {
         struct Stream(Arc<AtomicBool>);
         impl Drop for Stream {
             fn drop(&mut self) {
-                // a device that takes its time to close
                 std::thread::sleep(Duration::from_millis(50));
                 self.0.store(true, Ordering::SeqCst);
             }
@@ -1309,8 +1136,6 @@ mod tests {
         assert!(matches!(picked, Status::Gone(why) if why.contains("picked")));
     }
 
-    /// THE HEADLINE: a live camera that stops delivering is told Gone no
-    /// sooner than [`QUIET`] after its last frame, and only once released.
     #[test]
     fn a_camera_that_stops_delivering_is_gone_and_released() {
         let run = streaming(3, true);
@@ -1323,24 +1148,20 @@ mod tests {
         assert!(run.feed.picture.lock().unwrap().is_some());
         let (_, last) = run.delivered.lock().unwrap().expect("frames came");
         assert!(
-            gone - last > QUIET,
+            gone - last > CAMERA_FRAME_SILENCE_TIMEOUT,
             "{:?} after the last frame",
             gone - last
         );
     }
 
-    /// Stop releases the camera within the wait under way; a camera taken
-    /// only (nothing draws it) gives no pictures and is not mistaken for
-    /// gone.
     #[test]
     fn stop_releases_at_once_and_a_hidden_camera_stays_live() {
         let run = streaming(usize::MAX, false);
         until("live", || status(&run.feed) == Status::Live);
         until("frames past QUIET", || {
-            run.delivered
-                .lock()
-                .unwrap()
-                .is_some_and(|(first, last)| last - first > QUIET + SLICE * 2)
+            run.delivered.lock().unwrap().is_some_and(|(first, last)| {
+                last - first > CAMERA_FRAME_SILENCE_TIMEOUT + CAMERA_STOP_POLL_INTERVAL * 2
+            })
         });
         assert_eq!(status(&run.feed), Status::Live);
         assert!(run.feed.picture.lock().unwrap().is_none());

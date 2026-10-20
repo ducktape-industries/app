@@ -35,7 +35,6 @@ mod app {
     use std::time::Duration;
 
     thread_local! {
-        /// The gate's one window, kept for the process.
         static WINDOW: RefCell<Option<Retained<UIWindow>>> = const { RefCell::new(None) };
     }
 
@@ -51,8 +50,6 @@ mod app {
     );
 
     define_class!(
-        /// The app's one scene (iOS 27 runs no app without one): its
-        /// window, then the gate.
         #[unsafe(super(NSObject))]
         #[thread_kind = MainThreadOnly]
         #[name = "DucktapeSimGateScene"]
@@ -76,8 +73,6 @@ mod app {
         println!("GATE {text}");
     }
 
-    /// A window as the phone has one, the runner, and the gate on a thread
-    /// of its own (the runner's answers land on this one).
     fn launch(scene: &UIWindowScene) {
         let mtm = scene.mtm();
         let window = UIWindow::initWithWindowScene(UIWindow::alloc(mtm), scene);
@@ -145,9 +140,6 @@ mod app {
         let kill = |instance: &mut dyn ViewInstance, events: Vec<u8>| -> Result<(), String> {
             let pid = runner.content_process().ok_or("no content process")?;
             let seen = runner.deaths();
-            // on the main thread, where the page's answers land, behind a
-            // call that keeps the page busy: the tick is still in flight
-            // in the page when it is killed
             let killed = dispatch2::run_on_main(move |_| {
                 runner.stall();
                 instance.begin_tick(events);
@@ -188,8 +180,6 @@ mod app {
         failures
     }
 
-    /// Waits, at most a minute, until `pid` is gone (`kill(pid, 0)` says
-    /// `ESRCH`): whether it went.
     #[allow(unsafe_code, reason = "libc's kill, with signal 0")]
     fn gone(pid: i32) -> bool {
         let until = std::time::Instant::now() + Duration::from_secs(60);
@@ -209,7 +199,6 @@ mod app {
         let Some(mtm) = objc2::MainThreadMarker::new() else {
             return;
         };
-        // registered before UIKit looks the scene's class up by name
         let _scene = Scene::class();
         let delegate = NSString::from_class(Delegate::class());
         UIApplication::main(None, Some(&delegate), mtm);

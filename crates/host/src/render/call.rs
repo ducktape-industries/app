@@ -31,8 +31,6 @@ use gpui_kit::{EntityId, Task};
 #[cfg(feature = "call")]
 use inner::{Publisher, Remote};
 
-/// The pieces of a tree that publish or play a live track, by authored
-/// path, and the poll that tells their states.
 #[derive(Default)]
 pub(super) struct Calls {
     #[cfg(feature = "call")]
@@ -43,13 +41,10 @@ pub(super) struct Calls {
     _poll: Option<Task<()>>,
 }
 
-/// The most remote pieces a view has open at once: a room's stage and
-/// everyone's voice.
 #[cfg(feature = "call")]
 pub(super) const MAX_REMOTE: usize = 16;
 
 impl Calls {
-    /// Keeps the pieces `root` still has; the others' tracks end.
     pub(super) fn retain(&mut self, root: &wire::Node) {
         #[cfg(feature = "call")]
         if !self.publishers.is_empty() || !self.remotes.is_empty() {
@@ -70,7 +65,6 @@ impl Calls {
         let _ = root;
     }
 
-    /// Every track ends: the view stopped, or its tree goes.
     pub(super) fn release(&mut self) {
         #[cfg(feature = "call")]
         {
@@ -80,7 +74,6 @@ impl Calls {
         }
     }
 
-    /// `state` of the piece at `path`, as its track stands.
     #[cfg_attr(not(feature = "call"), allow(dead_code))]
     pub(super) fn adorn(&self, path: &AuthoredPath, state: &mut wire::MediaState) {
         #[cfg(feature = "call")]
@@ -92,8 +85,6 @@ impl Calls {
 }
 
 impl ViewTree {
-    /// A remote piece: the picture or the voice of someone in the room,
-    /// or the line that says this build has no calls.
     pub(super) fn remote(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Remote { id, style, .. } = node else {
             unreachable!()
@@ -133,32 +124,22 @@ mod inner {
     use ducktape_av::{CameraFeed, MicFeed, Speaking, Status, voice};
     use view_wire::methods::LiveTrack;
 
-    /// A voice track's bitrate.
     const VOICE_BITRATE: u32 = 24_000;
-    /// A video track's priority and a voice track's (SPEC D3).
     const VIDEO_PRIORITY: u8 = 128;
     const VOICE_PRIORITY: u8 = 64;
-    /// How long a microphone thread waits for a frame before it looks at
-    /// its track and its mute again.
     const MIC_WAIT: Duration = Duration::from_millis(100);
     const LESS_PICTURE: &str = "sending less picture";
 
-    /// What a piece's thread says of its track (and, a remote piece's, of
-    /// its playback).
     #[derive(Clone, Default, PartialEq)]
     pub(super) struct Standing {
-        /// A remote piece's playback: Live once something played.
         pub(super) status: Status,
         pub(super) track: wire::TrackState,
         pub(super) detail: String,
-        /// This build encodes or decodes nothing of the kind: `Unsupported`.
         pub(super) unsupported: bool,
     }
 
-    /// A publishing piece's track, run by a thread, until dropped.
     pub(in crate::render) struct Publisher {
         track: LiveTrack,
-        /// The device entity the thread reads: another means a new thread.
         entity: EntityId,
         standing: Arc<Mutex<Standing>>,
         told: Standing,
@@ -185,7 +166,6 @@ mod inner {
         }
     }
 
-    /// A remote piece: what plays it, and its thread's word.
     pub(in crate::render) struct Remote {
         track: LiveTrack,
         plays: Plays,
@@ -193,12 +173,10 @@ mod inner {
         speaking: Speaking,
         told: Option<wire::MediaState>,
         on_state: Option<u32>,
-        /// Ends the subscription, and with it the thread.
         _stopper: Option<tokio::task::AbortHandle>,
     }
 
     impl Drop for Remote {
-        /// The piece goes: its subscription ends, and its thread with it.
         fn drop(&mut self) {
             if let Some(stopper) = self._stopper.take() {
                 stopper.abort();
@@ -206,21 +184,15 @@ mod inner {
         }
     }
 
-    /// A remote audio piece's voice on the speaker, with the voice I/O it
-    /// plays through, once its thread made them (`None` when this build
-    /// decodes none).
     type Played = Arc<OnceLock<Option<(Arc<voice::Io>, Arc<voice::Voice>)>>>;
 
     enum Plays {
         Video(Entity<ducktape_av::Camera>),
         Audio(Played),
-        /// Nothing: the view has [`MAX_REMOTE`] open.
         Refused,
     }
 
     impl Calls {
-        /// A publishing camera piece at `path`: the publication, kept
-        /// while the track and the camera stay; gone with `publish`.
         pub(in crate::render) fn camera(
             &mut self,
             path: &AuthoredPath,
@@ -252,9 +224,6 @@ mod inner {
             self.ensure_poll(cx);
         }
 
-        /// A publishing microphone piece at `path` (`node`): its meter fed
-        /// by the voice I/O, its frames published; `muted` drops the
-        /// capture.
         pub(in crate::render) fn microphone(
             &mut self,
             path: &AuthoredPath,
@@ -304,7 +273,6 @@ mod inner {
             self.ensure_poll(cx);
         }
 
-        /// The poll that tells the pieces' states, while any piece lives.
         fn ensure_poll(&mut self, cx: &mut Context<ViewTree>) {
             if self._poll.is_some() {
                 return;
@@ -337,8 +305,6 @@ mod inner {
     }
 
     impl ViewTree {
-        /// A remote piece at this path: made for its track and kind, told
-        /// its state through `on_state`.
         pub(in crate::render) fn remote_piece(
             &mut self,
             node: &wire::Node,
@@ -391,8 +357,6 @@ mod inner {
             }
         }
 
-        /// Each piece's state told on change; `false` once no piece lives
-        /// (the poll ends).
         fn poll_calls(&mut self, cx: &mut Context<Self>) -> bool {
             let now = Instant::now();
             let mut events = Vec::new();
@@ -402,8 +366,6 @@ mod inner {
                     continue;
                 }
                 publisher.told = standing;
-                // the device's own state, as its piece last emitted it,
-                // with the track's
                 if let Some((handler, mut state)) = self.media.last_told(path) {
                     publisher.adorn(&mut state);
                     events.push(wire::Event::Media { handler, state });
@@ -425,7 +387,6 @@ mod inner {
                 if let Plays::Audio(played) = &remote.plays
                     && let Some(Some((io, voice))) = played.get()
                 {
-                    // the speaker that would not open is the piece's fault
                     if let Some((status, detail)) = speaker_fault(io.speaker()) {
                         state.status = status;
                         state.detail = detail;
@@ -469,7 +430,6 @@ mod inner {
         }
     }
 
-    /// A remote piece on `track`, its thread started.
     fn make_remote(
         track: &LiveTrack,
         media: &wire::RemoteMedia,
@@ -477,8 +437,6 @@ mod inner {
         cx: &mut Context<ViewTree>,
     ) -> Remote {
         let standing: Arc<Mutex<Standing>> = Arc::default();
-        // a picture from the group the node holds (its keyframe); a voice
-        // from the next packet, never a second of stale voice first
         let from = match media {
             wire::RemoteMedia::Video { .. } => Start::Latest,
             wire::RemoteMedia::Audio { .. } => Start::Next,
@@ -505,8 +463,6 @@ mod inner {
                 let played: Played = Arc::default();
                 let (word, heard, output) = (standing.clone(), played.clone(), output.clone());
                 spawn("call-audio", move || {
-                    // the voice I/O is made here, off the window thread
-                    // (its echo canceller is the cost)
                     let io = voice::hold(None, output);
                     let voice = match io.voice() {
                         Ok(voice) => Some((io, Arc::new(voice))),
@@ -544,8 +500,6 @@ mod inner {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// A speaker that is not playing, in the speaker's own words; `None`
-    /// while it plays or is not asked yet.
     fn speaker_fault(status: Status) -> Option<(wire::MediaStatus, String)> {
         let said = |why: &str| -> String {
             why.chars()
@@ -569,7 +523,6 @@ mod inner {
         })
     }
 
-    /// One line onto a proof tap (`DUCKTAPE_AV_FAKE_TAP`), nothing without.
     fn tap(tap: &mut Option<std::fs::File>, line: std::fmt::Arguments) {
         if let Some(tap) = tap {
             use std::io::Write as _;
@@ -577,8 +530,6 @@ mod inner {
         }
     }
 
-    /// The camera's pictures encoded at the ladder's rung and published,
-    /// while subscribers listen; a cut steps the ladder down.
     fn publish_camera(
         feed: Arc<CameraFeed>,
         mut publication: HostPublication,
@@ -590,8 +541,6 @@ mod inner {
         let mut encoder = match encoder_at(ladder.rung()) {
             Ok(encoder) => Some(encoder),
             Err(why) => {
-                // the codec's own reason: turned off in Settings, not
-                // fetched, no encoder on this device
                 let mut word = lock(&standing);
                 word.unsupported = true;
                 word.detail = format!("no picture sent: {why}");
@@ -611,7 +560,6 @@ mod inner {
                 match &heard {
                     TrackHeard::Up { subscribers: n } => {
                         if !up {
-                            // a fresh session or grant: start with a keyframe
                             want_key = true;
                             chunker.cut();
                         }
@@ -705,7 +653,6 @@ mod inner {
         VideoEncoder::new(rung.width, rung.height, rung.bitrate, rung.fps)
     }
 
-    /// The encoder at `rung`; its next packet is a keyframe.
     fn apply(encoder: &mut VideoEncoder, rung: Rung) {
         let _ = encoder.set_size(rung.width, rung.height, rung.fps);
         let _ = encoder.set_bitrate(rung.bitrate);
@@ -718,8 +665,6 @@ mod inner {
         }
     }
 
-    /// The voice I/O's frames encoded and published while the piece is
-    /// not muted; its status and level into the meter's feed.
     fn publish_microphone(
         io: Arc<voice::Io>,
         feed: Arc<MicFeed>,
@@ -784,8 +729,6 @@ mod inner {
         }
     }
 
-    /// The track's objects reassembled and decoded into the remote
-    /// camera's feed, until the subscription ends.
     fn play_video(
         subscription: &mut crate::runtime::HostSubscription,
         feed: Arc<CameraFeed>,
@@ -815,7 +758,6 @@ mod inner {
                         word.status = Status::Gone(code.clone());
                     }
                     if matches!(heard, TrackHeard::Up { .. }) {
-                        // a fresh subscription replays from a keyframe
                         frames.reset();
                         decoder = decoder.and_then(|_| VideoDecoder::new().ok());
                     }
@@ -847,7 +789,6 @@ mod inner {
         }
     }
 
-    /// The track's packets onto the voice, until the subscription ends.
     fn play_audio(
         subscription: &mut crate::runtime::HostSubscription,
         voice: Option<Arc<voice::Voice>>,

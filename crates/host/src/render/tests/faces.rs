@@ -5,7 +5,6 @@ use gpui_kit::HeadlessAppContext;
 
 const WORDS: &str = "iiiiiiii";
 
-/// A paragraph whose own style names `family`, in a box as wide as its words.
 fn paragraph(key: &str, family: Option<&'static str>) -> wire::Node {
     let mut style = div();
     if let Some(family) = family {
@@ -27,7 +26,6 @@ fn paragraph(key: &str, family: Option<&'static str>) -> wire::Node {
     )
 }
 
-/// A sensor whose style names `family`, around a text that names none.
 fn sensed(key: &str, family: &'static str) -> wire::Node {
     wire::Node::Sensor {
         id: named_id("sensor"),
@@ -42,9 +40,6 @@ fn sensed(key: &str, family: &'static str) -> wire::Node {
     }
 }
 
-/// A view names the design crate's faces, which the app does not bundle:
-/// a chat code line asks for its mono. Whatever kind of node asks, the app's
-/// own mono draws it, the face the paragraph's runs are drawn in.
 #[test]
 fn a_view_naming_the_design_crates_mono_is_drawn_in_the_apps() {
     let mut cx = HeadlessAppContext::new(Arc::new(crate::fonts::font_fallback::text_system()));
@@ -85,7 +80,6 @@ fn a_view_naming_the_design_crates_mono_is_drawn_in_the_apps() {
     .unwrap();
 }
 
-/// A text whose style sets `spacing`, in a box as wide as its words.
 fn spaced(key: &str, spacing: Option<f32>) -> wire::Node {
     let mut style = div();
     if let Some(spacing) = spacing {

@@ -10,13 +10,10 @@ use std::time::Duration;
 
 const WIDTH: f32 = 390.;
 
-/// A view showing the page `key`, `depth` over its stack's root.
 fn page(key: &str, depth: u32) -> wire::Node {
     page_of(key, depth, vec![text(&format!("{key}-words"), key)])
 }
 
-/// A view showing the page `key`, `depth` over its stack's root, made of
-/// `children`.
 fn page_of(key: &str, depth: u32, children: Vec<wire::Node>) -> wire::Node {
     let page = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
@@ -30,7 +27,6 @@ fn page_of(key: &str, depth: u32, children: Vec<wire::Node>) -> wire::Node {
     sized("view", page, Some(fill()), Some(fill()))
 }
 
-/// A list of three rows on the page `key`, filed under its path.
 fn rows(key: &str) -> wire::Node {
     let row = |id: u64| {
         container_with_style(
@@ -75,7 +71,6 @@ fn show(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext, root:
     native.update(crate::render::draw_frame);
 }
 
-/// `by` later, drawn.
 fn later(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext, by: Duration) {
     native.executor().advance_clock(by);
     tree.update(native, |_, cx| cx.notify());
@@ -101,10 +96,6 @@ fn moving(tree: &Entity<ViewTree>, native: &gpui_kit::VisualTestContext) -> bool
     tree.read_with(native, |tree, _| tree.page_moving())
 }
 
-/// A push slides the new page in from the right edge over the old, which
-/// moves left; a pop slides the top page off to the right over the one
-/// under it, which comes back from the left. Each ends at the still
-/// layout, with the old page gone.
 #[gpui_kit::test]
 fn a_push_and_a_pop_slide_and_land_still(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -144,8 +135,6 @@ fn a_push_and_a_pop_slide_and_land_still(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// Under Reduce Motion nothing slides: the old page fades over the new
-/// one in place, then is gone.
 #[gpui_kit::test]
 fn reduce_motion_slides_nothing(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -162,8 +151,6 @@ fn reduce_motion_slides_nothing(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// A page at the same depth (a tab of the root, a page put in place of
-/// another) is put in place at once, as the phone switches a tab.
 #[gpui_kit::test]
 fn a_page_at_the_same_depth_does_not_slide(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -175,7 +162,6 @@ fn a_page_at_the_same_depth_does_not_slide(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// A pointer window never moves a page.
 #[gpui_kit::test]
 fn a_pointer_window_does_not_slide(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = open(cx, page("rooms", 0));
@@ -185,8 +171,6 @@ fn a_pointer_window_does_not_slide(cx: &mut gpui_kit::TestAppContext) {
     assert!(!drawn(&mut native, "rooms"));
 }
 
-/// A list the page going was scrolled in moves away where it was left,
-/// not back at its top.
 #[gpui_kit::test]
 fn the_page_going_keeps_its_list_where_it_was_left(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -223,14 +207,9 @@ fn the_page_going_keeps_its_list_where_it_was_left(cx: &mut gpui_kit::TestAppCon
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// Over a pop the page going is on top: a press on it reaches nothing,
-/// not the control under it on the page coming back; once it has gone the
-/// control is pressed.
 #[gpui_kit::test]
 fn a_press_on_the_page_going_reaches_nothing(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
-    // a row the width of the page: at a pop's start the page coming back
-    // sits 30 % to the left, and the row still spans the press there
     let mut control = container_with_style("open", div().w_full().h(px(24.)).style().clone(), []);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut control {
         interactivity.get_or_insert_default().on_click = Some(9);
@@ -266,8 +245,6 @@ fn a_press_on_the_page_going_reaches_nothing(cx: &mut gpui_kit::TestAppContext) 
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// rooms (the root), then room pushed over it and landed still: the page
-/// kept under room is rooms.
 fn pushed(cx: &mut gpui_kit::TestAppContext) -> (Entity<ViewTree>, gpui_kit::VisualTestContext) {
     let (tree, mut native) = open(cx, page("rooms", 0));
     show(&tree, &mut native, page("room", 1));
@@ -276,12 +253,10 @@ fn pushed(cx: &mut gpui_kit::TestAppContext) -> (Entity<ViewTree>, gpui_kit::Vis
     (tree, native)
 }
 
-/// The swipe `progress` in, drawn: whether the page followed.
 fn drag(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext, progress: f32) -> bool {
     drag_at(tree, native, progress, 0.)
 }
 
-/// [`drag`], the finger moving at `speed` (widths per second).
 fn drag_at(
     tree: &Entity<ViewTree>,
     native: &mut gpui_kit::VisualTestContext,
@@ -293,7 +268,6 @@ fn drag_at(
     followed
 }
 
-/// The swipe let go short, drawn.
 fn let_go_short(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext) {
     tree.update(native, |tree, cx| tree.drag_page_cancelled(cx));
     native.update(crate::render::draw_frame);
@@ -303,8 +277,6 @@ fn finger(tree: &Entity<ViewTree>, native: &gpui_kit::VisualTestContext) -> Opti
     tree.read_with(native, |tree, _| tree.page_finger())
 }
 
-/// The frames a draw now asks for: the ones earlier draws asked for (a
-/// test draws without delivering them) are delivered first.
 fn frames(native: &mut gpui_kit::VisualTestContext) -> usize {
     native.update(|window, cx| {
         window.simulate_next_frame(cx);
@@ -320,11 +292,6 @@ fn near(drawn: f32, expected: f32, what: &str) {
     );
 }
 
-/// The edge swipe drags the page on top off the page it was pushed over,
-/// kept under it and coming back from the left, the finger moving both
-/// (no frame asked for); let go short, the page slides back from where it
-/// was left, and lands still, the page under it gone, with nothing asked
-/// for after.
 #[gpui_kit::test]
 fn the_edge_swipe_drags_a_page_off_the_one_under_it_and_back(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -364,10 +331,6 @@ fn the_edge_swipe_drags_a_page_off_the_one_under_it_and_back(cx: &mut gpui_kit::
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// Let go as a Back the view hears, the page holds where the finger left
-/// it (no frame asked for, no second swipe followed); the shallower page
-/// the view answers with is uncovered from there, not from the start, and
-/// lands still; nothing is kept under a root page.
 #[gpui_kit::test]
 fn a_swipe_let_go_as_back_pops_from_where_the_finger_left(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -408,8 +371,6 @@ fn a_swipe_let_go_as_back_pops_from_where_the_finger_left(cx: &mut gpui_kit::Tes
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// The page let go starts at the finger's speed: a pop on with it, a
-/// release short back the other way.
 #[gpui_kit::test]
 fn a_page_let_go_starts_at_the_fingers_speed(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -429,9 +390,6 @@ fn a_page_let_go_starts_at_the_fingers_speed(cx: &mut gpui_kit::TestAppContext) 
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// A Back the view answers at the same depth (a dialog it closed, a Back
-/// it had no use for) holds the page until the answer is in; then it
-/// slides back, as from a release short.
 #[gpui_kit::test]
 fn a_back_answered_without_a_pop_slides_the_page_back(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -456,9 +414,6 @@ fn a_back_answered_without_a_pop_slides_the_page_back(cx: &mut gpui_kit::TestApp
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// A page opened straight (a link onto a deep page), or jumped to past the
-/// page under it, has no page kept under it: the swipe does not follow,
-/// and stays the shell's (its release a Back as ever).
 #[gpui_kit::test]
 fn a_page_with_none_kept_under_it_does_not_follow(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -480,9 +435,6 @@ fn a_page_with_none_kept_under_it_does_not_follow(cx: &mut gpui_kit::TestAppCont
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// One page kept per depth under the top: two pushes keep both, and the
-/// swipe uncovers the one right under; a pop drops the page it uncovers,
-/// and the swipe on the page it lands on uncovers the one under that.
 #[gpui_kit::test]
 fn each_depth_keeps_the_page_under_it(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -501,8 +453,6 @@ fn each_depth_keeps_the_page_under_it(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// A sheet over the page (the view's Back closes it first) or Reduce
-/// Motion: the swipe does not follow.
 #[gpui_kit::test]
 fn a_sheet_over_the_page_or_reduce_motion_holds_it_still(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -532,15 +482,10 @@ fn a_sheet_over_the_page_or_reduce_motion_holds_it_still(cx: &mut gpui_kit::Test
     crate::contract::testing::touch_first_for_test(false);
 }
 
-/// A page with a camera and a microphone, pushed over: its copy, drawn
-/// under the push and kept under the page after, holds neither, opens
-/// neither (a device it opened would stay open, unseen, while the page is
-/// kept), and keeps each one's place.
 #[gpui_kit::test]
 fn the_page_kept_under_opens_no_device(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
     let style = crate::render::test_style(div().w(px(40.)).h(px(40.)).style().clone());
-    // a device no system lists: nothing opens should the copy try
     let camera = wire::Node::Camera {
         id: named_id("camera"),
         style,

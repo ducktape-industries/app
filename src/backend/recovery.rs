@@ -14,7 +14,6 @@ use noded_client::wire::{Frame, salt};
 use super::identity::submit_seated;
 use super::{RpcClient, anchor, query_signer, seated_key, seated_sign};
 
-/// 24 fresh words: a recovery key not yet on any account.
 pub(crate) fn new_recovery_phrase() -> String {
     keystore::userkey::mnemonic_of_seed(&rand::random::<[u8; 32]>())
 }
@@ -38,8 +37,6 @@ async fn account_of(
     }
 }
 
-/// Puts the key `phrase` makes on the account this device's (seated) key
-/// holds: this device consents, the recovery key signs its own `AddKey`.
 pub(crate) async fn add_recovery_key(
     client: &RpcClient,
     network: &str,
@@ -86,8 +83,6 @@ pub(crate) async fn add_recovery_key(
     submit(client, frame.encode()).await.map(drop)
 }
 
-/// This device's (seated) key joins the account the key `phrase` makes is
-/// on; that key consents.
 pub(crate) async fn join_with_recovery_key(
     client: &RpcClient,
     network: &str,

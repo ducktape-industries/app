@@ -139,10 +139,13 @@ fn a_load_a_pane_claimed_goes_first() {
         }
     };
     assert_eq!(
-        next_of(&VecDeque::from([load(0), load(0), load(3), load(0)])),
+        first_claimed_or_first_waiting_load(&VecDeque::from([load(0), load(0), load(3), load(0)])),
         2
     );
-    assert_eq!(next_of(&VecDeque::from([load(0), load(0)])), 0);
+    assert_eq!(
+        first_claimed_or_first_waiting_load(&VecDeque::from([load(0), load(0)])),
+        0
+    );
 }
 
 /// Claim: a roster read reads every preload's bytes before any is prepared,

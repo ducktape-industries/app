@@ -6,7 +6,6 @@
 
 use super::*;
 
-/// What a scroll widget command asks of a scrolling container's offset.
 #[derive(Clone, Copy)]
 pub(super) enum ScrollRequest {
     Relative(f32, f32),
@@ -15,8 +14,6 @@ pub(super) enum ScrollRequest {
     End,
 }
 
-/// Visits every node with its authored path, depth first; `row` is the
-/// node's index when it is a row of a list.
 pub(super) fn walk_authored_paths(
     node: &wire::Node,
     row: Option<usize>,
@@ -24,8 +21,6 @@ pub(super) fn walk_authored_paths(
     visit: &mut impl FnMut(&wire::Node, &AuthoredPath),
 ) {
     let entered_scope = crate::render::enter_scope(node, row, path);
-    // A node filed under no id is visited at its nearest identified
-    // ancestor's path, which is not its own to key state by.
     visit(node, path);
     for (at, child) in node.children().iter().enumerate() {
         walk_authored_paths(child, wire::identity::row(node, at), path, visit);
@@ -87,7 +82,6 @@ pub fn tab(trap: Option<&FocusHandle>, forward: bool, window: &mut Window, cx: &
     while !trap.contains_focused(window, cx) {
         step(window, cx);
         if window.focused(cx) == first {
-            // round once, and no stop in the trap
             if let Some(start) = &start {
                 window.focus(start, cx);
             }
@@ -151,7 +145,6 @@ impl ViewTree {
     ) -> Result<Vec<u8>, String> {
         use wire::WidgetCommand as C;
         command.validate()?;
-        // every command answers unit; the helpers say what went wrong
         match command {
             C::FocusHandle { handle } => {
                 let focus = self
@@ -161,8 +154,6 @@ impl ViewTree {
                     .clone();
                 focus.focus(window, cx);
             }
-            // Tab's own move: through the window's Tab stops, kept in a
-            // focus trap, never a walk of this tree's own
             C::FocusPrevious => {
                 let trap = gpui_kit::base::active_focus_trap(window, cx);
                 tab(trap.as_ref(), false, window, cx)
@@ -192,8 +183,6 @@ impl ViewTree {
         Ok(wire::encode(&()))
     }
 
-    /// Whether the keyboard is in the node at `target`, a whole authored
-    /// path.
     #[cfg(test)]
     pub(super) fn target_focused(
         &self,
@@ -209,10 +198,6 @@ impl ViewTree {
             .is_some_and(|field| field.is_focused(window, cx))
     }
 
-    /// Runs a focus, cursor, selection or editor command on the node at
-    /// `target`: a whole authored path, as the view SDK names it from the
-    /// frame it lowered, so two scopes holding one id are two targets. A
-    /// node that cannot take the command answers so.
     pub(super) fn input_command(
         &mut self,
         target: &[wire::ElementIdWire],
@@ -222,8 +207,6 @@ impl ViewTree {
     ) -> Result<(), String> {
         use wire::WidgetCommand as C;
         if matches!(command, C::Focus { .. }) {
-            // the container that owns the path: an id-less one sits on its
-            // nearest named ancestor's path and is not the node it names
             let mut kind = None;
             walk_authored_paths(&self.root, None, &mut Vec::new(), &mut |node, path| {
                 if path == target
@@ -245,8 +228,6 @@ impl ViewTree {
                 return Ok(());
             }
         }
-        // a field's edit is the view's ask of the engine; a cursor command
-        // moves the caret where it is; only Focus takes the keys
         if let Some(field) = self.fields.get_mut(target) {
             let event = match command {
                 C::Focus { .. } => {
@@ -273,7 +254,6 @@ impl ViewTree {
         let Some(handle) = self.scrolls.get(target) else {
             return Err("the target is no scroller with an id".into());
         };
-        // an offset is measured from the start: gpui scrolls into the negative
         let maximum = handle.max_offset();
         let next = match request {
             ScrollRequest::Relative(x, y) => {

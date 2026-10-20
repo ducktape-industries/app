@@ -4,14 +4,10 @@
 //! that takes it before it reads its source again.
 use super::*;
 
-/// The kernel's answers to a view's requests, written off-thread and
-/// drained into the view's pending events at its next redraw.
 pub(in crate::runtime) struct Replies {
     events: Mutex<Vec<wire::Event>>,
     in_flight: AtomicUsize,
     changed: tokio::sync::watch::Sender<()>,
-    /// Told on every redraw that takes the queue: a subscription parked in
-    /// [`Replies::subscription_item`] wakes here and reads its source again.
     drained: tokio::sync::watch::Sender<()>,
 }
 
@@ -27,14 +23,10 @@ impl Default for Replies {
 }
 
 impl Replies {
-    /// Fires on every answer, coalesced; each `Seat` (`seat/entity.rs`)
-    /// awaits its own receiver and turns. The
-    /// answer stays in the queue while no window presents the view.
     pub(in crate::runtime) fn changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changed.subscribe()
     }
 
-    /// Answers how many were waiting: the backlog at this drain.
     pub(in crate::runtime) fn drain_into(&self, pending: &mut Vec<wire::Event>) -> usize {
         let mut events = self.events.lock().expect("kernel replies");
         let backlog = events.len();
@@ -43,17 +35,10 @@ impl Replies {
         backlog
     }
 
-    /// Told on every drain: what a parked subscription waits on.
     pub(super) fn drains(&self) -> tokio::sync::watch::Receiver<()> {
         self.drained.subscribe()
     }
 
-    /// One item from a SUBSCRIPTION, which is the only producer that can
-    /// outrun the redraw: it answers for as long as the view holds it,
-    /// against a queue only a redraw empties. It PARKS here after the item
-    /// until a redraw takes the queue, so its own source — a node socket, a
-    /// poll loop — holds what comes next. `false` when the queue's drains
-    /// can no longer come: the subscription should end.
     pub(super) async fn subscription_item(
         &self,
         drained: &mut tokio::sync::watch::Receiver<()>,
@@ -68,11 +53,6 @@ impl Replies {
         drained.changed().await.is_ok()
     }
 
-    /// One item from a task holding `claim` on request `id`; `done` ends
-    /// it, and gives the claim up with it. `false`, and nothing queued,
-    /// once the claim is gone: the task ended the request already, or a
-    /// reconnect took it ([`Replies::take`]) and the task is the old
-    /// connection's.
     pub(super) fn answer(&self, claim: &Claim, id: u64, result: Answer, done: bool) -> bool {
         let mut events = self.events.lock().expect("kernel replies");
         let mut hold = claim.0.lock().expect("a request's claim");
@@ -85,12 +65,6 @@ impl Replies {
         true
     }
 
-    /// The kernel takes request `claim` from its task, to answer it or
-    /// open it again (a reconnect): `None` when the task ended it first,
-    /// else what the task left standing for it ([`Claim::stand`]). Under
-    /// the queue's lock, as every answer of a task is, so the request is
-    /// the task's or the kernel's, never both: no id is ended twice, and
-    /// nothing the old task sends lands after it is taken.
     pub(super) fn take(&self, claim: &Claim) -> Option<Option<Answer>> {
         let _events = self.events.lock().expect("kernel replies");
         let mut hold = claim.0.lock().expect("a request's claim");
@@ -106,34 +80,17 @@ impl Replies {
         InFlight(self.clone())
     }
 
-    /// WHETHER THE VIEW IS STILL OWED A FRAME, which is the in-flight count
-    /// AND the answers already lying here. The two are one fact to a caller
-    /// and reading only the count loses a race it loses often: a request is
-    /// spawned inside a redraw, and a node that answers before that redraw
-    /// returns has already given the count back — leaving an answer nobody
-    /// is coming back for. The widget then stops polling and the view sits
-    /// on "Loading…" until an unrelated event wakes it; a test's pump
-    /// returns and reads a screen that never got its rows.
-    ///
-    /// Under the events lock, because that is the lock [`Replies::settled`]
-    /// takes to give a count back: with it held, empty and zero together
-    /// mean nothing can arrive that no one is waiting for.
     pub(in crate::runtime) fn answer_owed(&self) -> bool {
         let events = self.events.lock().expect("kernel replies");
         !events.is_empty() || self.in_flight.load(Ordering::SeqCst) > 0
     }
 
-    /// One item for a request the kernel is running; `done` ends it for the
-    /// view. The in-flight count is [`Replies::settled`]'s to give back —
-    /// a subscription's last item and its count are not the same moment.
     pub(super) fn item(&self, id: u64, result: Answer, done: bool) {
         let mut events = self.events.lock().expect("kernel replies");
         events.push(wire::Event::Response { id, result, done });
         self.changed.send_replace(());
     }
 
-    /// An event the host makes for the view itself, not an answer to a
-    /// request (a file drop's files, once opened).
     #[cfg(feature = "ui")]
     pub(super) fn event(&self, event: wire::Event) {
         let mut events = self.events.lock().expect("kernel replies");
@@ -141,7 +98,6 @@ impl Replies {
         self.changed.send_replace(());
     }
 
-    /// One request off the in-flight count, under the lock a waiter holds.
     fn settled(&self) {
         let _events = self.events.lock().expect("kernel replies");
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -149,9 +105,6 @@ impl Replies {
     }
 }
 
-/// A task's hold on its request: the right to answer it, which its last
-/// answer gives up and a reconnect can take ([`Replies::answer`],
-/// [`Replies::take`]).
 #[derive(Clone, Default)]
 pub(in crate::runtime) struct Claim(std::sync::Arc<Mutex<Hold>>);
 
@@ -162,17 +115,11 @@ struct Hold {
 }
 
 impl Claim {
-    /// What the request answers if it is taken from its task from now on:
-    /// a submit whose frame is going out is in doubt, not unsent.
     pub(super) fn stand(&self, answer: Answer) {
         self.0.lock().expect("a request's claim").standing = Some(answer);
     }
 }
 
-/// One in-flight slot, held by a running request or subscription and given
-/// back when its task ends — INCLUDING THE ABORT a cancel or a replaced view fires, which is
-/// the only way a socket waiting on the node stops waiting. Without this
-/// the count would outlive the socket and the widget would poll forever.
 pub(super) struct InFlight(std::sync::Arc<Replies>);
 
 impl Drop for InFlight {

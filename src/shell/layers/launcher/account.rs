@@ -8,13 +8,9 @@ use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen, buttons, closing};
 use gpui_kit::*;
 
-/// What the device that waits for approval is told: a security instruction,
-/// so a `Status` a screen reader hears.
 const LINK_WAITING: &str = "On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Approve there only if it shows the same four-and-four. The code lasts five minutes.";
 
 impl LauncherLayer {
-    /// CreateAccount: name the account this key signs for, or add this
-    /// device to one that exists.
     pub(super) fn account_step(&self, window: &mut Window, cx: &App) -> AnyElement {
         let account = self.account.read(cx).get();
         if account.passkey_waiting {
@@ -91,7 +87,6 @@ impl LauncherLayer {
                 ])
                 .items_center(),
             );
-        // The common way in gets its own line; the other two share one.
         let join = closing(
             [
                 sans(500, 14.)
@@ -157,7 +152,6 @@ impl LauncherLayer {
         )
     }
 
-    /// Passkey: the ceremony is in the browser.
     fn passkey_waiting(&self, window: &mut Window, cx: &App) -> AnyElement {
         let ink = Ink::of(self.prefs.read(cx).get().dark());
         let links = closing(
@@ -189,8 +183,6 @@ impl LauncherLayer {
         )
     }
 
-    /// This device waits under a short code for one already on the account
-    /// to approve it; the fingerprint is compared on both screens.
     fn link_waiting(&self, window: &mut Window, cx: &App) -> AnyElement {
         let account = self.account.read(cx).get();
         let ink = Ink::of(self.prefs.read(cx).get().dark());
@@ -218,7 +210,6 @@ impl LauncherLayer {
                 .child(big("link-code", "Code", account.link_code.clone()))
                 .child(big("link-fingerprint", "This device", fingerprint))
                 .into_any_element(),
-            // a note's look; its words are the live region's own
             crate::a11y::live(
                 sans(400, 13.)
                     .line_height(px(13. * 1.55))
@@ -245,7 +236,6 @@ impl LauncherLayer {
                 id: "link-waiting",
                 tight: false,
                 caption: self.node_caption(cx),
-                // the step back reads as recovery's: the same way to the account
                 back: Some((
                     "link-back",
                     "← Back",

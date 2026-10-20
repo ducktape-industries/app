@@ -10,10 +10,7 @@ use crate::shell::sign_in;
 use crate::ui::layout::{EMPTY, HELP};
 use gpui_kit::{Bounds, Entity, TestAppContext, point, px, size};
 
-/// The node the account is on: none, so it asks nothing. (A socket's
-/// answer would wake the test from the runtime's thread, which the test
-/// scheduler refuses as non-deterministic.)
-const NODE: &str = "";
+const UNREACHABLE_NODE: &str = "";
 
 fn step(screen: Screen) -> &'static str {
     match screen {
@@ -37,7 +34,6 @@ fn step(screen: Screen) -> &'static str {
     }
 }
 
-/// An account with its screen, on no network.
 fn fresh(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
     let session = cx.update(session);
     let (_, account, screen) = session.read_with(cx, |session, _| session.parts());
@@ -52,12 +48,11 @@ fn state(account: &Entity<Account>, cx: &mut TestAppContext) -> super::AccountSt
     account.read_with(cx, |account, _| account.get().clone())
 }
 
-/// The key step on the test network. Its keyring is blank: this device's
-/// key is neither opened nor minted for it (`open_device_key` asks
-/// nothing without one).
 fn unlock(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
     let (account, screen) = fresh(cx);
-    account.update(cx, |account, _| account.seed_network(NODE, "testkit", ""));
+    account.update(cx, |account, _| {
+        account.seed_network(UNREACHABLE_NODE, "testkit", "")
+    });
     screen.update(cx, |screen, cx| {
         screen.set(Screen::Unlock { awaiting: false }, cx);
     });
@@ -71,7 +66,9 @@ fn awaiting(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>)
 }
 
 fn resolved(account: &Entity<Account>, found: Option<(u64, String)>, cx: &mut TestAppContext) {
-    account.update(cx, |account, cx| account.resolved(NODE, "ab", found, cx));
+    account.update(cx, |account, cx| {
+        account.resolved(UNREACHABLE_NODE, "ab", found, cx)
+    });
 }
 
 fn account_step(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
@@ -86,16 +83,10 @@ fn desk(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
     (account, screen)
 }
 
-/// This device picked its layout before: the desk shows where it is asked
-/// for. (With none picked, the layout step shows in its place.)
 fn layout_picked() {
     backend::save_layout(backend::Layout::MenuBar);
 }
 
-/// Every way between the screens: from a screen reached the way the app
-/// reaches it, one call (or a network taken up, which is what a node
-/// answering does to the account), and the screen it lands on. (Leaving
-/// and switching networks are `Session`'s, in session_tests.rs.)
 #[gpui_kit::test]
 fn every_onboarding_transition(cx: &mut TestAppContext) {
     let _seat = backend::seat_serial();
@@ -143,7 +134,9 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
     }
     fn misanswered(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
         let (account, screen) = awaiting(cx);
-        account.update(cx, |account, cx| account.resolved(NODE, "cd", None, cx));
+        account.update(cx, |account, cx| {
+            account.resolved(UNREACHABLE_NODE, "cd", None, cx)
+        });
         (account, screen)
     }
     fn testkit() -> noded_client::keyring::Keyring {
@@ -153,14 +146,13 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         }
     }
     let table: Vec<(&str, Build, Call, &str)> = vec![
-        // the fresh flow
         (
             "node reached",
             fresh,
             |a, cx| {
                 a.take_up(
                     testkit(),
-                    backend::RpcClient::new(NODE),
+                    backend::RpcClient::new(UNREACHABLE_NODE),
                     "testkit".into(),
                     cx,
                 );
@@ -200,19 +192,19 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         (
             "no account",
             awaiting,
-            |a, cx| a.resolved(NODE, "ab", None, cx),
+            |a, cx| a.resolved(UNREACHABLE_NODE, "ab", None, cx),
             "Account",
         ),
         (
             "an account",
             awaiting,
-            |a, cx| a.resolved(NODE, "ab", Some((7, "ada".into())), cx),
+            |a, cx| a.resolved(UNREACHABLE_NODE, "ab", Some((7, "ada".into())), cx),
             "Desk",
         ),
         (
             "another key's answer",
             awaiting,
-            |a, cx| a.resolved(NODE, "cd", None, cx),
+            |a, cx| a.resolved(UNREACHABLE_NODE, "cd", None, cx),
             "Unlock/awaiting",
         ),
         (
@@ -224,7 +216,7 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         (
             "no account, after another key's answer",
             misanswered,
-            |a, cx| a.resolved(NODE, "ab", None, cx),
+            |a, cx| a.resolved(UNREACHABLE_NODE, "ab", None, cx),
             "Account",
         ),
         (
@@ -233,7 +225,6 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             |a, cx| a.browse_without_key(cx),
             "Unlock/awaiting",
         ),
-        // read-only browsing
         (
             "read without a key",
             unlock,
@@ -258,7 +249,6 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             |a, cx| a.create_account(cx),
             "Desk",
         ),
-        // the account step
         ("not now", account_step, |a, cx| a.create_later(cx), "Desk"),
         (
             "an empty name",
@@ -326,24 +316,21 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         (
             "later answers stay",
             account_step,
-            |a, cx| a.resolved(NODE, "ab", None, cx),
+            |a, cx| a.resolved(UNREACHABLE_NODE, "ab", None, cx),
             "Account",
         ),
-        // the step is opened once: a later block reopens neither a step
-        // skipped nor one a passkey closed
         (
             "a later block after not now",
             later,
-            |a, cx| a.resolved(NODE, "ab", None, cx),
+            |a, cx| a.resolved(UNREACHABLE_NODE, "ab", None, cx),
             "Desk",
         ),
         (
             "a later block after a passkey",
             passkeyed,
-            |a, cx| a.resolved(NODE, "ab", None, cx),
+            |a, cx| a.resolved(UNREACHABLE_NODE, "ab", None, cx),
             "Desk",
         ),
-        // add-device / link
         (
             "from another device",
             account_step,
@@ -363,7 +350,6 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             |a, cx| a.joined(Err("gone".into()), cx),
             "Account",
         ),
-        // the recovery key, typed
         (
             "use a recovery key",
             account_step,
@@ -384,7 +370,6 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             |a, cx| a.joined(Err("no".into()), cx),
             "Recover",
         ),
-        // a new recovery phrase, and its quiz
         (
             "recovery key from the menu",
             desk,
@@ -422,7 +407,6 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             |a, cx| a.recovery_key_added(Err("no".into()), cx),
             "Phrase/quiz",
         ),
-        // lock and unlock
         ("lock", desk, |a, cx| a.lock(cx), "Unlock"),
         (
             "unlock",
@@ -442,7 +426,6 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             |a, cx| a.browse_without_key(cx),
             "Desk",
         ),
-        // the desk
         (
             "create account from the rail",
             desk,
@@ -453,12 +436,10 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         (
             "a later block's answer",
             desk,
-            |a, cx| a.resolved(NODE, "ab", None, cx),
+            |a, cx| a.resolved(UNREACHABLE_NODE, "ab", None, cx),
             "Desk",
         ),
     ];
-    // a device with no layout picked meets the layout step wherever the
-    // desk would show; one that picked it, the desk
     for picked in [false, true] {
         if picked {
             layout_picked();
@@ -475,9 +456,6 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
     }
 }
 
-/// The layout step stands where the desk would, until Continue saves the
-/// pick and opens the desk; no later way in (a lock, then an unlock) asks
-/// again. A Continue that lands after the step went saves nothing.
 #[gpui_kit::test]
 fn the_layout_step_shows_once_before_the_desk(cx: &mut TestAppContext) {
     let _seat = backend::seat_serial();
@@ -572,8 +550,6 @@ fn the_rail_reopens_the_step_and_a_created_account_closes_it(cx: &mut TestAppCon
     assert_eq!(state(&account, cx).account, Some(Some((9, "ada".into()))));
 }
 
-/// "Add a device…" opened or closed forgets what the last one found and
-/// its failure.
 #[gpui_kit::test]
 fn the_approve_dialog_forgets_what_it_found_when_it_opens_or_closes(cx: &mut TestAppContext) {
     let (account, _) = desk(cx);
@@ -607,19 +583,14 @@ fn the_approve_dialog_forgets_what_it_found_when_it_opens_or_closes(cx: &mut Tes
     }
 }
 
-/// Its future, dropped: what a call that never lands holds.
-struct Dropped(std::rc::Rc<std::cell::Cell<bool>>);
+struct NeverLandingCall(std::rc::Rc<std::cell::Cell<bool>>);
 
-impl Drop for Dropped {
+impl Drop for NeverLandingCall {
     fn drop(&mut self) {
         self.0.set(true);
     }
 }
 
-/// A step left by its back or close while its call is still out (a node
-/// that never answers): the call is dropped and the next try is not
-/// refused as busy. Before, `busy` held until the call landed, and every
-/// other sign-in step with it.
 #[gpui_kit::test]
 fn leaving_a_step_drops_its_call_and_frees_the_next_try(cx: &mut TestAppContext) {
     layout_picked();
@@ -670,7 +641,7 @@ fn leaving_a_step_drops_its_call_and_frees_the_next_try(cx: &mut TestAppContext)
     for (step, build, leave, lands) in table {
         let (account, screen) = build(cx);
         let dropped = std::rc::Rc::new(std::cell::Cell::new(false));
-        let held = Dropped(dropped.clone());
+        let held = NeverLandingCall(dropped.clone());
         account.update(cx, |account, cx| {
             let call = cx.spawn(async move |_, _| {
                 let _held = held;
@@ -687,10 +658,6 @@ fn leaving_a_step_drops_its_call_and_frees_the_next_try(cx: &mut TestAppContext)
     }
 }
 
-/// A second node of the same network keeps the key, the account and the
-/// screen; another chain leaves everything of the last one and starts at
-/// the key step. An account answer from the node left, or for another
-/// key, is not this one's.
 #[gpui_kit::test]
 fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
     layout_picked();
@@ -701,13 +668,13 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
         other_chain,
     };
     account.update(cx, |account, cx| {
-        account.seed_network(NODE, "testkit", "testkit");
-        account.resolved(NODE, "ab", Some((7, "ada".into())), cx);
+        account.seed_network(UNREACHABLE_NODE, "testkit", "testkit");
+        account.resolved(UNREACHABLE_NODE, "ab", Some((7, "ada".into())), cx);
     });
     let left = account.update(cx, |account, cx| {
         account.take_up(
             keyring("testkit", false),
-            backend::RpcClient::new(NODE),
+            backend::RpcClient::new(UNREACHABLE_NODE),
             "testkit".into(),
             cx,
         )
@@ -724,7 +691,7 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
     let left = account.update(cx, |account, cx| {
         account.take_up(
             keyring("testkit+200", true),
-            backend::RpcClient::new(NODE),
+            backend::RpcClient::new(UNREACHABLE_NODE),
             "testkit".into(),
             cx,
         )
@@ -742,7 +709,6 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
         "another chain starts at the key step"
     );
 
-    // an answer from the node left, then the one asked
     account.update(cx, |account, cx| {
         account.unlocked("ab".into(), cx);
         account.resolved("http://old", "ab", Some((1, "Stale".into())), cx);
@@ -753,7 +719,7 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
         "the old node's answer landed"
     );
     account.update(cx, |account, cx| {
-        account.resolved(NODE, "cd", Some((2, "Other".into())), cx)
+        account.resolved(UNREACHABLE_NODE, "cd", Some((2, "Other".into())), cx)
     });
     assert_eq!(
         state(&account, cx).account,
@@ -765,10 +731,6 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
     assert_eq!(shown(&screen, cx), "Account");
 }
 
-// ---------- what the desktop does on the account's events ----------
-
-/// The entities with a console window open, its desk laid out with one
-/// empty window; nothing is drawn.
 fn desktop(cx: &mut TestAppContext) -> (Entities, WindowKey) {
     let entities = cx.update(|cx| {
         gpui_kit::init(cx);
@@ -786,7 +748,6 @@ fn desktop(cx: &mut TestAppContext) -> (Entities, WindowKey) {
     (entities, key)
 }
 
-/// Locking says so: the account's toast reaches the notice.
 #[gpui_kit::test]
 fn a_locked_toast_still_shows(cx: &mut TestAppContext) {
     let _seat = backend::seat_serial();
@@ -797,9 +758,6 @@ fn a_locked_toast_still_shows(cx: &mut TestAppContext) {
     assert_eq!(toast, "Locked");
 }
 
-/// A new account lands on the desk with Help open in it, past the layout
-/// step on a device that has none yet; one that skips the step, or a key
-/// that already has an account, does not.
 #[gpui_kit::test]
 fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
     let (entities, key) = desktop(cx);
@@ -809,7 +767,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
             screen.set(Screen::Unlock { awaiting: false }, cx);
         });
         entities.account.update(cx, |account, cx| {
-            account.seed_network(NODE, "testkit", "");
+            account.seed_network(UNREACHABLE_NODE, "testkit", "");
             account.unlocked("ab".into(), cx);
         });
     };
@@ -838,7 +796,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
     let (entities, key) = desktop(cx);
     signing_in(&entities, cx);
     entities.account.update(cx, |account, cx| {
-        account.resolved(NODE, "ab", None, cx);
+        account.resolved(UNREACHABLE_NODE, "ab", None, cx);
         account.create_later(cx);
     });
     assert_eq!(
@@ -850,7 +808,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
     let (entities, key) = desktop(cx);
     signing_in(&entities, cx);
     entities.account.update(cx, |account, cx| {
-        account.resolved(NODE, "ab", Some((7, "ada".into())), cx);
+        account.resolved(UNREACHABLE_NODE, "ab", Some((7, "ada".into())), cx);
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
     assert_eq!(
@@ -860,17 +818,13 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
     );
 }
 
-/// A key seated on a network: its public half is kept under the network's
-/// keyring, whose set runs its notifiers for this person while another
-/// network is in hand (`runtime::follow`), no key store asked. Seated on
-/// no network, nothing is kept.
 #[gpui_kit::test]
 fn unlocked_notes_the_public_half(cx: &mut TestAppContext) {
     let (account, _) = fresh(cx);
     account.update(cx, |account, cx| account.unlocked("cd".into(), cx));
     assert_eq!(backend::device_key_of(""), None);
     account.update(cx, |account, _| {
-        account.seed_network(NODE, "testkit", "notes-testkit")
+        account.seed_network(UNREACHABLE_NODE, "testkit", "notes-testkit")
     });
     account.update(cx, |account, cx| account.unlocked("ab".into(), cx));
     assert_eq!(

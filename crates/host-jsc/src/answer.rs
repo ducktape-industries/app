@@ -8,17 +8,13 @@ use base64::Engine as _;
 use ducktape_host::contract::{Fault, Landed};
 use view_meter::Stop;
 
-/// One call's answer, read.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Answer {
     pub(crate) fuel_used: u64,
-    /// The view's linear memory after the call, when the page said.
     pub(crate) memory: Option<usize>,
-    /// The bytes the export answered, or why there are none.
     pub(crate) outcome: Result<Vec<u8>, Fault>,
 }
 
-/// Reads the page's answer `text`.
 pub(crate) fn read(text: &str) -> Answer {
     let failed = |fault: Fault, memory: Option<usize>| Answer {
         fuel_used: 0,
@@ -74,7 +70,6 @@ pub(crate) fn read(text: &str) -> Answer {
     }
 }
 
-/// The export a call entered, for what its bytes mean.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Export {
     Init,
@@ -84,7 +79,6 @@ pub(crate) enum Export {
 }
 
 impl Export {
-    /// The page's name for the call.
     pub(crate) fn op(self) -> &'static str {
         match self {
             Self::Init => "init",
@@ -94,9 +88,6 @@ impl Export {
         }
     }
 
-    /// What lands for `outcome`: as the wasmtime runner reads the same
-    /// export's answer (`snapshot` and `restore` answer a result,
-    /// `wire::abi::decode_result`).
     pub(crate) fn landed(self, outcome: Result<Vec<u8>, Fault>) -> Landed {
         let bytes = match outcome {
             Ok(bytes) => bytes,

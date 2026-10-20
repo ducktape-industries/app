@@ -48,7 +48,6 @@ use objc2_web_kit::{
 use std::cell::Cell;
 
 extern_class!(
-    /// WebKit's web view, as iOS has it.
     #[unsafe(super(UIView, UIResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "WKWebView"]
@@ -90,8 +89,6 @@ impl WebView {
 }
 
 define_class!(
-    /// The page's navigation delegate and its `dt` scheme's handler: each
-    /// callback goes to the runner (`runner.rs`), on the main thread.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "DucktapeViewPage"]
@@ -137,8 +134,6 @@ define_class!(
     }
 );
 
-/// A load that did not finish, unless a later load cancelled it (WebKit's
-/// `NSURLErrorCancelled`): that one is not the page failing.
 fn failed(error: &NSError) {
     if error.code() == -999 && error.domain().to_string() == "NSURLErrorDomain" {
         return;
@@ -146,21 +141,15 @@ fn failed(error: &NSError) {
     crate::runner::page_failed(error.localizedDescription().to_string());
 }
 
-/// The page's web view and the delegate it reports to: two references to
-/// the same objects when cloned.
 #[derive(Clone)]
 pub(crate) struct Web {
     view: Retained<WebView>,
     _delegate: Retained<PageDelegate>,
 }
 
-/// Where the page is loaded from: the `dt` scheme's own handler.
 const PAGE: &str = "dt://app/index.html";
 
 impl Web {
-    /// The hidden 1x1 web view, its `dt` scheme served by [`PageDelegate`]:
-    /// no touch reaches it, and VoiceOver passes it by. Not loaded yet
-    /// ([`Self::load`]).
     pub(crate) fn new(mtm: MainThreadMarker) -> Self {
         let delegate: Retained<PageDelegate> =
             // SAFETY: `NSObject`'s `init` on a class of ours with no ivars
@@ -187,16 +176,12 @@ impl Web {
         }
     }
 
-    /// Loads the page again: at start, and on a new content process after
-    /// the last one died.
     pub(crate) fn load(&self) {
         if let Some(url) = NSURL::URLWithString(&NSString::from_str(PAGE)) {
             let _navigation = self.view.load_request(&NSURLRequest::requestWithURL(&url));
         }
     }
 
-    /// Puts the view in the app's window, once it has one (the page runs
-    /// detached too, but starts slower: SPEC §6.1).
     pub(crate) fn attach(&self, mtm: MainThreadMarker) {
         if self.view.window().is_some() {
             return;
@@ -211,8 +196,6 @@ impl Web {
         }
     }
 
-    /// `dt.call(a)` in the page, `done` given its answer: the string the
-    /// page returned, or WebKit's words for why there is none.
     pub(crate) fn call(&self, a: &str, done: impl FnOnce(Result<String, String>) + 'static) {
         let done = Cell::new(Some(done));
         let block = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
@@ -247,7 +230,6 @@ impl Web {
         );
     }
 
-    /// The content process's pid, for the gate's killer.
     #[cfg(feature = "gate")]
     pub(crate) fn content_process(&self) -> Option<i32> {
         // SAFETY: key-value coding of a key WebKit's view answers with an
@@ -260,8 +242,6 @@ impl Web {
     }
 }
 
-/// Answers one `dt://app/<name>` request from the runner's bytes, or fails
-/// it (the page's `fetch` then rejects).
 fn serve(task: &ProtocolObject<dyn WKURLSchemeTask>) {
     // SAFETY: the task's request, while WebKit runs the task
     let request = unsafe { task.request() };
@@ -269,15 +249,12 @@ fn serve(task: &ProtocolObject<dyn WKURLSchemeTask>) {
         let name = url.path().map(|path| path.to_string()).unwrap_or_default();
         crate::runner::served(name.trim_start_matches('/')).map(|found| (url, found))
     });
-    // every task is answered: one left open hangs the page's `fetch`
     let Some((url, (bytes, mime))) = found else {
         let error = NSError::new(404, &NSString::from_str("industries.ducktape.views"));
         // SAFETY: the task has not been answered
         unsafe { task.didFailWithError(&error) };
         return;
     };
-    // an HTTP response: a plain `NSURLResponse` reaches the page's `fetch`
-    // as status 0, which is no `ok`
     let headers = NSDictionary::<NSString, NSString>::from_slices(
         &[&*NSString::from_str("Content-Type")],
         &[&*NSString::from_str(mime)],

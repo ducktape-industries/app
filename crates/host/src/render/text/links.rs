@@ -24,28 +24,16 @@ pub struct Links {
     pub drawn: bool,
 }
 
-/// A press on a range: the view's handler hears the range's click, as a
-/// real gesture.
 pub(super) type Press = Rc<dyn Fn(usize, &mut App)>;
 
-/// What the box hands the text inside it.
 pub(super) struct Linking {
     handler: u32,
     pub(super) press: Press,
-    /// each synthetic link's range index and node id, as the box's
-    /// prepaint made them; the text presses them at paint
     ids: Rc<RefCell<Vec<(u32, NodeId)>>>,
-    /// the picked range while the box has the keys
     pub(super) picked: Option<usize>,
 }
 
 impl ViewTree {
-    /// The box around a text with clickable ranges: one Tab stop, wearing
-    /// the shell ring, whose arrows pick a link and whose Enter presses
-    /// it. `id` is the paragraph's, the view's own or the host's number
-    /// for an id-less text, and the box wears it too, one level down. The
-    /// view's is already on `authored_path`; the host's is added to it in
-    /// its wire form, which no view can send.
     pub(super) fn linked_box(
         &mut self,
         id: &ElementId,
@@ -88,7 +76,6 @@ impl ViewTree {
         links.drawn = true;
         let last = words.len() - 1;
         let focused = links.focus.is_focused(window);
-        // focus arriving picks the first link; ranges may have shrunk
         links.picked.set(match focused {
             true => links.picked.get().min(last),
             false => 0,
@@ -127,8 +114,6 @@ impl ViewTree {
                             "right" | "down" => (at + 1).min(last),
                             "home" => 0,
                             "end" => last,
-                            // gpui's activation keys, as on any pressable
-                            // element (a view's `block_link` too)
                             "enter" | "space" => {
                                 cx.stop_propagation();
                                 press(at, cx);
@@ -152,7 +137,6 @@ impl ViewTree {
                     .role(Role::Link)
                     .aria_label(words[picked].clone())
                     .aria_active_descendant()
-                    // a press from assistive technology is the reader's: a gesture
                     .on_a11y_action(AccessibleAction::Click, move |_, _, cx| {
                         let _ = view.update(cx, |this, cx| {
                             this.activate();
@@ -176,14 +160,10 @@ impl ViewTree {
     }
 }
 
-/// The text inside the box: draws it, and presses the synthetic links for
-/// assistive technology.
 pub(super) struct Linked {
     text: InteractiveText,
     handler: u32,
     view: WeakEntity<ViewTree>,
-    /// each synthetic link's range index and node id, as the box's prepaint
-    /// made them
     links: Rc<RefCell<Vec<(u32, NodeId)>>>,
 }
 
@@ -217,7 +197,6 @@ impl Element for Linked {
         self.text.source_location()
     }
 
-    /// The box is the node that carries the words; the text has none.
     fn a11y_role(&self) -> Option<Role> {
         None
     }
@@ -257,7 +236,6 @@ impl Element for Linked {
     ) {
         self.text
             .paint(id, inspector_id, bounds, state, prepaint, window, cx);
-        // a press from assistive technology is the reader's: a gesture
         for (index, node) in self.links.borrow_mut().drain(..) {
             let (view, handler) = (self.view.clone(), self.handler);
             window.on_a11y_action(node, Action::Click, move |_, _, cx| {

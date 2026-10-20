@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 const HELD: usize = 4_096;
 
-/// `count` distinct 24px icons drawn by gpui's own SVG element.
 struct RealIcons {
     count: usize,
 }
@@ -40,13 +39,6 @@ impl Render for RealIcons {
     }
 }
 
-/// The window ledger's cost, measured: one window drawing 4,096
-/// distinct 24px icons through gpui's rasteriser into wgpu's atlas (`rendering_app`). With no GPU, Mesa's software
-/// Vulkan keeps the atlas in this process, so resident memory counts
-/// it. The window is drawn and read back empty first, so the readback
-/// target is not counted. Run alone: `cargo test
-/// render::svg_limits::tests::a_window_of_4096_icons --
-/// --ignored --exact --nocapture`.
 #[test]
 #[ignore = "measurement: prints resident memory and the ledger, asserts nothing of them"]
 fn a_window_of_4096_icons() {
@@ -67,7 +59,6 @@ fn a_window_of_4096_icons() {
                 )
             })
             .unwrap();
-        // the renderer uploads the frame's tiles when it draws it
         cx.capture_screenshot(window.into()).unwrap();
         (scale, ledger, refusals)
     };

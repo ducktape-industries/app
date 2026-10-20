@@ -5,7 +5,6 @@
 //! a node that claims.
 use super::*;
 
-/// A box the view gave no id, around a text `leaf`.
 fn around(
     leaf: &str,
     style: gpui_kit::StyleRefinement,
@@ -19,22 +18,15 @@ fn around(
     })
 }
 
-/// The id gpui files the text `leaf` under, innermost last: its own, and
-/// before it those of the elements around it that have one.
 fn filed(native: &mut gpui_kit::VisualTestContext, leaf: &'static str) -> Vec<ElementId> {
     native.update(|window, _| window.find(leaf).path().to_vec())
 }
 
-/// Whether `id` is the id the host makes for a container the view gave none.
 fn host_container(id: &ElementId) -> bool {
     crate::render::is_host_id(id)
         && matches!(id, ElementId::NamedChild(_, name) if name.starts_with("container-"))
 }
 
-/// A container that sets nothing gpui keeps state for is a `Div` with no
-/// id: what is under it is filed straight under the nearest node that has
-/// one, so gpui makes no global id for it and reads no element state for it
-/// in any pass. A clip is a style, and needs none either.
 #[gpui_kit::test]
 fn a_container_that_sets_nothing_has_no_id(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -60,10 +52,6 @@ fn a_container_that_sets_nothing_has_no_id(cx: &mut gpui_kit::TestAppContext) {
     }
 }
 
-/// Each thing gpui or the host reads under a container's id still finds
-/// one: the id the view gave; a scroller's offset, on either axis; and any
-/// interactivity (a listener, focus, a role, a tooltip, a hover, active or
-/// group style, a claim).
 #[gpui_kit::test]
 fn a_container_something_reads_keeps_its_id(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -216,10 +204,6 @@ fn a_container_something_reads_keeps_its_id(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
-/// A scroller the view gave no id keeps its offset in gpui's element
-/// state, under the id the host gives it: the wheel moves it, and the next
-/// frame of the same tree draws it where the wheel left it. With no id it
-/// would have no offset to move.
 #[gpui_kit::test]
 fn a_scroller_the_view_gave_no_id_keeps_its_offset(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -268,8 +252,6 @@ fn a_scroller_the_view_gave_no_id_keeps_its_offset(cx: &mut gpui_kit::TestAppCon
     assert_eq!(top(&mut native), -120., "and the one after");
 }
 
-/// A card of three nodes the view gave no id: a box 10 px tall, with a hover
-/// style when `lit`; a scroller of ten rows; a text.
 fn anonymous(lit: bool) -> wire::Node {
     let hover = lit.then(|| wire::Interactivity {
         hover: Some(crate::render::test_style(
@@ -318,11 +300,6 @@ fn anonymous(lit: bool) -> wire::Node {
     )
 }
 
-/// A host number is a node's place among the nodes the view gave no id,
-/// whatever each of them sets: a box that starts to take an id (here it
-/// gains a hover style) moves no number after it. So the scroller after it
-/// is the same element on the next frame, and gpui hands it the offset the
-/// wheel left under its id.
 #[gpui_kit::test]
 fn a_scroller_keeps_its_offset_when_a_box_before_it_takes_an_id(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -353,9 +330,6 @@ fn a_scroller_keeps_its_offset_when_a_box_before_it_takes_an_id(cx: &mut gpui_ki
     );
 }
 
-/// The same for a text the view gave no id: its number, so its id, so the
-/// accessibility node and whatever gpui keeps under it, stays when a box
-/// before it starts to take an id.
 #[gpui_kit::test]
 fn a_text_keeps_its_number_when_a_box_before_it_takes_an_id(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -364,7 +338,6 @@ fn a_text_keeps_its_number_when_a_box_before_it_takes_an_id(cx: &mut gpui_kit::T
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    // the number of the one text the host numbered
     let number = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
             crate::render::draw_frame(window, cx);
@@ -386,10 +359,6 @@ fn a_text_keeps_its_number_when_a_box_before_it_takes_an_id(cx: &mut gpui_kit::T
     );
 }
 
-/// An id-less text is numbered within the nearest box that has an id, so
-/// its number does not move when a box before it grows (a chat row that
-/// gains its action strip, a list that measures its rows in another order):
-/// what gpui keeps under the number (its place in a text selection) stays.
 #[gpui_kit::test]
 fn a_text_keeps_its_number_when_a_box_before_it_grows(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -432,8 +401,6 @@ fn a_text_keeps_its_number_when_a_box_before_it_grows(cx: &mut gpui_kit::TestApp
     );
 }
 
-/// A scroller of ten rows, each with an id, the first `first` px tall;
-/// `claim` is the row that claims.
 fn rows(claim: Option<usize>, first: f32) -> wire::Node {
     let rows = (0..10).map(|n| {
         let height = if n == 0 { first } else { 40. };
@@ -460,10 +427,6 @@ fn rows(claim: Option<usize>, first: f32) -> wire::Node {
     container_with_style("list", style, rows)
 }
 
-/// A node that does not claim has no canvas over it: nothing measures it,
-/// so a frame that moves every row is drawn once. The canvas is on the row
-/// that claims, and its one move of the scroller asks for the one render
-/// that draws the row there; a claim that stays asks for nothing.
 #[gpui_kit::test]
 fn only_a_claim_asks_for_a_second_render(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -473,8 +436,6 @@ fn only_a_claim_asks_for_a_second_render(cx: &mut gpui_kit::TestAppContext) {
     let seat = window.root(cx).unwrap();
     let tree = seat.read_with(cx, |seat, _| seat.0.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    // the renders `frame` costs, over five draws of the desk, and where
-    // they leave the scroller
     let mut renders = |frame: Option<wire::Node>| {
         let before = tree.read_with(&native, |tree, _| tree.renders);
         if let Some(frame) = frame {
@@ -482,7 +443,6 @@ fn only_a_claim_asks_for_a_second_render(cx: &mut gpui_kit::TestAppContext) {
         }
         for _ in 0..5 {
             native.update(|window, cx| {
-                // the desk draws its seats again: `render_frame` would refresh
                 seat.update(cx, |_, cx| cx.notify());
                 window.draw(cx).clear(cx);
             });

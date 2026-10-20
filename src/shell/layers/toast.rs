@@ -32,10 +32,6 @@ impl ToastView {
 }
 
 impl Render for ToastView {
-    /// The bar at the window's foot (the Reconnecting board): the node not
-    /// answering, which stays until it does, and a passing note (a toast:
-    /// it fades, or is dismissed). `width: 560px; height: 56px; gap: 14px;
-    /// border: 1.5px solid ink`, a soft shadow; a long note wraps.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.toast", 1);
         let (reconnecting, network) = {
@@ -48,8 +44,6 @@ impl Render for ToastView {
         };
         let lost = reconnecting && *self.screen.read(cx).get() != Screen::Connect;
         let toast = self.toast.read(cx).get().clone();
-        // `size_full` too: cached, this view is a layout root of its own
-        // (`OverlayLayer::render`)
         let layer = div().absolute().inset_0().size_full();
         if !lost && toast.is_empty() {
             return layer;

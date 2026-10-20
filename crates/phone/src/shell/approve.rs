@@ -41,8 +41,6 @@ pub fn field(window: &mut Window, cx: &mut Context<Root>) -> (Entity<InputState>
     (code, heard)
 }
 
-/// The code field's keyboard (Expo's field): every letter capitalized,
-/// nothing corrected or suggested.
 fn keyboard() -> TextInputConfiguration {
     TextInputConfiguration {
         autocapitalize: Autocapitalize::Characters,
@@ -50,8 +48,6 @@ fn keyboard() -> TextInputConfiguration {
     }
 }
 
-/// Next: the code typed, asked of the host, which refuses one that is no
-/// code.
 fn find(shared: &Shared, code: &Entity<InputState>, cx: &mut App) {
     let typed = code.read(cx).value().to_string();
     shared
@@ -75,7 +71,6 @@ pub fn content(
     let said = |words: &'static str| {
         look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(words)
     };
-    // the boards' sheet body: 16 over, 20 at the sides, 8 under
     let body = div()
         .flex()
         .flex_col()
@@ -97,8 +92,6 @@ pub fn content(
                 let (shared, code) = (shared.clone(), code.clone());
                 next = next.on_click(move |_, _, cx| find(&shared, &code, cx));
             }
-            // the host's refusal is the field's problem (Expo `Field`):
-            // under it in danger, the edge in danger
             let under = problem.clone().map(|problem| {
                 look::text(look::CAPTION, FontWeight::NORMAL, palette.danger())
                     .mt(px(look::gap::XS))
@@ -147,8 +140,6 @@ pub fn content(
                 .p(px(look::gap::BLOCK))
                 .border_1()
                 .border_color(palette.border_strong())
-                // the eyebrow role's upper case and tracking, as the join's
-                // code box draws it
                 .child(
                     look::text(look::EYEBROW, FontWeight::MEDIUM, palette.muted())
                         .font_family(ducktape_host::fonts::FAMILY_MONO)

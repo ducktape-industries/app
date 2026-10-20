@@ -92,7 +92,6 @@ pub struct SignedManifest {
     pub signature: Signature,
 }
 
-/// The channel file's shape.
 #[derive(Serialize, Deserialize)]
 struct ChannelFile {
     manifest: String,
@@ -160,20 +159,14 @@ pub fn verify_manifest(
     if !names_this_channel {
         return Err(Refusal::ChannelMismatch);
     }
-    check_signature_at(signed, &manifest, keys)?;
+    check_signature_at_key_takeover_sequence(signed, &manifest, keys)?;
     if !manifest.sha256_id_is_consistent() {
         return Err(Refusal::Sha256IdMismatch);
     }
     Ok(VerifiedManifest { manifest })
 }
 
-/// Rotation, one key at a time. From its successor's `from_sequence` on, the
-/// pinned key no longer signs: the recorded successor must. A manifest that
-/// announces a successor taking over at or before its own sequence, yet is
-/// signed by the pinned key, is `key_superseded` too — the announcement
-/// retires the key that made it. A successor signing before its takeover
-/// is simply not the expected key: `bad_signature`.
-fn check_signature_at(
+fn check_signature_at_key_takeover_sequence(
     signed: &SignedManifest,
     manifest: &Manifest,
     keys: &TrustedKeys,
@@ -181,12 +174,12 @@ fn check_signature_at(
     let took_over = |successor: &SuccessorKey| successor.from_sequence <= manifest.sequence;
     let recorded_successor_took_over = keys.successor.as_ref().is_some_and(took_over);
     let expected = match (&keys.successor, recorded_successor_took_over) {
-        (Some(successor), true) => Signer::Successor(&successor.pubkey),
-        (Some(_), false) | (None, _) => Signer::Pinned(&keys.pinned),
+        (Some(successor), true) => ExpectedSigner::Successor(&successor.pubkey),
+        (Some(_), false) | (None, _) => ExpectedSigner::Pinned(&keys.pinned),
     };
     let verifies = |pubkey: &PublicKey| signed.signature.verifies(pubkey, &signed.manifest_bytes);
     match expected {
-        Signer::Successor(pubkey) => {
+        ExpectedSigner::Successor(pubkey) => {
             if verifies(pubkey) {
                 return Ok(());
             }
@@ -196,7 +189,7 @@ fn check_signature_at(
             }
             Err(Refusal::BadSignature)
         }
-        Signer::Pinned(pubkey) => {
+        ExpectedSigner::Pinned(pubkey) => {
             if !verifies(pubkey) {
                 return Err(Refusal::BadSignature);
             }
@@ -210,15 +203,13 @@ fn check_signature_at(
     }
 }
 
-/// Which trusted key is expected to have signed at a sequence.
-enum Signer<'a> {
+enum ExpectedSigner<'a> {
     Pinned(&'a PublicKey),
     Successor(&'a PublicKey),
 }
 
 #[cfg(test)]
 pub(crate) mod testkit {
-    //! A signed manifest fixture: throwaway key, deterministic bytes.
 
     use ed25519_dalek::SigningKey;
 
@@ -276,9 +267,6 @@ mod tests {
         assert_eq!(verified.manifest, f.manifest);
     }
 
-    /// The manifest's bytes come back out of the channel file exactly, and
-    /// still verify; a file without both fields, or a signature that is
-    /// not one, is refused before anything is verified.
     #[test]
     fn the_channel_file_carries_the_exact_signed_bytes() {
         let f = fixture(manifest(17));
@@ -345,7 +333,6 @@ mod tests {
         let f = fixture(m.sealed());
         let error = verify_manifest(&f.signed, CHANNEL, &f.keys).unwrap_err();
         assert_eq!(error, Refusal::ChannelMismatch);
-        // The same document IS a nightly manifest when that is the channel asked.
         assert!(verify_manifest(&f.signed, "nightly", &f.keys).is_ok());
     }
 
@@ -369,25 +356,20 @@ mod tests {
         let error = verify_manifest(&f.signed, CHANNEL, &f.keys).unwrap_err();
         assert_eq!(error, Refusal::KeySuperseded);
 
-        // Before the takeover sequence the old key still signs.
         let earlier = fixture(manifest(19));
         let mut keys = earlier.keys.clone();
         keys.successor = f.keys.successor.clone();
         assert!(verify_manifest(&earlier.signed, CHANNEL, &keys).is_ok());
 
-        // From the takeover on, the successor signs.
         let signed = sign_with(&successor, &f.signed.manifest_bytes);
         assert!(verify_manifest(&signed, CHANNEL, &f.keys).is_ok());
 
-        // A successor signing before its takeover is not the expected key.
         let early = sign_with(&successor, &earlier.signed.manifest_bytes);
         assert_eq!(
             verify_manifest(&early, CHANNEL, &keys).unwrap_err(),
             Refusal::BadSignature
         );
 
-        // Past the takeover, a third key is a bad signature, not a
-        // supersession.
         let stranger = sign_with(&key_pair(11), &f.signed.manifest_bytes);
         assert_eq!(
             verify_manifest(&stranger, CHANNEL, &f.keys).unwrap_err(),

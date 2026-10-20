@@ -35,16 +35,12 @@ use super::wire::{self, methods, methods::Capability};
 
 type Kept = BTreeMap<String, Vec<u8>>;
 
-/// A store method as the view asked it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Ask {
-    /// a request on the file
     File(Request),
-    /// `store.changes`
     Changes,
 }
 
-/// A request on the file, [`applied`] to its map.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Request {
     Get(String),
@@ -53,8 +49,6 @@ enum Request {
 }
 
 impl Ask {
-    /// The ask `operation` of `capability` with `payload`; `None` for one
-    /// the store does not answer.
     fn read(
         capability: Capability,
         operation: &str,
@@ -85,7 +79,6 @@ impl Ask {
 }
 
 impl Request {
-    /// Its perf timer.
     fn stage(&self) -> &'static str {
         match self {
             Self::Get(_) => "io.store.get",
@@ -114,8 +107,6 @@ pub(super) fn answer(
     true
 }
 
-/// What `request` does to `kept`, the file's map as read: its answer, and
-/// the map to write back when it changed (only a `set` changes it).
 fn applied(mut kept: Kept, request: &Request) -> (Vec<u8>, Option<Kept>) {
     match request {
         Request::Get(asked) => (methods::encode(&kept.remove(asked)), None),
@@ -127,7 +118,6 @@ fn applied(mut kept: Kept, request: &Request) -> (Vec<u8>, Option<Kept>) {
             (methods::encode(&()), Some(kept))
         }
         Request::List(prefix) => {
-            // the keys under a prefix (empty: every key), in byte order
             let keys: Vec<String> = kept
                 .into_keys()
                 .filter(|key| key.starts_with(prefix.as_str()))
@@ -137,8 +127,6 @@ fn applied(mut kept: Kept, request: &Request) -> (Vec<u8>, Option<Kept>) {
     }
 }
 
-/// `request` on the file at `path`: read, [`applied`], and written back
-/// when it changed.
 fn run(path: &Path, request: &Request) -> Answer {
     let (answer, changed) = applied(load(path)?, request);
     if let Some(kept) = changed {
@@ -147,26 +135,17 @@ fn run(path: &Path, request: &Request) -> Answer {
     Ok(answer)
 }
 
-/// The file a request reads and writes, and what it is filed under.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct File {
-    /// the file read and written
     path: PathBuf,
-    /// the program's device file on this network: what `store.changes`
-    /// files its listeners under
     device: PathBuf,
-    /// the seated key (hex) the file is kept for; empty for none
     signer: String,
 }
 
-/// An instance of a program, as `store.changes` tells them apart: the
-/// view's own identity (`View::alive`).
 fn instance(view: &View) -> usize {
     std::sync::Arc::as_ptr(&view.alive) as usize
 }
 
-/// One `store.changes` subscriber: the instance it is, the key it runs
-/// with now, and where its keys go.
 struct Listener {
     instance: usize,
     signer: String,
@@ -175,7 +154,6 @@ struct Listener {
 
 type Listeners = HashMap<PathBuf, Vec<Listener>>;
 
-/// Each device file's `store.changes` subscribers, every key's alike.
 fn listeners() -> std::sync::MutexGuard<'static, Listeners> {
     static LISTENERS: OnceLock<Mutex<Listeners>> = OnceLock::new();
     LISTENERS
@@ -184,8 +162,6 @@ fn listeners() -> std::sync::MutexGuard<'static, Listeners> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// `store.changes` on `file`: each key another instance sets in the file
-/// of the key this one runs with.
 fn listen(view: &mut View, id: u64, file: File) {
     let (send, mut keys) = tokio::sync::mpsc::unbounded_channel();
     listeners().entry(file.device).or_default().push(Listener {
@@ -202,9 +178,6 @@ fn listen(view: &mut View, id: u64, file: File) {
     });
 }
 
-/// The props `view` is handed now: its `store.changes` hear the file of
-/// the key they name from now on, as its requests read it. Props that do
-/// not read as a session move nothing.
 pub(super) fn follow(view: &View, props: &Option<Vec<u8>>) {
     let Some(signer) = props.as_deref().and_then(signer_of) else {
         return;
@@ -217,8 +190,6 @@ pub(super) fn follow(view: &View, props: &Option<Vec<u8>>) {
     }
 }
 
-/// `key` was set in `file` by `writer`: every other instance listening
-/// with the same key hears it. One that stopped listening is let go.
 fn told(file: &File, key: String, writer: usize) {
     let mut listeners = listeners();
     let Some(listening) = listeners.get_mut(&file.device) else {
@@ -234,9 +205,6 @@ fn told(file: &File, key: String, writer: usize) {
     }
 }
 
-/// `request` on `file`, queued behind the view's earlier requests on it
-/// and answered as a reply. A `set` that kept its value is told to the
-/// program's other instances ([`told`]).
 fn ask(view: &mut View, id: u64, file: File, request: Request) {
     let (tell, answer) = tokio::sync::oneshot::channel();
     spawn_reply(view, id, async move {
@@ -245,7 +213,6 @@ fn ask(view: &mut View, id: u64, file: File, request: Request) {
             .unwrap_or_else(|_| Err(refusal(methods::refusal::HOST_FAULT, "the store job died")))
     });
     let writer = instance(view);
-    // timed where it runs, on the blocking pool (docs/perf.md, question 7)
     let name = file.path.to_string_lossy().into_owned();
     in_order(&name, move || {
         let _timed = crate::perf::time(crate::perf::Key::Shell, request.stage());
@@ -257,10 +224,6 @@ fn ask(view: &mut View, id: u64, file: File, request: Request) {
     });
 }
 
-/// This view's file on its own connection's network, for the key its
-/// props name; a view from before the app's last (re)connect, or of a
-/// followed set that left, is refused, so it never writes into the next
-/// network's or after the run in hand.
 fn file(view: &View, props: &Option<Vec<u8>>) -> Result<File, wire::Error> {
     let connection = &view.connection;
     if connection.stale() {
@@ -280,16 +243,12 @@ fn file(view: &View, props: &Option<Vec<u8>>) -> Result<File, wire::Error> {
     Ok(located(&store, &connection.chain, &signer, view.program))
 }
 
-/// The seated key (hex) a session names; empty for none.
 fn signer_of(props: &[u8]) -> Option<String> {
     methods::decode::<methods::Session>(props)
         .ok()
         .map(|session| session.signer)
 }
 
-/// Where `recipient`'s notifiers keep their files: its store, or the app's
-/// `<config>/store` for the person at this device, every network's run of
-/// a program alike (in hand or followed), so a switch finds its cursor.
 pub(super) fn store_of(recipient: Option<&super::notifier::Recipient>) -> PathBuf {
     match recipient {
         Some(recipient) => recipient.store.clone(),
@@ -303,7 +262,6 @@ fn path(store: &Path, chain: &str, program: &str) -> PathBuf {
         .join(format!("{}.borsh", escaped(program)))
 }
 
-/// `program`'s file on `chain` for `signer`, or the device's for none.
 fn located(store: &Path, chain: &str, signer: &str, program: &str) -> File {
     let device = path(store, chain, program);
     let keyed = match signer.is_empty() {
@@ -317,8 +275,6 @@ fn located(store: &Path, chain: &str, signer: &str, program: &str) -> File {
     }
 }
 
-/// A name as one path segment, one-to-one: ASCII letters, digits and `-`
-/// stay, every other byte is `_` and two hex digits. No `/`, no `..`.
 fn escaped(name: &str) -> String {
     name.bytes()
         .map(|byte| match byte.is_ascii_alphanumeric() || byte == b'-' {

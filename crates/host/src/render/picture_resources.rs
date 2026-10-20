@@ -40,7 +40,6 @@ pub(super) fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
             reader.limits(limits);
             let decoder = reader.into_decoder().ok()?;
             let (width, height) = decoder.dimensions();
-            // Decoder limits do not include expansion from grayscale to RGBA.
             if !rgba_fits(width, height, budget) {
                 return None;
             }
@@ -49,7 +48,6 @@ pub(super) fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
                 .into_rgba8()
         }
     };
-    // gpui RenderImage frames are BGRA.
     for pixel in pixels.pixels_mut() {
         pixel.0.swap(0, 2);
     }

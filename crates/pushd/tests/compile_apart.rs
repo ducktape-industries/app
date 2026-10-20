@@ -7,8 +7,6 @@ use ducktape_host::runner::COMPILE_APART;
 use std::path::Path;
 use std::process::{Command, Output};
 
-/// The child, asked for the `len` bytes of `blob` from `offset` on that its
-/// parent checked as `sha256`.
 fn child(cache: &Path, blob: &Path, offset: usize, len: usize, sha256: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_pushd"))
         .arg(COMPILE_APART)
@@ -39,12 +37,6 @@ fn pushd_compiles_a_notifier_apart_into_the_cache() {
     assert_eq!(compile(), "disk", "the second compile reads the first");
 }
 
-/// The child compiles only the bytes its parent checked. A file rewritten
-/// in place after the parent read it (a developer's view rebuilt mid-load)
-/// is refused with exit 2, naming the file, the range and both hashes, and
-/// nothing is compiled, even when the new bytes would compile: exit 1 stays
-/// "the parent's code does not compile", and no compile lands under a hash
-/// the parent never asked for.
 #[test]
 fn pushd_refuses_code_its_parent_did_not_check() {
     let cache = tempfile::tempdir().unwrap();

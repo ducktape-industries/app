@@ -48,8 +48,6 @@ fn gunzip(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The recording's ticks: u8 rendered, u32le len + the event batch, u32le
-/// len + the frame.
 fn ticks(bytes: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut at = 0;
     let chunk = |at: &mut usize| {
@@ -104,8 +102,7 @@ pub fn sessions() -> [Session; 2] {
     ]
 }
 
-/// FNV-1a 64 over each frame's u32le length and bytes.
-fn fnv<'a>(frames: impl IntoIterator<Item = &'a [u8]>) -> String {
+fn fnv1a_length_prefixed_frames<'a>(frames: impl IntoIterator<Item = &'a [u8]>) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for frame in frames {
         let len = u32::try_from(frame.len()).unwrap_or(u32::MAX).to_le_bytes();
@@ -116,13 +113,11 @@ fn fnv<'a>(frames: impl IntoIterator<Item = &'a [u8]>) -> String {
     format!("{hash:016x}")
 }
 
-/// A seat as the host drives one: its instance and the landing it answers on.
 struct Seat {
     instance: Box<dyn ViewInstance>,
     landing: async_channel::Receiver<Landed>,
 }
 
-/// The next answer, waited for.
 fn next(landing: &async_channel::Receiver<Landed>) -> Landed {
     landing
         .recv_blocking()
@@ -228,7 +223,7 @@ pub fn run(runner: &dyn ViewRunner, session: &Session) -> Result<Ran, String> {
     Ok(Ran {
         fuel,
         frames: (equal, session.ticks.len()),
-        restored: fnv(after.iter().map(Vec::as_slice)),
+        restored: fnv1a_length_prefixed_frames(after.iter().map(Vec::as_slice)),
         ticks,
     })
 }
@@ -291,7 +286,6 @@ pub fn revive(
     for (events, _) in &session.ticks[k + 1..=last_kept] {
         old.frame(events)?;
     }
-    // from here only the instance holds its code, as a drawn view's does
     drop(held);
     let died = &session.ticks[last_kept + 1];
     let in_flight = landed_as(match kill {
@@ -303,8 +297,6 @@ pub fn revive(
     });
     let begun_after = landed_as(old.tick(&died.0));
     let dead = old.landing.clone();
-    // the host's revive: a new instance at once, its code still held by
-    // the dead one
     let mut new = seat(runner, hash, 5)?;
     drop(old);
     new.restore(&state)?;
@@ -320,7 +312,10 @@ pub fn revive(
         in_flight,
         begun_after,
         stray: dead.try_recv().is_ok(),
-        after: (fnv(frames.iter().map(Vec::as_slice)), fuel),
+        after: (
+            fnv1a_length_prefixed_frames(frames.iter().map(Vec::as_slice)),
+            fuel,
+        ),
     })
 }
 
@@ -338,9 +333,6 @@ mod tests {
         })
     }
 
-    /// The numbers the simulator gate must give, on the desktop's runner:
-    /// the fuel the meter pass was proven against, every recorded frame,
-    /// the S0 restore hashes, and the revive's frames and fuel.
     #[test]
     fn the_sessions_give_the_reference_numbers_on_wasmtime() {
         let runner = wasmtime();

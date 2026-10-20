@@ -6,36 +6,23 @@
 use super::{Session, SessionState};
 use gpui_kit::{Context, Entity, Subscription};
 
-/// One thing open over the desk. Settings carries its page, so a page
-/// click moves this, and a keystroke in Spotlight does not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Overlay {
-    /// The command palette, ⌘K.
     Spotlight,
-    /// "Add a device…".
     Approve,
-    /// A view's op waiting on the person's yes (`runtime::consent`): the
-    /// card for the ask with this id. Another ask is another card.
     Consent(u64),
     Settings(SettingsPage),
-    /// The network switcher.
     Network,
-    /// A menu off the bar.
     Menu(Popover),
 }
 
-/// A menu hanging off the menu bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Popover {
-    /// Node status, off the breathing dot.
     Node,
-    /// The account's name: who is signed in, and Lock.
     Account,
-    /// The notification centre, off the bell.
     Notifications,
 }
 
-/// The Settings window's sections.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SettingsPage {
     #[default]
@@ -46,7 +33,6 @@ pub(crate) enum SettingsPage {
     About,
 }
 
-/// What a Spotlight row does when picked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Spot {
     Open(&'static str),
@@ -57,15 +43,11 @@ pub(crate) enum Spot {
     Appearance(crate::backend::Appearance),
     OtherNetwork,
     Help,
-    /// The focused window fills the desk (⌘⇧↩).
     FillWindow,
-    /// The arrows move and size the focused window (⌘⇧M).
     HoldWindow,
-    /// The console's OS window above other apps' windows, or back (⌘⇧T).
     KeepOnTop,
 }
 
-/// One Spotlight row, under its group's heading.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SpotRow {
     pub(crate) group: &'static str,
@@ -74,25 +56,14 @@ pub(crate) struct SpotRow {
     pub(crate) spot: Spot,
 }
 
-/// What is open over one window's desk: one thing at a time. While it is,
-/// the desk's shortcuts are off and Escape closes it (shell/keys.rs).
 pub(crate) struct Overlays {
     open: Option<Overlay>,
-    /// Settings' page, kept while it is closed: it opens there again. Not
-    /// compared (`open` carries the page while it shows).
     page: SettingsPage,
-    /// The open menu closed because the keys left it: they stay where they
-    /// went instead of going back to what had them before it opened. Not
-    /// compared; the overlay layer's handoff reads and clears it, and
-    /// anything opening clears it.
     left_by_keys: bool,
     _session: Subscription,
 }
 
 impl Overlays {
-    /// Nothing open, closing again whenever the network in hand is left:
-    /// the connection dropped, or another network (or another chain of the
-    /// same name) was taken up.
     pub(crate) fn new(session: &Entity<Session>, cx: &mut Context<Self>) -> Self {
         let on = |session: &SessionState| {
             (
@@ -138,25 +109,17 @@ impl Overlays {
         cx.notify();
     }
 
-    /// `overlay` open, or closed if it was the one open.
     pub(crate) fn toggle(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         let _timed = timed();
         let open = (self.open != Some(overlay)).then_some(overlay);
         self.set(open, cx);
     }
 
-    /// `overlay` open, in place of whatever was.
     pub(crate) fn open(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         let _timed = timed();
         self.set(Some(overlay), cx);
     }
 
-    /// The consent card follows the front of the queue (`runtime::consent`),
-    /// `front` its ask's id: a card opens for it over a bare desk; a card
-    /// whose ask is no longer the front closes, and the one now in front
-    /// opens as a new card. A card never takes another ask's words in place.
-    /// Anything else open stays: a view's ask never replaces a dialog the
-    /// person has open.
     pub(crate) fn follow_consent(&mut self, front: Option<u64>, cx: &mut Context<Self>) {
         let _timed = timed();
         if matches!(self.open, None | Some(Overlay::Consent(_))) {
@@ -164,13 +127,10 @@ impl Overlays {
         }
     }
 
-    /// Settings, on the page it last showed.
     pub(crate) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.open(Overlay::Settings(self.page), cx);
     }
 
-    /// `overlay` closed, if it is the one open: Settings on any page, and
-    /// for `Menu(_)` whichever menu off the bar.
     pub(crate) fn close(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         let _timed = timed();
         let open = match (self.open, overlay) {
@@ -183,10 +143,6 @@ impl Overlays {
         }
     }
 
-    /// The keys left the menu `menu` (Tab past its ends, anything else that
-    /// took them out): it closes, and they stay where they went. Nothing
-    /// unless `menu` is the one open: every close moves the keys out of a
-    /// menu, and the bell's Settings row opened Settings as it went.
     pub(crate) fn close_by_keys(&mut self, menu: Overlay, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.open == Some(menu) {
@@ -195,14 +151,10 @@ impl Overlays {
         }
     }
 
-    /// Whether the last menu closed because the keys left it, forgotten as
-    /// it is read.
     pub(crate) fn take_left_by_keys(&mut self) -> bool {
         std::mem::take(&mut self.left_by_keys)
     }
 
-    /// Spotlight's pick run (Enter, a row's click): with one picked
-    /// Spotlight closes and hands it back to be run; with none it stays.
     pub(crate) fn submit(&mut self, picked: Option<Spot>, cx: &mut Context<Self>) -> Option<Spot> {
         if picked.is_some() {
             self.close(Overlay::Spotlight, cx);
@@ -211,8 +163,6 @@ impl Overlays {
     }
 }
 
-/// Every write here is timed as `reducer.overlay` (docs/perf.md: a
-/// `reducer.*` sample past 250 ms is a hang).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.overlay")
 }
@@ -239,8 +189,6 @@ mod tests {
         (session, overlays)
     }
 
-    /// Settings opens on the page it last showed; a menu closes for any
-    /// `Menu(_)`, Settings for any page, and nothing for what is not open.
     #[gpui_kit::test]
     fn settings_opens_on_its_last_page_and_closes_by_kind(cx: &mut TestAppContext) {
         let (_, overlays) = overlays(cx);
@@ -261,8 +209,6 @@ mod tests {
         assert_eq!(open(cx), None);
     }
 
-    /// The keys leaving a menu close it only while it is the one open, and
-    /// say so once; anything opening forgets it.
     #[gpui_kit::test]
     fn a_menu_closes_by_keys_only_while_it_is_open(cx: &mut TestAppContext) {
         let (_, overlays) = overlays(cx);
@@ -292,9 +238,6 @@ mod tests {
         );
     }
 
-    /// Leaving the network closes what is open; a status that keeps it (a
-    /// new height, a switch still reaching) closes nothing, and an equal
-    /// write notifies nobody.
     #[gpui_kit::test]
     fn leaving_the_network_closes_the_overlay(cx: &mut TestAppContext) {
         let (session, overlays) = overlays(cx);

@@ -11,13 +11,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 impl LauncherLayer {
-    /// Main (Connect): an address, the nodes reached before, and why the
-    /// last try did not land.
     pub(super) fn connect(&self, window: &mut Window, cx: &App) -> AnyElement {
         let session = self.session.read(cx).get();
         let ink = Ink::of(self.prefs.read(cx).get().dark());
-        // The address refusal is about what is typed now; a failed try is
-        // about the last address. Both clear on the next keystroke or try.
         let note = [&session.endpoint_error, &session.error]
             .into_iter()
             .find(|note| !note.is_empty())
@@ -37,14 +33,11 @@ impl LauncherLayer {
             Some(_) => ink.danger,
             None => ink.field,
         };
-        // Only a try in flight has a status worth reading: the address it
-        // reaches for (on this screen no node is in hand).
         let below = match (&note, session.connecting) {
             (Some(note), _) => Some(alert("connect-error", note.clone(), &ink)),
             (None, true) => {
                 let status = format!("Reaching {}…", session.reaching);
                 Some(
-                    // a note's look; its words are the live region's own
                     crate::a11y::live(
                         sans(400, 13.)
                             .line_height(px(13. * 1.55))
@@ -88,8 +81,6 @@ impl LauncherLayer {
             let forget_target = entry.url.clone();
             let name = entry.name();
             let danger = ink.danger;
-            // `display: flex; align-items: baseline; gap: 16px;
-            // padding: 12px 0; border-bottom: 1px solid line`
             let pick = div()
                 .id(SharedString::from(format!("recent/{}", entry.url)))
                 .control(Role::Button, SharedString::from(entry.label()))
@@ -141,8 +132,6 @@ impl LauncherLayer {
                 .on_click(move |_, _, cx| {
                     forget_session.update(cx, |session, cx| session.forget(&forget_target, cx))
                 });
-            // Both have a tab stop: a keyboard-only reader reaches a node
-            // used before, and can forget it.
             div()
                 .flex()
                 .items_baseline()

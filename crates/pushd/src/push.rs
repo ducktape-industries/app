@@ -97,11 +97,10 @@ pub struct Client(reqwest::Client);
 
 impl Client {
     pub fn new() -> Result<Self, String> {
-        Self::timed(Duration::from_secs(10))
+        Self::http_client_with_request_and_connect_deadlines(Duration::from_secs(10))
     }
 
-    /// Each request given up after `timeout`, a connect after half of it.
-    fn timed(timeout: Duration) -> Result<Self, String> {
+    fn http_client_with_request_and_connect_deadlines(timeout: Duration) -> Result<Self, String> {
         reqwest::Client::builder()
             .timeout(timeout)
             .connect_timeout(timeout / 2)
@@ -121,8 +120,6 @@ impl Http for Client {
             post = post.header(*name, value);
         }
         ducktape_host::runtime::handle().block_on(async move {
-            // reqwest names the URL in its error, and an APNs URL ends in
-            // the device's token: the log line names it cut (`shown`)
             let answer = post
                 .body(request.body.clone())
                 .send()
@@ -134,7 +131,6 @@ impl Http for Client {
     }
 }
 
-/// A bearer token and when it is to be made again.
 type Kept = Mutex<Option<(String, Instant)>>;
 
 /// The APNs auth key, and the provider token signed with it.
@@ -177,9 +173,6 @@ impl Apns {
         }
     }
 
-    /// The provider token (an ES256 JWT of the team, signed with the key),
-    /// made again every 40 minutes: Apple takes one up to an hour old and
-    /// refuses one made again within 20.
     fn bearer(&self, now: u64) -> Result<String, String> {
         kept(&self.token, || {
             let header = serde_json::json!({ "alg": "ES256", "kid": self.key_id });
@@ -194,8 +187,6 @@ impl Apns {
         })
     }
 
-    /// One push of `body` to `token` (a `kind` token of `env`) with
-    /// `headers` and the provider token.
     fn request(
         &self,
         (kind, token, env): (&'static str, &str, &str),
@@ -213,7 +204,6 @@ impl Apns {
     }
 }
 
-/// What signs the service account's assertion: its RSA key (RS256).
 type Signer = Box<dyn Fn(&[u8]) -> Result<Vec<u8>, String> + Send + Sync>;
 
 /// The Firebase service account, and the access token it is exchanged for.
@@ -264,7 +254,6 @@ impl Fcm {
         })
     }
 
-    /// Where a message is sent.
     fn url(&self) -> String {
         match &self.endpoint {
             Some(endpoint) => format!("{endpoint}/v1/projects/{}/messages:send", self.project),
@@ -275,9 +264,6 @@ impl Fcm {
         }
     }
 
-    /// An OAuth access token for FCM, from Google's token endpoint for an
-    /// RS256 assertion of the service account; kept until a minute before
-    /// it lapses.
     fn bearer(&self, http: &dyn Http, now: u64) -> Result<String, String> {
         kept(&self.token, || {
             let header = serde_json::json!({ "alg": "RS256", "typ": "JWT" });
@@ -313,8 +299,6 @@ impl Fcm {
     }
 }
 
-/// The token kept in `token`, or a new one from `make` when there is none
-/// or it lapsed.
 fn kept(
     token: &Kept,
     make: impl FnOnce() -> Result<(String, Duration), String>,
@@ -332,7 +316,6 @@ fn kept(
     Ok(made)
 }
 
-/// A JWT of `header` and `claims`, its signature `sign`'s over them.
 fn jwt(
     header: &serde_json::Value,
     claims: &serde_json::Value,
@@ -348,7 +331,6 @@ fn jwt(
     Ok(format!("{signing}.{}", url.encode(signature)))
 }
 
-/// The DER inside a PEM block.
 fn der(pem: &str) -> Result<Vec<u8>, String> {
     let body: String = pem
         .lines()
@@ -359,7 +341,6 @@ fn der(pem: &str) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("not a PEM key: {error}"))
 }
 
-/// Unix seconds now.
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -385,19 +366,11 @@ pub struct Push {
     pub apns: Option<Arc<Apns>>,
     pub fcm: Option<Arc<Fcm>>,
     pub http: Arc<dyn Http>,
-    /// The tags standing on the phones, each with its last notice's
-    /// `until`: what a withdraw takes back, and what a notice goes quietly
-    /// under.
-    // ponytail: in memory, so a restart alerts once more under a standing
-    // tag and withdraws nothing posted before it; kept in the store if felt
     standing: Mutex<HashMap<String, u64>>,
 }
 
-/// One APNs send: the credential, its provider token and the tokens (each
-/// with its env) to push to.
 type ApnsSend<'a> = (&'a Apns, String, Vec<(String, String)>);
 
-/// The two priorities a push is sent at.
 const LOUD: &str = "10";
 const QUIET: &str = "5";
 
@@ -422,12 +395,10 @@ impl Push {
         }
     }
 
-    /// The account's tokens of `kind`, each with its env.
     fn tokens(&self, kind: &str) -> Vec<(String, String)> {
         self.devices.tokens(self.account, kind)
     }
 
-    /// The APNs provider token, when there are tokens of `kind` to push to.
     fn apns_for(&self, kind: &str, now: u64) -> Option<ApnsSend<'_>> {
         let apns = self.apns.as_deref()?;
         let tokens = self.tokens(kind);
@@ -443,7 +414,6 @@ impl Push {
         }
     }
 
-    /// The payload every push of `notice` carries.
     fn payload(&self, notice: &Notice, kind: &str) -> serde_json::Value {
         serde_json::json!({
             "kind": kind,
@@ -457,7 +427,6 @@ impl Push {
         })
     }
 
-    /// The requests that ring `call` on every device, at `now`.
     fn ring(&self, call: &Notice, now: u64) -> Vec<Request> {
         let mut payload = self.payload(call, "call");
         payload["end"] = call.end_link.clone().into();
@@ -482,9 +451,6 @@ impl Push {
         requests
     }
 
-    /// The requests that show `notice` on every device, at `now`; `quiet`
-    /// when one under its tag already stands there. Its title and body cut
-    /// to fit each channel ([`fitted`]).
     fn show(&self, notice: &Notice, now: u64, quiet: bool) -> Vec<Request> {
         let id = notice.os_id();
         let payload = |notice: &Notice| {
@@ -494,15 +460,11 @@ impl Push {
         };
         let mut requests = Vec::new();
         if let Some((apns, bearer, tokens)) = self.apns_for("apns", now) {
-            // the title and body twice: the alert iOS shows, and the payload
-            // the app reads
             let body = |notice: &Notice| {
                 let mut aps = serde_json::json!({
                     "alert": { "title": notice.title, "body": notice.body },
                     "thread-id": notice.tag,
                 });
-                // the app's quack (an iPhone app that does not carry it
-                // plays the default)
                 if !quiet {
                     aps["sound"] = SOUND.into();
                 }
@@ -534,14 +496,10 @@ impl Push {
         let data = data(&fitted(notice, |notice| {
             serde_json::Value::Object(data(notice)).to_string().len()
         }));
-        // no collapse key: FCM keeps four per device at most, and the
-        // phone replaces the notification under its id itself
         requests.extend(self.fcm(data, None, notice.until, now, "high"));
         requests
     }
 
-    /// The requests that take what stands under `tag` down from every
-    /// device before its `until`.
     fn withdrawal(&self, tag: &str, until: u64, now: u64) -> Vec<Request> {
         let mut requests = Vec::new();
         if let Some((apns, bearer, tokens)) = self.apns_for("apns", now) {
@@ -564,15 +522,10 @@ impl Push {
         }
         let data = serde_json::json!({ "kind": "withdraw", "tag": tag });
         let data = data.as_object().cloned().unwrap_or_default();
-        // normal: it shows nothing, and FCM deprioritises an app whose
-        // high-priority messages show nothing
         requests.extend(self.fcm(data, None, until, now, "normal"));
         requests
     }
 
-    /// One FCM data message of `data` at `priority` per Android token,
-    /// living until `until` (0: FCM's default), collapsed under
-    /// `collapse` when given.
     fn fcm(
         &self,
         data: serde_json::Map<String, serde_json::Value>,
@@ -621,16 +574,13 @@ impl Push {
             .collect()
     }
 
-    /// Sends each request; whether any was taken. A token the answer calls
-    /// gone is cleared (that kind and token, on this network); its row stays
-    /// a tombstone. The log says so in one line.
     fn send(&self, requests: Vec<Request>) -> bool {
         let mut taken = false;
         for request in requests {
             match self.http.send(&request) {
                 Ok((200, _)) => taken = true,
                 Ok((status, body)) => {
-                    let to = shown(&request.url);
+                    let to = request_url_with_redacted_device_token(&request.url);
                     match &request.device {
                         Some((kind, token)) if gone(kind, status, &body) => {
                             match self.devices.drop_token(kind, token) {
@@ -644,7 +594,7 @@ impl Push {
                     }
                 }
                 Err(error) => {
-                    let to = shown(&request.url);
+                    let to = request_url_with_redacted_device_token(&request.url);
                     tracing::warn!(target: "pushd", to, %error, "push not sent")
                 }
             }
@@ -659,11 +609,6 @@ impl Push {
     }
 }
 
-/// Whether APNs's or FCM's answer (`status`, `body`) to a push to a `kind`
-/// token says the token is gone: APNs's 410 or its `reason` exactly
-/// `Unregistered` or `BadDeviceToken` (a token Apple's server for its env
-/// does not know), FCM's `errorCode` exactly `UNREGISTERED`. Anything else,
-/// a credential refused among it, leaves the token be.
 fn gone(kind: &str, status: u16, body: &str) -> bool {
     let said: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
     match kind {
@@ -682,20 +627,14 @@ fn gone(kind: &str, status: u16, body: &str) -> bool {
     }
 }
 
-/// The most an APNs payload, or the data of an FCM message, may be.
-const MOST: usize = 4096;
+const MAX_PUSH_PAYLOAD_BYTES: usize = 4096;
 
-/// `notice` cut so `size` of it is at most [`MOST`]: its body, then its
-/// title, each to its longest start that fits, cut on a char and ended with
-/// `…` (or emptied, when not even that fits). Its link, tag, `until` and
-/// the rest are never cut: a notice too big without its words goes as it
-/// is, and APNs or FCM refuses it.
 fn fitted(notice: &Notice, size: impl Fn(&Notice) -> usize) -> Notice {
     let words: [fn(&mut Notice) -> &mut String; 2] =
         [|notice| &mut notice.body, |notice| &mut notice.title];
     let mut fit = notice.clone();
     for words in words {
-        if size(&fit) <= MOST {
+        if size(&fit) <= MAX_PUSH_PAYLOAD_BYTES {
             break;
         }
         let whole = std::mem::take(words(&mut fit));
@@ -704,7 +643,7 @@ fn fitted(notice: &Notice, size: impl Fn(&Notice) -> usize) -> Notice {
         let fits = ends.partition_point(|&end| {
             let mut tried = fit.clone();
             *words(&mut tried) = cut(end);
-            size(&tried) <= MOST
+            size(&tried) <= MAX_PUSH_PAYLOAD_BYTES
         });
         *words(&mut fit) = match fits {
             0 => String::new(),
@@ -714,7 +653,6 @@ fn fitted(notice: &Notice, size: impl Fn(&Notice) -> usize) -> Notice {
     fit
 }
 
-/// `payload`'s fields as strings: FCM's data values.
 fn strings(payload: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     payload
         .as_object()
@@ -729,9 +667,7 @@ fn strings(payload: &serde_json::Value) -> serde_json::Map<String, serde_json::V
         .collect()
 }
 
-/// Where a request went, for the log: an APNs device token in its URL cut
-/// to its last four characters (FCM's token is in the body, never logged).
-fn shown(url: &str) -> String {
+fn request_url_with_redacted_device_token(url: &str) -> String {
     match url.rsplit_once("/device/") {
         Some((host, token)) => {
             let tail = token.get(token.len().saturating_sub(4)..).unwrap_or("");
@@ -741,7 +677,6 @@ fn shown(url: &str) -> String {
     }
 }
 
-/// APNs's collapse id is at most 64 bytes: a longer tag goes by its hash.
 fn collapse_id(tag: &str) -> String {
     match tag.len() <= 64 {
         true => tag.to_owned(),
@@ -749,7 +684,6 @@ fn collapse_id(tag: &str) -> String {
     }
 }
 
-/// `text`'s SHA-256, in hex.
 fn sha256(text: &str) -> String {
     ring::digest::digest(&ring::digest::SHA256, text.as_bytes())
         .as_ref()
@@ -770,20 +704,16 @@ impl Banners for Push {
             NoticeKind::Call => self.send(self.ring(notice, now)),
             NoticeKind::Notice => self.send(self.show(notice, now, quiet)),
         };
-        // a tag stands once a device took it: one sent nowhere (an account
-        // with no token of its kind yet) leaves the next one loud
         if taken && !notice.tag.is_empty() {
             self.standing().insert(notice.tag.clone(), notice.until);
         }
         taken
     }
 
-    // the chain is this channel's own (`Push::new`)
     fn withdraw(&self, chain: &str, tag: &str) {
         self.log.withdraw(chain, tag);
         let until = self.standing().remove(tag);
         let now = now();
-        // one past its until shows nowhere any more: nothing to take back
         if let Some(until) = until.filter(|until| *until == 0 || *until > now) {
             self.send(self.withdrawal(tag, until, now));
         }
@@ -794,11 +724,9 @@ impl Banners for Push {
 mod tests {
     use super::*;
 
-    /// The chain the tests' channel carries notices of.
     const CHAIN: &str = "testkit-0a1b2c3d";
     use ring::signature::KeyPair as _;
 
-    /// Records each request and answers 200, the token endpoint with a token.
     #[derive(Default)]
     struct Recorded(Mutex<Vec<Request>>);
 
@@ -815,8 +743,6 @@ mod tests {
         }
     }
 
-    /// An `Apns` over a key made for the test, as Apple's `.p8` holds it
-    /// (PKCS#8 PEM), sending to `endpoint` when given.
     fn apns_with(endpoint: Option<String>) -> Apns {
         let dir = tempfile::tempdir().unwrap();
         let key = EcdsaKeyPair::generate_pkcs8(
@@ -840,8 +766,6 @@ mod tests {
 
     fn push(devices: &[(&str, &str)]) -> (Push, Arc<Recorded>) {
         let apns = apns_with(None);
-        // ring makes no RSA key: the assertion's signature is a stand-in,
-        // and Google's endpoint is the recorder
         let fcm = Fcm {
             project: "ducktape-test".into(),
             email: "pushd@ducktape-test.iam.gserviceaccount.com".into(),
@@ -903,10 +827,6 @@ mod tests {
             .map_or("", |(_, value)| value)
     }
 
-    /// A call rings an iPhone as a VoIP push expiring at its `until` and an
-    /// Android phone as a high-priority data message living until it, each
-    /// carrying the call's payload; the APNs provider token is an ES256 JWT
-    /// of the team that the key's public half verifies.
     #[test]
     fn a_call_is_a_voip_push_and_a_high_priority_message() {
         let (push, http) = push(&[("voip", "ab12"), ("fcm", "fcm-token")]);
@@ -919,7 +839,6 @@ mod tests {
             })
         ));
         let sent = http.0.lock().unwrap().clone();
-        // the access token first: it is asked for while the requests are made
         let [oauth, apns, fcm] = &sent[..] else {
             panic!("three requests: {sent:#?}");
         };
@@ -997,9 +916,6 @@ mod tests {
         );
     }
 
-    /// A notifier's wire `Notification` of kind `Call` passes an account's
-    /// centre (pushd's own settings) as a call and rings the phones: a
-    /// VoIP push and a high-priority FCM message, both until its `until`.
     #[test]
     fn a_notifiers_call_notification_rings_the_phones() {
         let (push, http) = push(&[("voip", "ab12"), ("fcm", "fcm-token")]);
@@ -1052,9 +968,6 @@ mod tests {
         );
     }
 
-    /// Taken down before its `until`, a call is withdrawn: a background push
-    /// to the iPhone's APNs token (no second VoIP push) and `kind: withdraw`
-    /// to the Android phone. Past its `until`, nothing is sent.
     #[test]
     fn a_withdraw_before_until_is_a_background_push_and_a_withdraw_message() {
         let (push, http) = push(&[("voip", "ab12"), ("apns", "cd34"), ("fcm", "fcm-token")]);
@@ -1094,14 +1007,9 @@ mod tests {
         );
     }
 
-    /// An endpoint that takes the connection and never answers is given up
-    /// at the client's timeout, and the next request goes out: one stuck
-    /// device never holds the program's queue past a call's `until`. The
-    /// error names no device token (it is logged).
     #[test]
     fn a_hung_endpoint_times_out_and_the_next_request_goes() {
         use std::io::{Read as _, Write as _};
-        // the kernel takes the connection into the backlog; nobody answers
         let hung = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let answers = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let (hung_at, answers_at) = (hung.local_addr().unwrap(), answers.local_addr().unwrap());
@@ -1110,7 +1018,9 @@ mod tests {
             let _ = connection.read(&mut [0; 4096]);
             let _ = connection.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok");
         });
-        let client = Client::timed(Duration::from_millis(300)).unwrap();
+        let client =
+            Client::http_client_with_request_and_connect_deadlines(Duration::from_millis(300))
+                .unwrap();
         let to = |at: std::net::SocketAddr| Request {
             url: format!("http://{at}/3/device/ab12cd34"),
             headers: Vec::new(),
@@ -1133,23 +1043,16 @@ mod tests {
         drop(hung);
     }
 
-    /// A logged URL shows the last four characters of an APNs token.
     #[test]
     fn a_logged_url_cuts_the_device_token() {
         assert_eq!(
-            shown("https://api.push.apple.com/3/device/ab12cd34"),
+            request_url_with_redacted_device_token("https://api.push.apple.com/3/device/ab12cd34"),
             "https://api.push.apple.com/3/device/…cd34"
         );
         let fcm = "https://fcm.googleapis.com/v1/projects/p/messages:send";
-        assert_eq!(shown(fcm), fcm);
+        assert_eq!(request_url_with_redacted_device_token(fcm), fcm);
     }
 
-    /// A notice that is not a call is an alert to the iPhone's
-    /// remote-notification token (never its VoIP one), in its tag's thread
-    /// under its own id, with a sound, and a high-priority data message the
-    /// Android app shows; a second under the same tag goes quietly (no
-    /// sound, lower priority, `quiet` for Android); taken down, both get a
-    /// withdraw; a tag withdrawn alerts again when posted again.
     #[test]
     fn a_notice_alerts_once_then_replaces_quietly_until_withdrawn() {
         let (push, http) = push(&[("voip", "ab12"), ("apns", "cd34"), ("fcm", "fcm-token")]);
@@ -1190,7 +1093,6 @@ mod tests {
         assert_eq!(body["aps"]["thread-id"], "chat/#general");
         assert_eq!(body["kind"], "notice");
         assert_eq!(body["link"], "duck://testkit-0a1b2c3d/chat/general/7");
-        // `end` is a call's alone
         assert!(body.get("end").is_none(), "{body}");
         let fcm = sent
             .iter()
@@ -1245,13 +1147,9 @@ mod tests {
         assert_eq!(header(apns, "apns-priority"), "10");
     }
 
-    /// The id of the notice under `chat/#general` linking message 7, and
-    /// of the one linking message 8: SHA-256 of tag, a newline and link.
     const SEVEN: &str = "91456d85cdd6e18a45793477650461b03e8b429f5051379cbfd1158c169df970";
     const EIGHT: &str = "cd2c0f5bebda5c4d861fe2ed7fcce6bc611e5c293363c5bb41a4bd645473cb73";
 
-    /// Chat's notice of message `seq` in `#general`, as its notifier words
-    /// it once the centre took it.
     fn message(seq: u32) -> Notice {
         Notice {
             kind: NoticeKind::Notice,
@@ -1266,8 +1164,6 @@ mod tests {
         }
     }
 
-    /// The alert to the iPhone and the FCM message one post sent, taken
-    /// off the recorder.
     fn sent(http: &Recorded) -> (Request, serde_json::Value) {
         let sent = std::mem::take(&mut *http.0.lock().unwrap());
         let mut apns = sent
@@ -1285,7 +1181,6 @@ mod tests {
         (alert.clone(), message["message"].clone())
     }
 
-    /// A request's headers but its provider token, which changes.
     fn headers(request: &Request) -> Vec<(&'static str, String)> {
         request
             .headers
@@ -1295,7 +1190,6 @@ mod tests {
             .collect()
     }
 
-    /// The headers of an alert sent at `priority` as `id`.
     fn alert(priority: &str, id: &str) -> Vec<(&'static str, String)> {
         vec![
             ("apns-push-type", "alert".into()),
@@ -1305,7 +1199,6 @@ mod tests {
         ]
     }
 
-    /// The payload of `notice` as `id`, the alert's or (`strings`) FCM's.
     fn carried(notice: &Notice, id: &str) -> serde_json::Value {
         serde_json::json!({
             "kind": "notice", "chain": "testkit-0a1b2c3d", "program": notice.program,
@@ -1314,10 +1207,6 @@ mod tests {
         })
     }
 
-    /// Two messages in one room are two notices: each under its own id
-    /// (APNs's collapse id, the FCM data's `id` Android posts it under),
-    /// both in the room's thread (iOS's `thread-id`, and the tag Android
-    /// groups by); the second goes quietly, its room standing.
     #[test]
     fn two_notices_in_a_room_stand_apart_in_its_thread() {
         let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
@@ -1352,8 +1241,6 @@ mod tests {
         }
     }
 
-    /// The same notice posted again (a run that restarted re-posts what
-    /// stands) keeps its id, so it replaces itself on the phones.
     #[test]
     fn a_repost_keeps_its_id() {
         let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
@@ -1368,9 +1255,6 @@ mod tests {
         assert_eq!(fcm["data"]["quiet"], "1");
     }
 
-    /// The burst's "N more", posted again on every notice past the burst,
-    /// is one notice a program: under `more/<program>` with no link, it
-    /// keeps one id whatever its count, alone in its thread.
     #[test]
     fn the_burst_summary_is_one_notice_a_program() {
         const MORE: &str = "ef7dad463059cafba2349784b2e003dd96d0edf8052009d9dfdfc17ded4b8d1c";
@@ -1408,9 +1292,6 @@ mod tests {
         }
     }
 
-    /// A withdraw names the tag alone: one background push to each iPhone
-    /// and one `withdraw` to each Android phone take down every notice in
-    /// the room, however many stand there.
     #[test]
     fn a_withdraw_takes_down_the_whole_room() {
         let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
@@ -1448,9 +1329,6 @@ mod tests {
         );
     }
 
-    /// A token registered under `sandbox` goes to Apple's sandbox server,
-    /// one under `production` to the production one; an endpoint set in
-    /// the config takes every push whatever the env.
     #[test]
     fn an_apns_token_goes_to_the_server_its_env_names() {
         let (push, http) = push(&[("apns", "cd34")]);
@@ -1492,9 +1370,6 @@ mod tests {
         assert_eq!(staged.host("production"), "http://127.0.0.1:9");
     }
 
-    /// A notice no device took leaves its tag not standing: an account
-    /// with only a VoIP token is sent no notice, and the first one after
-    /// its remote-notification token registers alerts with a sound.
     #[test]
     fn a_tag_stands_once_a_device_took_it() {
         let (push, http) = push(&[("voip", "ab12")]);
@@ -1524,14 +1399,9 @@ mod tests {
         assert_eq!(body["aps"]["sound"], SOUND);
     }
 
-    /// A notice too long for APNs's 4 KB payload or FCM's 4 KB of data has
-    /// its body cut to fit each, on a char and ended with `…`; its title
-    /// too when the body alone is not enough. The link, tag, id and `until`
-    /// stand whole, and a call is not cut.
     #[test]
     fn a_long_notice_is_cut_to_fit_four_kilobytes() {
         let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
-        // three bytes a char: a cut anywhere but on a char would not parse
         let long = Notice {
             body: "가".repeat(3000),
             ..message(1)
@@ -1539,7 +1409,6 @@ mod tests {
         assert!(push.post(&long, None));
         let (apns, fcm) = sent(&http);
         let id = long.os_id();
-        // the body twice in an alert: a char less is six bytes less
         assert_eq!(apns.body.len(), 4093);
         let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
         let body = alert["body"].as_str().unwrap();
@@ -1556,7 +1425,6 @@ mod tests {
         assert_eq!(data.len(), 4096);
         assert!(fcm["data"]["body"].as_str().unwrap().ends_with('…'));
 
-        // a title too long to fit beside an empty body: cut as well
         let longer = Notice {
             title: "t".repeat(5000),
             body: "b".repeat(5000),
@@ -1564,20 +1432,17 @@ mod tests {
         };
         assert!(push.post(&longer, None));
         let (apns, fcm) = sent(&http);
-        // the title twice: a char less is two bytes less
         assert_eq!(apns.body.len(), 4095);
         let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
         assert_eq!(alert["body"], "");
         assert!(alert["title"].as_str().unwrap().ends_with("t…"));
         assert_eq!(serde_json::to_string(&fcm["data"]).unwrap().len(), 4096);
 
-        // a notice that fits goes whole
         assert!(push.post(&message(3), None));
         let (apns, _) = sent(&http);
         let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
         assert_eq!(alert["body"], "hey @bob");
 
-        // a call is never cut
         let ring = Notice {
             body: "c".repeat(5000),
             ..call(now() + 45)
@@ -1588,10 +1453,6 @@ mod tests {
         assert_eq!(message["message"]["data"]["body"], ring.body);
     }
 
-    /// A token APNs calls gone (410 `Unregistered`, or `BadDeviceToken`)
-    /// or FCM calls gone (`UNREGISTERED`) is cleared, in the registry's
-    /// file too; its row stays a tombstone. That token only: another
-    /// token, and one whose push failed for another reason, stay.
     #[test]
     fn a_token_called_gone_is_dropped() {
         struct Answers;
@@ -1652,9 +1513,6 @@ mod tests {
         assert_eq!(left(&kept, "fcm"), ["fcm-busy"]);
     }
 
-    /// Gone is read off the answer's own field, never a word anywhere in
-    /// it: a credential refused, or a message that names the word, keeps
-    /// the token.
     #[test]
     fn gone_is_the_answers_reason_exactly() {
         assert!(gone("apns", 410, r#"{"reason":"Unregistered"}"#));
@@ -1687,7 +1545,6 @@ mod tests {
         }
     }
 
-    /// A tag past APNs's 64 bytes collapses by its hash.
     #[test]
     fn a_long_tag_collapses_by_its_hash() {
         assert_eq!(collapse_id("huddle/call/c1"), "huddle/call/c1");

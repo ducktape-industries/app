@@ -125,7 +125,6 @@ pub async fn chime(output: Option<String>) -> Result<Vec<u8>, wire::Error> {
     .await
 }
 
-/// `answer` run on a blocking thread, its answer awaited.
 #[cfg(feature = "av")]
 async fn blocking(
     answer: impl FnOnce() -> Result<Vec<u8>, wire::Error> + Send + 'static,
@@ -135,8 +134,6 @@ async fn blocking(
         .unwrap_or_else(|error| Err(wire::Error::new(refusal::HOST_FAULT, error.to_string())))
 }
 
-/// A listed device's id, name (cleaned as a window title) and whether the
-/// system picks it.
 #[cfg(feature = "av")]
 fn device(found: ducktape_av::Device) -> (String, String, bool) {
     (
@@ -146,51 +143,28 @@ fn device(found: ducktape_av::Device) -> (String, String, bool) {
     )
 }
 
-/// The pieces of a tree, by authored path.
 #[derive(Default)]
 pub(super) struct Media {
     #[cfg(feature = "av")]
     pieces: HashMap<AuthoredPath, Piece>,
-    /// The frame drawn came with the person's press or key: only then
-    /// does a microphone's monitor come on or a recording start, each a
-    /// sound (as `microphone.chime` needs a press).
     #[cfg(feature = "av")]
     pressed: bool,
 }
 
-/// The most pieces of one kind a view has open at once: its own tile, a
-/// device check's preview, a picker's few. Past it a piece opens nothing
-/// and says so, as does a second piece on a device the view has open:
-/// each open is a thread and a stream, which no frame multiplies.
 #[cfg(feature = "av")]
 const MAX_PIECES: usize = 4;
 
-/// One piece: what it opened, the device it names, and the route its
-/// state goes to.
 #[cfg(feature = "av")]
 struct Piece {
     opened: Opened,
-    /// The camera or microphone it names (`None`: the system's default);
-    /// another makes the piece again. A microphone's speaker is not one:
-    /// another moves its sound, the microphone staying open.
     device: Option<String>,
     revision: u64,
-    /// A microphone's monitor as the host let it on (at a press).
     monitor: bool,
-    /// Whether its device is the call's voice I/O's (a publishing
-    /// microphone piece, `call.rs`): one made for it is made again for
-    /// a plain piece, and the other way round.
     publishing: bool,
     on_state: std::rc::Rc<std::cell::Cell<Option<u32>>>,
-    /// The device's state as last told, for `call.rs` to tell again with
-    /// the track's.
     #[cfg_attr(not(feature = "call"), allow(dead_code))]
     told: std::rc::Rc<std::cell::RefCell<wire::MediaState>>,
     _state: Option<Subscription>,
-    /// Lets the device go the moment the piece drops, before gpui
-    /// releases its entity: the piece made in its place then waits for
-    /// the device to close (ducktape-av's one holder at a time), never
-    /// finding it busy.
     _release: Option<ducktape_av::Release>,
 }
 
@@ -198,8 +172,6 @@ struct Piece {
 enum Opened {
     Camera(Entity<ducktape_av::Camera>),
     Meter(Entity<ducktape_av::Meter>),
-    /// Nothing opened: the view has this device open in another piece, or
-    /// [`MAX_PIECES`] of its kind.
     Refused(ducktape_av::Kind),
 }
 
@@ -215,7 +187,6 @@ impl Opened {
 }
 
 impl Media {
-    /// Keeps the pieces `root` still has; the others' devices close.
     pub(super) fn retain(&mut self, root: &wire::Node) {
         #[cfg(feature = "av")]
         if !self.pieces.is_empty() {
@@ -233,21 +204,17 @@ impl Media {
         let _ = root;
     }
 
-    /// Every piece's device closes: the view stopped, or its tree goes.
     pub(super) fn release(&mut self) {
         #[cfg(feature = "av")]
         self.pieces.clear();
     }
 
-    /// The state the piece at `path` was last told, with its route.
     #[cfg(feature = "call")]
     pub(super) fn last_told(&self, path: &AuthoredPath) -> Option<(u32, wire::MediaState)> {
         let piece = self.pieces.get(path)?;
         Some((piece.on_state.get()?, piece.told.borrow().clone()))
     }
 
-    /// Why a view may not open another `kind` piece on `device` at `path`,
-    /// past the ones it has open elsewhere; `None` when it may.
     #[cfg(feature = "av")]
     fn refusal(
         &self,
@@ -293,8 +260,6 @@ impl ViewTree {
         self.calls.release();
     }
 
-    /// A camera piece: its pictures in the node's box, or the line that
-    /// says this build has no camera.
     pub(super) fn camera(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Camera { id, style, .. } = node else {
             unreachable!()
@@ -313,8 +278,6 @@ impl ViewTree {
         element.into_any_element()
     }
 
-    /// A microphone piece: its level in the node's box, or the line that
-    /// says this build has no microphone.
     pub(super) fn microphone(
         &mut self,
         node: &wire::Node,
@@ -342,9 +305,6 @@ impl ViewTree {
         element.into_any_element()
     }
 
-    /// The piece under this path, made when it is new, names another kind
-    /// or device, or was refused and may open now; its state routed to
-    /// `on_state`.
     #[cfg(feature = "av")]
     fn piece(
         &mut self,
@@ -364,8 +324,6 @@ impl ViewTree {
                 || matches!(piece.opened, Opened::Refused(_)) && refusal.is_none()
         });
         if again {
-            // the old device let go (its `Release`) before the new one
-            // opens, which waits for it to have closed
             self.media.pieces.remove(&path);
             let route = std::rc::Rc::new(std::cell::Cell::new(on_state));
             let heard = route.clone();
@@ -493,8 +451,6 @@ impl ViewTree {
         };
         let pressed = self.media.pressed;
         let (opens, plays) = (device.clone(), output.clone());
-        // a publishing piece's microphone is the call's voice I/O: its
-        // meter is fed from there (`call.rs`), opening nothing itself
         #[cfg(feature = "call")]
         let publishing = publish.is_some();
         #[cfg(not(feature = "call"))]
@@ -521,8 +477,6 @@ impl ViewTree {
         let meter = meter.clone();
         let apply = piece.revision != *revision;
         piece.revision = *revision;
-        // a sound comes on only at a press: the monitor turning on, a
-        // recording starting (it plays back). Off and Stop need none
         piece.monitor = *monitor && (piece.monitor || pressed);
         let monitor = piece.monitor;
         #[cfg(feature = "call")]
@@ -570,9 +524,6 @@ impl ViewTree {
     }
 }
 
-/// What a view hears of its piece's device: a refusal says how to allow
-/// the device here, and whether its settings page opens (`link.open` of
-/// the wire's settings links).
 #[cfg(feature = "av")]
 pub(super) fn told(state: &ducktape_av::State, kind: ducktape_av::Kind) -> wire::MediaState {
     use ducktape_av::{Playback, Status};
@@ -592,8 +543,6 @@ pub(super) fn told(state: &ducktape_av::State, kind: ducktape_av::Kind) -> wire:
         Status::NoDevice => (wire::MediaStatus::NoDevice, String::new()),
         Status::Failed(why) => (wire::MediaStatus::Failed, why.clone()),
     };
-    // one line, at most 200 bytes, as the wire says (a window title's
-    // 80 chars would cut a fix line short)
     let mut detail: String = detail.chars().filter(crate::runtime::plain).collect();
     while detail.len() > 200 {
         detail.pop();
@@ -615,7 +564,6 @@ pub(super) fn told(state: &ducktape_av::State, kind: ducktape_av::Kind) -> wire:
     }
 }
 
-/// A piece's box saying this build has no such device.
 #[cfg(not(feature = "av"))]
 fn placeholder(element: Stateful<Div>, line: &'static str) -> Stateful<Div> {
     element.flex().items_center().justify_center().child(line)
@@ -637,8 +585,6 @@ mod tests {
         }
     }
 
-    /// A microphone piece `id` on `device`, playing on `output`, its
-    /// monitor and commands as given at `revision`.
     fn microphone_on(
         id: &str,
         device: Option<&str>,
@@ -680,7 +626,6 @@ mod tests {
         })
     }
 
-    /// A build without av draws both pieces as their lines.
     #[cfg(not(feature = "av"))]
     #[gpui_kit::test]
     fn a_build_without_av_draws_the_pieces_as_lines(cx: &mut gpui_kit::TestAppContext) {
@@ -695,8 +640,6 @@ mod tests {
         .unwrap();
     }
 
-    /// A tree of `children` in a window of its own, drawn once; the
-    /// events it emits from then on collected.
     #[cfg(feature = "av")]
     fn drawn(
         children: Vec<wire::Node>,
@@ -726,8 +669,6 @@ mod tests {
         (tree, native, heard)
     }
 
-    /// The tree's next frame, `children`, drawn; `pressed` as the seat
-    /// says it.
     #[cfg(feature = "av")]
     fn next(
         tree: &Entity<ViewTree>,
@@ -756,13 +697,6 @@ mod tests {
         tree.read_with(native, |tree, _| tree.media_for_test())
     }
 
-    // Every piece below names a device no system lists: each opens
-    // nothing (no camera light, no permission prompt on a Mac) and says
-    // `NoDevice`.
-
-    /// A view that puts a microphone where its camera was (one id, one
-    /// place) gets a microphone: the piece is made again for its kind,
-    /// not taken for the camera (which ended the app).
     #[cfg(feature = "av")]
     #[gpui_kit::test]
     fn a_place_that_changes_kind_holds_the_new_kind(cx: &mut gpui_kit::TestAppContext) {
@@ -775,9 +709,6 @@ mod tests {
         assert_eq!(meters.len(), 1);
     }
 
-    /// Another device picked lets the old one go at once, while gpui
-    /// still holds its piece: the new one, which waits for every device
-    /// let go to close, never finds the old still open and busy.
     #[cfg(feature = "av")]
     #[gpui_kit::test]
     fn another_device_lets_the_old_go_at_once(cx: &mut gpui_kit::TestAppContext) {
@@ -796,8 +727,6 @@ mod tests {
         assert!(!new.read_with(&native, |camera, _| camera.let_go()));
     }
 
-    /// Another speaker moves a microphone's sound: the microphone stays
-    /// open (the same piece), told the new output.
     #[cfg(feature = "av")]
     #[gpui_kit::test]
     fn another_speaker_keeps_the_microphone_open(cx: &mut gpui_kit::TestAppContext) {
@@ -810,9 +739,6 @@ mod tests {
         assert!(!after.read_with(&native, |meter, _| meter.let_go()));
     }
 
-    /// A view opens a device once and at most four of a kind: a second
-    /// piece on one device, or a fifth camera, opens nothing and is told
-    /// why; it opens once the one in its way goes.
     #[cfg(feature = "av")]
     #[gpui_kit::test]
     fn a_view_opens_a_device_once_and_a_few_of_a_kind(cx: &mut gpui_kit::TestAppContext) {
@@ -820,8 +746,6 @@ mod tests {
             camera_on("one", Some("no-such"), Some(1)),
             camera_on("two", Some("no-such"), Some(2)),
         ];
-        // its window draws it as it opens: the pieces come in the next frame,
-        // with the events heard
         let (tree, mut native, heard) = drawn(Vec::new(), cx);
         next(&tree, twice, false, &mut native);
         assert_eq!(media(&tree, &native).0.len(), 1);
@@ -848,9 +772,6 @@ mod tests {
         assert_eq!(media(&tree, &native).0.len(), MAX_PIECES);
     }
 
-    /// A microphone's monitor comes on, and a recording starts, only with
-    /// a frame that came with the person's press or key (each a sound);
-    /// a monitor let on stays on, and turning it off needs nothing.
     #[cfg(feature = "av")]
     #[gpui_kit::test]
     fn a_sound_starts_only_at_a_press(cx: &mut gpui_kit::TestAppContext) {
@@ -882,9 +803,6 @@ mod tests {
         assert_eq!(told(&native), (false, Some(Ask::Stop)));
     }
 
-    /// Each settings place brings up its own device's page, where the
-    /// system has one (iOS has one page of the app for both), and the
-    /// reader's account none.
     #[cfg(feature = "av")]
     #[test]
     fn a_settings_place_is_its_own_devices_page() {
@@ -897,10 +815,6 @@ mod tests {
         assert_eq!(settings_page(Place::Account), None);
     }
 
-    /// A device's state reaches its view in the wire's words, bounded;
-    /// a refusal says how to allow the device here, and its settings page
-    /// opens where the system has one; a device gone says why, where the
-    /// system said.
     #[cfg(feature = "av")]
     #[test]
     fn a_device_state_is_told_in_the_wires_words() {

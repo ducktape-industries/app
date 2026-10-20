@@ -6,19 +6,14 @@ use crate::shell::entities::{Chain, Prefs, Session, SessionState, Shared, Slice}
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use gpui_kit::{App, AppContext as _, Context, Entity, Subscription};
 
-/// What the item shows, diffed before each native update.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Snapshot {
-    /// picks the icon: online or offline
     connected: bool,
     tooltip: String,
     title: Option<String>,
     labels: [String; ROWS],
 }
 
-// The menu, top to bottom, by row: network, status, sep, Open, sep,
-// Appearance ▸ (System, Light, Dark), sep, Quit. A click comes back as
-// the row's index.
 const NETWORK: usize = 0;
 const STATUS: usize = 1;
 const OPEN: usize = 3;
@@ -32,16 +27,12 @@ const ROWS: usize = 11;
 const SEPARATORS: [usize; 3] = [2, 4, 9];
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SUBMENU: (usize, [usize; 3]) = (APPEARANCE, [SYSTEM, LIGHT, DARK]);
-/// every row the menu lists directly: not the submenu's children, not Quit
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const TOP_LEVEL: [usize; 7] = [NETWORK, STATUS, 2, OPEN, 4, APPEARANCE, 9];
-/// the two rows of status text: listed, not clickable
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const STATUS_ROWS: [usize; 2] = [NETWORK, STATUS];
 
 impl Snapshot {
-    /// The session's line, as the connect screen and the footer say it:
-    /// "Not connected", "Reaching …", "Connected · block N", "Reconnecting…".
     fn status_line(session: &SessionState, chain: &Chain) -> String {
         match (session.connecting, session.connected, session.reconnecting) {
             (true, _, _) => format!("Reaching {}…", session.reaching),
@@ -85,10 +76,8 @@ impl Snapshot {
     }
 }
 
-/// A row of the menu clicked: what it asks of the shell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Pick {
-    /// The console brought forward, or opened if there is none.
     Open,
     Appearance(Appearance),
     Quit,
@@ -220,8 +209,6 @@ mod native {
 
     impl StatusItem {
         pub(super) fn new(send: UnboundedSender<usize>) -> Result<Self, String> {
-            // AppKit makes a menu on the main thread only, and muda panics
-            // anywhere else (a test's thread): refuse as the tray itself does
             if unsafe { libc::pthread_main_np() } == 0 {
                 return Err("not on the main thread".into());
             }
@@ -360,7 +347,6 @@ mod tests {
         session.reconnecting = true;
         let snapshot = Snapshot::of(&session, &chain, Appearance::System, false);
         assert_eq!(snapshot.labels[STATUS], "Reconnecting…");
-        // the node the attempt out is for, not what the address field holds
         session.connecting = true;
         session.reaching = "http://b".into();
         session.endpoint = "http://bx".into();
@@ -368,9 +354,6 @@ mod tests {
         assert_eq!(snapshot.labels[STATUS], "Reaching http://b…");
     }
 
-    /// The item draws itself as the app starts, and again from its own
-    /// observers when the session, the chain or the appearance moves: no
-    /// one else tells it.
     #[gpui_kit::test]
     fn the_tray_follows_the_session_the_chain_and_the_appearance(
         cx: &mut gpui_kit::TestAppContext,

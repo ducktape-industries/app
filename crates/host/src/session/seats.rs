@@ -18,10 +18,8 @@ use gpui_kit::{
 };
 use std::collections::BTreeMap;
 
-/// A pane's seat and the routes out of it.
 struct Routed {
     seat: Entity<Seat>,
-    /// Its intents, routed here; dropping it unsubscribes.
     _intents: Subscription,
 }
 
@@ -64,10 +62,8 @@ pub struct Seats {
     account: Entity<Account>,
     rail: Entity<Rail>,
     notifications: Entity<Notifications>,
-    /// The session as every seat last heard it, encoded.
     props: Vec<u8>,
     _observing: Vec<Subscription>,
-    /// What the programs' notifiers ask for, routed as a pane's is.
     _notifiers: gpui_kit::Task<()>,
 }
 
@@ -81,7 +77,6 @@ impl Seats {
         notifications: &Entity<Notifications>,
         cx: &mut Context<Self>,
     ) -> Self {
-        // a notifier is no pane's: what it asks moves the rail and the bell
         let mut heard = crate::runtime::notifier::intents();
         let _notifiers = cx.spawn(async move |this, cx| {
             use futures::StreamExt as _;
@@ -112,9 +107,6 @@ impl Seats {
         this
     }
 
-    /// What every view is handed as its props: the node the views are on
-    /// (not the address being typed or tried, a switch in flight), the
-    /// chain, the seated key and its account.
     fn encode(&self, cx: &App) -> Vec<u8> {
         let session = self.session.read(cx).get();
         let account = self.account.read(cx).get();
@@ -127,8 +119,6 @@ impl Seats {
         )
     }
 
-    /// The session moved: the props to every seat, which turns only when
-    /// its bytes did.
     fn props_moved(&mut self, cx: &mut Context<Self>) {
         let props = self.encode(cx);
         if props == self.props {
@@ -169,7 +159,6 @@ impl Seats {
                 let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
                     this.route(program, instance, intent.clone(), cx)
                 });
-                // the session as it stands, before its first turn
                 seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
                 Routed { seat, _intents }
             });
@@ -187,7 +176,6 @@ impl Seats {
             };
             let program = routed.seat.read(cx).program();
             let intents = routed.seat.update(cx, |seat, cx| seat.hide(cx));
-            // the seat drops with this entry: its images leave the atlas
             if let Some(tree) = routed.seat.read(cx).tree() {
                 tree.update(cx, |tree, cx| tree.release(cx));
             }
@@ -205,8 +193,6 @@ impl Seats {
         }
     }
 
-    /// What the view of `program` in the pane with this layout `instance`
-    /// asked for, to the entity it moves, or to the shell.
     fn route(
         &mut self,
         program: &'static str,

@@ -12,9 +12,6 @@ use crate::shell::entities::{Overlay, Popover, Screen};
 use crate::shell::panes_tests::{console, draw, ids, settle, window_count};
 use gpui_kit::{TestAppContext, VisualTestContext};
 
-/// The node's breath is a view of its own: with motion on, each of its
-/// pulses draws the dot and the window's root, and the bar (cached, with
-/// its well empty) not at all.
 #[gpui_kit::test]
 fn a_pulse_re_renders_the_dot_and_not_the_chrome(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
@@ -23,8 +20,6 @@ fn a_pulse_re_renders_the_dot_and_not_the_chrome(cx: &mut TestAppContext) {
     native.update(|window, _| window.activate_window());
     set_motion(&app, true, &mut native);
     polled(&app, status(7), &mut native);
-    // frames, not `draw`: its `activate_a11y` refreshes the window, a miss
-    // for every cached layer
     for _ in 0..4 {
         frame(&mut native);
     }
@@ -58,7 +53,6 @@ fn a_pulse_re_renders_the_dot_and_not_the_chrome(cx: &mut TestAppContext) {
     );
 }
 
-/// Every render counter window `key` has, by name.
 fn render_counts(key: crate::runtime::WindowKey) -> Vec<(String, u64)> {
     let snapshot = crate::perf::snapshot(false);
     let counts = snapshot["windows"][key.0.to_string()]
@@ -71,12 +65,6 @@ fn render_counts(key: crate::runtime::WindowKey) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// An idle app on a chain that stands still draws nothing: the node's
-/// status poll runs on its own clock and lands the same height, and no
-/// layer of the window draws, nor the root that lays
-/// them out, nor a pane's tree. No clock of the app's draws it otherwise:
-/// the wall clock's beat went with the reducer, and its `shell.dispatch`
-/// timer with it.
 #[gpui_kit::test]
 fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
     use crate::shell::entities::{STATUS_EVERY, SessionState};
@@ -86,7 +74,6 @@ fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
     crate::runtime::seat_drawing_for_test(PROGRAM, 400, line("a line"));
     set_motion(&app, false, &mut native);
     pane(&view, PaneMessage::Select(PROGRAM), &mut native);
-    // the node answers height 7 to every ask
     let (source, asked) = source(|_| Ok(status(7)));
     app.session.update(&mut native, |session, cx| {
         let on_node = SessionState {
@@ -101,7 +88,6 @@ fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
         native.executor().advance_clock(STATUS_EVERY);
         native.run_until_parked();
     };
-    // the first answer moves the height from none to 7, and draws it
     poll(&mut native);
     for _ in 0..4 {
         frame(&mut native);
@@ -137,8 +123,6 @@ fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
     );
 }
 
-/// A seat that wakes (its view lands again) draws its own tree and leaves
-/// the bar cached.
 #[gpui_kit::test]
 fn a_pane_wake_leaves_the_chrome_alone(cx: &mut TestAppContext) {
     const PROGRAM: &str = "root-wake-view";
@@ -168,8 +152,6 @@ fn a_pane_wake_leaves_the_chrome_alone(cx: &mut TestAppContext) {
     );
 }
 
-/// A toast showing draws the footer's layer, and neither the bar nor a
-/// pane's tree.
 #[gpui_kit::test]
 fn a_toast_re_renders_its_layer_only(cx: &mut TestAppContext) {
     const PROGRAM: &str = "root-toast-view";
@@ -200,7 +182,6 @@ fn a_toast_re_renders_its_layer_only(cx: &mut TestAppContext) {
         "a toast drew the bar"
     );
     assert_eq!(tree_renders(PROGRAM), tree, "a toast drew a pane's tree");
-    // the door's tree after the counts: activating it refreshes the window
     let nodes = native.update(draw);
     assert!(
         ids(&nodes).iter().any(|id| id == "console:toast"),
@@ -208,8 +189,6 @@ fn a_toast_re_renders_its_layer_only(cx: &mut TestAppContext) {
     );
 }
 
-/// The node in `window`'s last tree that the element with its own id
-/// `name` built.
 fn node_of(window: &gpui_kit::Window, name: &str) -> gpui_kit::accesskit::NodeId {
     let tree = window.a11y_tree().expect("the window built a tree");
     tree.nodes
@@ -222,8 +201,6 @@ fn node_of(window: &gpui_kit::Window, name: &str) -> gpui_kit::accesskit::NodeId
         .unwrap_or_else(|| panic!("no {name} node in the tree"))
 }
 
-/// Each named element's node in `window`'s last tree, with its parent's
-/// element path (`None` under the window's root node).
 fn placed(window: &gpui_kit::Window, names: &[&str]) -> Vec<(String, Option<String>)> {
     let tree = window.a11y_tree().expect("the window built a tree");
     let parents: std::collections::HashMap<_, _> = tree
@@ -243,7 +220,6 @@ fn placed(window: &gpui_kit::Window, names: &[&str]) -> Vec<(String, Option<Stri
         .collect()
 }
 
-/// What the door serves of the console: its node ids, in order.
 fn door_ids(native: &mut VisualTestContext) -> Vec<String> {
     native.update(|window, _| {
         crate::ax::snapshot("console", window, false)
@@ -253,16 +229,6 @@ fn door_ids(native: &mut VisualTestContext) -> Vec<String> {
     })
 }
 
-/// A cached layer stays cached under a reader, and its nodes stay in the
-/// tree (the fork carries a reused view's nodes, focus ids and listeners):
-/// with a11y on, ten pulses of the dot, each followed by a door read (a
-/// draw, as `ax::actions::current` draws), draw neither the bar, nor the
-/// strip, nor the pane's tree, and the door serves the same nodes after
-/// each: the bar, its tabs, the strip's buttons, the view and its tree's
-/// text, under the parents the first frame gave them. The pane view draws
-/// with every frame and its tree with none: under the door `misses` now
-/// fall short of `draws`. The door's Focus on a bar tab drawn from reuse
-/// still lands, and a menu hanging off a cached bar keeps its nodes too.
 #[gpui_kit::test]
 fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
@@ -283,8 +249,6 @@ fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
     for _ in 0..4 {
         frame(&mut native);
     }
-    // the strip and the view name no node of their own: their controls
-    // and the view's text are theirs
     let names = [
         "menubar",
         "rail-rows",
@@ -343,7 +307,6 @@ fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
         "the pane view drew {} times in ten pulses and ten reads",
         draws() - drawn
     );
-    // the Focus a door `focus` sends, on the tab the last reuse carried
     native.update(|window, cx| {
         let target_node = node_of(window, TAB);
         window.dispatch_a11y_action(
@@ -365,8 +328,6 @@ fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
             .collect()
     });
     assert_eq!(focused, [format!("console:{TAB}")], "the Focus missed");
-    // a menu hangs off the bar (deferred, inside its cache): reuse carries
-    // its nodes as the bar's
     super::tests::show(&view, Some(Overlay::Network), &mut native);
     for _ in 0..4 {
         frame(&mut native);
@@ -388,10 +349,6 @@ fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
     );
 }
 
-/// Typing in Spotlight's field draws the overlay layer (the field is its
-/// child: each of the field's own notifies draws it too) and no other
-/// cached layer: neither the bar, nor the footer, nor a pane's tree. (The
-/// root and the pane layer under it are not cached: they draw with it.)
 #[gpui_kit::test]
 fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     const PROGRAM: &str = "root-keystroke-view";
@@ -401,8 +358,6 @@ fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     set_motion(&app, false, &mut native);
     pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     super::tests::show(&view, Some(Overlay::Spotlight), &mut native);
-    // the first key: the window's input turns to the keyboard, which gpui
-    // answers with a full redraw
     native.simulate_input("a");
     for _ in 0..8 {
         frame(&mut native);
@@ -437,13 +392,6 @@ fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     );
 }
 
-/// A focus move draws the two views it moves between, not the window (the
-/// pinned fork, gpui-pre#9: before it, every focus move refreshed the
-/// window and every cached layer missed): Tab from the bar's last control
-/// into the pane draws the bar once (its ring goes) and the pane's strip
-/// once (its first button's comes), with the root and the pane view under
-/// it (neither cached), and neither the pane's tree, nor the dialogs'
-/// layer, nor the footer.
 #[gpui_kit::test]
 fn a_focus_move_re_renders_two_layers_not_the_window(cx: &mut TestAppContext) {
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
@@ -468,9 +416,6 @@ fn a_focus_move_re_renders_two_layers_not_the_window(cx: &mut TestAppContext) {
                 .map(|node| node.id)
         })
     };
-    // the keys on the bar's last control, the door's way; then a Tab back
-    // and forth in the bar, as the first key turns the window's input to
-    // the keyboard, which gpui answers with a full redraw
     native.update(|window, cx| {
         let target_node = node_of(window, "settings");
         window.dispatch_a11y_action(
@@ -527,8 +472,6 @@ fn a_focus_move_re_renders_two_layers_not_the_window(cx: &mut TestAppContext) {
     assert_eq!(tree_renders(PROGRAM), tree, "the focus move drew the tree");
 }
 
-/// A pane popped out to a window of its own: that window's root draws the
-/// panes and the footer, and no bar.
 #[gpui_kit::test]
 fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
@@ -572,9 +515,6 @@ fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
     );
 }
 
-/// The View menu's Search goes to whichever window is in front: from a
-/// pop-out it opens Spotlight over the console, where it draws, and leaves
-/// the pop-out's panes uncovered.
 #[gpui_kit::test]
 fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext) {
     let (app, key, view, mut native) = console(cx);
@@ -611,11 +551,6 @@ fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext)
     });
 }
 
-/// Before the desk the console's root draws the launcher's screen alone:
-/// each screen change draws it once, and once more when the screen's
-/// figure follows a frame late
-/// (`the_figure_follows_the_screen_without_a_render_write`); no bar until
-/// the desk.
 #[gpui_kit::test]
 fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
@@ -671,13 +606,6 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     );
 }
 
-/// The launcher's figure is never written from a draw: written during the
-/// launcher's draw, the figure (a cached view of its own) would keep last
-/// frame's drawing until something else drew it again (P3). A screen
-/// change draws the launcher with the last screen's figure (its glyphs
-/// enter the atlas after the screen's text, which the unlock screen's
-/// pixels depend on), the next frame draws the new figure, and no frame
-/// follows that.
 #[gpui_kit::test]
 fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext) {
     use crate::shell::figure::Figure;
@@ -685,7 +613,6 @@ fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext)
     let mut seed = Seed::boot();
     seed.center = Default::default();
     seed.roster = Default::default();
-    // a still figure: none of its own frames
     seed.prefs.motion = false;
     let (_, key, view, mut native) = open_console(seed, cx);
     frame(&mut native);
@@ -719,9 +646,6 @@ fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext)
     );
 }
 
-/// Back from the desk the figure is drawn afresh (the desk kept no frame
-/// of it), so it comes with its screen: the frame that shows the connect
-/// screen draws the roll, not the key screen's ring it last drew.
 #[gpui_kit::test]
 fn a_figure_back_from_the_desk_comes_with_its_screen(cx: &mut TestAppContext) {
     use crate::shell::figure::Figure;
@@ -751,8 +675,6 @@ fn a_figure_back_from_the_desk_comes_with_its_screen(cx: &mut TestAppContext) {
     );
 }
 
-/// A toast paints over an open menu, as it did before it was a layer: its
-/// node comes after the menu's in the tree.
 #[gpui_kit::test]
 fn a_toast_paints_over_an_open_menu(cx: &mut TestAppContext) {
     let (app, _, view, mut native) = console(cx);
@@ -772,9 +694,6 @@ fn a_toast_paints_over_an_open_menu(cx: &mut TestAppContext) {
     );
 }
 
-/// The notification centre hears which view is in front from the root's
-/// observers, not from a draw: a pane brought to the front with no frame
-/// drawn moves the centre's front.
 #[gpui_kit::test]
 fn the_centre_hears_the_front_pane_without_a_frame(cx: &mut TestAppContext) {
     const PROGRAM: &str = "root-front-view";
@@ -786,15 +705,10 @@ fn the_centre_hears_the_front_pane_without_a_frame(cx: &mut TestAppContext) {
         native.update(|_, cx| app.notifications.read(cx).center().lock().front)
     };
     assert_ne!(front(&mut native), Some((key, PROGRAM)));
-    // one move of the desk, no frame: the observer alone tells the centre
     pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     assert_eq!(front(&mut native), Some((key, PROGRAM)));
 }
 
-/// A view is on screen (`host.visible`) only while its window is in front:
-/// a pane in a window the person left (behind another, or the app left)
-/// is not being looked at, so a chat room there is not read and its
-/// mentions are notices.
 #[gpui_kit::test]
 fn a_view_is_visible_only_while_its_window_is_in_front(cx: &mut TestAppContext) {
     const PROGRAM: &str = "root-visible-view";
@@ -820,10 +734,6 @@ fn a_view_is_visible_only_while_its_window_is_in_front(cx: &mut TestAppContext) 
     assert!(crate::runtime::visible_for_test(PROGRAM), "back in front");
 }
 
-/// A pane moved between windows (popped out, then back in) keeps its seat
-/// and its drawn tree: two roots, one `Seats`, and the seat's place
-/// follows the window whose desk holds the pane. Each root draws the pane
-/// from the seat it finds by the pane's `instance`.
 #[gpui_kit::test]
 fn a_pane_move_between_windows_keeps_its_seat_and_tree(cx: &mut TestAppContext) {
     const PROGRAM: &str = "root-move-view";
@@ -873,7 +783,6 @@ fn a_pane_move_between_windows_keeps_its_seat_and_tree(cx: &mut TestAppContext) 
         "the pop-out drew no panes"
     );
 
-    // back in: the console's desk holds it again, the seat follows
     app.windows
         .update(&mut native, |windows, cx| windows.pop_in(popped_key, cx));
     native.run_until_parked();
@@ -904,8 +813,6 @@ fn a_pane_move_between_windows_keeps_its_seat_and_tree(cx: &mut TestAppContext) 
     );
 }
 
-/// Raising a window that is already active still times the switch to the
-/// frame after the one it asks for: the timer closes and lands a sample.
 #[gpui_kit::test]
 fn raising_an_active_window_closes_its_switch_timer(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
@@ -921,7 +828,6 @@ fn raising_an_active_window_closes_its_switch_timer(cx: &mut TestAppContext) {
     let before = samples(&mut native);
     app.windows
         .update(&mut native, |windows, cx| windows.raise(key, cx));
-    // the frame the raise asks for, then the one after it
     frame(&mut native);
     frame(&mut native);
     assert_eq!(
@@ -931,15 +837,10 @@ fn raising_an_active_window_closes_its_switch_timer(cx: &mut TestAppContext) {
     );
 }
 
-/// The quads the window painted last, with no reader on: the cached path.
-fn quads(native: &mut VisualTestContext) -> Vec<gpui_kit::Quad> {
+fn cached_frame_quads_without_reader(native: &mut VisualTestContext) -> Vec<gpui_kit::Quad> {
     native.update(|window, _| window.painted_quads())
 }
 
-/// A dialog open over the desk, drawn cached (no reader on): its scrim
-/// paints below the bar, the window wide and high, over the panes. The
-/// cached view is a layout root of its own, where its height is its
-/// content's unless it says `size_full`: both are `OverlayLayer`'s.
 #[gpui_kit::test]
 fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
     const PROGRAM: &str = "root-scrim-view";
@@ -952,10 +853,9 @@ fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
     }
     for overlay in [Overlay::Spotlight, Overlay::Approve] {
         super::tests::show(&view, Some(overlay), &mut native);
-        // a miss (the dialog opened), then hits
         for _ in 0..3 {
             frame(&mut native);
-            let quads = quads(&mut native);
+            let quads = cached_frame_quads_without_reader(&mut native);
             let scale = native.update(|window, _| window.scale_factor());
             let scrim = quads
                 .iter()
@@ -974,7 +874,6 @@ fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
                 (BAR * scale, 1280. * scale, (800. - BAR) * scale),
                 "{overlay:?}'s scrim fills the window under the bar"
             );
-            // the pane's box: a 1px border, taller than the dialog's rows
             let pane = quads
                 .iter()
                 .filter(|quad| {
@@ -994,10 +893,6 @@ fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
     }
 }
 
-/// Settings open, the layout switched under it (its own Layout row; Review
-/// Focus 2): on the next frames the scrim starts right of the sidebar, the
-/// window high, no bar's height over it, and the dialog hangs centred on
-/// it; switched back, under the bar again. Settings stays open throughout.
 #[gpui_kit::test]
 fn a_dialog_follows_the_chrome_when_the_layout_switches(cx: &mut TestAppContext) {
     use crate::backend::Layout;
@@ -1005,14 +900,12 @@ fn a_dialog_follows_the_chrome_when_the_layout_switches(cx: &mut TestAppContext)
     set_motion(&app, false, &mut native);
     let settings = Overlay::Settings(Default::default());
     super::tests::show(&view, Some(settings), &mut native);
-    // the scrim's bounds as painted, cached (no reader on), and then the
-    // dialog's as the door reads them
     let placed = |native: &mut VisualTestContext| {
         for _ in 0..3 {
             frame(native);
         }
         let scale = native.update(|window, _| window.scale_factor());
-        let scrim = quads(native)
+        let scrim = cached_frame_quads_without_reader(native)
             .into_iter()
             .find(|quad| {
                 quad.background
@@ -1065,9 +958,6 @@ fn a_dialog_follows_the_chrome_when_the_layout_switches(cx: &mut TestAppContext)
     assert_eq!(super::tests::open_now(&view, &mut native), Some(settings));
 }
 
-/// A toast drawn cached (no reader on) sits at the window's foot: its layer
-/// is a layout root of its own, and says `size_full` so its `bottom` is the
-/// window's.
 #[gpui_kit::test]
 fn a_cached_toast_sits_at_the_foot(cx: &mut TestAppContext) {
     let (app, _, _, mut native) = console(cx);
@@ -1076,7 +966,7 @@ fn a_cached_toast_sits_at_the_foot(cx: &mut TestAppContext) {
     for _ in 0..3 {
         frame(&mut native);
         let scale = native.update(|window, _| window.scale_factor());
-        let toast = quads(&mut native)
+        let toast = cached_frame_quads_without_reader(&mut native)
             .into_iter()
             .find(|quad| {
                 quad.bounds.size.width.0 == 560. * scale && quad.border_widths.top.0 == 1.5 * scale
@@ -1090,11 +980,6 @@ fn a_cached_toast_sits_at_the_foot(cx: &mut TestAppContext) {
     }
 }
 
-/// A view's `Deferred`, drawn like the dialog over it, stays under the
-/// host's dialog: inside the pane, where the view's draw lies, the scrim
-/// paints over it and takes the click meant for it (here closing the
-/// dialog), the deferral one deep or nested (a nested one draws in place,
-/// in gpui's first round of deferred draws, under the host's band).
 #[gpui_kit::test]
 fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
@@ -1144,7 +1029,7 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
         for _ in 0..3 {
             frame(&mut native);
         }
-        let quads = quads(&mut native);
+        let quads = cached_frame_quads_without_reader(&mut native);
         let scale = native.update(|window, _| window.scale_factor());
         let drawn = quads
             .iter()
@@ -1164,8 +1049,6 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
             drawn.order,
             scrim.order
         );
-        // the view's bottom-left corner: inside its draw, under the scrim,
-        // away from the dialog's card
         let at = gpui_kit::point(
             gpui_kit::px(drawn.bounds.origin.x.0 / scale + 8.),
             gpui_kit::px((drawn.bounds.origin.y.0 + drawn.bounds.size.height.0) / scale - 8.),
@@ -1177,10 +1060,6 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
     }
 }
 
-/// A view's tooltip, open when a host dialog comes over its pane (the
-/// pointer still), stays under the dialog: the scrim paints over it and
-/// takes the click meant for it (here closing the dialog), the tooltip
-/// hoverable or not.
 #[gpui_kit::test]
 fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
@@ -1224,7 +1103,7 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
         }
         let scale = native.update(|window, _| window.scale_factor());
         let painted = |native: &mut VisualTestContext, color: u32| {
-            quads(native)
+            cached_frame_quads_without_reader(native)
                 .into_iter()
                 .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(color).into()))
         };
@@ -1247,12 +1126,11 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
             painted(&mut native, MAGENTA).is_some(),
             "{program}: the tooltip opened"
         );
-        // the dialog comes with the pointer still (a request, a shortcut)
         super::tests::show(&view, Some(Overlay::Approve), &mut native);
         for _ in 0..3 {
             frame(&mut native);
         }
-        let quads = quads(&mut native);
+        let quads = cached_frame_quads_without_reader(&mut native);
         let scrim = quads
             .iter()
             .find(|quad| {
@@ -1261,7 +1139,6 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
                     .is_some_and(|color| (color.a - 0.6).abs() < 0.01)
             })
             .expect("the dialog's scrim paints");
-        // the pointer is still in the source's bounds: the tooltip stays up
         let tip = quads
             .iter()
             .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(MAGENTA).into()))
@@ -1272,7 +1149,6 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
             tip.order,
             scrim.order
         );
-        // the pane's bottom-left corner: on the scrim, away from the card
         let at = gpui_kit::point(
             gpui_kit::px(pane.origin.x.0 / scale + 8.),
             gpui_kit::px((pane.origin.y.0 + pane.size.height.0) / scale - 8.),
@@ -1284,11 +1160,6 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
     }
 }
 
-/// A view's layer reaches no further than its pane: its `Deferred` as big
-/// as the window and anchored at the window's corner, occluding and taking
-/// clicks, takes none on the bar or in the view's window beside it. The
-/// bar's account button opens its menu, a click in the neighbour reaches
-/// the neighbour, and the view's own handler never fires.
 #[gpui_kit::test]
 fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
@@ -1339,7 +1210,6 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     });
     crate::runtime::seat_drawing_for_test(HOSTILE, 400, hostile);
     crate::runtime::seat_drawing_for_test(NEIGHBOUR, 400, neighbour);
-    // a signed-in desk: the bar shows the account's button
     let mut seed = Seed::boot();
     seed.roster = Default::default();
     seed.center = Default::default();
@@ -1349,7 +1219,6 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     set_motion(&app, false, &mut native);
     pane(&view, PaneMessage::Select(HOSTILE), &mut native);
     pane(&view, PaneMessage::Split(NEIGHBOUR), &mut native);
-    // side by side: a split opens over the window before it
     for (program, x) in [(HOSTILE, 12.), (NEIGHBOUR, 640.)] {
         let index = native.update(|_, cx| {
             let layout = view.read(cx).layout(cx);
@@ -1370,7 +1239,6 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     for _ in 0..4 {
         frame(&mut native);
     }
-    // what each view's tree emits from here on
     let clicks = |program: &str, native: &mut VisualTestContext| {
         let clicks = Rc::new(RefCell::new(Vec::new()));
         let seen = clicks.clone();
@@ -1416,7 +1284,7 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     super::tests::show(&view, None, &mut native);
     frame(&mut native);
     let scale = native.update(|window, _| window.scale_factor());
-    let beside = quads(&mut native)
+    let beside = cached_frame_quads_without_reader(&mut native)
         .into_iter()
         .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(CYAN).into()))
         .expect("the neighbour paints")
@@ -1427,7 +1295,6 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     );
     native.simulate_click(middle, gpui_kit::Modifiers::none());
     frame(&mut native);
-    // what the bar's click opened, the neighbour's clicks, the view's
     assert_eq!(
         (open, neighbour.take(), hostile.take()),
         (Some(Overlay::Menu(Popover::Account)), vec![2], vec![]),
@@ -1435,15 +1302,8 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     );
 }
 
-/// What a view's tree emits from here on: its click handlers, in order.
 type Clicks = std::rc::Rc<std::cell::RefCell<Vec<u32>>>;
 
-/// The desk of the 28px cascade probe: `back` drawing `tree`, and a view
-/// split over it (a split cascades 28px from the window under it), front
-/// and focused, with a cyan body that takes clicks as handler 2. Returns
-/// the window, the back view's clicks and the front view's.
-/// A view's frame: `root`, with `content` as its answer for the tooltip
-/// route `request`.
 fn tooltip_frame(
     root: view_wire::Node,
     request: u32,
@@ -1536,13 +1396,11 @@ fn cascade(
     (view, native, back, front)
 }
 
-/// The front window's body (the cascade's cyan), and its middle in window
-/// pixels.
 fn front_body(
     native: &mut VisualTestContext,
 ) -> (gpui_kit::Quad, gpui_kit::Point<gpui_kit::Pixels>) {
     let scale = native.update(|window, _| window.scale_factor());
-    let body = quads(native)
+    let body = cached_frame_quads_without_reader(native)
         .into_iter()
         .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(0x00ffff).into()))
         .expect("the front window paints");
@@ -1553,11 +1411,6 @@ fn front_body(
     (body, middle)
 }
 
-/// A back window's layer stays under the front window (P29a's overlap
-/// probe): its view's `Deferred` as big as the window, anchored at the
-/// window's corner, occluding and taking clicks, and a split cascaded 28px
-/// over it. A click on the front window's middle, inside the back pane's
-/// box, reaches the front view, and the back view's handler never fires.
 #[gpui_kit::test]
 fn a_back_windows_deferred_draw_takes_no_click_on_the_front_window(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
@@ -1611,10 +1464,6 @@ fn a_back_windows_deferred_draw_takes_no_click_on_the_front_window(cx: &mut Test
     );
 }
 
-/// A back window's tooltip stays under the front window: shown from the
-/// strip of the back view the 28px cascade leaves bare, as big as the back
-/// pane and taking clicks, it paints under the front window's body, and a
-/// click on the front window's middle reaches the front view.
 #[gpui_kit::test]
 fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
@@ -1656,14 +1505,13 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
     );
     let scale = native.update(|window, _| window.scale_factor());
     let painted = |native: &mut VisualTestContext, color: u32| {
-        quads(native)
+        cached_frame_quads_without_reader(native)
             .into_iter()
             .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(color).into()))
     };
     let source = painted(&mut native, YELLOW)
         .expect("the back view paints")
         .bounds;
-    // the back view's left strip, 8px in: 20px clear of the front window
     let bare = gpui_kit::point(
         gpui_kit::px(source.origin.x.0 / scale + 8.),
         gpui_kit::px((source.origin.y.0 + source.size.height.0 / 2.) / scale),
@@ -1693,12 +1541,6 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
     );
 }
 
-/// Before any network is joined the console shows the launcher, and
-/// Settings opens over it all the same: ⌘, (the app menu's Settings…)
-/// opens it, painted on the window's whole height below the title bar the
-/// launcher draws on macOS (it has no other chrome to keep clear of), and
-/// Escape closes it. An update notice's
-/// click sets the same overlay (`windows_tests`).
 #[gpui_kit::test]
 fn settings_opens_over_the_launcher(cx: &mut TestAppContext) {
     use super::tests::open_now;
@@ -1713,7 +1555,7 @@ fn settings_opens_over_the_launcher(cx: &mut TestAppContext) {
         frame(&mut native);
     }
     let scale = native.update(|window, _| window.scale_factor());
-    let scrim = quads(&mut native)
+    let scrim = cached_frame_quads_without_reader(&mut native)
         .into_iter()
         .find(|quad| {
             quad.background
@@ -1730,7 +1572,6 @@ fn settings_opens_over_the_launcher(cx: &mut TestAppContext) {
             scrim.size.height,
         ]
         .map(|it| it.0 / scale),
-        // the title bar the launcher draws on macOS stays uncovered
         match cfg!(target_os = "macos") {
             true => [0., 36., 1280., 764.],
             false => [0., 0., 1280., 800.],

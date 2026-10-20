@@ -182,7 +182,6 @@ pub fn signing_key_from_hex(text: &str) -> Option<SigningKey> {
 pub(crate) mod testkit {
     use super::*;
 
-    /// A throwaway signing key, deterministic per `seed`.
     pub(crate) fn key_pair(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
     }
@@ -203,8 +202,6 @@ mod tests {
         assert!(!signature.verifies(&PublicKey::of(&key_pair(2)), b"manifest"));
     }
 
-    /// The namespace is part of the preimage: the same key's plain signature
-    /// over the same bytes is not a release signature.
     #[test]
     fn a_signature_without_the_namespace_does_not_verify() {
         let signer = key_pair(1);
@@ -231,7 +228,6 @@ mod tests {
         assert_eq!("abc".parse::<PublicKey>(), Err(PublicKeyParseError));
     }
 
-    /// The pinned key is the one the owner handed over, byte for byte.
     #[test]
     fn the_pinned_key_is_the_release_jobs_public_half() {
         assert_eq!(

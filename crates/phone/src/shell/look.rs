@@ -219,7 +219,6 @@ impl Palette {
     /// `danger`, violet `agent`; `warning` is too near orange, so amber is
     /// its own, clearly yellow). No tint is the neutral filled tile.
     pub fn tint(self, tint: Tint) -> (Hsla, Hsla) {
-        // [ground, ink], light then dark
         let pair = |light: [u32; 2], dark: [u32; 2]| {
             let [ground, ink] = if self.dark { dark } else { light };
             (rgb(ground).into(), rgb(ink).into())
@@ -297,8 +296,6 @@ mod tests {
         dark: true,
     };
 
-    /// A tint is its own pair in each appearance, the design palette's
-    /// where it has one; no tint is the neutral filled tile.
     #[test]
     fn a_tint_is_its_pair_and_none_is_the_neutral_tile() {
         assert_eq!(
@@ -318,8 +315,6 @@ mod tests {
         }
     }
 
-    /// Every tile's glyph reads on its ground: 3:1 or more (WCAG's
-    /// non-text contrast), in both appearances.
     #[test]
     fn every_glyph_reads_on_its_ground() {
         let luminance = |colour: Hsla| {

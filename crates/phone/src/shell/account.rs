@@ -36,8 +36,6 @@ pub fn tab(
     cx: &mut Context<Root>,
 ) -> Div {
     let session = shared.session.read(cx).get().clone();
-    // Expo `you.tsx`: the account's name, else "No account yet"; the
-    // avatar draws the name's initial, or none
     let me = home::me(shared, cx);
     let (face, name, under) = match me.clone() {
         Some((number, name)) => (
@@ -51,8 +49,6 @@ pub fn tab(
             session.network.clone(),
         ),
     };
-    // the tab roots' 56 header (Expo `Header` with `root`), the avatar in
-    // its hit at the left
     let header = div()
         .h(px(look::HEADER))
         .flex_none()
@@ -106,8 +102,6 @@ pub fn tab(
             root.open(ACCOUNT_PROGRAM, cx);
         }))
     });
-    // Expo's row under the Keys list, in the `programs` view here, which
-    // the shell does not draw into: the desktop's account menu holds it too
     let add = me.map(|_| {
         let said = "Approve a new device by the code it shows.";
         let add = row(
@@ -215,7 +209,6 @@ pub fn tab(
             .prefs
             .update(cx, |prefs, cx| prefs.set_debug(!on, cx));
     }));
-    // the boards' foot: the version alone, centred, in the data face
     let version = look::text(look::CAPTION, FontWeight::NORMAL, palette.faint())
         .id("account/version")
         .debug_selector(|| "account/version".to_owned())
@@ -252,10 +245,6 @@ pub fn tab(
         )
 }
 
-/// The appearance, inline (the boards' segmented control): System, Light
-/// and Dark side by side in one 36 box, the one in force filled. A press
-/// saves it, and the app, every program and the system bars take it at
-/// once (the shell's prefs observer puts it on the theme).
 fn appearance(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div {
     let now = shared.prefs.read(cx).get().appearance;
     let choices = [
@@ -319,9 +308,6 @@ fn appearance(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div 
         )
 }
 
-/// The Expo `Switch` (kit `Toggle.tsx`): a 40 × 24 pill, `primary` when
-/// on and `border_strong` off, its 18 knob in `background` at the left or
-/// the right; the row around it is the press.
 fn toggle(on: bool, palette: Palette) -> Div {
     let ground = match on {
         true => palette.primary(),
@@ -345,7 +331,6 @@ fn toggle(on: bool, palette: Palette) -> Div {
         )
 }
 
-/// A row's chevron (Expo `Row`'s `chevron`): the row opens something.
 fn chevron(palette: Palette) -> gpui_kit::Svg {
     svg()
         .path("icons/chevron-right.svg")
@@ -354,10 +339,6 @@ fn chevron(palette: Palette) -> gpui_kit::Svg {
         .text_color(palette.faint())
 }
 
-/// A list row (Expo `Row`), named `id` to the AX door: the 24 lead column
-/// with its 18 muted icon, the title over its caption, then whatever the
-/// caller puts at the right; 56 with a caption (48 without), 6 above and
-/// below, the gutter at the sides, a hairline under.
 pub(super) fn row(
     id: &'static str,
     icon: &'static str,
@@ -400,14 +381,10 @@ pub(super) fn row(
         .child(words)
 }
 
-/// A row's caption: 12 muted, wrapping as the boards' do (where the key
-/// is kept runs to two lines).
 fn caption(text: impl Into<SharedString>, palette: Palette) -> Div {
     look::text(look::CAPTION, FontWeight::NORMAL, palette.muted()).child(text.into())
 }
 
-/// The Expo `Badge` in its ok tint: 20 tall, tiny medium in `success` on
-/// `success_soft`.
 fn badge(label: &'static str, palette: Palette) -> AnyElement {
     div()
         .h(px(look::BADGE))
@@ -420,8 +397,6 @@ fn badge(label: &'static str, palette: Palette) -> AnyElement {
         .into_any_element()
 }
 
-/// Where the key is kept, in the Expo build's words (mobile
-/// `src/session/key-storage.ts`): only what the store reported.
 fn words(storage: &KeyStorage) -> String {
     let android = |level: &str| match storage.sealed {
         true => format!("Sealed by Android Keystore, {level}"),
@@ -433,14 +408,11 @@ fn words(storage: &KeyStorage) -> String {
         KeyLevel::KeystoreStrongBox => android("hardware-backed (StrongBox)"),
         KeyLevel::KeystoreTee => android("hardware-backed (TEE)"),
         KeyLevel::KeystoreSoftware => android("software-backed"),
-        // the desktop's two: no phone's store answers them
         KeyLevel::OsKeyring => "The system keyring".to_owned(),
         KeyLevel::File => "A key file".to_owned(),
     }
 }
 
-/// The OK badge: only a key the store says lives in (or is sealed by) a
-/// TEE, StrongBox or the Secure Enclave (Expo `storageOk`).
 fn ok(storage: &KeyStorage) -> bool {
     matches!(
         storage.level,
@@ -448,8 +420,6 @@ fn ok(storage: &KeyStorage) -> bool {
     )
 }
 
-/// Unix ms `ms` as the local calendar day it falls on, `16 Oct 2026`
-/// (Expo `src/design/format.ts` `day`).
 fn day(ms: u64) -> String {
     let seconds = i64::try_from(ms / 1000).unwrap_or(i64::MAX);
     let local = seconds.saturating_add(ducktape_host::runtime::local_offset(seconds));
@@ -460,8 +430,6 @@ fn day(ms: u64) -> String {
 mod tests {
     use super::*;
 
-    /// The store's report reads as the Expo build's words, the badge only on
-    /// hardware it named.
     #[test]
     fn key_storage_reads_as_the_expo_builds_words() {
         let kept = |level, sealed| KeyStorage { sealed, level };

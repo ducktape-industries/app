@@ -60,7 +60,6 @@ use crate::verify::{Refusal, VerifiedManifest};
 /// Advance the machine by one event.
 pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
     match (phase, event) {
-        // Idle: the only phase that checks for updates from scratch.
         (Phase::Idle(idle), Event::Tick) => idle_tick(idle),
         (Phase::Idle(idle), Event::ManifestFetched { result, take }) => {
             idle_manifest_fetched(idle, result, take)
@@ -81,7 +80,6 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             | Event::AutomaticOff,
         ) => unchanged(phase),
 
-        // Downloading: the app is fetching, then verifying, `target`.
         (Phase::Downloading(downloading), Event::Boot) => downloading_boot(downloading),
         (Phase::Downloading(downloading), Event::DownloadFinished { sha }) => {
             downloading_download_finished(downloading, sha)
@@ -112,8 +110,6 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             | Event::Tick,
         ) => unchanged(phase),
 
-        // Staged: a verified release waits for the next start; a newer one
-        // supersedes it.
         (Phase::Staged(staged), Event::Boot) => staged_boot(staged),
         (Phase::Staged(staged), Event::QualifyPassed(sha)) => staged_qualify_passed(staged, sha),
         (Phase::Staged(staged), Event::QualifyFailed { sha, reason }) => {
@@ -136,7 +132,6 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             | Event::Rendered,
         ) => unchanged(phase),
 
-        // Swapping: only a boot ever sees it (a crash mid-flip).
         (Phase::Swapping(swapping), Event::Boot) => swapping_boot(swapping),
         (Phase::Swapping(swapping), Event::SwapResolved(state)) => {
             swapping_resolved(swapping, state)
@@ -157,7 +152,6 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             | Event::AutomaticOff,
         ) => unchanged(phase),
 
-        // PendingHealthy: flipped, waiting for the first frame.
         (Phase::PendingHealthy(pending), Event::Boot) => pending_healthy_boot(pending),
         (Phase::PendingHealthy(pending), Event::Rendered) => pending_healthy_rendered(pending),
         (
@@ -176,7 +170,6 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             | Event::AutomaticOff,
         ) => unchanged(phase),
 
-        // RolledBack: the notice stands until the app has read it.
         (Phase::RolledBack(rolled_back), Event::DismissRollbackNotice) => {
             rolled_back_dismiss(rolled_back)
         }
@@ -207,8 +200,6 @@ fn banner_only(phase: Phase, banner: UpdateBanner) -> (Phase, Vec<Command>) {
     (phase, vec![Command::Banner(banner)])
 }
 
-// --- Idle ------------------------------------------------------------------
-
 fn idle_tick(idle: Idle) -> (Phase, Vec<Command>) {
     (Phase::Idle(idle), vec![Command::Fetch])
 }
@@ -224,11 +215,6 @@ fn idle_manifest_fetched(
     }
 }
 
-/// A verified manifest, against the pin. The pin is the sequence of the
-/// release this install last flipped to (or was installed from), and it
-/// never lowers — so an EQUAL sequence is the release that runs, or the one a
-/// rollback left as `previous`, which a newer sequence supersedes. Neither is
-/// downloaded again. An older sequence is a downgrade; a newer one is offered.
 fn idle_offer(idle: Idle, verified: VerifiedManifest, take: Take) -> (Phase, Vec<Command>) {
     match verified.manifest.sequence.cmp(&idle.pinned_sequence) {
         Ordering::Less => banner_only(
@@ -240,9 +226,6 @@ fn idle_offer(idle: Idle, verified: VerifiedManifest, take: Take) -> (Phase, Vec
     }
 }
 
-/// A newer sequence: take it if it ships this platform and names something
-/// other than what runs, and the check takes; with updating automatically
-/// off, only name it.
 fn offer_newer(idle: Idle, verified: VerifiedManifest, take: Take) -> (Phase, Vec<Command>) {
     let manifest = verified.manifest;
     let Some(artifact) = manifest.artifact_for(Platform::HOST) else {
@@ -282,23 +265,30 @@ fn offer_newer(idle: Idle, verified: VerifiedManifest, take: Take) -> (Phase, Ve
     (phase.clone(), vec![Command::Persist(phase), download])
 }
 
-/// The crash-safe flip: `Swapping` persisted BEFORE `Flip`, `PendingHealthy`
-/// AFTER, then `Exec`. Shared by the update and the resumed swap.
-fn swap_into(from: Sha, to: Sha, pinned_sequence: u64, display: String) -> (Phase, Vec<Command>) {
+fn persist_then_flip_and_exec(
+    from: Sha,
+    to: Sha,
+    pinned_sequence: u64,
+    display: String,
+) -> (Phase, Vec<Command>) {
     let swapping = Phase::Swapping(Swapping {
         from,
         to,
         pinned_sequence,
         display: display.clone(),
     });
-    let (pending, finish) = finish_swap(from, to, pinned_sequence, display);
+    let (pending, finish) = persist_pending_health_and_exec(from, to, pinned_sequence, display);
     let mut commands = vec![Command::Persist(swapping), Command::Flip { from, to }];
     commands.extend(finish);
     (pending, commands)
 }
 
-/// After the flip landed: persist `PendingHealthy{boots: 0}` and exec `to`.
-fn finish_swap(from: Sha, to: Sha, pinned_sequence: u64, display: String) -> (Phase, Vec<Command>) {
+fn persist_pending_health_and_exec(
+    from: Sha,
+    to: Sha,
+    pinned_sequence: u64,
+    display: String,
+) -> (Phase, Vec<Command>) {
     let pending = Phase::PendingHealthy(PendingHealthy {
         current: to,
         previous: from,
@@ -312,10 +302,6 @@ fn finish_swap(from: Sha, to: Sha, pinned_sequence: u64, display: String) -> (Ph
     )
 }
 
-// --- Downloading -----------------------------------------------------------
-
-/// A boot mid-download abandons it: the next `Tick` re-offers and the
-/// executor resumes the `.partial` by size.
 fn downloading_boot(downloading: Downloading) -> (Phase, Vec<Command>) {
     let idle = Phase::Idle(Idle {
         current: downloading.current,
@@ -348,9 +334,6 @@ fn downloading_download_failed(
     abandon_download(downloading, banner)
 }
 
-/// Verified: record any announced successor key, collect the partial it was
-/// extracted from, and offer the restart. The pin stays: it advances at the
-/// flip.
 fn downloading_verified(downloading: Downloading, sha: Sha) -> (Phase, Vec<Command>) {
     let is_stale = sha != downloading.target;
     if is_stale {
@@ -402,9 +385,6 @@ fn downloading_verify_refused(
     abandon_download(downloading, banner)
 }
 
-/// Back to `Idle` without advancing the pin, and say why.
-/// The other channel picked: the download was the old channel's offer. Its
-/// partial goes with the next `Gc`.
 fn downloading_channel_changed(downloading: Downloading) -> (Phase, Vec<Command>) {
     let idle = Idle {
         current: downloading.current,
@@ -419,8 +399,6 @@ fn downloading_channel_changed(downloading: Downloading) -> (Phase, Vec<Command>
     (Phase::Idle(idle), commands)
 }
 
-/// Updating automatically went off: a download the updater started on its
-/// own goes as a channel switch's does; one the person asked for goes on.
 fn downloading_automatic_off(downloading: Downloading) -> (Phase, Vec<Command>) {
     match downloading.asked {
         true => unchanged(Phase::Downloading(downloading)),
@@ -440,27 +418,20 @@ fn abandon_download(downloading: Downloading, banner: UpdateBanner) -> (Phase, V
     )
 }
 
-// --- Staged ----------------------------------------------------------------
-
 fn staged_boot(staged: Staged) -> (Phase, Vec<Command>) {
     let qualify = Command::Qualify(staged.staged);
     (Phase::Staged(staged), vec![qualify])
 }
 
-/// The flip adopts the staged sequence as the pin.
 fn staged_qualify_passed(staged: Staged, sha: Sha) -> (Phase, Vec<Command>) {
     let is_stale = sha != staged.staged;
     if is_stale {
         return unchanged(Phase::Staged(staged));
     }
     let adopted = staged.pinned_sequence.max(staged.sequence);
-    swap_into(staged.current, staged.staged, adopted, staged.display)
+    persist_then_flip_and_exec(staged.current, staged.staged, adopted, staged.display)
 }
 
-/// Refused by its own self-check: keep running `current` and keep the release
-/// staged; the next start asks it again. The reason is persisted: the boot
-/// step qualifies, and the running app reports it. The refusal does not close
-/// the channel.
 fn staged_qualify_failed(staged: Staged, sha: Sha, reason: String) -> (Phase, Vec<Command>) {
     let is_stale = sha != staged.staged;
     if is_stale {
@@ -495,33 +466,22 @@ fn staged_manifest_fetched(
     }
 }
 
-/// A newer sequence supersedes the staged release: discard it, then offer the
-/// manifest as `Idle` would. The staged sequence, or a lower one, changes
-/// nothing and says nothing: a check repeats every hour for as long as the
-/// release waits, `Ready` was said once when it staged, and a refusal is read
-/// from `Staged::refused`, not re-announced. With updating automatically off
-/// nothing supersedes it: the release the person asked for still takes over
-/// at the next start, as Settings said.
 fn staged_offer(staged: Staged, verified: VerifiedManifest, take: Take) -> (Phase, Vec<Command>) {
     let supersedes = verified.manifest.sequence > staged.sequence && take != Take::Nothing;
     if !supersedes {
         return unchanged(Phase::Staged(staged));
     }
-    let (idle, mut commands) = discard_staged(staged);
+    let (idle, mut commands) = persist_idle_before_collecting_staged_release(staged);
     let (phase, offer) = idle_offer(idle, verified, take);
     commands.extend(offer);
     (phase, commands)
 }
 
-/// The other channel picked: the staged release was the old channel's offer.
 fn staged_channel_changed(staged: Staged) -> (Phase, Vec<Command>) {
-    let (idle, commands) = discard_staged(staged);
+    let (idle, commands) = persist_idle_before_collecting_staged_release(staged);
     (Phase::Idle(idle), commands)
 }
 
-/// Updating automatically went off: a release the updater staged on its own
-/// is dropped as a channel switch drops one, so no start applies it unasked;
-/// one the person asked for still takes over at the next start.
 fn staged_automatic_off(staged: Staged) -> (Phase, Vec<Command>) {
     match staged.asked {
         true => unchanged(Phase::Staged(staged)),
@@ -529,10 +489,7 @@ fn staged_automatic_off(staged: Staged) -> (Phase, Vec<Command>) {
     }
 }
 
-/// Back to `Idle` on what runs, the pin kept, the staged directory collected.
-/// `Persist` comes before `Gc`, so a crash between them leaves `Idle` and an
-/// orphan directory, never a `Staged` phase with no release on disk.
-fn discard_staged(staged: Staged) -> (Idle, Vec<Command>) {
+fn persist_idle_before_collecting_staged_release(staged: Staged) -> (Idle, Vec<Command>) {
     let idle = Idle {
         current: staged.current,
         previous: staged.previous,
@@ -546,9 +503,6 @@ fn discard_staged(staged: Staged) -> (Idle, Vec<Command>) {
     (idle, commands)
 }
 
-// --- Swapping --------------------------------------------------------------
-
-/// Crashed mid-flip: never guess, ask which side is live.
 fn swapping_boot(swapping: Swapping) -> (Phase, Vec<Command>) {
     let resolve = Command::ResolveSwap {
         from: swapping.from,
@@ -559,7 +513,8 @@ fn swapping_boot(swapping: Swapping) -> (Phase, Vec<Command>) {
 
 fn swapping_resolved(swapping: Swapping, state: SwapState) -> (Phase, Vec<Command>) {
     let (from, to) = (swapping.from, swapping.to);
-    let (pending, finish) = finish_swap(from, to, swapping.pinned_sequence, swapping.display);
+    let (pending, finish) =
+        persist_pending_health_and_exec(from, to, swapping.pinned_sequence, swapping.display);
     match state {
         SwapState::Landed => (pending, finish),
         SwapState::Untouched => {
@@ -570,11 +525,6 @@ fn swapping_resolved(swapping: Swapping, state: SwapState) -> (Phase, Vec<Comman
     }
 }
 
-// --- PendingHealthy --------------------------------------------------------
-
-/// The exec'd image's own boot counts the flip; a boot after that, with no
-/// `Rendered` in between, means the release never came up: flip back,
-/// crash-safely, and exec the previous release.
 fn pending_healthy_boot(pending: PendingHealthy) -> (Phase, Vec<Command>) {
     let first_boot_since_flip = pending.boots == 0;
     if first_boot_since_flip {
@@ -609,7 +559,6 @@ fn pending_healthy_boot(pending: PendingHealthy) -> (Phase, Vec<Command>) {
     (rolled_back, commands)
 }
 
-/// The healthy signal: keep `current` and `previous`, drop the rest.
 fn pending_healthy_rendered(pending: PendingHealthy) -> (Phase, Vec<Command>) {
     let idle = Phase::Idle(Idle {
         current: pending.current,
@@ -622,12 +571,6 @@ fn pending_healthy_rendered(pending: PendingHealthy) -> (Phase, Vec<Command>) {
     (idle.clone(), vec![Command::Persist(idle), gc])
 }
 
-// --- RolledBack ------------------------------------------------------------
-
-/// Read: only what runs is kept. The failed release never came up, so it is
-/// nothing to go back to, and it goes with whatever the flip left (the
-/// release before the last one, a partial). The pin keeps its sequence, so
-/// it is not downloaded again; a newer sequence supersedes it.
 fn rolled_back_dismiss(rolled_back: RolledBack) -> (Phase, Vec<Command>) {
     let idle = Phase::Idle(Idle {
         current: rolled_back.current,
@@ -686,7 +629,6 @@ mod tests {
         }
     }
 
-    /// Staged because the person asked ("Update now").
     fn asked(current: &str, staged_sha: &str) -> Phase {
         Phase::Staged(Staged {
             asked: true,
@@ -730,8 +672,7 @@ mod tests {
         })
     }
 
-    /// A check updating automatically fetched this manifest.
-    fn fetched(sequence: u64, platform_key: &str, artifact: &str) -> Event {
+    fn automatically_fetched_manifest(sequence: u64, platform_key: &str, artifact: &str) -> Event {
         fetched_taking(Take::Automatic, sequence, platform_key, artifact)
     }
 
@@ -750,7 +691,6 @@ mod tests {
         }
     }
 
-    /// The whole flip, from `from` to `to`: swap bit, flip, pending, exec.
     fn flip_commands(from: &str, to: &str, pinned_sequence: u64) -> (Phase, Vec<Command>) {
         let pending = Phase::PendingHealthy(PendingHealthy {
             current: sha(to),
@@ -816,7 +756,6 @@ mod tests {
             ..accepted.clone()
         };
         vec![
-            // ---- Idle
             Case {
                 name: "idle tick fetches",
                 phase: idle("a", None, 17),
@@ -826,7 +765,7 @@ mod tests {
             Case {
                 name: "idle newer manifest downloads",
                 phase: idle("a", Some("z"), 17),
-                event: fetched(18, &host(), "b"),
+                event: automatically_fetched_manifest(18, &host(), "b"),
                 expect: (
                     Phase::Downloading(accepted.clone()),
                     vec![
@@ -841,7 +780,7 @@ mod tests {
             Case {
                 name: "idle equal sequence is the release installed from its archive's directory",
                 phase: idle("binary", None, 18),
-                event: fetched(18, &host(), "b"),
+                event: automatically_fetched_manifest(18, &host(), "b"),
                 expect: (
                     idle("binary", None, 18),
                     vec![Command::Banner(UpdateBanner::UpToDate)],
@@ -850,7 +789,7 @@ mod tests {
             Case {
                 name: "idle equal sequence after a rollback is not downloaded again",
                 phase: idle("a", Some("b"), 18),
-                event: fetched(18, &host(), "b"),
+                event: automatically_fetched_manifest(18, &host(), "b"),
                 expect: (
                     idle("a", Some("b"), 18),
                     vec![Command::Banner(UpdateBanner::UpToDate)],
@@ -859,7 +798,7 @@ mod tests {
             Case {
                 name: "idle lower sequence is a downgrade",
                 phase: idle("a", None, 17),
-                event: fetched(16, &host(), "b"),
+                event: automatically_fetched_manifest(16, &host(), "b"),
                 expect: (
                     idle("a", None, 17),
                     vec![Command::Banner(UpdateBanner::Refused(
@@ -870,7 +809,7 @@ mod tests {
             Case {
                 name: "idle manifest without this platform",
                 phase: idle("a", None, 17),
-                event: fetched(18, "plan9-mips", "b"),
+                event: automatically_fetched_manifest(18, "plan9-mips", "b"),
                 expect: (
                     idle("a", None, 17),
                     vec![Command::Banner(UpdateBanner::Refused(
@@ -881,7 +820,7 @@ mod tests {
             Case {
                 name: "idle manifest naming what runs is up to date",
                 phase: idle("a", None, 17),
-                event: fetched(18, &host(), "a"),
+                event: automatically_fetched_manifest(18, &host(), "a"),
                 expect: (
                     idle("a", None, 17),
                     vec![Command::Banner(UpdateBanner::UpToDate)],
@@ -910,7 +849,6 @@ mod tests {
                 event: Event::Rendered,
                 expect: (idle("a", None, 17), vec![]),
             },
-            // ---- Downloading
             Case {
                 name: "downloading finished verifies",
                 phase: Phase::Downloading(downloading("b", 18)),
@@ -995,7 +933,6 @@ mod tests {
                 event: Event::Tick,
                 expect: (Phase::Downloading(downloading("b", 18)), vec![]),
             },
-            // ---- Staged
             Case {
                 name: "staged boot qualifies",
                 phase: Phase::Staged(staged("a", "b")),
@@ -1062,7 +999,7 @@ mod tests {
             Case {
                 name: "staged newer manifest discards the staged release and downloads",
                 phase: refused("a", "b", "codesign_invalid"),
-                event: fetched(19, &host(), "c"),
+                event: automatically_fetched_manifest(19, &host(), "c"),
                 expect: (
                     Phase::Downloading(Downloading {
                         target: sha("c"),
@@ -1089,7 +1026,7 @@ mod tests {
             Case {
                 name: "staged newer manifest naming what runs discards the staged release",
                 phase: Phase::Staged(staged("a", "b")),
-                event: fetched(19, &host(), "a"),
+                event: automatically_fetched_manifest(19, &host(), "a"),
                 expect: (
                     idle("a", Some("z"), 17),
                     vec![
@@ -1104,19 +1041,19 @@ mod tests {
             Case {
                 name: "staged same sequence downloads nothing and repeats no banner",
                 phase: Phase::Staged(staged("a", "b")),
-                event: fetched(18, &host(), "b"),
+                event: automatically_fetched_manifest(18, &host(), "b"),
                 expect: (Phase::Staged(staged("a", "b")), vec![]),
             },
             Case {
                 name: "staged same sequence of a refused release repeats no banner",
                 phase: refused("a", "b", "codesign_invalid"),
-                event: fetched(18, &host(), "b"),
+                event: automatically_fetched_manifest(18, &host(), "b"),
                 expect: (refused("a", "b", "codesign_invalid"), vec![]),
             },
             Case {
                 name: "staged lower sequence changes nothing and repeats no banner",
                 phase: Phase::Staged(staged("a", "b")),
-                event: fetched(17, &host(), "c"),
+                event: automatically_fetched_manifest(17, &host(), "c"),
                 expect: (Phase::Staged(staged("a", "b")), vec![]),
             },
             Case {
@@ -1130,7 +1067,6 @@ mod tests {
                     ))],
                 ),
             },
-            // ---- Swapping
             Case {
                 name: "swapping boot asks which side landed",
                 phase: Phase::Swapping(swapping("a", "b")),
@@ -1171,7 +1107,6 @@ mod tests {
                     ],
                 ),
             },
-            // ---- PendingHealthy
             Case {
                 name: "pending first boot, the exec'd image's own, counts",
                 phase: pending("b", "a", 0),
@@ -1188,7 +1123,6 @@ mod tests {
                 expect: (
                     rolled_back("a", "b"),
                     vec![
-                        // the swap back: "a" was never offered
                         Command::Persist(Phase::Swapping(Swapping {
                             display: String::new(),
                             ..swapping("b", "a")
@@ -1222,7 +1156,6 @@ mod tests {
                 event: Event::Tick,
                 expect: (pending("b", "a", 0), vec![]),
             },
-            // ---- RolledBack
             Case {
                 name: "rolled back dismiss keeps only what runs and collects the rest",
                 phase: rolled_back("a", "b"),
@@ -1249,7 +1182,6 @@ mod tests {
                 event: Event::Rendered,
                 expect: (rolled_back("a", "b"), vec![]),
             },
-            // ---- the channel switched
             Case {
                 name: "a switch while idle changes nothing: the next check asks the new channel",
                 phase: idle("a", Some("z"), 17),
@@ -1304,7 +1236,6 @@ mod tests {
                 event: Event::ChannelChanged,
                 expect: (pending("b", "a", 1), vec![]),
             },
-            // ---- updating automatically off
             Case {
                 name: "off, a newer release is named and nothing is downloaded",
                 phase: idle("a", Some("z"), 17),
@@ -1425,8 +1356,6 @@ mod tests {
         }
     }
 
-    /// The phase `step` returns is the phase the executor ends up holding:
-    /// equal to the last `Persist` in the list when there is one.
     #[test]
     fn returned_phase_is_the_last_persisted_one() {
         for case in table() {
@@ -1441,9 +1370,6 @@ mod tests {
         }
     }
 
-    /// A Flip is always followed by an Exec in the same list (an Exec alone
-    /// is the resumed swap that had already landed), and the pin never
-    /// lowers.
     #[test]
     fn flip_is_followed_by_exec_and_the_pin_never_lowers() {
         for case in table() {
@@ -1462,7 +1388,6 @@ mod tests {
         }
     }
 
-    /// Verified with an announced successor records it before the phase.
     #[test]
     fn verified_pins_the_announced_successor() {
         use crate::manifest::SuccessorKey;
@@ -1478,9 +1403,6 @@ mod tests {
         assert!(matches!(commands[1], Command::Persist(Phase::Staged(_))));
     }
 
-    /// A staged release whose own qualify refuses it does not spend the
-    /// channel. It stays staged, but a check still fetches, a newer sequence
-    /// supersedes it, and its own sequence is not downloaded again.
     #[test]
     fn a_refused_staged_release_does_not_freeze_the_channel() {
         let refusal = Event::QualifyFailed {
@@ -1496,9 +1418,10 @@ mod tests {
             "a refused release still checks"
         );
 
-        // a newer good release supersedes it: the staged one is collected,
-        // the newer one downloaded
-        let (next, commands) = step(refused.clone(), fetched(19, &host(), "e"));
+        let (next, commands) = step(
+            refused.clone(),
+            automatically_fetched_manifest(19, &host(), "e"),
+        );
         let Phase::Downloading(downloading) = &next else {
             panic!("a newer sequence is downloaded, not {next:?}");
         };
@@ -1515,9 +1438,10 @@ mod tests {
             })
         );
 
-        // its own sequence again: no download and no repeated banner; why it
-        // waits is read from the phase
-        let (same, commands) = step(refused.clone(), fetched(18, &host(), "d"));
+        let (same, commands) = step(
+            refused.clone(),
+            automatically_fetched_manifest(18, &host(), "d"),
+        );
         assert_eq!(same, refused);
         assert_eq!(commands, vec![], "a standing release repeats nothing");
         let Phase::Staged(standing) = &same else {
@@ -1526,9 +1450,6 @@ mod tests {
         assert_eq!(standing.refused.as_deref(), Some("qualify_exit_3"));
     }
 
-    /// The refusal happens in the boot step, which then runs the current
-    /// release: the reason rides `state.json`, so the app reads it from the
-    /// phase. The qualify banners it once; the app's checks repeat nothing.
     #[test]
     fn a_qualify_refusal_reaches_the_app_through_state_json() {
         let (booted, commands) = step(Phase::Staged(staged("a", "d")), Event::Boot);
@@ -1555,15 +1476,11 @@ mod tests {
 
         let (read, commands) = step(read, Event::Tick);
         assert_eq!(commands, vec![Command::Fetch]);
-        let (read, commands) = step(read, fetched(18, &host(), "d"));
+        let (read, commands) = step(read, automatically_fetched_manifest(18, &host(), "d"));
         assert_eq!(commands, vec![], "the app's check repeats no banner");
         assert_eq!(read, *written, "and the reason stays readable");
     }
 
-    /// THE ROLLBACK, as the boots happen: the flip execs the new release,
-    /// whose own boot step counts it; it never renders, and the next start
-    /// flips back and execs the previous release, which then runs its own
-    /// boot step on the notice and stays.
     #[test]
     fn a_flipped_release_that_never_renders_is_rolled_back_at_the_next_start() {
         let (flipped, commands) = step(
@@ -1584,8 +1501,6 @@ mod tests {
         let (stays, commands) = step(rolled, Event::Boot);
         assert_eq!((stays, commands), (rolled_back("a", "b"), vec![]));
 
-        // and the healthy path: a first frame before that next start keeps
-        // the new release and collects the rest.
         let (healthy, commands) = step(pending("b", "a", 1), Event::Rendered);
         assert_eq!(healthy, idle("b", Some("a"), 18));
         assert_eq!(
@@ -1596,10 +1511,8 @@ mod tests {
         );
     }
 
-    /// Every (Phase, Event) pair is routed: exhaustiveness is the compiler's,
-    /// but a stale pair must also be a no-op, never a panic.
     #[test]
-    fn every_pair_is_total() {
+    fn every_phase_event_pair_is_total_and_never_lowers_the_pin() {
         let phases = vec![
             idle("a", Some("z"), 17),
             Phase::Downloading(downloading("b", 18)),
@@ -1613,7 +1526,7 @@ mod tests {
             Event::Boot,
             Event::SwapResolved(SwapState::Landed),
             refused_manifest(),
-            fetched(19, &host(), "c"),
+            automatically_fetched_manifest(19, &host(), "c"),
             fetched_taking(Take::Nothing, 19, &host(), "c"),
             fetched_taking(Take::Asked, 19, &host(), "c"),
             Event::DownloadFinished { sha: sha("b") },
@@ -1645,8 +1558,6 @@ mod tests {
         }
     }
 
-    /// The shape of `step` is load-bearing: one `match`, no wildcard arm,
-    /// every arm a single delegation. A source-parsing lint, not a comment.
     #[test]
     fn step_is_one_match_with_no_wildcard_and_only_delegating_arms() {
         let source = include_str!("step.rs");

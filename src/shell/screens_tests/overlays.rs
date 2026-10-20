@@ -8,7 +8,6 @@ use crate::runtime::consent;
 use gpui_kit::{Pixels, Role};
 use std::collections::HashMap;
 
-/// Whether `window`'s focused node is the `role` named `name`, or inside it.
 fn focus_inside(window: &Window, role: Role, name: &str) -> bool {
     let update = window.a11y_tree().unwrap();
     let nodes: HashMap<_, _> = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
@@ -29,7 +28,6 @@ fn focus_inside(window: &Window, role: Role, name: &str) -> bool {
     false
 }
 
-/// The focused node's role and name, for a failure to say where the keys went.
 fn focused_node(window: &Window) -> Option<(Role, String)> {
     let update = window.a11y_tree()?;
     update
@@ -39,11 +37,8 @@ fn focused_node(window: &Window) -> Option<(Role, String)> {
         .map(|(_, node)| (node.role(), node.label().unwrap_or_default().to_owned()))
 }
 
-/// `overlay` open over the desk, or whatever is open closed, the way the
-/// bar and the keys do it.
 fn show(view: &Entity<WindowRoot>, native: &mut VisualTestContext, overlay: Option<Overlay>) {
     super::super::layers::tests::show(view, overlay, native);
-    // the draw that sees it open or shut, then the one after the keys enter
     native.update(draw);
     native.update(draw);
 }
@@ -64,7 +59,6 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
     for (overlay, role, name) in overlays {
         let (view, mut native) = open(gate::desk(), cx);
         native.update(draw);
-        // the keys on the bar, where a keyboard user leaves them
         native.simulate_keystrokes("tab");
         let before = native.update(|window, cx| {
             draw(window, cx);
@@ -87,8 +81,6 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
         });
     }
 
-    // a menu giving way to a dialog hands the keys on; closing gives them
-    // back to what had them before the menu
     let (view, mut native) = open(gate::desk(), cx);
     native.update(draw);
     native.simulate_keystrokes("tab");
@@ -115,7 +107,6 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
     });
 }
 
-/// Every menu hanging from the bar.
 const MENUS: [(Overlay, Role, &str); 4] = [
     (Overlay::Network, Role::Menu, "Networks"),
     (Overlay::Menu(Popover::Node), Role::Dialog, "Node status"),
@@ -127,10 +118,6 @@ const MENUS: [(Overlay, Role, &str); 4] = [
     ),
 ];
 
-/// A menu closes when the keys leave it, whichever way (the menu pattern;
-/// owner, 2026-09-28): Shift+Tab before its first control, Tab past its
-/// last. The keys stay where they went. It is no focus trap, also once a
-/// dialog on a scrim has been open in the window.
 #[gpui_kit::test]
 fn a_menu_closes_when_the_keys_leave_it(cx: &mut TestAppContext) {
     for (overlay, role, name) in MENUS {
@@ -167,15 +154,10 @@ fn a_menu_closes_when_the_keys_leave_it(cx: &mut TestAppContext) {
     }
 }
 
-/// A click outside a menu closes it: low on the desk, on the backdrop
-/// under the menu, which closes it and reaches no window behind; and on
-/// the bar where nothing is (its end past the window's edge), which takes
-/// the keys to the window, out of the menu.
 #[gpui_kit::test]
 fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
     for (overlay, _, name) in MENUS {
         let (view, mut native) = open(gate::desk(), cx);
-        // gpui reports focus moves only in the active window
         super::activate(&mut native);
         native.update(draw);
         show(&view, &mut native, Some(overlay));
@@ -203,18 +185,12 @@ fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
     }
 }
 
-/// The keys move inside a menu or from one menu to the next and the menu
-/// stays: one menu giving way to the next hands them on, and a control
-/// that goes (Mark all read, once all is read) leaves them in its menu.
-/// The bell's panel still hands off to Settings, the keys in it.
 #[gpui_kit::test]
 fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
     use crate::runtime::notify::{CenterHandle, Permission, Settings};
-    // Account, then a click on the bell
     let (view, mut native) = open(gate::desk(), cx);
     native.update(draw);
     show(&view, &mut native, Some(Overlay::Menu(Popover::Account)));
-    // a press on the bell, in the frame that placed it
     native.update(|window, cx| press("menubar", "rail-notifications", window, cx));
     native.update(draw);
     native.update(draw);
@@ -228,7 +204,6 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
         )
     });
 
-    // the bell's panel, one notice unread: Mark all read goes as it works
     let mut seed = gate::desk();
     let center = CenterHandle::default();
     seed.center = center.clone();
@@ -268,7 +243,6 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
         )
     });
 
-    // and its Notification settings opens Settings, the keys in it
     native.update(|window, cx| press("notifications", "notif-settings", window, cx));
     native.update(draw);
     native.update(draw);
@@ -285,10 +259,6 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
     });
 }
 
-/// Settings' page scrolls the row Tab reaches into view: in a short window
-/// the Notifications rows run past the dialog's foot, and the walk still
-/// finds every stop it reaches on screen (AX-020). A press on a row's words
-/// leaves the keys where they were.
 #[gpui_kit::test]
 fn tab_scrolls_a_settings_row_below_the_fold_into_view(cx: &mut TestAppContext) {
     let notifications = || (gate::desk(), Overlay::Settings(SettingsPage::Notifications));
@@ -317,7 +287,6 @@ fn tab_scrolls_a_settings_row_below_the_fold_into_view(cx: &mut TestAppContext) 
     });
 }
 
-/// The middle of the bar button with the id `id`.
 fn bar_button(native: &mut VisualTestContext, id: &str) -> gpui_kit::Point<Pixels> {
     let nodes = native.update(|window, cx| {
         draw(window, cx);
@@ -334,9 +303,6 @@ fn bar_button(native: &mut VisualTestContext, id: &str) -> gpui_kit::Point<Pixel
     gpui_kit::point(px((at(0) + at(2)) / 2.), px((at(1) + at(3)) / 2.))
 }
 
-/// Tab past a menu's last control closes it (M6), and the keys stay where
-/// Tab took them: the next control in the walk, not what had them before
-/// the menu opened (the window itself, here).
 #[gpui_kit::test]
 fn a_menu_left_by_tab_does_not_pull_the_keys_back(cx: &mut TestAppContext) {
     for (overlay, role, name) in MENUS {
@@ -353,7 +319,6 @@ fn a_menu_left_by_tab_does_not_pull_the_keys_back(cx: &mut TestAppContext) {
             presses += 1;
         }
         assert_eq!(open_now(&view, &mut native), None, "tab out of {name}");
-        // where the closing Tab left them, before any frame ran a handoff
         let went = native.update(|window, cx| window.focused(cx));
         native.update(draw);
         native.update(draw);
@@ -373,14 +338,10 @@ fn a_menu_left_by_tab_does_not_pull_the_keys_back(cx: &mut TestAppContext) {
     }
 }
 
-/// Opening a menu moves the keys from its handle to its first row: the
-/// belt hears the keys leaving the menu, not its handle, so the menu
-/// stays open with its first row focused.
 #[gpui_kit::test]
 fn opening_a_menu_does_not_close_it(cx: &mut TestAppContext) {
     for (overlay, role, name) in MENUS {
         let (view, mut native) = open(gate::desk(), cx);
-        // gpui reports focus moves only in the active window
         super::activate(&mut native);
         native.update(draw);
         show(&view, &mut native, Some(overlay));
@@ -401,9 +362,6 @@ fn opening_a_menu_does_not_close_it(cx: &mut TestAppContext) {
     }
 }
 
-/// A press on a menu's own bar button toggles it: open, shut, open again;
-/// and a press on another menu's button opens that one. Nothing under the
-/// bar closes the menu first and swallows the press.
 #[gpui_kit::test]
 fn a_press_on_the_menus_own_button_toggles_it_once(cx: &mut TestAppContext) {
     let (view, mut native) = open(gate::desk(), cx);
@@ -430,10 +388,6 @@ fn a_press_on_the_menus_own_button_toggles_it_once(cx: &mut TestAppContext) {
     );
 }
 
-/// The bell's Settings row opens Settings on its Notifications page,
-/// whichever page it showed last, as the bell closes: the keys leave the
-/// bell's subtree, and the belt, seeing the bell no longer open, leaves
-/// Settings alone.
 #[gpui_kit::test]
 fn the_bells_settings_row_opens_the_notifications_page(cx: &mut TestAppContext) {
     let (view, mut native) = open(gate::desk(), cx);
@@ -470,12 +424,6 @@ fn the_bells_settings_row_opens_the_notifications_page(cx: &mut TestAppContext) 
     find(&nodes, "RadioGroup", "Burst limit");
 }
 
-/// A menu's card hangs 4px under the bar (`top: 40px`) on a 1x display as
-/// on a 2x one: its button is centred in the bar half a pixel up, and the
-/// snap to device pixels must not carry that half into the card, nor into
-/// what the card holds: the bell's footer row sits where the base drew it
-/// (`notif-settings` at y 221 in a 1280x800 window with nothing to read),
-/// not a pixel lower from a card laid out on a half pixel.
 #[gpui_kit::test]
 fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext) {
     for (overlay, role, name) in [
@@ -489,7 +437,6 @@ fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext
     ] {
         let (_view, mut native) = open((gate::desk(), overlay), cx);
         for scale in [1., 2.] {
-            // this menu's window: the ones the earlier menus opened stay open
             let window = native.update(|window, _| window.window_handle());
             native.simulate_window_scale_factor_change(window, scale);
             let nodes = native.update(|window, cx| {
@@ -510,8 +457,6 @@ fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext
     }
 }
 
-/// An ask queued from the view `program`, saying `said`, and the console's
-/// card synced to the queue as the shell's wake syncs it.
 fn ask(
     view: &Entity<WindowRoot>,
     native: &mut VisualTestContext,
@@ -542,7 +487,6 @@ fn sync(view: &Entity<WindowRoot>, native: &mut VisualTestContext) {
     native.update(draw);
 }
 
-/// Whether a node on screen says `said`.
 fn shows(native: &mut VisualTestContext, said: &str) -> bool {
     let nodes = native.update(|window, cx| {
         draw(window, cx);
@@ -555,14 +499,10 @@ fn shows(native: &mut VisualTestContext, said: &str) -> bool {
         .any(|node| node["name"] == said)
 }
 
-/// Whether the person's answer to `told`'s ask has come, and was Approve.
-/// Asked once the answer may have come: an answer is read once.
 fn approved(told: &mut consent::Told) -> bool {
     futures::FutureExt::now_or_never(told.answer()) == Some(Some(true))
 }
 
-/// Enter's key-down (`is_held`: the platform's repeat) or key-up, then a
-/// draw.
 fn key(native: &mut VisualTestContext, down: bool, is_held: bool) {
     let keystroke = gpui_kit::Keystroke::parse("enter").unwrap();
     if down {
@@ -672,8 +612,6 @@ fn approve_takes_no_click_that_carries_on_a_count_or_enter_on_the_card(cx: &mut 
     assert!(approved(&mut told), "a click of its own approves it");
 }
 
-/// In a short window a long description scrolls inside the card, and
-/// Approve stays on screen (`dialog_fit`).
 #[gpui_kit::test]
 fn approve_stays_on_screen_under_a_long_description(cx: &mut TestAppContext) {
     let (view, mut native) = open(gate::desk(), cx);
@@ -700,8 +638,6 @@ fn approve_stays_on_screen_under_a_long_description(cx: &mut TestAppContext) {
     assert!(at.y < px(400. - 22.), "Approve below the window: {at:?}");
 }
 
-/// A card for an op to the network says so in its title, and shows the
-/// target program's description of the op as the request's task read it.
 #[gpui_kit::test]
 fn a_card_for_the_network_says_so_and_shows_the_description(cx: &mut TestAppContext) {
     let (view, mut native) = open(gate::desk(), cx);
@@ -730,14 +666,10 @@ fn a_card_for_the_network_says_so_and_shows_the_description(cx: &mut TestAppCont
     sync(&view, &mut native);
 }
 
-/// A mouse press that began before the card opened (down on the desk where
-/// Approve then appears, up on Approve) does not approve it; a whole click
-/// on Approve after it opened does.
 #[gpui_kit::test]
 fn a_click_begun_before_the_card_opened_does_not_approve_it(cx: &mut TestAppContext) {
     let (view, mut native) = open(gate::desk(), cx);
     super::activate(&mut native);
-    // where Approve shows: a first card, withdrawn
     let told = ask(&view, &mut native, "chat", "chat asks to suspend agent #3.");
     let at = bar_button(&mut native, "consent-approve");
     drop(told);
@@ -757,10 +689,6 @@ fn a_click_begun_before_the_card_opened_does_not_approve_it(cx: &mut TestAppCont
     assert!(approved(&mut told), "a click on the card approves it");
 }
 
-/// A card never takes another ask's words. The front ask withdrawn while
-/// another waits, its card closes and the next opens as a new card with
-/// its own words; a press that began on the old card (the mouse's, then
-/// Enter's) does not approve the new one. A whole click on it does.
 #[gpui_kit::test]
 fn a_withdrawn_asks_card_gives_way_to_a_new_card(cx: &mut TestAppContext) {
     let (view, mut native) = open(gate::desk(), cx);
@@ -844,7 +772,6 @@ fn under_touch_the_card_is_the_phones_confirm_sheet(cx: &mut TestAppContext) {
         draw(window, cx);
         serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
     });
-    // the eyebrow is drawn in capitals and read as written
     find(&nodes, "Label", consent::ACCOUNT);
     assert!(!shows(&mut native, &consent::ACCOUNT.to_uppercase()));
     let card = find(&nodes, "Dialog", consent::ACCOUNT);

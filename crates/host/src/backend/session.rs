@@ -16,13 +16,6 @@ struct Signer {
     key: Arc<dyn noded_client::Signer>,
 }
 
-/// The seated key: the one that signs. "Seat" here is the backend's word
-/// for loading this key and "lock" for dropping it — not the runtime's
-/// seat, the slot a program's view is mounted in. Never held across an
-/// await: a write takes its copy of the key and lets go before it asks the
-/// node anything, so a seat or a lock never waits on a write's ask (and a
-/// task on the shell's executor is never woken from a runtime thread for
-/// it).
 static SIGNER: std::sync::Mutex<Option<Signer>> = std::sync::Mutex::new(None);
 
 fn seat() -> std::sync::MutexGuard<'static, Option<Signer>> {
@@ -182,9 +175,6 @@ mod tests {
     use super::*;
     use commonware_cryptography::{Signer as _, ed25519};
 
-    /// A join's signer, made while the key is seated, refuses once the
-    /// person locks (or another key is seated): the join that waited fails
-    /// as locked instead of signing with a copy.
     #[tokio::test]
     async fn a_seated_signer_refuses_once_the_key_is_locked() {
         let _serial = seat_serial();

@@ -91,8 +91,6 @@ fn native_rich_text_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppC
     });
 }
 
-/// A key the person presses in the view activates it; Escape does not
-/// (the web's rule: a dismissal grants nothing).
 #[gpui_kit::test]
 fn a_key_activates_the_view_and_escape_does_not(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -139,10 +137,6 @@ fn a_key_activates_the_view_and_escape_does_not(cx: &mut gpui_kit::TestAppContex
     });
 }
 
-/// What a node consumes stops at it, as gpui's `cx.stop_propagation()` in
-/// its listener would: a link's click does not reach the card it is drawn
-/// on, and the Enter and Space it takes for its keyboard click do not
-/// reach the composite around it, which hears every other key.
 #[gpui_kit::test]
 fn a_consumed_press_stops_at_the_node_that_consumes_it(cx: &mut gpui_kit::TestAppContext) {
     const CARD: u32 = 81;

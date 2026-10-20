@@ -57,17 +57,10 @@ use crate::backend::{AudioDevice, AudioKind, CameraDevice, Device, Facing, MicFe
 
 pub(crate) use crate::apple::{camera_allowed, microphone_allowed, open};
 
-// ---------- what a person is told ----------
-
-/// The app's own page in Settings, where its camera and microphone
-/// switches are: UIKit's `UIApplicationOpenSettingsURLString`. One page
-/// for both.
 pub(crate) fn settings_page(_: crate::Kind) -> Option<&'static str> {
     Some("app-settings:")
 }
 
-/// How a person allows a camera or a microphone the system refused: on
-/// the app's page ([`settings_page`]).
 pub(crate) fn allow(kind: crate::Kind) -> &'static str {
     match kind {
         crate::Kind::Camera => "Open Settings, turn Camera on, then try again.",
@@ -75,12 +68,6 @@ pub(crate) fn allow(kind: crate::Kind) -> &'static str {
     }
 }
 
-// ---------- the cameras ----------
-
-/// The cameras the phone lists now, the front one first (a call shows the
-/// person): each wide-angle camera and the back ultra-wide one. Listing
-/// asks for no permission. An iPhone takes no plugged-in camera, so none
-/// is External.
 pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
     autoreleasepool(|_| {
         let video = crate::apple::video()?;
@@ -118,7 +105,6 @@ pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
                 }
             })
             .collect();
-        // stable: the system's order within each side
         listed.sort_by_key(|camera| camera.facing != Facing::Front);
         if let Some(first) = listed.first_mut() {
             first.device.default = true;
@@ -127,7 +113,6 @@ pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
     })
 }
 
-/// Which way `device` looks, where the phone says it sits.
 fn facing(device: &AVCaptureDevice) -> Facing {
     // SAFETY: a plain property of a listed device
     match unsafe { device.position() } {
@@ -137,10 +122,6 @@ fn facing(device: &AVCaptureDevice) -> Facing {
     }
 }
 
-/// Turns `output`'s pictures upright for the portrait screen (a phone's
-/// camera sensor lies on its side) and leaves mirroring to the piece:
-/// the system mirrors nothing. Called once the output is in its session,
-/// which makes the connection.
 pub(crate) fn upright(output: &AVCaptureVideoDataOutput) {
     let Ok(video) = crate::apple::video() else {
         return;
@@ -166,9 +147,6 @@ pub(crate) fn upright(output: &AVCaptureVideoDataOutput) {
     }
 }
 
-/// What a camera's session interrupted says: Busy while a call or
-/// another app has the camera (at open, or taking it from this one), else
-/// Gone with the line a person reads.
 pub(crate) fn interrupted(notification: &NSNotification) -> Status {
     // SAFETY: an AVFoundation constant, there since iOS 9
     let key = unsafe { AVCaptureSessionInterruptionReasonKey };
@@ -192,17 +170,12 @@ pub(crate) fn interrupted(notification: &NSNotification) -> Status {
     Status::Gone(why.into())
 }
 
-/// The integer under `key` in `notification`'s user info.
 fn number(notification: &NSNotification, key: &NSString) -> Option<isize> {
     let info = notification.userInfo()?;
     let value = info.objectForKey(key)?;
     Some(value.downcast::<NSNumber>().ok()?.integerValue())
 }
 
-// ---------- the audio session ----------
-
-/// How many hold the session active ([`Active`]), and how many of them
-/// are microphones.
 struct Holds {
     all: usize,
     microphones: usize,
@@ -213,30 +186,15 @@ static ACTIVE: Mutex<Holds> = Mutex::new(Holds {
     microphones: 0,
 });
 
-/// Whether the session records: while a microphone holds it, or one is
-/// coming (`microphone`). The chime alone plays without: a session that
-/// records raises the microphone's prompt when it goes active, and a
-/// speaker test asks for no microphone.
 fn records(holds: &Holds, microphone: bool) -> bool {
     microphone || holds.microphones > 0
 }
 
-/// The app's audio session as listing and routing find it: in the
-/// category its holds need, and while nothing holds it set up for the
-/// next microphone (whose inputs it lists).
 fn session() -> Result<Retained<AVAudioSession>, String> {
     let holds = ACTIVE.lock().expect("audio session");
     configured(holds.all == 0 || records(&holds, false))
 }
 
-/// The app's audio session set for a call (`record`: play and record, on
-/// the loudspeaker unless a headset is in, Bluetooth headsets
-/// (hands-free) and headphones taken) or for the chime alone (plain
-/// playback, where the system routes it), in the default mode: video
-/// chat mode's voice processing is for an audio unit cpal does not open,
-/// and it lowers the sound. Set only when it is not already: setting it
-/// again is a route change. Setting it asks for nothing (the
-/// microphone's prompt comes when a recording session goes active).
 fn configured(record: bool) -> Result<Retained<AVAudioSession>, String> {
     // SAFETY: AVFAudio constants, there since iOS 3, 6 and 5
     let (category, mode) = unsafe {
@@ -276,36 +234,20 @@ fn configured(record: bool) -> Result<Retained<AVAudioSession>, String> {
     }
 }
 
-/// A call's voice I/O is coming (`on`) or went: the hint the next
-/// recording session is configured with (video chat mode: the system
-/// routes and ducks as for a call; the echo cancelling is the app's own,
-/// `crate::voice`).
 #[cfg(feature = "call")]
 pub(crate) fn call(on: bool) {
     CALL.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Whether a call's voice I/O is up ([`call`]).
 static CALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The id of the phone's loudspeaker among the speakers: always there,
-/// whatever the route (an override reaches it).
 const SPEAKER: &str = "speaker";
 
-/// One listed route: the device, and the session input picking it
-/// prefers (a microphone itself; a Bluetooth headset's, as a speaker).
 struct Route {
     audio: AudioDevice,
     prefers: Option<Retained<AVAudioSessionPortDescription>>,
 }
 
-/// The microphones (`input`) or speakers the session routes to now, each
-/// one a piece can name back (`backend::nameable`). Microphones: its
-/// inputs, the one it hears now the default. Speakers: the loudspeaker,
-/// what the route plays on now besides it (headphones, AirPlay) or what
-/// the loudspeaker was picked over ([`REPLACED`]), and each Bluetooth
-/// headset among the inputs. The earpiece is not one: the call session
-/// plays on the loudspeaker instead.
 fn routes(session: &AVAudioSession, input: bool) -> Vec<Route> {
     let mut listed = match input {
         true => inputs(session),
@@ -315,7 +257,6 @@ fn routes(session: &AVAudioSession, input: bool) -> Vec<Route> {
     listed
 }
 
-/// A session port as a listed device: its UID, its name, what it is.
 fn row(port: &AVAudioSessionPortDescription, input: bool, default: bool) -> AudioDevice {
     // SAFETY: plain properties of a port the session listed
     let (id, name, kind) = unsafe { (port.UID(), port.portName(), port.portType()) };
@@ -329,21 +270,17 @@ fn row(port: &AVAudioSessionPortDescription, input: bool, default: bool) -> Audi
     }
 }
 
-/// A port's UID, which names it among the routes.
 fn uid(port: &AVAudioSessionPortDescription) -> String {
     // SAFETY: a plain property of a port the session listed
     unsafe { port.UID() }.to_string()
 }
 
-/// The inputs the session has now, each preferred when picked.
 fn available(session: &AVAudioSession) -> Vec<Retained<AVAudioSessionPortDescription>> {
     // SAFETY: the session's documented read
     let ports = unsafe { session.availableInputs() };
     ports.map(|ports| ports.to_vec()).unwrap_or_default()
 }
 
-/// The microphones: the session's inputs, the one it hears now the
-/// default.
 fn inputs(session: &AVAudioSession) -> Vec<Route> {
     // SAFETY: the session's documented reads
     let heard: Vec<String> = unsafe { session.currentRoute().inputs() }
@@ -359,9 +296,6 @@ fn inputs(session: &AVAudioSession) -> Vec<Route> {
         .collect()
 }
 
-/// The speakers: the loudspeaker, what the route plays on now besides it,
-/// and each Bluetooth headset among the inputs (picking it prefers its
-/// microphone, which moves its sound there too).
 fn outputs(session: &AVAudioSession) -> Vec<Route> {
     // SAFETY: AVFAudio constants
     let (loudspeaker, headset) = unsafe {
@@ -392,7 +326,6 @@ fn outputs(session: &AVAudioSession) -> Vec<Route> {
             prefers: None,
         });
     }
-    // what the loudspeaker was picked over, while it plays in its place
     let replaced = REPLACED.lock().expect("replaced output").clone();
     if let Some(audio) = replaced
         && listed[0].audio.device.default
@@ -419,16 +352,10 @@ fn outputs(session: &AVAudioSession) -> Vec<Route> {
     listed
 }
 
-/// Whether `port` is one of `types` (a constant the system lacks is none).
 fn is(port: &AVAudioSessionPort, types: &[Option<&'static AVAudioSessionPort>]) -> bool {
     types.iter().flatten().any(|kind| **kind == *port)
 }
 
-/// What a session port is: only what is sure. A loudspeaker, the
-/// earpiece, a screen's or a car's speakers, AirPlay (which the
-/// microphone hears); a headset's microphone, headphones, a Bluetooth
-/// headset or hearing aid; anything else (the built-in microphone, a
-/// Bluetooth A2DP output, which may be a speaker) says Other.
 fn kind_of(port: &AVAudioSessionPort, input: bool) -> AudioKind {
     // SAFETY: AVFAudio constants
     let worn = unsafe {
@@ -462,7 +389,6 @@ fn kind_of(port: &AVAudioSessionPort, input: bool) -> AudioKind {
     }
 }
 
-/// The microphones and speakers the session routes to now.
 pub(crate) fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), String> {
     autoreleasepool(|_| {
         let session = session()?;
@@ -476,13 +402,6 @@ pub(crate) fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), St
     })
 }
 
-/// Routes the session to the microphone (`input`) or speaker `id` it
-/// lists now, before cpal opens its audio unit; `None` leaves the route
-/// as it is (another piece's pick holds). Nothing when it lists no such
-/// device: an id is resolved only against this listing. Picking the
-/// loudspeaker remembers what it is picked over ([`REPLACED`]); picking
-/// another speaker lifts it. A route the system refuses is logged and
-/// the unit opens where the session is.
 pub(crate) fn route(id: Option<&str>, input: bool) -> Option<()> {
     let Some(id) = id else {
         return Some(());
@@ -516,18 +435,8 @@ pub(crate) fn route(id: Option<&str>, input: bool) -> Option<()> {
     })
 }
 
-/// The speaker the loudspeaker was picked over (headphones without a
-/// microphone, Bluetooth headphones, AirPlay), listed while the
-/// loudspeaker plays in its place: the session lists only what plays,
-/// and picking it lifts the override. Forgotten when another speaker is
-/// picked, or a device comes or goes ([`forget_on_change`]).
 static REPLACED: Mutex<Option<AudioDevice>> = Mutex::new(None);
 
-/// Remembers what the route plays on now as the loudspeaker is picked
-/// over it ([`REPLACED`]): not a Bluetooth headset (listed among the
-/// inputs anyway) nor the earpiece (the call session plays on the
-/// loudspeaker instead). What was remembered stays while the loudspeaker
-/// plays already.
 fn remember(session: &AVAudioSession) {
     // SAFETY: AVFAudio constants
     let (loudspeaker, kept) = unsafe {
@@ -555,9 +464,6 @@ fn remember(session: &AVAudioSession) {
     forget_on_change();
 }
 
-/// Forgets [`REPLACED`] once a device comes or goes: the system lifts
-/// the loudspeaker's override at such a route change, and what it was
-/// picked over may be gone. Observed once, for the app's life.
 fn forget_on_change() {
     static OBSERVED: std::sync::Once = std::sync::Once::new();
     OBSERVED.call_once(|| {
@@ -575,13 +481,11 @@ fn forget_on_change() {
                     NSNotificationCenter::defaultCenter()
                         .addObserverForName_object_queue_usingBlock(Some(name), None, None, &forget)
                 };
-            // kept for the app's life
             std::mem::forget(observer);
         }
     });
 }
 
-/// Whether a route change came of a device coming or going.
 fn came_or_went(notification: &NSNotification) -> bool {
     // SAFETY: an AVFAudio constant
     let Some(key) = (unsafe { AVAudioSessionRouteChangeReasonKey }) else {
@@ -598,8 +502,6 @@ fn came_or_went(notification: &NSNotification) -> bool {
     )
 }
 
-/// cpal's one audio unit, the session routed first to `id`, one of its
-/// routes ([`route`]: an id it does not list opens nothing).
 pub(crate) fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device> {
     use cpal::traits::HostTrait as _;
     route(id, input)?;
@@ -609,12 +511,8 @@ pub(crate) fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<c
     }
 }
 
-/// The session routes cpal's one stream in place: a route change
-/// invalidates it, though it plays on (its ends come from [`activate`]).
 pub(crate) const ROUTED_IN_PLACE: bool = true;
 
-/// The name a person knows the opened microphone by: the port the
-/// session hears ([`heard`]), cpal's unit naming none.
 pub(crate) fn input_name(input: &cpal::Device) -> String {
     use cpal::traits::DeviceTrait as _;
     heard().map(|heard| heard.name).unwrap_or_else(|| {
@@ -625,7 +523,6 @@ pub(crate) fn input_name(input: &cpal::Device) -> String {
     })
 }
 
-/// The microphone the session hears now, as listed.
 pub(crate) fn heard() -> Option<Device> {
     autoreleasepool(|_| {
         // SAFETY: the session's documented reads
@@ -636,10 +533,6 @@ pub(crate) fn heard() -> Option<Device> {
     })
 }
 
-/// Whether a route change moved the sound onto the loudspeaker from
-/// elsewhere (the headphones gone, the loudspeaker picked over them).
-/// Where the change does not say what played before, the loudspeaker
-/// playing now is enough.
 fn fell(notification: &NSNotification) -> bool {
     // SAFETY: AVFAudio constants, and the session's and its routes'
     // documented reads
@@ -661,21 +554,11 @@ fn fell(notification: &NSNotification) -> bool {
     }
 }
 
-/// The session held active, for a microphone or the chime; with a
-/// microphone's feed, its ends (an interruption, the media services
-/// lost) are told to it as Gone, and its route's moves
-/// ([`crate::backend::moved`]). The last one dropped deactivates the
-/// session, telling the other apps they may play again.
 pub(crate) struct Active {
     microphone: bool,
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
 }
 
-/// The session active from now until the returned hold drops, recording
-/// only for a microphone ([`records`]); `microphone` the open
-/// microphone's feed, which hears how it ends and where its route moves,
-/// and the microphone its piece named (`None`: the default). A call that
-/// has the audio refuses it (Busy).
 pub(crate) struct Prepared;
 
 impl Prepared {
@@ -736,13 +619,6 @@ impl Drop for Active {
     }
 }
 
-/// Ends `feed`'s microphone, told Gone with the reason once its streams
-/// closed ([`MicFeed::end`]), when the session is interrupted (a call, an
-/// alarm, another app's audio, the app suspended) or its media services
-/// are lost or reset, and where its route moved (a
-/// headset in or out, the loudspeaker picked: the microphone its piece
-/// `named` no longer heard, the monitor on the loudspeaker): the
-/// observers, until removed.
 fn watch(
     feed: &Arc<MicFeed>,
     named: Option<&str>,
@@ -798,9 +674,6 @@ fn watch(
     .collect()
 }
 
-/// Why the microphone stopped, for an interruption that began; none for
-/// one that ended. iOS no longer says when the app's suspension was the
-/// reason.
 fn interruption_began(notification: &NSNotification) -> Option<&'static str> {
     // SAFETY: an AVFAudio constant
     let kind = unsafe { AVAudioSessionInterruptionTypeKey }?;
@@ -808,7 +681,6 @@ fn interruption_began(notification: &NSNotification) -> Option<&'static str> {
     began.then_some(crate::MICROPHONE_TAKEN)
 }
 
-/// A session error, as a status: a call that has the audio is Busy.
 fn refused(error: &NSError) -> Status {
     const INSUFFICIENT_PRIORITY: u32 = u32::from_be_bytes(*b"!pri");
     const CANNOT_INTERRUPT_OTHERS: u32 = u32::from_be_bytes(*b"!int");
@@ -818,7 +690,6 @@ fn refused(error: &NSError) -> Status {
     }
 }
 
-/// A session error's words.
 fn said(error: &NSError) -> String {
     error.localizedDescription().to_string()
 }
@@ -829,7 +700,6 @@ mod tests {
     use objc2_avf_audio::{AVAudioSessionPortBluetoothA2DP, AVAudioSessionPortBuiltInMic};
     use objc2_foundation::NSDictionary;
 
-    /// A session port is what its type says, only what is sure.
     #[test]
     fn a_port_is_what_its_type_says() {
         let kind = |port: Option<&'static AVAudioSessionPort>, input| kind_of(port.unwrap(), input);
@@ -869,8 +739,6 @@ mod tests {
         }
     }
 
-    /// A call that has the audio refuses the session as Busy; another
-    /// error says its words.
     #[test]
     fn a_call_that_has_the_audio_is_busy() {
         let domain = NSString::from_str("NSOSStatusErrorDomain");
@@ -880,7 +748,6 @@ mod tests {
         assert!(matches!(refused(&error(b"what")), Status::Failed(_)));
     }
 
-    /// A notification named `name` whose user info holds `value` under `key`.
     fn told(name: &NSNotificationName, key: &NSString, value: isize) -> Retained<NSNotification> {
         let value = NSNumber::new_isize(value);
         let info = NSDictionary::<NSString, NSNumber>::from_slices(&[key], &[&value]);
@@ -891,9 +758,6 @@ mod tests {
         unsafe { NSNotification::notificationWithName_object_userInfo(name, None, Some(info)) }
     }
 
-    /// An interruption that began stops the microphone and says why; one
-    /// that ended says nothing; a camera another has is Busy, and a
-    /// camera stopped otherwise says its reason.
     #[test]
     fn an_interruption_says_why() {
         // SAFETY: AVFoundation and AVFAudio constants
@@ -918,13 +782,8 @@ mod tests {
         ));
     }
 
-    /// One test at a time sets the app's one session.
     static ONE_SESSION: Mutex<()> = Mutex::new(());
 
-    /// The chime alone plays in a session that does not record, so a
-    /// speaker test never raises the microphone's prompt; a microphone,
-    /// coming or holding, makes it a call's, in the default mode. Nothing
-    /// is activated.
     #[test]
     fn only_a_microphone_makes_the_session_record() {
         let _one = ONE_SESSION.lock().unwrap();
@@ -950,10 +809,6 @@ mod tests {
         }
     }
 
-    /// What the loudspeaker was picked over stays listed while the
-    /// loudspeaker plays in its place, and picking it lifts the override;
-    /// a device coming or going forgets it, the override's own route
-    /// change does not. Nothing is activated.
     #[test]
     fn what_the_loudspeaker_replaced_stays_listed() {
         let _one = ONE_SESSION.lock().unwrap();
@@ -971,7 +826,6 @@ mod tests {
                 .iter()
                 .any(|output| output.device == headphones.device)
         };
-        // the simulator plays on its loudspeaker
         assert!(audio_devices().unwrap().1[0].device.default);
         *REPLACED.lock().unwrap() = Some(headphones.clone());
         assert!(listed());
@@ -1001,10 +855,6 @@ mod tests {
         *REPLACED.lock().unwrap() = None;
     }
 
-    /// A route change under an open microphone is told to its feed: from
-    /// a route that played elsewhere to the loudspeaker, the monitor
-    /// stops; the microphone its piece named, no longer heard, is gone.
-    /// Nothing is activated.
     #[test]
     fn a_route_change_is_told_to_the_microphone() {
         let _one = ONE_SESSION.lock().unwrap();
@@ -1032,7 +882,6 @@ mod tests {
         // SAFETY: a notification made here, posted to this process alone
         let told =
             unsafe { NSNotification::notificationWithName_object_userInfo(name, None, Some(info)) };
-        // the simulator plays on its loudspeaker
         assert!(audio_devices().unwrap().1[0].device.default);
         NSNotificationCenter::defaultCenter().postNotification(&told);
         assert!(!feed.monitoring());
@@ -1044,8 +893,6 @@ mod tests {
         }
     }
 
-    /// A piece left to the default leaves the route another picked: the
-    /// preferred microphone stays. Nothing is activated.
     #[test]
     fn a_default_piece_leaves_the_route_as_it_is() {
         let _one = ONE_SESSION.lock().unwrap();
@@ -1063,9 +910,6 @@ mod tests {
         }
     }
 
-    /// The session lists the loudspeaker first among the speakers, routes
-    /// to it, and routes to nothing it does not list. Nothing is opened
-    /// or activated; the cameras are listed front first.
     #[test]
     fn the_session_lists_and_routes_only_its_own() {
         let _one = ONE_SESSION.lock().unwrap();

@@ -28,47 +28,32 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
-/// A call's answer callback, and a seating's: on the main thread.
 type Done = Box<dyn FnOnce(Answered)>;
 type Work = Box<dyn FnOnce(Result<u64, String>)>;
 
-/// The page: its web view and what is in flight on it.
 struct Page {
     web: Web,
     calls: Calls<Done, Work>,
-    /// The life a failed page was loaded again for ([`page_failed`]): a
-    /// failure of that load stands, so a page that keeps failing is loaded
-    /// again once per failure, not in a loop.
     reloaded: Option<u64>,
 }
 
 thread_local! {
-    /// The one page, on the main thread.
     static PAGE: RefCell<Option<Page>> = const { RefCell::new(None) };
 }
 
-/// What the loader thread and the kernel's pool share with the page.
 struct Shared {
     cache: Option<PathBuf>,
-    /// Prepared code, while anything holds it.
     code: Codes,
-    /// Describe modules by sha256, held for the process; `None` for bytes
-    /// the runners do not take.
     described: Mutex<HashMap<[u8; 32], Option<Arc<Code>>>>,
-    /// The page's one fact (SPEC §6.6): whether it has WebAssembly, once
-    /// the first page loaded; or why no page did.
     wasm: Mutex<Option<Result<(), String>>>,
     probed: Condvar,
-    /// Page deaths so far, for the gate's killer to wait on.
     deaths: Mutex<u64>,
     died: Condvar,
 }
 
 static SHARED: OnceLock<Shared> = OnceLock::new();
 
-/// Runs `work` on the main thread: here, when this is it; else posted,
-/// never waited for.
-fn on_main(work: impl FnOnce(MainThreadMarker) + Send + 'static) {
+fn run_or_post_on_main_thread(work: impl FnOnce(MainThreadMarker) + Send + 'static) {
     match MainThreadMarker::new() {
         Some(mtm) => work(mtm),
         None => dispatch2::DispatchQueue::main().exec_async(move || {
@@ -79,32 +64,23 @@ fn on_main(work: impl FnOnce(MainThreadMarker) + Send + 'static) {
     }
 }
 
-/// `work` on the page, its borrow let go before anything it hands back is
-/// run; `None` before the runner made the page.
-fn with_page<T>(work: impl FnOnce(&mut Page) -> T) -> Option<T> {
+fn with_page_then_release_borrow<T>(work: impl FnOnce(&mut Page) -> T) -> Option<T> {
     PAGE.with(|page| page.borrow_mut().as_mut().map(work))
 }
 
-/// Loads the page (again), outside its borrow: WebKit may call a delegate
-/// back as a load begins (the load it cancels failing), and that delegate
-/// borrows the page.
 fn load_page() {
-    if let Some(web) = with_page(|page| page.web.clone()) {
+    if let Some(web) = with_page_then_release_borrow(|page| page.web.clone()) {
         web.load();
     }
 }
 
-/// The glue's words for code it could not fetch or compile (`glue.js`,
-/// `seatView`).
 const NOT_LOADED: &str = "the view's code did not load";
 
 impl Drop for Code {
-    /// The page forgets its compiled module; posted to the main thread,
-    /// never waited for, even there.
     fn drop(&mut self) {
         let name = std::mem::take(&mut self.name);
         dispatch2::DispatchQueue::main().exec_async(move || {
-            let life = with_page(|page| page.calls.life());
+            let life = with_page_then_release_borrow(|page| page.calls.life());
             if let Some(life) = life {
                 call(life, "forget", 0, &name, "", Box::new(|_| {}));
             }
@@ -112,11 +88,9 @@ impl Drop for Code {
     }
 }
 
-/// One call into the page on `life`, `done` given its answer: sent, or,
-/// on a page that died since (or never loaded), answered as dead at once.
 fn call(life: u64, op: &str, id: u64, name: &str, arg: &str, done: Done) {
     let text = format!("{op} {id} {name} {arg}");
-    let sent = with_page(|page| match page.calls.begin(life, done) {
+    let sent = with_page_then_release_borrow(|page| match page.calls.begin(life, done) {
         Begun::Send(token) => {
             page.web
                 .call(&text, move |answered| answer_call(token, answered));
@@ -129,27 +103,21 @@ fn call(life: u64, op: &str, id: u64, name: &str, arg: &str, done: Done) {
     }
 }
 
-/// The call under `token` answered: its `done`, once (none for a call the
-/// page's death answered already). Taken up on the next turn of the main
-/// queue if it came while the page is borrowed (WebKit answering a call
-/// as it is made).
 fn answer_call(token: u64, answered: Answered) {
     if page_busy() {
         return dispatch2::DispatchQueue::main().exec_async(move || answer_call(token, answered));
     }
-    if let Some(Some(done)) = with_page(|page| page.calls.answered(token)) {
+    if let Some(Some(done)) = with_page_then_release_borrow(|page| page.calls.answered(token)) {
         done(answered);
     }
 }
 
-/// Whether the page is borrowed right now (a callback inside a page call).
 fn page_busy() -> bool {
     PAGE.with(|page| page.try_borrow_mut().is_err())
 }
 
-/// `work` once the page is ready, on its life; at once when it is.
 fn seating(work: Work) {
-    let decided = with_page(|page| page.calls.when_ready(work));
+    let decided = with_page_then_release_borrow(|page| page.calls.when_ready(work));
     match decided {
         Some(Seating::Run(work, life)) => work(Ok(life)),
         Some(Seating::Refused(work, why)) => work(Err(why)),
@@ -157,10 +125,8 @@ fn seating(work: Work) {
     }
 }
 
-/// The page loaded (`webView:didFinishNavigation:`): it is asked its one
-/// fact and given the budget, then the seatings held for it run.
 pub(crate) fn page_loaded(_: MainThreadMarker) {
-    let booted = with_page(|page| {
+    let booted = with_page_then_release_borrow(|page| {
         let life = page.calls.life();
         page.web.call(
             &format!("boot 0 {} {}", crate::VIEW_FUEL, crate::DESCRIBE_FUEL),
@@ -172,19 +138,15 @@ pub(crate) fn page_loaded(_: MainThreadMarker) {
     }
 }
 
-/// The page's answer to `boot`: its fact kept, and the page ready (or
-/// failed).
 fn booted(life: u64, answered: Answered) {
     if page_busy() {
         return dispatch2::DispatchQueue::main().exec_async(move || booted(life, answered));
     }
-    // a page that died while it booted boots again once its successor loads
-    if with_page(|page| page.calls.life()) != Some(life) {
+    if with_page_then_release_borrow(|page| page.calls.life()) != Some(life) {
         return;
     }
     let fact = match answered.map(|text| answer::read(&text).outcome) {
         Ok(Ok(bytes)) if bytes == b"object" => Ok(()),
-        // Lockdown Mode: the page has no WebAssembly (SPEC §6.6)
         Ok(Ok(_)) => Err("WebAssembly".to_owned()),
         Ok(Err(fault)) => Err(fault.to_string()),
         Err(why) => Err(why),
@@ -198,10 +160,8 @@ fn booted(life: u64, answered: Answered) {
     }
     match fact {
         Err(why) if why != "WebAssembly" => page_failed(why),
-        // no WebAssembly is a fact, not a failure: nothing is prepared, so
-        // nothing is seated
         _ => {
-            if let Some((held, life)) = with_page(|page| page.calls.ready()) {
+            if let Some((held, life)) = with_page_then_release_borrow(|page| page.calls.ready()) {
                 for work in held {
                     work(Ok(life));
                 }
@@ -210,11 +170,6 @@ fn booted(life: u64, answered: Answered) {
     }
 }
 
-/// The page did not load, or did not boot. A page that booted before (a
-/// load after a death, its boot) is loaded once more on a new life, every
-/// call on it answered as dead; otherwise, or when that load fails too,
-/// every seating held is refused with `why`, and every later one, until
-/// the next death loads the page again.
 pub(crate) fn page_failed(why: String) {
     tracing::error!(target: "ducktape::jsc", %why, "the views' page did not load");
     let booted_before = SHARED.get().is_some_and(|shared| {
@@ -231,7 +186,7 @@ pub(crate) fn page_failed(why: String) {
     });
     let again = booted_before
         .then(|| {
-            with_page(|page| {
+            with_page_then_release_borrow(|page| {
                 if page.reloaded == Some(page.calls.life()) {
                     return None;
                 }
@@ -249,21 +204,16 @@ pub(crate) fn page_failed(why: String) {
         }
         return;
     }
-    if let Some(held) = with_page(|page| page.calls.failed(why.clone())) {
+    if let Some(held) = with_page_then_release_borrow(|page| page.calls.failed(why.clone())) {
         for work in held {
             work(Err(why.clone()));
         }
     }
 }
 
-/// The content process died (`webViewWebContentProcessDidTerminate:`):
-/// every call in flight lands the runner's fault, every instance of the
-/// dead page is dead, and the page loads again in a new process. A first
-/// boot the death cut short says nothing about the page: the next boot's
-/// answer is its fact.
 pub(crate) fn page_died(_: MainThreadMarker) {
     tracing::warn!(target: "ducktape::jsc", reason = "page_died", "the views' content process died");
-    let flying = with_page(|page| page.calls.died());
+    let flying = with_page_then_release_borrow(|page| page.calls.died());
     if let Some(shared) = SHARED.get() {
         let mut wasm = lock(&shared.wasm);
         if matches!(&*wasm, Some(Err(why)) if why != "WebAssembly") {
@@ -279,8 +229,6 @@ pub(crate) fn page_died(_: MainThreadMarker) {
     }
 }
 
-/// What the scheme handler answers `dt://app/<name>` with: the page, or
-/// metered code something holds.
 pub(crate) fn served(name: &str) -> Option<(Arc<[u8]>, &'static str)> {
     match name {
         "index.html" => return Some((Arc::from(&include_bytes!("index.html")[..]), "text/html")),
@@ -340,9 +288,6 @@ impl JscRunner {
         Ok(Self { shared })
     }
 
-    /// Whether the page has WebAssembly, once its first load says: waited
-    /// for here (a loader thread's wait; on the main thread, which loads the
-    /// page, it would never end, so there it is the runner's failure).
     fn wasm(&self) -> Result<(), Failure> {
         let mut wasm = lock(&self.shared.wasm);
         while wasm.is_none() {
@@ -367,7 +312,9 @@ impl JscRunner {
     /// The content process's pid, for the simulator gate's killer.
     #[cfg(feature = "gate")]
     pub fn content_process(&self) -> Option<i32> {
-        dispatch2::run_on_main(|_| with_page(|page| page.web.content_process()).flatten())
+        dispatch2::run_on_main(|_| {
+            with_page_then_release_borrow(|page| page.web.content_process()).flatten()
+        })
     }
 
     /// Waits until the page has died more than `seen` times; the deaths so
@@ -397,8 +344,8 @@ impl JscRunner {
     /// On the main thread, as every call is begun.
     #[cfg(feature = "gate")]
     pub fn stall(&self) {
-        on_main(|_| {
-            if let Some(life) = with_page(|page| page.calls.life()) {
+        run_or_post_on_main_thread(|_| {
+            if let Some(life) = with_page_then_release_borrow(|page| page.calls.life()) {
                 call(life, "stall", 0, "-", "", Box::new(|_| {}));
             }
         });
@@ -433,8 +380,8 @@ impl ViewRunner for JscRunner {
         let cache = self.shared.cache.clone();
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        on_main(move |mtm| {
-            with_page(|page| page.web.attach(mtm));
+        run_or_post_on_main_thread(move |mtm| {
+            with_page_then_release_borrow(|page| page.web.attach(mtm));
             seating(Box::new(move |ready| {
                 let life = match ready {
                     Ok(life) => life,
@@ -487,7 +434,6 @@ impl ViewRunner for JscRunner {
         op: &[u8],
     ) -> Option<view_wire::methods::Description> {
         let module = module.bytes;
-        // its answer comes on the main thread: waiting there never ends
         if MainThreadMarker::new().is_some() || self.wasm().is_err() {
             return None;
         }
@@ -510,7 +456,7 @@ impl ViewRunner for JscRunner {
         let ask = || {
             let (send, answered) = std::sync::mpsc::channel();
             let (code, arg) = (code.clone(), arg.clone());
-            on_main(move |_| {
+            run_or_post_on_main_thread(move |_| {
                 seating(Box::new(move |ready| match ready {
                     Ok(life) => call(
                         life,
@@ -530,8 +476,6 @@ impl ViewRunner for JscRunner {
             answered.recv().ok()
         };
         let mut answered = ask()?;
-        // the page died under the call: asked once more, of the new page
-        // (the kernel keeps a `None` for the op for good)
         if matches!(&answered, Err(why) if why == DEAD) {
             answered = ask()?;
         }
@@ -541,14 +485,11 @@ impl ViewRunner for JscRunner {
     }
 }
 
-/// What the last landed call of an instance used, as its completion left it.
 struct Stats {
     fuel: AtomicU64,
     memory: AtomicUsize,
 }
 
-/// One seated view: a `WebAssembly.Instance` in the page's life `life`,
-/// under `id`.
 struct JscInstance {
     id: u64,
     life: u64,
@@ -556,8 +497,6 @@ struct JscInstance {
     seat: SeatId,
     land: Landing,
     stats: Arc<Stats>,
-    /// The code, held while the instance is, dead or alive (contract:
-    /// a revive seats it again by hash).
     _code: Arc<Code>,
 }
 
@@ -565,7 +504,7 @@ impl JscInstance {
     fn begin(&self, export: Export, arg: Vec<u8>) {
         let (life, id, land, stats) = (self.life, self.id, self.land.clone(), self.stats.clone());
         let arg = base64::engine::general_purpose::STANDARD.encode(arg);
-        on_main(move |_| {
+        run_or_post_on_main_thread(move |_| {
             call(
                 life,
                 export.op(),
@@ -627,8 +566,6 @@ impl ViewInstance for JscInstance {
 }
 
 impl Drop for JscInstance {
-    /// The page lets the instance go; posted to the main thread, never
-    /// waited for, even there (a drop may come from inside a page callback).
     fn drop(&mut self) {
         let (life, id) = (self.life, self.id);
         tracing::debug!(target: "ducktape::jsc", program = self.seat.0, instance = self.seat.1, id, "view_dropped");

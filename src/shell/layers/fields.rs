@@ -11,33 +11,20 @@ use gpui_kit::{
     AppContext as _, Context, Entity, IntoElement as _, Styled as _, Subscription, Window,
 };
 
-/// One native text field, made with the layer that draws it and kept as
-/// long as that layer.
 pub(in crate::shell) struct NativeInput {
     pub(in crate::shell) state: Entity<InputState>,
-    /// Drawn as dots, with the password role.
     masked: bool,
     _events: Subscription,
 }
 
-/// How a layer draws one of its fields (`NativeInput::input`).
 pub(in crate::shell) struct TextField {
-    /// Its accessible name.
     pub(in crate::shell) label: gpui_kit::SharedString,
-    /// Sensitive without being masked (the recovery phrase): its value is
-    /// read aloud, and the test door masks it (`a11y::AX_PRIVATE`); its
-    /// field is made [`NativeInput::secret`].
     pub(in crate::shell) private: bool,
-    /// The error the screen draws with it: the field reports it invalid,
-    /// and says the error as its description (AX-108).
     pub(in crate::shell) error: Option<String>,
-    /// The text size, in the canvas's px (`ink::fit` scales it).
     pub(in crate::shell) size: f32,
 }
 
 impl NativeInput {
-    /// A field of the layer `V`, its id `key`: every change hands the text
-    /// to `on_change`, Enter calls `on_enter`, and the layer draws again.
     pub(in crate::shell) fn new<V: 'static>(
         placeholder: &'static str,
         masked: bool,
@@ -69,11 +56,6 @@ impl NativeInput {
         }
     }
 
-    /// The field is a secret shown in the clear (the recovery key and its
-    /// words, `TextField::private`): the platform keeps what is typed from
-    /// third-party keyboards and suggestion services, as for a masked one
-    /// (`TextInputConfiguration::secure`, iOS `secureTextEntry`), and the
-    /// words stay on screen.
     pub(in crate::shell) fn secret(self, cx: &mut gpui_kit::App) -> Self {
         let secure = gpui_kit::TextInputConfiguration {
             secure: true,
@@ -84,13 +66,10 @@ impl NativeInput {
         self
     }
 
-    /// Empties the field, when it holds anything; no change goes out.
     pub(in crate::shell) fn wipe(&self, window: &mut Window, cx: &mut gpui_kit::App) {
         self.set(String::new(), window, cx);
     }
 
-    /// Puts `text` in the field, when it holds something else; no change
-    /// goes out (`set_value` emits none).
     pub(in crate::shell) fn set(&self, text: String, window: &mut Window, cx: &mut gpui_kit::App) {
         if *self.state.read(cx).value() != *text {
             self.state
@@ -98,22 +77,11 @@ impl NativeInput {
         }
     }
 
-    /// Whether the field holds focus, for the box drawn around it
-    /// ([`crate::a11y::around_field`]).
     pub(in crate::shell) fn focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         use gpui_kit::Focusable as _;
         self.state.read(cx).focus_handle(cx).is_focused(window)
     }
 
-    /// The field `key`, drawn as `field` says.
-    ///
-    /// Its accessible name is `label`. Its accessible value is the field's
-    /// current text — unless masked: a `PasswordInput` shows no text, so it
-    /// gives none (the door's mask is not the platform's; a value set here
-    /// reaches every AX client). `private` marks a field (the recovery
-    /// phrase) that is sensitive without being visually masked
-    /// [`crate::a11y::AX_PRIVATE`]: assistive technology reads the text on
-    /// the screen; the test door masks it.
     pub(in crate::shell) fn input(
         &self,
         key: &'static str,
@@ -147,7 +115,6 @@ impl NativeInput {
             true => element,
             false => element.aria_value(self.state.read(cx).value().to_string()),
         };
-        // every form here refuses its fields empty (AX-109)
         let mut patch = crate::a11y::Patch::default().required();
         if private {
             patch = patch.class_name(crate::a11y::AX_PRIVATE);
@@ -168,11 +135,6 @@ impl NativeInput {
     }
 }
 
-/// The field over `state` with no node of its own: no role, name or value.
-/// It takes Tab; the box drawn around it wears the ring
-/// ([`crate::a11y::around_field`]), and a label or a
-/// [`crate::a11y::combo_box`] around it speaks for it. Its id is `key`;
-/// the door sets its value through `"{key}/field"`.
 pub(in crate::shell) fn bare(
     key: &'static str,
     state: &Entity<InputState>,
@@ -182,11 +144,6 @@ pub(in crate::shell) fn bare(
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     use gpui_kit::Focusable as _;
     use gpui_kit::component::input::{Input, InputContentType};
-    // bare: the canvas's box around it is `ink::field_box`; its text
-    // is `size` (the canvas's `15px`, the account name's `22px`)
-    // the kit fixes an input's line at `1.25rem` (20px) inside `8px`
-    // padding: a larger face is clipped top and bottom. The line follows
-    // the face; the canvas's box around it sets height and inset.
     let input = Input::new(state)
         .id(key)
         .appearance(false)
@@ -211,9 +168,6 @@ pub(in crate::shell) fn bare(
     )
 }
 
-/// What the inspector reads of a field over `state` ([`crate::a11y::Native`]):
-/// its role and name, its text unless `hidden` (masked or private), and
-/// typing that replaces the text, as SetValue does.
 pub(in crate::shell) fn inspected(
     state: &Entity<InputState>,
     role: Option<gpui_kit::Role>,

@@ -91,8 +91,6 @@ impl Fact {
     }
 }
 
-/// What the phone's card says when an op asks a role's program and the
-/// host knows no verb for it: its button, and the title's verb.
 const APPROVE: &str = "Approve";
 
 impl Words {
@@ -120,16 +118,12 @@ impl Words {
                 None => "an operation this app cannot read",
             },
         );
-        // after the program, before who signs
         let at = self.card.facts.len().min(1);
         let rows = std::iter::once(Fact::new("Operation", operation, false)).chain(fields);
         self.card.facts.splice(at..at, rows);
     }
 }
 
-/// "<verb>: <what>", where `what` is a described title ("Schedule · chat")
-/// that a verb already saying its head drops it ("Schedule: chat"), as the
-/// phone's `askTitle` does (mobile `src/network/words.ts`).
 fn ask_title(verb: &str, what: &str) -> String {
     let said = what
         .split_once(" · ")
@@ -140,8 +134,6 @@ fn ask_title(verb: &str, what: &str) -> String {
     }
 }
 
-/// The card's last row: the seated account, or the device where none is
-/// resolved yet (mobile `src/network/consent.ts`, `signer`).
 fn signs(own: Option<u64>) -> Fact {
     Fact::new(
         "Signs",
@@ -214,9 +206,6 @@ pub struct Ask {
 pub fn waiting() -> &'static Mutex<VecDeque<Ask>> {
     #[cfg(any(test, feature = "test-support"))]
     {
-        // `os()` first: on a test build it installs the test services if
-        // nothing has yet, so which queue an ask lands in never depends on
-        // whether an earlier read happened to install them.
         crate::contract::os();
         if crate::contract::testing::active() {
             thread_local! {
@@ -229,7 +218,6 @@ pub fn waiting() -> &'static Mutex<VecDeque<Ask>> {
     WAITING.get_or_init(Mutex::default)
 }
 
-/// The queue, less every ask whose request let go of it (`Told`).
 fn lock() -> std::sync::MutexGuard<'static, VecDeque<Ask>> {
     lock_in(waiting())
 }
@@ -259,7 +247,6 @@ pub fn answer(id: u64, yes: bool) -> bool {
     if waiting.front().is_some_and(|ask| ask.id == id)
         && let Some(ask) = waiting.pop_front()
     {
-        // the task may be gone (its view torn down): nothing to tell
         let _ = ask.tell.send(yes);
     }
     !waiting.is_empty()
@@ -306,7 +293,6 @@ pub fn needed(
             Some(PROGRAM.len()..PROGRAM.len() + program.len()),
         ),
     };
-    // every sentence begins with `by`, so `id` is where the id is in it
     let words = |said: String, shown: Option<String>, card: Card| Words {
         title: ACCOUNT,
         said,
@@ -316,8 +302,6 @@ pub fn needed(
         card,
     };
     let target_row = Fact::new("Program", target, true);
-    // the phone's account card (mobile `src/network/consent.ts`,
-    // `accountAsk`), the agent by its number
     let agent = |verb: &'static str, account: u64, warning: String, named: Vec<Fact>| Card {
         title: format!("{verb}: agent #{account}"),
         facts: [vec![target_row.clone()], named, vec![signs(own)]].concat(),
@@ -334,7 +318,6 @@ pub fn needed(
     };
     if target == identity::PROGRAM {
         let Ok(op) = abi::decode::<identity::Op>(body) else {
-            // the deployed identity may know it: its own words, if it does
             return Some(Words {
                 described: true,
                 ..words(
@@ -422,7 +405,6 @@ pub fn needed(
                     "{by} asks to stop the program running agent #{account}. It acts for no program until it is given a script again."
                 ),
                 Some(format!("#{account}")),
-                // Expo asks no card for it: the account card, as Suspend's
                 agent(
                     "Stop",
                     account,
@@ -448,7 +430,6 @@ pub fn needed(
             return asked;
         }
     }
-    // a view no vote reviewed, writing to a role
     let roles = roles.filter(|_| !bound(program))?;
     let (role, _) = roles.iter().find(|(_, bound)| *bound == target)?;
     let (title, what, phone) = match role {
@@ -480,8 +461,6 @@ pub fn needed(
     })
 }
 
-/// Whether genesis bound `program` to a role the kernel calls (`roles`, as
-/// the node's programs role answers them): never while no bindings are known.
 pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
     roles.is_some_and(|roles| roles.iter().any(|(_, bound)| bound == program))
 }
@@ -507,12 +486,8 @@ pub fn shown(description: Option<&describe::Description>, len: usize) -> String 
     format!("{title}\n{}", fields.join(" · "))
 }
 
-/// The longest a title or a value runs on the card before it is clipped.
 const MAX_VALUE: usize = 160;
 
-/// `text` as one line of the card: its plain chars (`kernel::plain`: no
-/// line break to fake a fields line, no bidi control to reorder one), at
-/// most [`MAX_VALUE`] of them.
 fn clip(text: &str) -> String {
     let text: String = text.chars().filter(super::kernel::plain).collect();
     match text.char_indices().nth(MAX_VALUE) {
@@ -521,8 +496,6 @@ fn clip(text: &str) -> String {
     }
 }
 
-/// One described value as text: an account by its number, a key by its
-/// fingerprint (as the card shows a key it names), a hash or bytes short.
 fn value(shown: &describe::Value) -> String {
     use describe::Value;
     let short = |bytes: &[u8]| design::short_hex(&abi::hex(bytes));
@@ -551,7 +524,6 @@ fn value(shown: &describe::Value) -> String {
     }
 }
 
-/// Milliseconds since the epoch as a UTC date: `12 Oct 2026, 14:03 UTC`.
 fn date(millis: u64) -> String {
     let seconds = millis / 1000;
     let of_day = seconds % 86_400;
@@ -563,11 +535,6 @@ fn date(millis: u64) -> String {
     )
 }
 
-/// The ask for view (`program`, `instance`), queued in `waiting`; `None`
-/// while another of that view's waits. The shell is not told here
-/// ([`moved`] is). `waiting` is the queue the request came in on, taken at
-/// its press: the request's task queues the ask from the runtime's thread,
-/// and under test each test thread has its own.
 pub(super) fn queue_in(
     waiting: &'static Mutex<VecDeque<Ask>>,
     program: &'static str,
@@ -603,10 +570,6 @@ pub fn queue(program: &'static str, instance: u64, words: Words) -> Option<Told>
 mod tests {
     use super::*;
 
-    /// Claim: exactly the ops that drop or stop a key or an agent are
-    /// asked, naming the requesting program; an op this app cannot read is
-    /// asked too, never passed; every other identity op, and any other
-    /// program, is not.
     #[test]
     fn the_ops_that_remove_or_suspend_are_asked_and_nothing_else_is() {
         let asked =
@@ -624,8 +587,6 @@ mod tests {
             "{removed:?}"
         );
         assert_eq!(removed.shown.as_deref(), Some(fingerprint.as_str()));
-        // the signed account is not the seated key's: an agent's, and the
-        // card says whose, beside the key (also while none is resolved yet)
         for own in [Some(8), None] {
             let removed =
                 needed("chat", None, identity::PROGRAM, &abi::encode(&remove), own).unwrap();
@@ -683,15 +644,10 @@ mod tests {
         }
         let unread = needed("chat", None, identity::PROGRAM, &[0xff, 0xff], Some(7)).unwrap();
         assert!(unread.said.contains("cannot read"), "{unread:?}");
-        // the deployed identity's own words, read in by the request's task
         assert_eq!((unread.shown, unread.described), (None, true));
         assert_eq!(needed("chat", None, "chat", &[0xff, 0xff], Some(7)), None);
     }
 
-    /// Claim: the card names a program genesis bound to a role the kernel
-    /// calls "System", by the bindings the node answered and no name the
-    /// app assumes; any other program, and every program while no bindings
-    /// are known, by its program id.
     #[test]
     fn a_role_program_asks_as_system_and_any_other_by_its_id() {
         let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
@@ -737,11 +693,6 @@ mod tests {
         assert!(said("egress-b", Some(&unbound)).starts_with("Program egress-b asks"));
     }
 
-    /// Claim: no program id reads as the system. A program named `system`
-    /// asks as "Program system", its id the part set in mono; only a
-    /// program bound to a role asks as "System", with no id to set. An id
-    /// outside the one spelling (`System`, `"\nSystem"`) never reaches the
-    /// card: the roster leaves it off (`seat::tests`).
     #[test]
     fn no_program_id_asks_as_the_system() {
         let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
@@ -772,13 +723,6 @@ mod tests {
         );
     }
 
-    /// Claim: a view whose program is bound to no role asks for every op to
-    /// a bound role's program (egress among them), the account's title for
-    /// identity and the network's for every other, and leaves the words to the
-    /// target's description; its op to any other program, any op from a
-    /// role's own program, and every op while no bindings are known ask
-    /// nothing new. The identity ops that remove or suspend keep their own
-    /// words for both.
     #[test]
     fn a_view_no_vote_reviewed_asks_for_every_op_to_a_role() {
         let roles = abi::Roles::from_iter([
@@ -888,8 +832,6 @@ mod tests {
         }
     }
 
-    /// Claim: a vote on a role's op reads on the card in that program's own
-    /// words (halo's here), through the validators' program's description.
     #[test]
     fn a_role_vote_reads_in_its_programs_words() {
         let open = abi::role::halo::Op::Open {
@@ -906,9 +848,6 @@ mod tests {
         );
     }
 
-    /// Claim: the card shows a description as the program's title, then
-    /// its fields as `label value` on one line, each value as what it is;
-    /// a long value clipped; and the op's size where nothing describes it.
     #[test]
     fn a_description_reads_as_its_title_then_its_fields() {
         use describe::{Value, field};
@@ -950,9 +889,6 @@ mod tests {
         };
         assert_eq!(shown(Some(&long), 9), format!("{}…", "x".repeat(MAX_VALUE)));
         assert_eq!(shown(None, 3), "3 bytes this app cannot read");
-        // the op's own text fakes no line and reorders nothing: a line
-        // break, a bidi override, a paragraph separator go, in the title, a
-        // label and a value alike
         let forged = "a\nb\u{202e}c\u{2029}";
         let forged = describe::Description {
             title: format!("Set name · {forged}"),
@@ -961,11 +897,6 @@ mod tests {
         assert_eq!(shown(Some(&forged), 9), "Set name · abc\nabc abc");
     }
 
-    /// Claim: under touch the card is the phone's (mobile
-    /// `src/network/consent.ts`): "Suspend: agent #12", the agent by its
-    /// number (the host has no name for it), the program, the agent, who
-    /// signs, what it takes away, and the verb in danger; an op a role's
-    /// program describes is titled and listed in that program's words.
     #[test]
     fn the_phones_card_words_the_op_as_the_phone_does() {
         use describe::{Value, field};
@@ -1035,13 +966,9 @@ mod tests {
             words.card.facts[1],
             Fact::new("Operation", "3 bytes this app cannot read", false)
         );
-        // a verb that says the title's head drops it, as the phone's does
         assert_eq!(ask_title("Schedule", "Schedule · chat"), "Schedule: chat");
     }
 
-    /// Claim: an ask is in the queue exactly as long as its request holds
-    /// its `Told`; let go of unanswered, it is gone from the front, it no
-    /// longer blocks the view's next ask, and the shell is woken to sync.
     #[test]
     fn an_ask_lives_only_as_long_as_its_request() {
         let mut woken = changes_channel();

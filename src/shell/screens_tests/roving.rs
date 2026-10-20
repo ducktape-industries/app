@@ -6,7 +6,6 @@
 //! Programs rail only moves the keys, and Return opens the program.
 use super::*;
 
-/// The focused node's door id, and whether it is selected or checked.
 fn focus(native: &mut VisualTestContext) -> (String, bool) {
     let nodes = native.update(draw);
     let has = |node: &serde_json::Value, state: &str| {
@@ -24,7 +23,6 @@ fn focus(native: &mut VisualTestContext) -> (String, bool) {
     (node["id"].as_str().unwrap().to_owned(), picked)
 }
 
-/// Every stop Tab lands on, once round from where the keys are.
 fn tab_round(native: &mut VisualTestContext) -> Vec<String> {
     let mut stops: Vec<String> = Vec::new();
     for _ in 0..60 {
@@ -38,7 +36,6 @@ fn tab_round(native: &mut VisualTestContext) -> Vec<String> {
     panic!("Tab never came back round: {stops:?}");
 }
 
-/// Tab until the keys are on `id`.
 fn tab_to(native: &mut VisualTestContext, id: &str) {
     for _ in 0..60 {
         native.simulate_keystrokes("tab");
@@ -49,7 +46,6 @@ fn tab_to(native: &mut VisualTestContext, id: &str) {
     panic!("Tab never reached {id}");
 }
 
-/// Each key, and the item it leaves the keys on, picked or not.
 fn arrows(native: &mut VisualTestContext, steps: &[(&str, &str, bool)]) {
     for (key, id, picked) in steps {
         native.simulate_keystrokes(key);
@@ -57,7 +53,6 @@ fn arrows(native: &mut VisualTestContext, steps: &[(&str, &str, bool)]) {
     }
 }
 
-/// The stops of `stops` whose id starts `shell:<prefix>`.
 fn under<'a>(stops: &'a [String], prefix: &str) -> Vec<&'a str> {
     stops
         .iter()
@@ -66,9 +61,6 @@ fn under<'a>(stops: &'a [String], prefix: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// Settings' pages, a column: one Tab stop on the page shown; up and down
-/// open the next page and take the keys along, wrapping at the ends; Home
-/// and End open the first and the last.
 #[gpui_kit::test]
 fn settings_pages_are_one_tab_stop_whose_arrows_open_the_next(cx: &mut TestAppContext) {
     let settings = Overlay::Settings(SettingsPage::Appearance);
@@ -95,10 +87,6 @@ fn settings_pages_are_one_tab_stop_whose_arrows_open_the_next(cx: &mut TestAppCo
     );
 }
 
-/// A radio group of Settings, a row: one Tab stop on the chosen choice;
-/// right and left pick the next choice and take the keys along, wrapping
-/// at the ends; Home and End pick the first and the last. The Burst limit
-/// and each view's group, on the Notifications page, are one stop each too.
 #[gpui_kit::test]
 fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppContext) {
     let mut seed = gate::desk();
@@ -126,7 +114,6 @@ fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppCont
         crate::backend::Appearance::System,
         "the arrows picked it"
     );
-    // the Notifications page: the burst limit and one group per view
     tab_to(&mut native, "shell:settings/appearance");
     arrows(
         &mut native,
@@ -142,8 +129,6 @@ fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppCont
     }
 }
 
-/// Settings' Layout row shows Menu bar chosen while none is picked, and a
-/// click on Sidebar saves it.
 #[gpui_kit::test]
 fn a_click_on_the_settings_layout_row_saves_it(cx: &mut TestAppContext) {
     use crate::backend::{Layout, load_layout};
@@ -175,10 +160,6 @@ fn a_click_on_the_settings_layout_row_saves_it(cx: &mut TestAppContext) {
     );
 }
 
-/// The layout step's cards, a row: one Tab stop, on the card picked (Menu
-/// bar before any pick); right and left pick the other and take the keys
-/// along, wrapping, Home and End the first and the last, and none of it
-/// saves. Enter on the group continues: the pick saved, the desk.
 #[gpui_kit::test]
 fn the_layout_cards_are_one_tab_stop_whose_arrows_pick_and_enter_continues(
     cx: &mut TestAppContext,
@@ -211,18 +192,11 @@ fn the_layout_cards_are_one_tab_stop_whose_arrows_pick_and_enter_continues(
     assert_eq!(load_layout(), Some(Layout::Sidebar));
 }
 
-/// The Programs rail, a row: one Tab stop, on the front window's program
-/// or else the first; right and left move the keys to the next program,
-/// wrapping at the ends, Home and End to the first and the last, and open
-/// nothing. Tab back into the rail lands on its stop again, not on the
-/// tab the arrows left.
 #[gpui_kit::test]
 fn the_programs_rail_is_one_tab_stop_whose_arrows_move_the_keys(cx: &mut TestAppContext) {
     let mut seed = gate::desk();
     seed.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b", "gate-c"]);
     let (view, mut native) = open(seed, cx);
-    // gpui reports focus moves only in the active window: the rail hears
-    // the keys leave it from one
     super::activate(&mut native);
     native.update(draw);
     let stops = tab_round(&mut native);
@@ -256,11 +230,6 @@ fn the_programs_rail_is_one_tab_stop_whose_arrows_move_the_keys(cx: &mut TestApp
     assert_eq!(focus(&mut native).0, "shell:rail/gate-a");
 }
 
-/// The sidebar's list, a column: one Tab stop, on the window in front's
-/// row; up and down move the keys along every row, programs and windows,
-/// wrapping at the ends, Home and End to the first and the last, and open
-/// nothing. Return on a window's row brings that window to the front; on a
-/// program's row, it opens the program.
 #[gpui_kit::test]
 fn the_sidebar_is_one_tab_stop_whose_up_and_down_move_the_keys(cx: &mut TestAppContext) {
     use crate::ui::layout::HELP;
@@ -312,7 +281,6 @@ fn the_sidebar_is_one_tab_stop_whose_up_and_down_move_the_keys(cx: &mut TestAppC
         ],
     );
     assert_eq!(panes(&mut native), before, "the arrows opened nothing");
-    // a whole press of Return: a click is its key-up
     let enter = |native: &mut VisualTestContext| {
         let keystroke = gpui_kit::Keystroke::parse("enter").unwrap();
         native.simulate_event(gpui_kit::KeyDownEvent {
@@ -328,7 +296,6 @@ fn the_sidebar_is_one_tab_stop_whose_up_and_down_move_the_keys(cx: &mut TestAppC
         (3, 0),
         "Return brought the window forward"
     );
-    // the keys went with the window: Tab back to the list, on its row now
     tab_to(&mut native, &one);
     arrows(
         &mut native,

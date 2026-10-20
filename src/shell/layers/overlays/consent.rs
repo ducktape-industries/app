@@ -25,13 +25,11 @@ impl OverlayLayer {
     pub(super) fn consent(&self, ask: u64, window: &Window, cx: &App) -> AnyElement {
         let ink = Ink::of(self.prefs.read(cx).get().dark());
         let Some((_, words)) = consent::front().filter(|(front, _)| *front == ask) else {
-            // answered or withdrawn already; the layer redraws without it
             return div().into_any_element();
         };
         let overlays = self.overlays.entity().clone();
         let answer = move |yes: bool, cx: &mut App| {
             consent::answer(ask, yes);
-            // the card closes; another ask waiting opens as a new one
             let front = consent::front().map(|(id, _)| id);
             overlays.update(cx, |overlays, cx| overlays.follow_consent(front, cx));
         };
@@ -61,8 +59,6 @@ impl OverlayLayer {
             false,
             &ink,
         );
-        // the sentence, the asking program's id in mono: one Label, its
-        // words its value, as `ink::note`'s text is
         let said = SharedString::from(words.said);
         let id = words.id;
         let instruction = sans(400, 13.)
@@ -84,7 +80,6 @@ impl OverlayLayer {
                 .id("consent-shown")
                 .role(Role::Label)
                 .aria_label(shown.clone());
-            // a description: lines in a box, as the design's `.shown`
             let label = match described {
                 true => label
                     .line_height(px(12. * 1.5))
@@ -95,7 +90,6 @@ impl OverlayLayer {
                     .border_color(ink.line),
                 false => label,
             };
-            // the description scrolls before the card outgrows the window
             div()
                 .id("consent-shown-scroll")
                 .min_h_0()
@@ -168,7 +162,6 @@ impl OverlayLayer {
         let color = ducktape_host::theme::hsla;
         let title = asked.title;
         let body = consent::sheet(asked, dark, approved, answer);
-        // the Expo sheet's handle, in its band
         let handle = div()
             .flex_none()
             .h(px(20.))
@@ -209,7 +202,6 @@ impl OverlayLayer {
             .right_0()
             .bottom_0()
             .occlude()
-            // the Expo palette's `scrim`
             .bg(gpui_kit::black().opacity(if dark { 0.55 } else { 0.4 }))
             .flex()
             .flex_col()

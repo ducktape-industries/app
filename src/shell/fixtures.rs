@@ -7,7 +7,6 @@ use super::launch::initialize_rendering;
 use crate::fonts::fallback_chain;
 use gpui_kit::{Context, Entity, IntoElement, Render, Window};
 
-/// The `--render-tree` entry: parses the arguments, opens the window.
 pub(crate) fn render_tree_fixture() {
     use gpui_kit::component::{Root, Theme, ThemeMode};
     use gpui_kit::*;

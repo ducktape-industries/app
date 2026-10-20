@@ -10,7 +10,6 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::rc::Rc;
 
-/// The cards, in order: the layout, its name, the line under it.
 const CARDS: [(Layout, &str, &str); 2] = [
     (
         Layout::MenuBar,
@@ -25,8 +24,6 @@ const CARDS: [(Layout, &str, &str); 2] = [
 ];
 
 impl LauncherLayer {
-    /// LayoutStep: two cards, one radio group (one Tab stop, the arrows
-    /// pick), and Continue; Enter on the group continues too.
     pub(super) fn layout_step(&self, window: &mut Window, cx: &Context<Self>) -> AnyElement {
         let ink = Ink::of(self.prefs.read(cx).get().dark());
         let picked = self.layout;
@@ -39,8 +36,6 @@ impl LauncherLayer {
                 }
             });
         });
-        // read at the press, not the draw: an arrow and Enter can come
-        // between two frames
         let go: Rc<dyn Fn(&mut App)> = {
             let (this, account) = (cx.weak_entity(), self.account.entity().clone());
             Rc::new(move |cx| {
@@ -66,13 +61,11 @@ impl LauncherLayer {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                // the chosen card's 1.5px border eats into its padding
                 .p(px(if on { 11.5 } else { 12. }))
                 .pb(px(if on { 13.5 } else { 14. }))
                 .border(px(if on { 1.5 } else { 1. }))
                 .border_color(if on { ink.ink } else { ink.strong })
                 .cursor_pointer()
-                // a press leaves the keys where they were
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .on_click(move |_, _, cx| pick(layout, cx))
                 .child(thumbnail(layout, &ink))
@@ -147,7 +140,6 @@ impl LauncherLayer {
     }
 }
 
-/// The card's radio: a 14px ring, chosen a 1.5px ink ring around a 6px dot.
 fn radio(on: bool, ink: &Ink) -> Div {
     div()
         .size(px(14.))
@@ -163,8 +155,6 @@ fn radio(on: bool, ink: &Ink) -> Div {
         })
 }
 
-/// A box at `x, y` of `w × h` on the thumbnail's 240 × 140 grid, scaled to
-/// the card's width.
 fn at(x: f32, y: f32, w: f32, h: f32) -> Div {
     div()
         .absolute()
@@ -174,8 +164,6 @@ fn at(x: f32, y: f32, w: f32, h: f32) -> Div {
         .h(relative(h / 140.))
 }
 
-/// A window on the thumbnail's desk: a frame in `line` with its title
-/// strip 10 units deep.
 fn window_at(x: f32, y: f32, w: f32, h: f32, line: Hsla, ink: &Ink) -> Div {
     at(x, y, w, h)
         .bg(ink.bg)
@@ -190,8 +178,6 @@ fn window_at(x: f32, y: f32, w: f32, h: f32, line: Hsla, ink: &Ink) -> Div {
         )
 }
 
-/// The layout as a line drawing (the mock's 240 × 140 one): the bar and
-/// two windows, or the column of programs beside them.
 fn thumbnail(layout: Layout, ink: &Ink) -> Div {
     let bar = |x, y, w, color| at(x, y, w, 5.).bg(color);
     let frame = div()

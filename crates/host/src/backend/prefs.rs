@@ -24,8 +24,6 @@ pub fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) -> bool {
     prefs_path().is_some_and(|path| edit_prefs_at(&path, change))
 }
 
-/// What `path` holds; `{}` when it is missing or unparsable (the last is set
-/// aside as `prefs.json.bad`). Any other read error stays an error.
 fn read_prefs_at(path: &std::path::Path) -> std::io::Result<serde_json::Value> {
     super::read_or_set_aside(path, |bytes| serde_json::from_slice(bytes))
         .map(|prefs| prefs.unwrap_or_else(|| serde_json::json!({})))
@@ -53,9 +51,6 @@ fn edit_prefs_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Va
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// How many times this test's thread read its prefs (a test's prefs are
-    /// its own: `contract::testing::TestOs` gives each test thread a config
-    /// directory of its own).
     static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -205,8 +200,6 @@ mod tests {
         );
     }
 
-    /// No `appearance` key is System; Light and Dark read back as saved,
-    /// and System takes the key away again.
     #[test]
     fn the_appearance_reads_back_as_saved_and_system_is_no_key() {
         assert_eq!(load_appearance(), Appearance::System);
@@ -219,7 +212,6 @@ mod tests {
         assert!(read_prefs().unwrap().get("appearance").is_none());
     }
 
-    /// Debug mode is off until turned on, and reads back as saved.
     #[test]
     fn debug_mode_is_off_until_turned_on_and_reads_back_as_saved() {
         assert!(!load_debug());
@@ -229,8 +221,6 @@ mod tests {
         assert!(!load_debug());
     }
 
-    /// No `layout` key is "not chosen yet"; each choice reads back as
-    /// saved, under its own word.
     #[test]
     fn the_layout_is_none_until_chosen_and_reads_back_as_saved() {
         assert_eq!(load_layout(), None);
@@ -242,8 +232,6 @@ mod tests {
         assert_eq!(read_prefs().unwrap()["layout"], "menu_bar");
     }
 
-    /// A `prefs.json` cut short is set aside whole as `.bad`, the app
-    /// starts with no prefs, and the next write lands whole.
     #[test]
     fn unparsable_prefs_are_set_aside_and_the_next_write_lands_whole() {
         let dir = tempfile::tempdir().unwrap();
@@ -260,8 +248,6 @@ mod tests {
         assert_eq!(read_prefs_at(&path).unwrap(), prefs);
     }
 
-    /// A `prefs.json` this device cannot read is not taken for `{}`: a
-    /// save is refused and every key in the file stays.
     #[test]
     fn unreadable_prefs_refuse_a_save_and_keep_every_key() {
         use std::os::unix::fs::PermissionsExt;

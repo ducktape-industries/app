@@ -186,9 +186,6 @@ mod tests {
     use gpui_kit::{ElementId, point};
     use std::cell::Cell;
 
-    /// A screen with a Send button that counts its clicks, and a cover
-    /// over it that takes the pointer while `covered`; `gone` leaves the
-    /// button out.
     struct Screen {
         pressed: Rc<Cell<usize>>,
         covered: Rc<Cell<bool>>,
@@ -260,8 +257,6 @@ mod tests {
         })
     }
 
-    /// A control records its id, role and name and its path; a pointer's
-    /// press at it runs its own click listener, once.
     #[gpui_kit::test]
     fn a_control_is_recorded_and_pressed_as_a_pointer_presses_it(cx: &mut TestAppContext) {
         let mut screen = mounted(cx);
@@ -285,8 +280,6 @@ mod tests {
         assert_eq!(screen.pressed.get(), 1);
     }
 
-    /// Something drawn over a control takes a pointer's press, so the
-    /// press is refused and the control hears nothing.
     #[gpui_kit::test]
     fn a_covered_control_is_not_pressed(cx: &mut TestAppContext) {
         let mut screen = mounted(cx);
@@ -302,7 +295,6 @@ mod tests {
         assert_eq!(screen.pressed.get(), 0);
     }
 
-    /// A control no longer drawn is no longer recorded.
     #[gpui_kit::test]
     fn a_control_not_drawn_is_gone(cx: &mut TestAppContext) {
         let mut screen = mounted(cx);

@@ -1,7 +1,5 @@
 use super::*;
 
-// Decoded pictures belong to presentation state, not one ViewTree entity;
-// their bytes are the seat's, handed to every tree it draws.
 const PRESENTATION_SVG: &[u8] =
     br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><path d="M0 0h1v1H0z"/></svg>"#;
 
@@ -71,7 +69,6 @@ fn pictures(with_bytes: bool) -> wire::Node {
     })
 }
 
-/// A distinct one-pixel raster per `seed`.
 fn pixel(seed: u64) -> wire::ImageData {
     let [a, b, c, ..] = seed.to_le_bytes();
     wire::ImageData::Rgba {
@@ -81,7 +78,6 @@ fn pixel(seed: u64) -> wire::ImageData {
     }
 }
 
-/// A picture of a mebibyte of pixels, `seed` in its first ones.
 fn mebibyte(seed: u64) -> wire::ImageData {
     let mut pixels = vec![255; 1 << 20];
     pixels[..8].copy_from_slice(&seed.to_le_bytes());
@@ -92,9 +88,6 @@ fn mebibyte(seed: u64) -> wire::ImageData {
     }
 }
 
-/// Remembers mebibyte pictures from hash `first` on until the raster
-/// cache takes no more, then one-pixel ones until it takes none; the last
-/// hash it took.
 fn fill(tree: &mut ViewTree, first: u64, cx: &mut gpui_kit::Context<ViewTree>) -> u64 {
     let mut hash = first;
     while tree.remember_image(hash, &mebibyte(hash), None, cx) {
@@ -106,7 +99,6 @@ fn fill(tree: &mut ViewTree, first: u64, cx: &mut gpui_kit::Context<ViewTree>) -
     hash - 1
 }
 
-/// The bytes a seat holds for `pictures(false)`'s two hashes.
 fn held() -> Arc<PictureBytes> {
     let mut held = PictureBytes::default();
     held.raster.insert(
@@ -141,8 +133,6 @@ fn svg_admitted(native: &mut gpui_kit::VisualTestContext) -> u64 {
         .update(|window, cx| svg_limits::svg_admitted_bytes(window.window_handle().window_id(), cx))
 }
 
-/// A tree names a picture by hash alone once its bytes crossed: it draws
-/// the seat's bytes under that hash, and nothing without them.
 #[gpui_kit::test]
 fn a_hash_only_picture_draws_from_the_seats_bytes(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -178,7 +168,6 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
     let last = native.update(|_, cx| {
         original.update(cx, |tree, cx| {
             assert!(tree.image_for_test(11).is_some(), "decoded raster");
-            // the cache filled to its budget, all drawn by this frame
             let last = fill(tree, 100, cx);
             assert!(tree.image_for_test(last).is_some());
             last
@@ -223,8 +212,6 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
     });
 }
 
-/// An Image with a loading child and a fallback child, each identified, so
-/// a test reads which one the tree mounted.
 fn image_with_states(hash: u64) -> wire::Node {
     let state = |name: &str| {
         wire::Node::Container(view_wire::ContainerNode {
@@ -251,25 +238,17 @@ fn image_with_states(hash: u64) -> wire::Node {
     }
 }
 
-/// Whether the last frame drew the picture's state child `name`.
 fn drew(native: &mut gpui_kit::VisualTestContext, name: &'static str) -> bool {
     native.update(|window, _| window.try_find(name).is_some())
 }
 
-/// A picture the raster cache has no room for, beside what the current
-/// frame draws, shows the view's fallback, not its loading placeholder
-/// for good; once a new frame lands, the rasters the last one drew are
-/// evicted and it draws.
 #[gpui_kit::test]
 fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let (host, mut native) = drawn(ViewTree::new(image_with_states(7)), cx);
     let tree = host.read_with(&native, |host, _| host.tree.clone());
-    // app-level, as the seat updates its tree, so no window is leased
     let last = native.cx.update(|cx| {
         tree.update(cx, |tree, cx| {
-            // the decoded picture leaves; the cache fills with rasters this
-            // frame drew
             tree.release(cx);
             let last = fill(tree, 100, cx);
             cx.notify();
@@ -300,8 +279,6 @@ fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestApp
     assert!(!drew(&mut native, "fallback") && !drew(&mut native, "loading"));
 }
 
-/// A seat that drops releases its pictures' atlas tiles; a hot swap, whose
-/// next tree draws on with them, releases nothing.
 #[gpui_kit::test]
 fn a_released_tree_drops_its_atlas_tiles_and_a_hot_swap_keeps_them(
     cx: &mut gpui_kit::TestAppContext,
@@ -330,7 +307,6 @@ fn a_released_tree_drops_its_atlas_tiles_and_a_hot_swap_keeps_them(
     );
 
     let replacement = host.read_with(&native, |host, _| host.tree.clone());
-    // app-level, as `Seats::reconcile` releases it
     native
         .cx
         .update(|cx| replacement.update(cx, |tree, cx| tree.release(cx)));
@@ -340,12 +316,6 @@ fn a_released_tree_drops_its_atlas_tiles_and_a_hot_swap_keeps_them(
     );
 }
 
-/// The raster cache's cost, measured: a seat drawing 64 pictures of 1 MiB
-/// decoded (the byte cap, every one drawn), then 64 fresh ones that
-/// displace them. The seat's raw bytes (P16's store) are built before the
-/// first reading. gpui's test atlas keeps no pixels: a GPU holds each
-/// drawn raster again as its atlas tile. Run alone: `cargo test
-/// a_seat_at_its_raster_cap -- --ignored --exact --nocapture`.
 #[gpui_kit::test]
 #[ignore = "measurement: prints resident memory, asserts nothing of it"]
 fn a_seat_at_its_raster_cap(cx: &mut gpui_kit::TestAppContext) {

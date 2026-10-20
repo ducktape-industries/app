@@ -23,14 +23,10 @@ unsafe extern "C" {
     fn g_main_context_iteration(context: *mut c_void, may_block: c_int) -> c_int;
 }
 
-/// Most glib dispatches in one turn, so a flood of X events cannot hold
-/// the pump.
-const MOST: usize = 64;
+const MAX_DISPATCHES_PER_TURN: usize = 64;
 
-/// Dispatches what is ready on glib's default context, without waiting.
-/// On the main thread, where CEF's UI thread is.
 pub(crate) fn turn() {
-    for _ in 0..MOST {
+    for _ in 0..MAX_DISPATCHES_PER_TURN {
         // SAFETY: null is the default context; 0 never blocks
         if unsafe { g_main_context_iteration(std::ptr::null_mut(), 0) } == 0 {
             return;

@@ -34,29 +34,17 @@ mod bell;
 mod menus;
 mod sidebar;
 
-/// The menu bar's height.
 pub(in crate::shell) const BAR: f32 = 36.;
-/// The sidebar's width.
 pub(in crate::shell) const SIDEBAR: f32 = 220.;
-/// The sidebar's footer: the bell, the node, the account, the gear.
-const FOOT: f32 = 40.;
+const SIDEBAR_FOOTER_HEIGHT: f32 = 40.;
 
-/// Where the console's chrome sits in a layout. Whatever is placed against
-/// it reads it here: the desk, a dialog's scrim and room, a menu's backdrop
-/// and room, a pop-out's place on the screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::shell) struct Inset {
-    /// What it takes off the window's top: the bar's height, or nothing.
     pub(in crate::shell) top: f32,
-    /// What it takes off the window's left: nothing, or the sidebar.
     pub(in crate::shell) left: f32,
-    /// How deep it is where its menus hang from: the bar above them, the
-    /// sidebar's footer below them.
     pub(in crate::shell) menus: f32,
 }
 
-/// The chrome's [`Inset`] in `layout`: the bar across the top, or the
-/// sidebar down the left.
 pub(in crate::shell) fn chrome_inset(layout: crate::backend::Layout) -> Inset {
     match layout {
         crate::backend::Layout::MenuBar => Inset {
@@ -67,25 +55,20 @@ pub(in crate::shell) fn chrome_inset(layout: crate::backend::Layout) -> Inset {
         crate::backend::Layout::Sidebar => Inset {
             top: 0.,
             left: SIDEBAR,
-            menus: FOOT,
+            menus: SIDEBAR_FOOTER_HEIGHT,
         },
     }
 }
 
-/// A row of the programs' list, as the keys move along it: a program, or
-/// (in the sidebar) one window on the desk.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Row {
     Program(&'static str),
     Window(u64),
 }
 
-/// The menu bar and its menus, one per console window.
 pub(in crate::shell) struct Chrome {
-    /// The app's windows: a menu row that opens a program goes through them.
     windows: Entity<Windows>,
     key: WindowKey,
-    /// Its window: a tab's click opens the program through it.
     window: WeakEntity<WindowRoot>,
     session: Observed<Session>,
     chain: Observed<Chain>,
@@ -97,27 +80,14 @@ pub(in crate::shell) struct Chrome {
     popped: Observed<Slice<Popped>>,
     prefs: Observed<Slice<Prefs>>,
     dot: Observed<DotSlot>,
-    /// The box the open menu's card hangs from holds the keys by this; the
-    /// overlay layer puts them in when the menu opens (`OverlayLayer::moved`).
     pub(in crate::shell) menu: FocusHandle,
-    /// The Programs rail's one Tab stop (`a11y::roving`).
     stop: FocusHandle,
-    /// The row the arrows moved to while the rail has the keys: Return
-    /// opens it. Gone when the keys leave the rail.
     rail_cursor: Option<Row>,
-    /// The sidebar's program row under the pointer: it shows its `+`.
     hovered: Option<&'static str>,
-    /// The bar's program tabs: how far past their strip they ran.
     rail_scroll: ScrollHandle,
-    /// The window width the bar's full words need; narrower, it folds.
     bar_needs: f32,
-    /// What `bar_needs` was measured over: the network, the tabs, who is
-    /// signed in. Changed, the bar is measured again.
     bar_made: u64,
-    /// The width the bar was last drawn at unfolded; `None` while folded.
     bar_drawn: Option<f32>,
-    /// One second at a time while a menu that shows ages (the node's, the
-    /// bell's) is open: each tick draws the menu again.
     ages: Option<Task<()>>,
     _subscriptions: [Subscription; 3],
 }
@@ -142,13 +112,11 @@ impl Chrome {
         let popped = app.windows.read(cx).popped().clone();
         let (stop, menu) = (cx.focus_handle().tab_stop(true), cx.focus_handle());
         let subscriptions = [
-            // the rail's cursor lasts as long as the rail has the keys
             cx.on_blur(&stop, window, |this, _, cx| {
                 if this.rail_cursor.take().is_some() {
                     cx.notify();
                 }
             }),
-            // the belt: the keys left the menu's subtree, however they did
             cx.on_focus_out(&menu, window, |this, _, window, cx| {
                 this.keys_left(window, cx)
             }),
@@ -187,13 +155,6 @@ impl Chrome {
         this
     }
 
-    /// The keys are outside the open menu: it closes, and they stay where
-    /// they went (`Overlays::close_by_keys`, now: the audit's walk and the
-    /// door read the window in the same update, and an event would land
-    /// after them). A no-op while they are in it (a row that went while the
-    /// menu stays put them back at its first control, `focus_lost`), and
-    /// when nothing hanging from the bar is open (a normal close moved them
-    /// too; the bell's Settings row opened Settings, which stays).
     fn keys_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.contains_focused(window, cx) {
             return;
@@ -207,8 +168,6 @@ impl Chrome {
             .update(cx, |overlays, cx| overlays.close_by_keys(open, cx));
     }
 
-    /// The ages clock runs while the node menu or the bell is open, and
-    /// only then.
     fn ages_follow(&mut self, open: &Option<Overlay>, cx: &mut Context<Self>) {
         let counting = matches!(
             open,
@@ -232,7 +191,6 @@ impl Chrome {
         }
     }
 
-    /// What a press does: `call` on the notification centre.
     fn on_notifications(
         &self,
         call: impl Fn(&mut Notifications, &mut Context<Notifications>) + 'static,
@@ -241,7 +199,6 @@ impl Chrome {
         move |cx| notifications.update(cx, |notifications, cx| call(notifications, cx))
     }
 
-    /// What a press does: `call` on the windows.
     fn on_windows(
         &self,
         call: impl Fn(&mut Windows, &mut Context<Windows>) + 'static,
@@ -250,8 +207,6 @@ impl Chrome {
         move |cx| windows.update(cx, |windows, cx| call(windows, cx))
     }
 
-    /// A row of the menu `menu` that is done with it: the menu closes,
-    /// then `run` runs.
     fn closing(
         &self,
         menu: Overlay,
@@ -264,7 +219,6 @@ impl Chrome {
         }
     }
 
-    /// What a press does: `call` on the session.
     fn on_session(
         &self,
         call: impl Fn(&mut Session, &mut Context<Session>) + 'static,
@@ -273,7 +227,6 @@ impl Chrome {
         move |cx| session.update(cx, |session, cx| call(session, cx))
     }
 
-    /// What a press does: `call` on the account.
     fn on_account(
         &self,
         call: impl Fn(&mut Account, &mut Context<Account>) + 'static,
@@ -282,7 +235,6 @@ impl Chrome {
         move |cx| account.update(cx, |account, cx| call(account, cx))
     }
 
-    /// What is open over the desk, moved by `change`.
     fn overlaying(
         &self,
         change: impl Fn(&mut Overlays, &mut Context<Overlays>) + 'static,
@@ -291,7 +243,6 @@ impl Chrome {
         move |cx| overlays.update(cx, &change)
     }
 
-    /// A menu item: `height: 36px; padding: 0 16px; font: 400 14px`.
     fn menu_row(
         &self,
         id: &'static str,
@@ -320,7 +271,6 @@ impl Chrome {
         )
     }
 
-    /// The chrome's [`Inset`] in the layout the prefs pick.
     fn inset(&self, cx: &App) -> Inset {
         chrome_inset(self.prefs.read(cx).get().layout_or_default())
     }
@@ -333,11 +283,6 @@ impl Chrome {
         f32::from(window.viewport_size().height) - self.inset(cx).menus - clear - 3.
     }
 
-    /// What is under an open menu: it keeps presses off the desk, and a
-    /// click on it closes the menu (as a click on the chrome itself does
-    /// not: the backdrop starts past it). Drawn first among the deferred
-    /// children, so the menu's card lies over it. Invisible, and nothing
-    /// about focus or keys: the box its card hangs from holds those.
     fn backdrop(&self, id: &'static str, closes: Overlay, window: &Window, cx: &App) -> AnyElement {
         let close = self.overlaying(move |overlays, cx| overlays.close(closes, cx));
         let viewport = window.viewport_size();
@@ -357,21 +302,6 @@ impl Chrome {
         .into_any_element()
     }
 
-    /// A menu hanging beside the button that opened it (`footed`): its
-    /// card (the canvas's `border: 1.5px solid ink` and a soft shadow,
-    /// `width` wide), on the bar `anchor` (a top corner) at the same corner
-    /// of the button, 4px below the bar (`top: 40px`); in the sidebar the
-    /// network's (`TopLeft`) 4px right of the column at its row's top, the
-    /// footer's (`TopRight`) upward from their button's left end, 4px over
-    /// the footer. Shifted back inside the window when it would run off
-    /// it. Deferred over the backdrop. The box
-    /// the card hangs from holds the keys by `menu`: its rows step with the
-    /// arrows and stop at its ends; Tab and Shift+Tab move on, and past its
-    /// ends they close it (`keys_left`; `keys::MenuTab`, bound over the
-    /// kit's Tab under the `menu` context). Escape closes it through
-    /// `keys::CloseOverlay` (bound under the `overlay` context). A press
-    /// inside stays inside: occluded, the backdrop is not under the pointer.
-    /// No `on_click` on the card: that would offer a press on the dialog.
     #[allow(clippy::too_many_arguments, reason = "one shape, four menus")]
     fn hanging(
         &self,
@@ -397,14 +327,6 @@ impl Chrome {
             .shadow_lg()
             .w(px(width))
             .child(body);
-        // the corner: a point-sized box 5px under the button's foot
-        // (`Chrome::footed`, whose bottom is the bar's inside edge at 35)
-        // that the anchored card hangs from, so its top lands on 40 (the
-        // canvas's menus: `top: 40px`); in the sidebar 5px past the network
-        // row's right end (the column's inside edge), or 5px over the
-        // footer button's box. It holds the menu handle and hears the rows'
-        // keys (no id, no role: the card is the node assistive technology
-        // sees, and it offers no focus of its own)
         let menu = self.menu.clone();
         let corner = div()
             .absolute()
@@ -426,8 +348,6 @@ impl Chrome {
                     step(window, cx, !down);
                 }
             })
-            // the kit's Tab would move the keys and leave the menu open
-            // behind them: the menu's own moves them and then asks
             .key_context(keys::MENU)
             .on_action(cx.listener(|this, _: &keys::MenuTab, window, cx| {
                 window.focus_next(cx);
@@ -456,15 +376,6 @@ impl Chrome {
         .into_any_element()
     }
 
-    /// A button with its open menu beside it, in a box the chrome's inside
-    /// height (on the bar 35px above the border line). The 36px button is
-    /// centred in the box as it was in the bar, half a pixel up, so it is
-    /// drawn where it was; the menu's corner hangs from the box, whose edges
-    /// lie on whole pixels. Layout snaps each edge to the device grid where
-    /// it lies (gpui's `layout_bounds`), so a card laid out half a pixel off
-    /// has some of its rows land a pixel from where the same card on a whole
-    /// pixel has them. The corner hangs 5px past the box, so the card is
-    /// laid out on a whole pixel.
     fn footed(button: Stateful<Div>, menu: Option<AnyElement>) -> Div {
         div()
             .relative()
@@ -476,8 +387,6 @@ impl Chrome {
             .children(menu)
     }
 
-    /// A button on the bar: alone, or in its box with its menu while that
-    /// is open (`footed`).
     fn hung((button, menu): (Stateful<Div>, Option<AnyElement>)) -> AnyElement {
         match menu {
             Some(menu) => Self::footed(button, Some(menu)).into_any_element(),
@@ -485,9 +394,6 @@ impl Chrome {
         }
     }
 
-    /// A menu hanging below the bar, its right edge under its button's, or
-    /// up from the sidebar's footer (`hanging`), scrolling in a short
-    /// window rather than being cut off.
     fn popover(
         &self,
         which: Popover,
@@ -521,8 +427,6 @@ impl Chrome {
     }
 }
 
-/// What the chrome is drawn from, read off the slices at the top of a
-/// render.
 struct Bar {
     layout: crate::backend::Layout,
     dark: bool,
@@ -535,17 +439,11 @@ struct Bar {
     account: Option<Option<(u64, String)>>,
     open: Option<Overlay>,
     focused: Option<&'static str>,
-    /// The window in front: a pop-out's while it is the OS window in
-    /// front, else the desk's focused one.
     front: Option<u64>,
-    /// Every window: the desk's in layout order, then the pop-outs'.
     listed: Vec<Listed>,
     rows: Vec<crate::runtime::RailRow>,
 }
 
-/// A chrome button: `height: 36px; padding: 0 10px; gap: 8px; font: 400
-/// 13px`, on `surface` while its menu is open and under the pointer.
-/// `popup`: what its press opens, which it says (AX-113).
 fn item(
     id: &'static str,
     name: SharedString,
@@ -582,9 +480,6 @@ fn item(
     ))
 }
 
-/// The chrome's empty stretch: on macOS, where the app draws its own title
-/// bar, the window's handle (a press moves the window, a double press is
-/// the title bar's).
 fn drag_handle(id: &'static str, titlebar: Option<f32>) -> Stateful<Div> {
     div()
         .id(id)
@@ -600,31 +495,26 @@ fn drag_handle(id: &'static str, titlebar: Option<f32>) -> Stateful<Div> {
         })
 }
 
-/// A program's name as assistive technology hears it: its label, the note
-/// while its view is on its way, and its unread count.
-fn program_name(row: &crate::runtime::RailRow, badge: i64) -> String {
+fn accessible_program_name_with_status_and_unread(
+    row: &crate::runtime::RailRow,
+    badge: i64,
+) -> String {
     let shown = tab_label(row);
     let name = match row.note {
         Some(note) => format!("{shown} · {note}"),
         None => shown,
     };
-    // the count the tab shows is in what it is called
     match badge {
         ..=0 => name,
         count => format!("{name}, {count} unread"),
     }
 }
 
-/// The parts of the chrome both layouts draw, each a button (and the menu
-/// hanging from it while that is open): the bar lays them across the top,
-/// the sidebar down its column and footer.
 impl Chrome {
-    /// What a press does: `menu` opens, or closes when it is open.
     fn toggle(&self, menu: Overlay) -> Box<dyn Fn(&mut App)> {
         Box::new(self.overlaying(move |overlays, cx| overlays.toggle(menu, cx)))
     }
 
-    /// The network's name and its switcher.
     fn network(
         &self,
         bar: &Bar,
@@ -647,7 +537,6 @@ impl Chrome {
         (button, open.then(|| self.network_menu(narrow, ink, cx)))
     }
 
-    /// Search (⌘K): its word unless folded, and the chord in a box.
     fn search(&self, narrow: bool, ink: &Ink) -> Stateful<Div> {
         let chord = chord_label("K");
         item(
@@ -673,7 +562,6 @@ impl Chrome {
         )
     }
 
-    /// The bell, the unread count on it; its panel.
     fn bell(
         &self,
         bar: &Bar,
@@ -703,7 +591,6 @@ impl Chrome {
                         .size(px(16.))
                         .text_color(ink.muted),
                 )
-                // the count, announced as notices land
                 .when(unread > 0, |bell| {
                     bell.child(
                         crate::a11y::live(
@@ -733,8 +620,6 @@ impl Chrome {
         (button, open.then(|| self.bell_menu(ink, window, cx)))
     }
 
-    /// The node's button, the 12px well its breath is drawn over; its
-    /// status menu.
     fn node(
         &self,
         bar: &Bar,
@@ -742,18 +627,12 @@ impl Chrome {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> (Stateful<Div>, Option<AnyElement>) {
-        // the height moves every block: it is the description, so the
-        // name holds still
         let said = match (bar.connecting, bar.reconnecting) {
             (true, _) => "Node: switching",
             (_, true) => "Node: not answering",
             (false, false) => "Node: in sync",
         };
         let open = bar.open == Some(Overlay::Menu(Popover::Node));
-        // the 12px well the breath sits in, empty: `layers::StatusDot`
-        // draws the breath over it. Where it is laid out is the dot's
-        // slot, read at prepaint and, when it moved, committed after the
-        // frame (a settled chrome asks for nothing)
         let well = {
             let dot = self.dot.entity().clone();
             div().size(px(12.)).flex_shrink_0().relative().child(
@@ -788,8 +667,6 @@ impl Chrome {
         (button, open.then(|| self.node_menu(ink, window, cx)))
     }
 
-    /// Who is signed in (folded, their initials), and the account menu; or
-    /// the way in: Sign in, Create account.
     fn who(
         &self,
         bar: &Bar,
@@ -811,7 +688,6 @@ impl Chrome {
                 .child(div().underline().child("Sign in")),
                 None,
             ),
-            // named by what it says
             (Some(None), true) => (
                 item(
                     "rail-account",
@@ -849,8 +725,6 @@ impl Chrome {
         }
     }
 
-    /// Settings are the app's, not the account's: their own spot at the
-    /// edge.
     fn gear(&self, ink: &Ink) -> Stateful<Div> {
         item(
             "settings",
@@ -868,7 +742,6 @@ impl Chrome {
         )
     }
 
-    /// The backdrop under whichever menu is open, drawn before its card.
     fn menu_backdrop(&self, bar: &Bar, window: &Window, cx: &App) -> Option<AnyElement> {
         match bar.open {
             Some(Overlay::Network) => {
@@ -886,10 +759,6 @@ impl Chrome {
         }
     }
 
-    /// What a program's row does: a click opens it (into an empty focused
-    /// window, or its own); a shift-click, or Shift with Enter or Space,
-    /// shows it in the focused window instead (a press with Shift is no
-    /// click).
     fn opening(&self, row: Stateful<Div>, program: &'static str) -> Stateful<Div> {
         let (click, keys) = (self.window.clone(), self.window.clone());
         row.aria_description(format!(
@@ -953,9 +822,6 @@ impl Render for Chrome {
 }
 
 impl Chrome {
-    /// The menu bar (the Menubar board): `height: 36px; padding: 0 8px;
-    /// border-bottom: 1px solid line`; every item `height: 36px; padding: 0
-    /// 10px; gap: 8px; font: 400 13px`, on `surface` while its menu is open.
     fn bar(
         &mut self,
         bar: Bar,
@@ -963,21 +829,7 @@ impl Chrome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // the sidebar's row under the pointer goes with the sidebar: a row
-        // no longer drawn hears no end to its hover
         self.hovered = None;
-        // Folding. The tabs show their full labels until they overflow their
-        // strip; then every tab folds to its icon or initial, so none is cut.
-        // `bar_needs` is the narrowest window the full labels are known to
-        // need: the width the bar was last drawn unfolded at, plus how far
-        // the strip overflowed there (`rail_scroll.max_offset()`). Layout
-        // reports that overflow one frame late, so a bar drawn unfolded at a
-        // new width asks for one more frame to be measured in. `bar_needs`
-        // only grows while the bar shows the same words. New words (the
-        // network, the tab list, the sign-in state: `bar_made` hashes them)
-        // reset it to measure again, and the overflow the old words left is
-        // skipped on that frame. Badge counts stay out of the hash: they
-        // tick while folded, and a re-measure draws the bar whole for a frame.
         let made_of = {
             use std::hash::{Hash as _, Hasher as _};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -994,7 +846,6 @@ impl Chrome {
             self.bar_needs = 0.;
         }
         let width = f32::from(window.viewport_size().width);
-        // last frame's overflow: the old words', on the frame that remade the bar
         let over = f32::from(self.rail_scroll.max_offset().x);
         if let Some(drawn) = self.bar_drawn
             && !remade
@@ -1005,9 +856,6 @@ impl Chrome {
         }
         let narrow = width < self.bar_needs;
         let drawn = (!narrow).then_some(width);
-        // drawn whole at a new width or of new words: the next frame measures
-        // it, so ask for one that draws this view again (a frame alone would
-        // find it cached)
         if drawn.is_some() && (remade || drawn != self.bar_drawn) {
             let this = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
@@ -1016,8 +864,6 @@ impl Chrome {
         }
         self.bar_drawn = drawn;
 
-        // one Tab stop: the tab the arrows moved to while the rail has the
-        // keys, else the focused window's program, else the first
         let stop = self.stop.clone();
         let rows = bar.rows.iter().filter(|row| !row.empty);
         let listed: Vec<&'static str> = rows.clone().map(|row| row.program).collect();
@@ -1034,9 +880,7 @@ impl Chrome {
                 let selected = bar.focused == Some(program);
                 let badge = self.rail.read(cx).badge(program);
                 let shown = tab_label(row);
-                let name = program_name(row, badge);
-                // folded: the icon its view declares, its initial when it has
-                // none, and its whole name on hover
+                let name = accessible_program_name_with_status_and_unread(row, badge);
                 let icon = narrow
                     .then(|| folded_icon(row, cx.asset_source().as_ref()))
                     .flatten();
@@ -1096,8 +940,6 @@ impl Chrome {
                     })
             })
             .collect();
-        // macOS draws the traffic lights over the bar's left end, and the
-        // bar is the window's handle: its empty middle moves the window.
         let titlebar = theme::traffic_lights(window);
         let moved = cx.entity().downgrade();
         div()
@@ -1123,7 +965,6 @@ impl Chrome {
                     &stop,
                     accesskit::Orientation::Horizontal,
                     [active, listed.len()],
-                    // the arrows move the keys; Return opens the program
                     move |to, _, cx| {
                         let program = listed[to];
                         let _ = moved.update(cx, |this, cx| {
@@ -1134,7 +975,6 @@ impl Chrome {
                 )
                 .min_w_0()
                 .flex()
-                // folded and still too many: they scroll
                 .overflow_x_scroll()
                 .track_scroll(&self.rail_scroll)
                 .children(tabs)
@@ -1157,17 +997,11 @@ impl Chrome {
     }
 }
 
-/// The icon a folded tab draws: the one `row`'s view declares, when the app
-/// bundles that file. A manifest's icon is a safe path and no more: it can
-/// name a file `assets` does not have, and that tab, like one whose view
-/// declares none, folds to its initial (`None`).
 fn folded_icon(row: &crate::runtime::RailRow, assets: &dyn AssetSource) -> Option<SharedString> {
     let bundled = !row.icon.is_empty() && matches!(assets.load(&row.icon), Ok(Some(_)));
     bundled.then(|| row.icon.clone().into())
 }
 
-/// A program's name on the bar. Before the manifest lands (or if it never
-/// does) the label is the program's own id, prettified.
 pub(in crate::shell) fn tab_label(row: &crate::runtime::RailRow) -> String {
     match row.note {
         Some(_) => screens::prettify(&row.label),
@@ -1179,10 +1013,6 @@ pub(in crate::shell) fn tab_label(row: &crate::runtime::RailRow) -> String {
 mod tests {
     use crate::runtime::RailRow;
 
-    /// A folded tab draws the icon its view declares when the app bundles
-    /// that file (`AllAssets`, the set `launch::run` registers), and folds
-    /// to its initial when the view declares none or names a file the app
-    /// does not have: a safe path is not a bundled one.
     #[test]
     fn a_folded_tab_is_the_icon_its_view_declares_or_its_initial() {
         let drawn = |icon: &str| {
@@ -1199,8 +1029,6 @@ mod tests {
             };
             super::folded_icon(&row, &gpui_kit::assets::AllAssets)
         };
-        // the icons the shipped views declare: a kit that renames one of
-        // these files folds that tab to its initial
         for icon in [
             "icons/messages-square.svg",
             "icons/hammer.svg",

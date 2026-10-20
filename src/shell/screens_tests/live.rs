@@ -8,8 +8,6 @@ use super::*;
 use gpui_kit::Role;
 use gpui_kit::accesskit::Live;
 
-/// Every node of `window`'s last tree that is a Status or an Alert, or
-/// carries a politeness: its role, name, value and politeness.
 pub(super) fn announced(window: &Window) -> Vec<(Role, String, Option<String>, Option<Live>)> {
     window
         .a11y_tree()
@@ -34,9 +32,6 @@ pub(super) fn announced(window: &Window) -> Vec<(Role, String, Option<String>, O
         .unwrap_or_default()
 }
 
-/// Each screen state's Status and Alert nodes: polite and assertive live
-/// regions whose name is their value. The ones named below must be there,
-/// so the check is not vacuous.
 #[gpui_kit::test]
 fn every_shell_status_and_alert_is_live_with_its_words_as_name_and_value(cx: &mut TestAppContext) {
     let expected = [

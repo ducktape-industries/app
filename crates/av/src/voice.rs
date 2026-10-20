@@ -26,24 +26,12 @@ use crate::codec::{FRAME, SAMPLE_RATE};
 use crate::mixer::{self, Mixer, Source};
 use crate::platform;
 
-/// Sonora's block: 10 ms.
 const BLOCK: usize = 480;
-/// Frames a capture holds for its reader before the oldest goes: the
-/// encoder is behind by more than this only when something is wrong.
 const CAPTURE_BACKLOG: usize = 8;
-/// How often the I/O thread looks at who holds it.
 const TICK: Duration = Duration::from_millis(10);
-/// The echo path's delay the canceller is told, microphone in to speaker
-/// out, when `DUCKTAPE_AEC_DELAY_MS` names none: two 20 ms device buffers
-/// and the mixer's frame. A real device drifts from it; the knob stays.
 const DELAY_MS: i32 = 60;
-/// How long after a device would not open (or was taken) before it is
-/// asked again.
 const RETRY: Duration = Duration::from_secs(2);
 
-/// When a device that failed is opened again: after [`RETRY`], except one
-/// the system refused (Denied), which waits until nothing wants it, so
-/// the phones' permission prompt is not raised over and over.
 #[derive(Default)]
 struct Retry {
     until: Option<Instant>,
@@ -62,7 +50,6 @@ impl Retry {
         }
     }
 
-    /// Nothing wants the device: the next want opens it at once.
     fn reset(&mut self) {
         *self = Self::default();
     }
@@ -70,25 +57,14 @@ impl Retry {
 
 /// The app's voice I/O while anything holds it.
 pub struct Io {
-    /// The microphone's status and name (Live while open; Starting while
-    /// no capture asks for it).
     status: Mutex<(Status, String)>,
-    /// The speaker's status (Live while open; Starting while no voice
-    /// asks for it).
     speaker: Mutex<Status>,
-    /// What the phone's audio session tells of the microphone (an
-    /// interruption, a route moved): read each tick, told as the status.
     feed: Arc<MicFeed>,
     apm: Mutex<sonora::AudioProcessing>,
     mixer: Mixer,
     captures: Mutex<Vec<mpsc::SyncSender<[f32; FRAME]>>>,
-    /// How many [`Capture`]s live: the microphone is open while any does.
     capturing: AtomicUsize,
-    /// The microphone's level after processing, 0 to 1, as `f32` bits.
     level: AtomicU32,
-    /// The microphone and speaker the first holder named (`None`: the
-    /// defaults). ponytail: one pair for the app; another piece's choice
-    /// is ignored until the I/O is made again.
     device: Option<String>,
     output: Option<String>,
     delay_ms: i32,
@@ -97,13 +73,6 @@ pub struct Io {
 
 static IO: Mutex<Weak<Io>> = Mutex::new(Weak::new());
 
-/// Told `true` when the voice I/O is made and `false` when its last holder
-/// lets go: the app's call, as what stands outside it sees it (the phone's
-/// call screen, iOS CallKit through the launcher, ends its call with it).
-/// Told on the thread that makes or drops the I/O, any thread, under the
-/// voice's lock: a follower must not hold the voice itself, and should
-/// hand the news on and return. One for the process, set before the first
-/// hold ([`on_life`]).
 static LIFE: std::sync::OnceLock<fn(bool)> = std::sync::OnceLock::new();
 
 /// Sets what is told the voice I/O's life ([`LIFE`]); the first set stands.
@@ -174,11 +143,6 @@ fn apm() -> sonora::AudioProcessing {
 impl Drop for Io {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // under the hold's lock, and only when no I/O was made since: a
-        // hold that raced this drop made a new one, and the voice goes on
-        // (`strong_count`, never `upgrade`: a strong reference taken here
-        // could be some I/O's last, and its drop would re-enter under the
-        // lock)
         let held = lock(&IO);
         if held.strong_count() == 0
             && let Some(told) = LIFE.get()
@@ -235,8 +199,6 @@ impl Io {
         })
     }
 
-    /// One processed frame of the microphone's, to every capture; a
-    /// capture that is behind loses it.
     pub(crate) fn heard(&self, frame: [f32; FRAME]) {
         self.level
             .store(mixer::level(&frame).to_bits(), Ordering::Relaxed);
@@ -248,7 +210,6 @@ impl Io {
         });
     }
 
-    /// Whether any capture lives.
     pub(crate) fn capturing(&self) -> bool {
         self.capturing.load(Ordering::Relaxed) > 0
     }
@@ -307,9 +268,6 @@ impl Voice {
     }
 }
 
-/// The I/O's thread: the microphone open while a capture lives, the
-/// speaker while a voice does, until the last holder lets go. The phones'
-/// call mode (`platform::call`) is on for the thread's life.
 fn run(io: Weak<Io>) {
     let host = cpal::default_host();
     let mut input: Option<Opened> = None;
@@ -322,8 +280,6 @@ fn run(io: Weak<Io>) {
             break;
         }
         let now = Instant::now();
-        // the phone's session ended the microphone under the I/O: told,
-        // the device let go, and asked again after the retry
         if input.is_some()
             && let Some(why) = io.feed.take_ended()
         {
@@ -371,10 +327,7 @@ fn run(io: Weak<Io>) {
     platform::call(false);
 }
 
-/// The microphone opened: Live, its frames processed and handed to the
-/// captures.
 fn open_input(host: &cpal::Host, io: &Arc<Io>) -> Result<Opened, Status> {
-    // after any microphone piece that let its device go has closed it
     let holding = backend::hold_microphone(io.clone());
     let prepared = platform::prepare(io.device.as_deref())?;
     let named = prepared.device().or(io.device.as_deref());
@@ -388,7 +341,7 @@ fn open_input(host: &cpal::Host, io: &Arc<Io>) -> Result<Opened, Status> {
         .map_err(|error| backend::audio_fault(&error, false))?;
     let name = platform::input_name(&device);
     let channels = usize::from(config.channels()).max(1);
-    let step = f64::from(SAMPLE_RATE) / f64::from(config.sample_rate());
+    let nearest_sample_rate_step = f64::from(SAMPLE_RATE) / f64::from(config.sample_rate());
     let mut due = 0f64;
     let mut block = Vec::with_capacity(BLOCK);
     let mut processed = [0f32; BLOCK];
@@ -396,8 +349,7 @@ fn open_input(host: &cpal::Host, io: &Arc<Io>) -> Result<Opened, Status> {
     let delay_ms = io.delay_ms;
     let weak = Arc::downgrade(io);
     let mut on_mono = move |sample: f32| {
-        // ponytail: nearest-sample rate conversion to 48 kHz
-        due += step;
+        due += nearest_sample_rate_step;
         while due >= 1. {
             due -= 1.;
             block.push(sample);
@@ -439,7 +391,7 @@ fn open_input(host: &cpal::Host, io: &Arc<Io>) -> Result<Opened, Status> {
     macro_rules! typed {
         ($t:ty) => {
             device.build_input_stream::<$t, _, _>(
-                backend::short(&config),
+                backend::with_twenty_millisecond_buffer(&config),
                 move |data: &[$t], _| {
                     for chunk in data.chunks(channels) {
                         let mono = chunk
@@ -479,9 +431,6 @@ type Opened = (
     platform::Prepared,
 );
 
-/// The speaker opened: the mixer's frames played, each told to the echo
-/// canceller as what the microphone will hear; the system's audio session
-/// (a phone's) held while it plays, as for the chime.
 fn open_output(
     host: &cpal::Host,
     io: &Arc<Io>,
@@ -492,7 +441,7 @@ fn open_output(
         .default_output_config()
         .map_err(|error| backend::audio_fault(&error, false))?;
     let channels = usize::from(config.channels()).max(1);
-    let step = f64::from(SAMPLE_RATE) / f64::from(config.sample_rate());
+    let nearest_sample_rate_step = f64::from(SAMPLE_RATE) / f64::from(config.sample_rate());
     let mut due = 0f64;
     let mut frame = [0f32; FRAME];
     let mut at = FRAME;
@@ -500,7 +449,7 @@ fn open_output(
     let mut scratch = [0f32; BLOCK];
     let weak = Arc::downgrade(io);
     let mut next = move || {
-        due += step;
+        due += nearest_sample_rate_step;
         while due >= 1. {
             due -= 1.;
             if at >= FRAME {
@@ -524,7 +473,7 @@ fn open_output(
     macro_rules! typed {
         ($t:ty) => {
             device.build_output_stream::<$t, _, _>(
-                backend::short(&config),
+                backend::with_twenty_millisecond_buffer(&config),
                 move |data: &mut [$t], _| {
                     for chunk in data.chunks_mut(channels) {
                         let value = <$t as cpal::FromSample<f32>>::from_sample_(next());
@@ -558,8 +507,6 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// When the next 20 ms frame is due, from `started`, for a loop that
-/// ticks the fake and the tests: `n` frames in.
 pub(crate) fn frame_due(started: Instant, n: u64) -> Instant {
     started + Duration::from_millis(20 * n)
 }
@@ -568,9 +515,6 @@ pub(crate) fn frame_due(started: Instant, n: u64) -> Instant {
 mod tests {
     use super::*;
 
-    /// A device that failed is not asked again before the retry passes,
-    /// one the system refused not until nothing wants it; both open at
-    /// once after a reset.
     #[test]
     fn a_failed_device_is_asked_again_after_the_retry_a_denied_one_after_a_reset() {
         let now = Instant::now();
@@ -585,10 +529,6 @@ mod tests {
         assert!(retry.may(now));
     }
 
-    /// The I/O's life is told once each way: made with the first holder
-    /// (a second hold is the same I/O), gone with the last. The follower
-    /// is the process's one, and `TOLD` counts every I/O of this binary:
-    /// this is the only test that holds the voice.
     #[test]
     fn the_voice_io_s_life_is_told_at_its_first_hold_and_its_last_let_go() {
         use std::sync::atomic::AtomicU8;
@@ -604,7 +544,6 @@ mod tests {
         drop(first);
         assert_eq!(TOLD.load(Ordering::Relaxed), 0x01);
         drop(second);
-        // the I/O's thread may hold the last reference for one of its ticks
         let until = Instant::now() + Duration::from_secs(2);
         while TOLD.load(Ordering::Relaxed) != 0x11 && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(5));

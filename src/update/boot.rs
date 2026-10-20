@@ -36,27 +36,16 @@ use tracing::{debug, info, warn};
 
 use super::{Layout, Refusal, TARGET};
 
-/// How long a staged release has to answer `--version`. The boot step runs
-/// before any window, so a release that hangs there would hang every start.
-const QUALIFY_TIMEOUT: Duration = Duration::from_secs(10);
+const STAGED_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// What the boot step decided for this process.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Boot {
-    /// Not an installed app: no update state was read or written.
     Off,
-    /// An installed app whose updater another of its processes runs: this
-    /// one goes on with it off, and touched nothing.
     Elsewhere,
-    /// This image is the release that should run: the app goes on, its
-    /// updater armed with this phase.
     Run(Phase),
-    /// The install path names another image: run it in this one's place.
     Exec(PathBuf),
 }
 
-/// Decide, then run the release the install path names in this process's
-/// place or arm the updater. Returns when this process goes on as the app.
 pub(crate) fn boot() {
     let (Some(layout), Ok(own)) = (Layout::host(), std::env::current_exe()) else {
         return;
@@ -132,8 +121,6 @@ pub(super) fn takeover_at(layout: &Layout, own_id: (u64, u64)) -> Result<Option<
     Ok((super::file_id(&layout.app_exe())? == own_id).then_some(phase))
 }
 
-/// The decision over explicit inputs, every file effect performed: `own` is
-/// the running executable.
 pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     let has_state = std::fs::symlink_metadata(layout.state_path()).is_ok();
     if !(layout.owns(own) && (has_state || cfg!(target_os = "macos"))) {
@@ -142,8 +129,6 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     if !super::hold_install(layout)? {
         return Ok(Boot::Elsewhere);
     }
-    // taken before anything moves: on macOS the swap puts another bundle
-    // at this very path
     let own_id = super::file_id(own)?;
     let phase = match super::read_state(&layout.state_path()) {
         Err(refusal) if refusal.reason == "state_invalid" => {
@@ -152,12 +137,6 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
         }
         read => read?,
     };
-    // macOS adopts the bundle that runs from the install dir when no state
-    // describes it ([`super::install::adopt`]): none, as for a bundle dragged
-    // in from the DMG, or one that names another bundle, as for one dragged
-    // over an installed one, older or newer (`macos::describes`, by the
-    // executable's digest). On Linux a bare binary runs from anywhere, and
-    // `install` is the way in.
     let adopting = cfg!(target_os = "macos")
         && match &phase {
             Some(phase) => !super::macos::describes(layout, phase, super::digest_file(own)?),
@@ -173,10 +152,6 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
             ));
         }
     };
-    // a release staged for a channel the device has since left is that
-    // channel's offer, and one the updater staged on its own before
-    // updating automatically went off was never asked for: dropped, never
-    // flipped to
     let first = match &phase {
         Phase::Staged(staged) if staged.channel != super::channel::read_channel(layout).name() => {
             warn!(target: TARGET, event = "app_update_refused", reason = "other_channel", staged = %staged.staged, channel = %staged.channel, "the device follows another channel now; not flipped");
@@ -211,13 +186,6 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     }
 }
 
-/// Step the machine from `event` (`Boot`, `ChannelChanged` for a release
-/// another channel staged, or `AutomaticOff` for one staged unasked while
-/// updating automatically is off), performing each command in order and
-/// feeding the answers (`SwapResolved`, `QualifyPassed`/`Failed`) back in,
-/// until a list asks for nothing more. Returns the phase it settled on. `Exec`
-/// needs nothing here: [`boot_at`] runs whatever the install path names
-/// once the machine is done with it.
 fn drive(layout: &Layout, mut phase: Phase, mut event: Event) -> Result<Phase, Refusal> {
     loop {
         let (next, commands) = step(phase, event);
@@ -257,9 +225,6 @@ fn drive(layout: &Layout, mut phase: Phase, mut event: Event) -> Result<Phase, R
     }
 }
 
-/// Point the install path at `to`. Linux: `previous` then `current`, each a
-/// symlink at a temp name renamed over, so the install path always resolves
-/// to one whole release. macOS: the bundle swap.
 fn flip(layout: &Layout, from: Sha, to: Sha) -> Result<(), Refusal> {
     if cfg!(target_os = "macos") {
         return super::macos::swap_bundles(layout, from, to);
@@ -269,7 +234,6 @@ fn flip(layout: &Layout, from: Sha, to: Sha) -> Result<(), Refusal> {
     super::replace_symlink(&layout.current_link(), &Layout::link_target(to))
 }
 
-/// Which side of a crashed swap is live.
 fn resolve(layout: &Layout, from: Sha, to: Sha) -> Result<SwapState, Refusal> {
     if cfg!(target_os = "macos") {
         return super::macos::resolve_swap(layout, from, to);
@@ -291,11 +255,6 @@ fn resolve(layout: &Layout, from: Sha, to: Sha) -> Result<SwapState, Refusal> {
     ))
 }
 
-/// The staged release, asked whether it runs at all before anything flips
-/// to it: whole, (macOS) its bundle signature intact, and its own
-/// `--version` answered — the one flag every release answers without
-/// starting the app. A binary that does not load fails here, not at the
-/// boot after the flip.
 fn qualify(layout: &Layout, sha: Sha) -> Event {
     let whole =
         super::require_release(layout, sha).and_then(|()| match cfg!(target_os = "macos") {
@@ -304,7 +263,7 @@ fn qualify(layout: &Layout, sha: Sha) -> Event {
         });
     let answered = whole
         .map_err(|refusal| refusal.reason.to_string())
-        .and_then(|()| answers_version(&layout.release_exe(sha), QUALIFY_TIMEOUT));
+        .and_then(|()| answers_version(&layout.release_exe(sha), STAGED_VERSION_PROBE_TIMEOUT));
     match answered {
         Ok(()) => Event::QualifyPassed(sha),
         Err(reason) => {
@@ -314,7 +273,6 @@ fn qualify(layout: &Layout, sha: Sha) -> Event {
     }
 }
 
-/// `<exe> --version` exits 0 within `timeout` and names itself.
 pub(super) fn answers_version(exe: &Path, timeout: Duration) -> Result<(), String> {
     let mut child = Process::new(exe)
         .arg("--version")
@@ -335,8 +293,6 @@ pub(super) fn answers_version(exe: &Path, timeout: Duration) -> Result<(), Strin
             }
         }
     };
-    // what it said by its exit, read without waiting: a process it left
-    // behind may still hold the pipe open
     let mut said = [0u8; 64];
     let read = child.stdout.take().map_or(0, |mut stdout| {
         // SAFETY: an open descriptor and flag constants.

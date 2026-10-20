@@ -14,10 +14,8 @@ use gpui_kit::{Entity, Subscription, TestAppContext};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-/// The node the sessions are on.
 const ORIGIN: &str = "http://127.0.0.1:1";
 
-/// The other node a switch tries.
 const OTHER: &str = "http://127.0.0.1:2";
 
 fn testnet(height: u64) -> NodeStatus {
@@ -27,7 +25,6 @@ fn testnet(height: u64) -> NodeStatus {
     }
 }
 
-/// Every event `session` emits while the subscription lives.
 fn events(
     session: &Entity<Session>,
     cx: &mut TestAppContext,
@@ -55,14 +52,11 @@ fn state(session: &Entity<Session>, cx: &mut TestAppContext) -> SessionState {
     session.read_with(cx, |session, _| session.get().clone())
 }
 
-/// Two seconds on the clock: one poll, landed.
 fn poll(cx: &mut TestAppContext) {
     cx.executor().advance_clock(STATUS_EVERY);
     cx.run_until_parked();
 }
 
-/// A session on the test node, its first poll landed, answering `answer`
-/// (asked once already).
 fn connected(
     answer: impl Fn(usize) -> Result<NodeStatus, String> + 'static,
     cx: &mut TestAppContext,
@@ -85,9 +79,6 @@ fn connected(
     (session, asked)
 }
 
-/// A node not reached says so under the address field; a new address
-/// clears the last failure's sentence, and an address that is none is
-/// refused before it is tried.
 #[gpui_kit::test]
 fn a_node_not_reached_is_said_and_a_new_try_clears_it(cx: &mut TestAppContext) {
     let session = cx.update(session);
@@ -118,9 +109,6 @@ fn a_node_not_reached_is_said_and_a_new_try_clears_it(cx: &mut TestAppContext) {
     assert!(!refused.connecting, "a refused address was tried");
 }
 
-/// A connect out reaches for the address it was started with: what is
-/// typed meanwhile is the field's, and a node not reached is named by the
-/// address that was tried.
 #[gpui_kit::test]
 fn a_connect_out_reaches_for_the_address_it_was_started_with(cx: &mut TestAppContext) {
     let session = cx.update(session);
@@ -138,8 +126,6 @@ fn a_connect_out_reaches_for_the_address_it_was_started_with(cx: &mut TestAppCon
     cx.run_until_parked();
     let failed = state(&session, cx);
     assert!(failed.reaching.is_empty(), "no attempt is out");
-    // the sentence is backend's (`connect_error`); which address it names
-    // (by its host) is the claim here
     assert!(
         failed.error.contains("127.0.0.1:1.") && !failed.error.contains("127.0.0.1:19"),
         "the failure named an address that was not tried: {}",
@@ -147,8 +133,6 @@ fn a_connect_out_reaches_for_the_address_it_was_started_with(cx: &mut TestAppCon
     );
 }
 
-/// The poll asks every two seconds on the clock; a node at the same height
-/// moves neither the session nor the chain.
 #[gpui_kit::test]
 fn an_unchanged_status_poll_notifies_nothing(cx: &mut TestAppContext) {
     let (session, asked) = connected(|_| Ok(testnet(7)), cx);
@@ -163,8 +147,6 @@ fn an_unchanged_status_poll_notifies_nothing(cx: &mut TestAppContext) {
     assert_eq!(chains.get(), 0, "a still chain moved the chain");
 }
 
-/// A block landing moves the chain once, stamps it seen now, and moves the
-/// session not at all.
 #[gpui_kit::test]
 fn a_moved_height_notifies_the_chain_and_not_the_session(cx: &mut TestAppContext) {
     let (session, _) = connected(|n| Ok(testnet(7 + n as u64)), cx);
@@ -185,8 +167,6 @@ fn a_moved_height_notifies_the_chain_and_not_the_session(cx: &mut TestAppContext
     assert_eq!(sessions.get(), 0, "a block moved the session");
 }
 
-/// Every answered poll restamps when the node was last heard, without a
-/// notify: only the open node menu's own clock reads it.
 #[gpui_kit::test]
 fn heard_moves_without_a_notify(cx: &mut TestAppContext) {
     let (session, _) = connected(|_| Ok(testnet(7)), cx);
@@ -211,8 +191,6 @@ fn heard_moves_without_a_notify(cx: &mut TestAppContext) {
     );
 }
 
-/// A missed poll reads reconnecting, and one answer recovers; the
-/// session moves once each way, and the poll never stops.
 #[gpui_kit::test]
 fn a_missed_poll_reads_reconnecting_and_one_answer_recovers(cx: &mut TestAppContext) {
     let (session, _) = connected(
@@ -241,9 +219,6 @@ fn a_missed_poll_reads_reconnecting_and_one_answer_recovers(cx: &mut TestAppCont
     );
 }
 
-/// A switch keeps the network in hand until the other node answers; one
-/// that does not land says so over it, the address back to the node in
-/// hand, and the poll goes on. The same node again is no switch.
 #[gpui_kit::test]
 fn a_switch_that_does_not_land_keeps_the_network_in_hand(cx: &mut TestAppContext) {
     let (session, asked) = connected(|_| Ok(testnet(7)), cx);
@@ -279,8 +254,6 @@ fn a_switch_that_does_not_land_keeps_the_network_in_hand(cx: &mut TestAppContext
     assert!(!state(&session, cx).connecting);
 }
 
-/// Disconnect: off every network, the Connect screen, the poll gone, the
-/// key locked, and the desks told to clear (`LeftNetwork`).
 #[gpui_kit::test]
 fn disconnecting_leaves_everything_of_the_network(cx: &mut TestAppContext) {
     let _seat = crate::backend::seat_serial();
@@ -307,8 +280,6 @@ fn disconnecting_leaves_everything_of_the_network(cx: &mut TestAppContext) {
     assert_eq!(asked.get(), polls, "the poll went on after leaving");
 }
 
-/// Every session method and the poll's landing record under
-/// `reducer.connect`: qa's hang rule reads the timer (docs/perf.md).
 #[gpui_kit::test]
 fn session_methods_record_under_reducer_connect(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
@@ -322,9 +293,6 @@ fn session_methods_record_under_reducer_connect(cx: &mut TestAppContext) {
     );
 }
 
-/// In the background the status poll stops (the node is not asked while
-/// nothing is shown); coming to the front asks at once and polls on
-/// (`Signal::Lifecycle`, through `start`'s drain).
 #[gpui_kit::test]
 fn the_poll_stops_in_the_background_and_asks_at_once_in_front(cx: &mut TestAppContext) {
     use gpui_kit::AppLifecyclePhase::{Background, Foreground};

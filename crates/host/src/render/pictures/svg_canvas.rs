@@ -1,9 +1,6 @@
 use super::*;
 use gpui_kit::relative;
 
-/// The SVG road for commands gpui cannot paint itself. A canvas has no wire
-/// identity, so nothing measures it across frames: the picture is drawn at
-/// prepaint, when its own bounds are known, and laid out as a root there.
 pub(super) struct SvgCanvas {
     pub(super) commands: Vec<wire::CanvasCommand>,
 }
@@ -94,9 +91,6 @@ mod tests {
         })
     }
 
-    /// The tree in a cached seat, as on the desk: it renders again only when
-    /// it asks to. Three frames to settle, five more, and the renders those
-    /// five cost — a tree at rest costs none.
     fn redraws_at_rest(
         root: wire::Node,
         cx: &mut gpui_kit::TestAppContext,
@@ -128,7 +122,6 @@ mod tests {
 
     #[gpui_kit::test]
     fn a_canvas_at_rest_asks_for_no_render(cx: &mut gpui_kit::TestAppContext) {
-        // a Path shape takes the SVG road, the one that needs the canvas's size
         let drawing = wire::Node::Canvas {
             commands: vec![wire::CanvasCommand::Draw {
                 shape: wire::CanvasShape::Path(vec![]),

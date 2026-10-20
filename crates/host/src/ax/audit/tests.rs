@@ -174,11 +174,6 @@ fn ax_012_press_comes_with_focus() {
     assert_eq!(fails(&report, "AX-012"), ["w:row"]);
 }
 
-/// A rich text's clickable ranges are links no element draws, reached by
-/// the arrows from the box around the text once Tab has put the keys in
-/// it: under a node that offers focus they pass, and the picked one, a
-/// drawn node the keys are on, passes as focused. A range under no such
-/// box, and a drawn link nothing reaches, fail.
 #[test]
 fn ax_012_a_texts_links_are_reached_through_its_box() {
     let mut text = node("text", "Group", "Read the docs or the code");
@@ -199,9 +194,6 @@ fn ax_012_a_texts_links_are_reached_through_its_box() {
     assert_eq!(fails(&report, "AX-012"), ["w:drawn", "w:loose.Link"]);
 }
 
-/// A composite's rows are reached by the arrows from the composite: a row
-/// with a press and no focus passes under one that takes focus, as
-/// view_wire::audit's Unreachable reads it, and not under one that does not.
 #[test]
 fn ax_012_a_composites_rows_are_reached_through_it() {
     let row = |id, parent: &str| {
@@ -227,11 +219,6 @@ fn ax_012_a_composites_rows_are_reached_through_it() {
     assert_eq!(fails(&report, "AX-012"), ["w:b", "w:c"]);
 }
 
-/// A desk window without the keys: its rows are reached by the chord its
-/// box names, which hands that window the keys. The shell's own reading: a
-/// view's row answers to view_wire::audit, a control's chord presses the
-/// control, handing nothing the keys, and in the window with the keys the
-/// chord hands it nothing it has not got.
 #[test]
 fn ax_012_a_shell_row_is_reached_by_the_chord_its_window_names() {
     let row = |id, parent: &str| {
@@ -331,7 +318,6 @@ fn ax_018_a_launcher_screen_has_one_shell_heading_when_the_caller_says_so() {
     );
     let two = vec![node("h", "Heading", "A"), node("h2", "Heading", "B")];
     assert_eq!(fails(&audit(&reading(vec![two]), true), "AX-018"), ["w"]);
-    // the desk, or a caller that said nothing: not applicable
     let report = audit(&reading(vec![none.clone()]), false);
     assert!(!report.applicable.contains_key("AX-018") && !report.launcher);
     let mut modal = reading(vec![none]);
@@ -383,10 +369,6 @@ fn ax_021_every_focus_stop_is_reached() {
     assert_eq!(fails(&skipped, "AX-021"), ["w:b"]);
 }
 
-/// A box the keys went into is reached: a rich text's box has the keys
-/// while its picked link, a node offering no focus of its own, is the one
-/// focused. A stop beside it or around it that Tab never lands on is not:
-/// the keys are on the link's nearest ancestor that offers focus.
 #[test]
 fn ax_021_a_box_holding_the_keys_through_its_picked_link_is_reached() {
     let card = || {
@@ -414,7 +396,6 @@ fn ax_021_a_box_holding_the_keys_through_its_picked_link_is_reached() {
     assert_eq!(fails(&report, "AX-021"), ["w:b", "w:card"]);
 }
 
-/// A stop the state opened on and Tab never lands on again is not reached.
 #[test]
 fn ax_021_where_the_state_opened_does_not_count() {
     let a = || button("a", "A");
@@ -427,10 +408,6 @@ fn ax_021_where_the_state_opened_does_not_count() {
     assert_eq!(fails(&report, "AX-021"), ["w:a"]);
 }
 
-/// A menu Tab leaves closes (a Dialog or a Menu hanging from the bar): the
-/// control it opened on had the keys as it opened, and no Tab comes back
-/// to it. One that stays open is held to the walk like anything else, and
-/// so is what goes with any other box.
 #[test]
 fn ax_021_a_menu_the_walk_closed_had_the_keys_where_it_opened() {
     let walked = |role: &str, closes: bool| {
@@ -473,8 +450,6 @@ fn ax_021_a_menu_the_walk_closed_had_the_keys_where_it_opened() {
     assert_eq!(fails(&walked("Group", true), "AX-021"), ["w:a"]);
 }
 
-/// A combo box never shows as focused: gpui moves the tree's focus to its
-/// active row. It holds the keys while it names one.
 #[test]
 fn ax_021_a_combo_box_holds_the_keys_while_its_row_is_active() {
     let combo = |row: Option<&str>| {
@@ -534,7 +509,6 @@ fn ax_023_under_a_modal_focus_never_leaves() {
     let mut out = reading(vec![vec![focused(a())], vec![focused(a())], vec![a()]]);
     out.modal = true;
     assert_eq!(fails(&audit(&out, false), "AX-023"), ["step 2"]);
-    // no modal: not applicable
     assert!(
         !walk(vec![vec![a()], vec![a()]])
             .applicable
@@ -550,7 +524,6 @@ fn ax_024_a_shell_dialog_has_escape_bound() {
     let mut unbound = reading(vec![vec![dialog(), focused(button("a", "A"))]]);
     unbound.escape = vec![false];
     assert_eq!(fails(&audit(&unbound, false), "AX-024"), ["w:dlg"]);
-    // a view's dialog closes on its own key
     let mut view = dialog();
     view.scope = "w/chat".into();
     let mut viewed = reading(vec![vec![view, focused(button("a", "A"))]]);
@@ -567,10 +540,6 @@ fn ax_025_a_dialog_shows_with_something_focused() {
     assert_eq!(fails(&lost, "AX-025"), ["w:dlg"]);
 }
 
-/// A step whose focus is on a node the audit's scope left out (a `view=`
-/// walk on a shell stop) is the other scope's: AX-020, AX-022 and AX-023
-/// skip it, and to AX-025 it is focus. A step with no focus anywhere is
-/// judged as ever.
 #[test]
 fn a_step_whose_focus_is_outside_the_scope_is_left_to_that_scope() {
     let dialog = || node("dlg", "Dialog", "Settings");
@@ -598,9 +567,6 @@ fn a_step_whose_focus_is_outside_the_scope_is_left_to_that_scope() {
     }
 }
 
-/// After a step whose focus was outside the scope, a step with no focus
-/// anywhere fails AX-020 and passes AX-022 as the whole window's walk
-/// does: the focus moved off the other scope's node.
 #[test]
 fn a_step_that_loses_the_focus_from_outside_the_scope_moved_it() {
     let (a, s) = (|| button("a", "A"), || button("s", "S"));
@@ -635,13 +601,10 @@ fn coverage_counts_actionable_nodes_clean_of_errors_and_rules_failed_over_applic
     ]);
     assert_eq!(report.nodes, 4);
     assert_eq!(report.actionable, 3);
-    // "bare" fails AX-002 (error); "thin" only warns
     assert!(
         (report.coverage.actionable - 2. / 3.).abs() < 1e-9,
         "{report:#?}"
     );
-    // AX-002 bare, AX-017 thin, AX-014 h; the rule coverage is what is left
-    // of every (rule, node) the rules applied to
     assert_eq!(report.violations.len(), 3, "{report:#?}");
     let applicable = report.applicable.values().sum::<usize>() as f64;
     assert!(applicable > 3., "{report:#?}");
@@ -666,7 +629,6 @@ fn a_node_seen_in_every_snapshot_counts_once() {
     assert_eq!(report.nodes, 1);
 }
 
-/// A box that holds the keys first, around the stops its builder paints.
 struct Stops(gpui_kit::FocusHandle, fn() -> Vec<gpui_kit::AnyElement>);
 
 impl gpui_kit::Render for Stops {
@@ -685,7 +647,6 @@ impl gpui_kit::Render for Stops {
     }
 }
 
-/// A 40 px button `id`, a Tab stop, `top` px down its box.
 fn stop(id: &'static str, top: f32) -> gpui_kit::AnyElement {
     use gpui_kit::*;
     div()
@@ -702,8 +663,6 @@ fn stop(id: &'static str, top: f32) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-/// `stops` in a window under the kit's root (what answers Tab), the keys
-/// on the box and then `tabs` stops on.
 fn stops_window(
     cx: &mut gpui_kit::TestAppContext,
     stops: fn() -> Vec<gpui_kit::AnyElement>,
@@ -735,7 +694,6 @@ fn stops_window(
     native
 }
 
-/// The ids `rule` fails on in a `/audit` answer.
 fn door_fails(report: &serde_json::Value, rule: &str) -> Vec<String> {
     report["violations"]
         .as_array()
@@ -746,8 +704,6 @@ fn door_fails(report: &serde_json::Value, rule: &str) -> Vec<String> {
         .collect()
 }
 
-/// Six buttons, Tab order as painted: three below the window's edge, then
-/// three on it.
 fn six() -> Vec<gpui_kit::AnyElement> {
     vec![
         stop("hidden-1", 1000.),
@@ -759,8 +715,6 @@ fn six() -> Vec<gpui_kit::AnyElement> {
     ]
 }
 
-/// The first snapshot shows three stops of a Tab cycle of six: the walk
-/// goes on past them, round the whole cycle.
 #[gpui_kit::test]
 fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
     cx: &mut gpui_kit::TestAppContext,
@@ -780,7 +734,6 @@ fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
     assert_eq!(report.presses, 7);
 }
 
-/// The presses a walk of `native` takes.
 fn presses(native: &mut gpui_kit::VisualTestContext) -> usize {
     let snap = |window: &mut Window, cx: &mut App| {
         window.activate_a11y();
@@ -792,8 +745,6 @@ fn presses(native: &mut gpui_kit::VisualTestContext) -> usize {
         .update(|window, cx| audit(&observe(window, cx, "w", true, |_| true, snap), false).presses)
 }
 
-/// A 40 px button `id` that offers focus and is no Tab stop, as a
-/// composite's chosen row does.
 fn offer(id: &'static str, top: f32) -> gpui_kit::AnyElement {
     use gpui_kit::*;
     div()
@@ -808,17 +759,12 @@ fn offer(id: &'static str, top: f32) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-/// A window of one stop, the keys on it: Tab stays there, `escape tab`
-/// stays there, and that is the focus back on the first stop. The walk
-/// ends on it, though two nodes offer focus.
 #[gpui_kit::test]
 fn the_walk_ends_on_a_first_stop_that_keeps_the_keys(cx: &mut gpui_kit::TestAppContext) {
     let mut native = stops_window(cx, || vec![stop("only", 0.), offer("row", 50.)], 1);
     assert_eq!(presses(&mut native), 2);
 }
 
-/// No stop and the keys nowhere: the first press puts the focus nowhere,
-/// and ends the walk, though a node offers focus.
 #[gpui_kit::test]
 fn the_walk_ends_on_a_first_press_that_puts_the_focus_nowhere(cx: &mut gpui_kit::TestAppContext) {
     let mut native = stops_window(cx, || vec![offer("row", 0.)], 0);
@@ -826,8 +772,6 @@ fn the_walk_ends_on_a_first_press_that_puts_the_focus_nowhere(cx: &mut gpui_kit:
     assert_eq!(presses(&mut native), 1);
 }
 
-/// View `x`'s mark (`Seat::ax_mark`) at the right of the window, around
-/// `inside`.
 fn view_x(inside: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
     use gpui_kit::*;
     div()
@@ -841,7 +785,6 @@ fn view_x(inside: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-/// Two shell stops, then two in view `x`.
 fn shell_then_view() -> Vec<gpui_kit::AnyElement> {
     vec![
         stop("shell-1", 0.),
@@ -850,10 +793,6 @@ fn shell_then_view() -> Vec<gpui_kit::AnyElement> {
     ]
 }
 
-/// A `view=` audit walks the whole window's Tab cycle, and a step Tab
-/// spends on a stop outside the view is not the view's to judge: the view
-/// passes AX-020 and AX-022 as the whole window does, with C 1, and its
-/// own steps are still judged.
 #[gpui_kit::test]
 async fn a_view_audit_does_not_judge_the_steps_tab_spends_outside_the_view(
     cx: &mut gpui_kit::TestAppContext,
@@ -870,11 +809,9 @@ async fn a_view_audit_does_not_judge_the_steps_tab_spends_outside_the_view(
         assert_eq!(report["presses"], 5, "{what}");
     }
     assert_eq!(whole["applicable"]["AX-020"], 5);
-    // in-1 and in-2: the view's own steps
     assert_eq!(view["applicable"]["AX-020"], 2);
 }
 
-/// A shell stop, then a Dialog in view `x` holding one.
 fn shell_then_dialog() -> Vec<gpui_kit::AnyElement> {
     use gpui_kit::*;
     vec![
@@ -891,13 +828,8 @@ fn shell_then_dialog() -> Vec<gpui_kit::AnyElement> {
     ]
 }
 
-/// Focus on a node a `view=` audit leaves out is still focus: a view's
-/// Dialog that Tab leaves for a shell stop has something focused (AX-025),
-/// as the whole window's audit says; the focus is outside it (AX-104) in
-/// both.
 #[gpui_kit::test]
 async fn a_view_audit_counts_focus_outside_the_view_as_focus(cx: &mut gpui_kit::TestAppContext) {
-    // the dialog opens with the keys on its own stop
     let native = stops_window(cx, shell_then_dialog, 2);
     let window = gpui_kit::VisualContext::window_handle(&native);
     let whole = door_audit(window, None, &|_, _| None, cx).await;
@@ -908,11 +840,8 @@ async fn a_view_audit_counts_focus_outside_the_view_as_focus(cx: &mut gpui_kit::
     }
 }
 
-/// The key route of the list [`members`] draws.
 const KEYS: u32 = 9;
 
-/// A focusable ListBox of four rows, `active` the chosen one, whose keys go
-/// to the view: the Members list's shape.
 fn members(active: usize) -> view_wire::Node {
     use gpui_kit::Styled as _;
     let container = |key: String, children| {
@@ -961,9 +890,6 @@ fn members(active: usize) -> view_wire::Node {
     list
 }
 
-/// `GET /audit?walk=1` over a [`members`] list holding the keys, whose
-/// view steps the active row on `down` and `up`, `after` the key reached
-/// it (none: at once): the answer, and the keys the view heard.
 async fn arrow_probe(
     cx: &mut gpui_kit::TestAppContext,
     after: Option<std::time::Duration>,
@@ -1007,7 +933,6 @@ async fn arrow_probe(
             .detach();
         })
     });
-    // the list holds the keys: Tab is the app's binding, not a bare window's
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
         window.activate_a11y();
@@ -1019,14 +944,6 @@ async fn arrow_probe(
     (report, heard)
 }
 
-/// A view's list answers an arrow once the update that pressed it has
-/// ended (a key reaches a view as an event the tree emits, and an emit is
-/// delivered when the outermost update ends): the arrow probe of
-/// `GET /audit` presses each arrow in an update of its own and reads after
-/// it, so a list whose arrows move its active row passes AX-107. A view
-/// that moves its active row a while after it heard the arrow (a view
-/// ticks on a later draw) passes too: the probe reads again until the row
-/// has moved, before it presses the next arrow.
 #[gpui_kit::test]
 async fn the_arrow_probe_sees_a_views_list_move_its_active_row_at_once_or_late(
     cx: &mut gpui_kit::TestAppContext,
@@ -1046,11 +963,8 @@ async fn the_arrow_probe_sees_a_views_list_move_its_active_row_at_once_or_late(
     }
 }
 
-/// The first key route of [`composites_audit`]'s composites.
 const ROUTE: u32 = 40;
 
-/// An item `id` of `role`, the active descendant of its composite when
-/// `active`.
 fn item(
     id: String,
     role: gpui_kit::Role,
@@ -1083,8 +997,6 @@ fn item(
     })
 }
 
-/// A composite as the SDK builds one: one Tab stop, `role`, named and
-/// oriented, its keys to `route`, holding `items`.
 fn one_stop(
     id: &str,
     role: gpui_kit::Role,
@@ -1112,8 +1024,6 @@ fn one_stop(
     })
 }
 
-/// A horizontal tab list of three pages over a list box of four rows,
-/// `active` their active items.
 fn pages_over_rows(active: &[usize]) -> view_wire::Node {
     use gpui_kit::Role;
     use gpui_kit::accesskit::Orientation;
@@ -1149,8 +1059,6 @@ fn pages_over_rows(active: &[usize]) -> view_wire::Node {
     })
 }
 
-/// A grid of three messages, `active[0]` the active one, whose first body
-/// is a rich text with one link: a Tab stop of its own inside the grid.
 fn messages(active: &[usize]) -> view_wire::Node {
     use gpui_kit::Role;
     let rows = (0..3).map(|n| {
@@ -1182,12 +1090,6 @@ fn messages(active: &[usize]) -> view_wire::Node {
     )
 }
 
-/// `GET /audit?walk=1` over what `screen` draws from its composites'
-/// active items (`active`, as it opens), in a window under the kit's root
-/// (what answers Tab), after `tabs` Tab presses. Composite `n` hears its
-/// keys on `ROUTE + n` and, as a view does, moves its active item on
-/// `steps[n]`'s pair (next, previous) among its `count`: the answer, and
-/// the keys each composite heard.
 async fn composites_audit(
     cx: &mut gpui_kit::TestAppContext,
     screen: fn(&[usize]) -> view_wire::Node,
@@ -1202,7 +1104,6 @@ async fn composites_audit(
     let window = cx.open_window(
         gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
         |window, cx| {
-            // a front pane with nothing over the desk: its dialogs may take the keys
             let tree =
                 cx.new(|_| crate::render::ViewTree::new(screen(&active)).with_keys_grant(true));
             gpui_kit::component::Root::new(tree, window, cx)
@@ -1251,9 +1152,6 @@ async fn composites_audit(
     (report, heard)
 }
 
-/// The state opens with the keys on a tab list, and Tab lands on a list
-/// box: the audit probes each with its own arrows, the tab list with
-/// right and left, the list box with down and up, and both pass.
 #[gpui_kit::test]
 async fn the_walk_probes_each_composite_tab_lands_in_by_its_own_arrows(
     cx: &mut gpui_kit::TestAppContext,
@@ -1265,9 +1163,6 @@ async fn the_walk_probes_each_composite_tab_lands_in_by_its_own_arrows(
     assert_eq!(heard, [["right", "left"], ["down", "up"]]);
 }
 
-/// A list box that opens on its last row (a room list on the last room)
-/// does not move on down: the probe presses up, then down back, and the
-/// list passes.
 #[gpui_kit::test]
 async fn the_probe_comes_back_from_a_row_at_the_end(cx: &mut gpui_kit::TestAppContext) {
     let steps = vec![(["right", "left"], 3), (["down", "up"], 4)];
@@ -1277,10 +1172,6 @@ async fn the_probe_comes_back_from_a_row_at_the_end(cx: &mut gpui_kit::TestAppCo
     assert_eq!(heard[1], ["down", "up", "down"]);
 }
 
-/// The state opens with the keys on a message's links, a Tab stop inside
-/// the grid that keeps its arrows: the grid is not probed from there (its
-/// links would not move, and the grid would fail for them), but when Tab
-/// lands on the grid itself.
 #[gpui_kit::test]
 async fn the_probe_skips_a_link_box_inside_a_grid(cx: &mut gpui_kit::TestAppContext) {
     let steps = vec![(["down", "up"], 3)];
@@ -1293,7 +1184,6 @@ async fn the_probe_skips_a_link_box_inside_a_grid(cx: &mut gpui_kit::TestAppCont
     assert_eq!(heard, [["down", "up"]]);
 }
 
-/// A view's Button `id`, a Tab stop.
 fn view_button(id: &str) -> view_wire::Node {
     let view_wire::Node::Container(mut button) =
         item(id.to_owned(), gpui_kit::Role::Button, false, Vec::new())
@@ -1305,8 +1195,6 @@ fn view_button(id: &str) -> view_wire::Node {
     view_wire::Node::Container(button)
 }
 
-/// A view's dialog "Pick", open from the first frame, holding two buttons
-/// over the button that opened it.
 fn pick_dialog(_: &[usize]) -> view_wire::Node {
     use gpui_kit::Styled as _;
     view_wire::Node::Overlay {
@@ -1326,11 +1214,6 @@ fn pick_dialog(_: &[usize]) -> view_wire::Node {
     }
 }
 
-/// What the census sees of a view dialog: it opens with the keys on its
-/// first control, and the Tab walk goes round its two controls without
-/// ever leaving it — every snapshot has one focused node in the modal
-/// (AX-020), inside it (AX-023), and the dialog holds the keys (AX-025,
-/// AX-104).
 #[gpui_kit::test]
 async fn the_tab_walk_stays_in_a_view_dialog(cx: &mut gpui_kit::TestAppContext) {
     let (report, _) = composites_audit(cx, pick_dialog, Vec::new(), Vec::new(), 0).await;
@@ -1347,8 +1230,6 @@ async fn the_tab_walk_stays_in_a_view_dialog(cx: &mut gpui_kit::TestAppContext) 
     }
 }
 
-/// A grid of rows of `widths` cells each, under a header row of column
-/// headers when `header`, the claim on row 0's cell `active`.
 fn grid(widths: &[usize], header: bool, active: usize) -> view_wire::Node {
     use gpui_kit::Role;
     let header = header.then(|| {
@@ -1376,41 +1257,30 @@ fn grid(widths: &[usize], header: bool, active: usize) -> view_wire::Node {
     )
 }
 
-/// A room of one message with nothing to press in it.
 fn one_message(active: &[usize]) -> view_wire::Node {
     grid(&[1], false, active[0])
 }
 
-/// One row of eight under a header row.
 fn one_row(active: &[usize]) -> view_wire::Node {
     grid(&[8], true, active[0])
 }
 
-/// Three rows of three.
 fn three_by_three(active: &[usize]) -> view_wire::Node {
     grid(&[3, 3, 3], false, active[0])
 }
 
-/// Eleven emoji eight to a row: a row of eight over a row of three.
 fn eleven_emoji(active: &[usize]) -> view_wire::Node {
     grid(&[8, 3], false, active[0])
 }
 
-/// Tab lands on a room of one message with nothing to press in it (a
-/// thread opened on a message with no replies): the grid has one cell,
-/// nothing its arrows could move to, and is not probed.
 #[gpui_kit::test]
 async fn a_grid_of_one_cell_is_not_probed(cx: &mut gpui_kit::TestAppContext) {
     let steps = vec![(["down", "up"], 1)];
     let (report, heard) = composites_audit(cx, one_message, vec![0], steps, 1).await;
     assert!(report["applicable"].get("AX-107").is_none(), "{report}");
-    // no arrow; the walk's way out of the one Tab stop Tab stays on
     assert_eq!(heard, [["escape"]]);
 }
 
-/// A grid whose one row holds all its cells, under a header row of column
-/// headers (the frequent emoji, a list of one repository): the probe
-/// moves along the row, and it passes.
 #[gpui_kit::test]
 async fn the_probe_moves_a_grid_of_one_row_along_it(cx: &mut gpui_kit::TestAppContext) {
     let steps = vec![(["right", "left"], 8)];
@@ -1420,9 +1290,6 @@ async fn the_probe_moves_a_grid_of_one_row_along_it(cx: &mut gpui_kit::TestAppCo
     assert_eq!(heard, [["right", "left", "escape"]]);
 }
 
-/// A grid of three rows whose up and down do nothing fails, though its
-/// left and right move the active cell: the probe asks a grid of rows
-/// for its rows.
 #[gpui_kit::test]
 async fn a_grid_whose_rows_do_not_move_fails(cx: &mut gpui_kit::TestAppContext) {
     let steps = vec![(["right", "left"], 3)];
@@ -1431,9 +1298,6 @@ async fn a_grid_whose_rows_do_not_move_fails(cx: &mut gpui_kit::TestAppContext) 
     assert_eq!(heard, [["down", "up", "down", "escape"]]);
 }
 
-/// An emoji grid of a row of eight over a row of three, the claim on the
-/// first row's sixth: nothing is below it, nothing above, so down and up
-/// move nothing, and the probe moves along the row instead.
 #[gpui_kit::test]
 async fn the_probe_moves_along_a_row_with_nothing_above_or_below(
     cx: &mut gpui_kit::TestAppContext,
@@ -1445,16 +1309,11 @@ async fn the_probe_moves_along_a_row_with_nothing_above_or_below(
     assert_eq!(heard, [["down", "up", "right", "left", "escape"]]);
 }
 
-/// The refused elements `Filter` keeps: a view's audit reports the ones under
-/// its `view/<program>` element, the shell's are in the whole window's alone.
 mod refused_scope {
     use super::*;
     use crate::ax::Filter;
     use gpui_kit::{ElementId, GlobalElementId};
 
-    /// A `GlobalElementId` is made by the window: every segment on its
-    /// element-id stack, the last one's id read off it. A `view/<program>`
-    /// segment is that view's mark (`Seat::ax_mark`).
     fn path(window: &mut gpui_kit::Window, segments: &[&str]) -> GlobalElementId {
         let name = |segment: &str| match segment.starts_with("view/") {
             true => crate::render::host_id(segment.to_owned()),
@@ -1467,8 +1326,6 @@ mod refused_scope {
         }
     }
 
-    /// What `note_refused` keeps of one frame refusing `paths`, under the
-    /// filter `view=`.
     fn kept(view: Option<&str>, paths: &[&[&str]]) -> Vec<String> {
         let mut cx = gpui_kit::TestAppContext::single();
         let window = cx.add_empty_window();
@@ -1507,8 +1364,6 @@ mod refused_scope {
         assert_eq!(kept(None, &[A, B, SHELL]).len(), 3);
     }
 
-    /// A refused element is named by its id path, in the words the door has
-    /// always used, whatever else gpui's `GlobalElementId` holds.
     #[test]
     fn a_refused_element_is_printed_as_its_id_path() {
         assert_eq!(
@@ -1519,8 +1374,6 @@ mod refused_scope {
 }
 
 mod phase_two {
-    //! One passing and one failing case per phase-2 rule, over hand-built
-    //! nodes.
     use super::*;
 
     fn under(mut node: AxNode, parent: &str) -> AxNode {
@@ -1581,13 +1434,11 @@ mod phase_two {
         };
         assert!(fails(&held(true), "AX-103").is_empty());
         assert_eq!(fails(&held(false), "AX-103"), ["w:dlg"]);
-        // a walk that leaves it: not modal to the keyboard either
         let left = walk(vec![
             vec![dialog(false), focused(a())],
             vec![dialog(false), a(), focused(button("bar", "Search"))],
         ]);
         assert!(!left.applicable.contains_key("AX-103"));
-        // no walk, no word on it
         assert!(
             !one(vec![dialog(false), focused(a())])
                 .applicable
@@ -1606,8 +1457,6 @@ mod phase_two {
             focused(button("bar", "Search")),
         ]);
         assert_eq!(fails(&outside, "AX-104"), ["w:dlg"]);
-        // every snapshot: a menu the walk leaves closes, one that stays
-        // open with the focus outside it fails
         let left = |stays: bool| {
             let mut after = vec![focused(button("bar", "Search"))];
             if stays {
@@ -1669,7 +1518,6 @@ mod phase_two {
             row.actions = vec!["press", "focus"];
             row
         };
-        // on a row: the composite is the one the arrows move
         let on_row = vec![menu(), focused(row("a")), row("b")];
         assert_eq!(
             crate::ax::audit::arrowed(&on_row).map(|node| node.id.as_str()),
@@ -1677,12 +1525,9 @@ mod phase_two {
         );
         assert!(crate::ax::audit::arrowed(&[menu(), focused(row("a"))]).is_none());
         assert!(!one(on_row).applicable.contains_key("AX-107"));
-        // on the composite itself, with rows in it
         let mut held = menu();
         held.state = vec!["focused"];
         assert_eq!(fails(&one(vec![held, row("a")]), "AX-107"), ["w:menu"]);
-        // the probe: the arrow moves the active row and the arrow back
-        // brings it back, or it does not
         let probe = |composite: AxNode, keys: Vec<[&'static str; 2]>, spots: [[&str; 2]; 3]| {
             let mut told = reading(vec![vec![composite.clone()]]);
             let at = |n: usize| spots.map(|spot| Some(format!("w:{}", spot[n])));
@@ -1702,12 +1547,10 @@ mod phase_two {
             fails(&menu_probe([on("a"), on("a"), on("a")]), "AX-107"),
             ["w:menu"]
         );
-        // one whose arrow back moves it on, not back, fails
         assert_eq!(
             fails(&menu_probe([on("a"), on("b"), on("c")]), "AX-107"),
             ["w:menu"]
         );
-        // a failed probe names every pair it tried
         let both = probe(
             menu(),
             vec![["down", "up"], ["up", "down"]],
@@ -1717,15 +1560,12 @@ mod phase_two {
             both.violations[0].message,
             r#"down moved nothing; up then down leaves the active row at [Some("w:a"), Some("w:a"), Some("w:a")]"#
         );
-        // a grid whose rows have cells of their own is back in its row on
-        // the row's first cell; a row further on is not back
         let grid = || node("grid", "Grid", "Messages");
         let cell = |row, cell| [cell, row];
         let back = [cell("r0", "c03"), cell("r1", "c10"), cell("r0", "c00")];
         assert!(fails(&probe(grid(), down(), back), "AX-107").is_empty());
         let on_down = [cell("r0", "c03"), cell("r1", "c10"), cell("r1", "c11")];
         assert_eq!(fails(&probe(grid(), down(), on_down), "AX-107"), ["w:grid"]);
-        // along a row, a grid's cells are its items
         let right = vec![["right", "left"]];
         let along = [cell("r0", "c00"), cell("r0", "c01"), cell("r0", "c00")];
         assert!(fails(&probe(grid(), right.clone(), along), "AX-107").is_empty());
@@ -1735,7 +1575,6 @@ mod phase_two {
 
     #[test]
     fn ax_107_a_disabled_row_is_not_one_the_arrows_pick() {
-        // a read-only verdict: every radio disabled, the picked one claimed
         let radio = |id: &str| {
             let mut radio = under(node(id, "RadioButton", id), "verdict");
             radio.state = vec!["disabled", "unchecked"];
@@ -1745,7 +1584,6 @@ mod phase_two {
         group.actions = vec!["focus"];
         let claimed = [group.clone(), focused(radio("a")), radio("b"), radio("c")];
         assert!(crate::ax::audit::arrowed(&claimed).is_none());
-        // the group itself focused, its rows all disabled: none is active to be on
         group.state = vec!["focused"];
         assert!(fails(&one(vec![group, radio("a"), radio("b")]), "AX-107").is_empty());
     }
@@ -1763,7 +1601,6 @@ mod phase_two {
             )
             .is_empty()
         );
-        // with a row of cells under it, the focus belongs on a cell
         let row = under(node("row", "Row", ""), "grid");
         let cell = under(node("cell", "GridCell", "ducktape"), "row");
         assert_eq!(
@@ -1786,7 +1623,6 @@ mod phase_two {
         for role in ["TabList", "RadioGroup"] {
             let mut list = node("tabs", role, "Pages");
             list.actions = vec!["focus"];
-            // one stop: the list has the keys, its active item is claimed
             let claimed = [list.clone(), focused(tab("a", false)), tab("b", false)];
             assert_eq!(arrowed(&claimed), Some("w:tabs".into()), "{role}");
             let mut held = list.clone();
@@ -1795,8 +1631,6 @@ mod phase_two {
                 fails(&one(vec![held, tab("a", false)]), "AX-107"),
                 ["w:tabs"]
             );
-            // its focused item takes focus of its own (the shell's roving
-            // stop): the arrows are asked, in the shell as in a view
             list.actions = Vec::new();
             let stops = [list, focused(tab("a", true)), tab("b", false)];
             assert_eq!(arrowed(&stops), Some("w:tabs".into()), "{role}");
@@ -1806,8 +1640,6 @@ mod phase_two {
             });
             assert_eq!(arrowed(&viewed), Some("w:tabs".into()), "{role}");
         }
-        // a separate Tab stop inside a grid keeps the arrows; the grid's
-        // own claimed cell does not
         let grid = || {
             let mut grid = node("grid", "Grid", "Messages");
             grid.actions = vec!["focus"];
@@ -1852,8 +1684,6 @@ mod phase_two {
         assert_eq!(oriented("TabList", Some("vertical")), rows);
         assert_eq!(oriented("RadioGroup", Some("horizontal")), cells);
         assert_eq!(oriented("ListBox", None), rows);
-        // a grid: its rows, or its cells when one row holds them all; a
-        // header row of column headers holds none
         let grid = |held: &[&str]| {
             let mut nodes = vec![
                 node("c", "Grid", "C"),
@@ -1872,8 +1702,6 @@ mod phase_two {
         };
         assert_eq!(grid(&["a"]), cells);
         assert_eq!(grid(&["a", "b"]), rows);
-        // an emoji grid, eight over three: from the first row's sixth,
-        // nothing is below; from its second, the second row's is
         let emoji = |at: usize| {
             let mut nodes = vec![node("c", "Grid", "C")];
             for (r, width) in [8, 3].into_iter().enumerate() {
@@ -1982,7 +1810,6 @@ mod phase_two {
             row("past", Some((41, 40))),
         ]);
         assert_eq!(fails(&report, "AX-112"), ["w:bare", "w:half", "w:past"]);
-        // a list that says nothing, and the shell's own rows, are not asked
         let mut native = row("native", None);
         native.scope = "w".into();
         native.more.size_of_set = Some(3);
@@ -2015,7 +1842,6 @@ mod phase_two {
         let report = audit(&told, false);
         assert_eq!(fails(&report, "AX-114"), ["w:help"]);
         assert_eq!(report.applicable["AX-114"], 2);
-        // told nothing, it asks nothing
         assert!(
             !one(vec![button("help", "Help")])
                 .applicable
@@ -2090,8 +1916,6 @@ mod phase_two {
         assert_eq!(report.applicable["AX-119"], 3);
     }
 
-    /// The fork panics on a duplicate in a debug build, so a test cannot draw
-    /// one: it hands the rule the list `observe` would have read.
     fn refused(kept: &str, element: &str, nth: usize) -> Refused {
         Refused {
             kept: kept.to_owned(),
@@ -2135,8 +1959,6 @@ mod phase_two {
     fn ax_124_a_refusal_every_snapshot_sees_is_one_violation_named_by_the_first() {
         let mut walk = reading(vec![vec![button("ok", "Save")]]);
         let element = "GlobalElementId([Name(\"save\")])";
-        // the second snapshot widened the kept node's door id; the third
-        // does not show it
         walk.refused = vec![
             refused("w:ok", element, 0),
             refused("w:form.ok", element, 0),

@@ -22,17 +22,10 @@ pub fn chain_of(status: &crate::backend::NodeStatus) -> String {
         .map_or_else(|| status.network.clone(), |chain| chain.to_string())
 }
 
-/// The chain in hand and what every other listed one has here: the set
-/// following it, or its log, parked as it left hand until its set takes it
-/// up (a parked log is taken up over its file's, which may be behind it).
-/// One lock, taken before any centre's, never while one is held.
 #[derive(Default)]
 struct Sets {
-    /// The chain in hand, and the centre holding its log ([`take_up`]).
     in_hand: (String, Option<CenterHandle>),
     running: HashMap<String, std::sync::Weak<Set>>,
-    /// By the log's file: one per chain on a device (a test's dirs are its
-    /// own).
     parked: HashMap<PathBuf, Log>,
 }
 
@@ -41,9 +34,6 @@ fn sets() -> std::sync::MutexGuard<'static, Sets> {
     lock(SETS.get_or_init(Mutex::default))
 }
 
-/// The app is locked: every followed set's notifiers are handed no key and
-/// no account, as the network in hand's are. The registry's, not a set's,
-/// so a set followed while it is locked starts so.
 static LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The app locked, or unlocked (the desktop's follower carries each move;
@@ -59,7 +49,6 @@ pub fn lock_followed(locked: bool) {
 }
 
 impl Sets {
-    /// Whether `chain` is in hand, or a set follows it already.
     fn taken(&self, chain: &str) -> bool {
         self.in_hand.0 == chain
             || self
@@ -75,14 +64,12 @@ impl Sets {
             .collect()
     }
 
-    /// `log` parked for its chain's next run, its set's or in hand.
     fn park(&mut self, log: Log) {
         if let Some(file) = log.file() {
             self.parked.insert(file.to_owned(), log);
         }
     }
 
-    /// `chain`'s log, if it is parked.
     fn unpark(&mut self, chain: &str) -> Option<Log> {
         notify::log_file(chain).and_then(|file| self.parked.remove(&file))
     }
@@ -108,8 +95,6 @@ pub fn take_up(center: &CenterHandle, chain: &str) {
     sets.park(left);
 }
 
-/// The centre holding `chain`'s log now: the one in hand, or a followed
-/// set's; `None` when neither does (its log parked, or no such chain).
 pub(in crate::runtime) fn holding(chain: &str) -> Option<CenterHandle> {
     let sets = sets();
     if sets.in_hand.0 == chain {
@@ -126,9 +111,6 @@ pub fn followed_url(chain: &str) -> Option<String> {
     Some(set.url.clone())
 }
 
-/// The person's word on `program`'s notices, on every followed network:
-/// blocked stops its notifier there, anything else starts it where the
-/// set's own roster lists the program, on the set's own connection.
 pub(super) fn permission_moved(program: &str, permission: Permission) {
     let sets = sets().followed();
     for set in sets {
@@ -139,7 +121,6 @@ pub(super) fn permission_moved(program: &str, permission: Permission) {
     }
 }
 
-/// Every followed set's log handed to the disk: the app quits.
 pub(in crate::runtime) fn flush_sets() {
     let followed = sets().followed();
     for set in followed {
@@ -147,21 +128,12 @@ pub(in crate::runtime) fn flush_sets() {
     }
 }
 
-/// Another listed network's notifiers, followed here beside the network in
-/// hand's: a recipient on a connection of its own.
 struct Set {
     notifiers: Notifiers,
-    /// Its node and chain, apart from the views' connection; `rev` moves
-    /// when its node answers again after it did not, and its notifiers
-    /// start over on it, as on a connect.
     connection: Mutex<Connection>,
     apart: Arc<Apart>,
     url: String,
-    /// This device's key on its network, hex, as last seated there
-    /// (`Account::unlocked`); empty before that.
     key: String,
-    /// The account that key holds there; asked again at each of its blocks
-    /// while none is known.
     account: Mutex<Option<u64>>,
     poll: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -174,10 +146,6 @@ impl Set {
             .expect("a followed set has a recipient")
     }
 
-    /// Its notifiers' session: its chain and node, with this device's key
-    /// and account there unless the app is locked ([`lock_followed`]). Made
-    /// under the session's own lock: when a lock and an account land at
-    /// once, the session made last carries both.
     fn props_moved(&self) {
         self.recipient().session.send_if_modified(|props| {
             let account = *lock(&self.account);
@@ -193,9 +161,6 @@ impl Set {
         });
     }
 
-    /// Its notifiers on its roster as last read, started, kept or stopped
-    /// as a read in hand does; none once it left (checked under its
-    /// centre's lock, which [`Set::leave`] holds).
     fn reconcile(&self) {
         let _center = self.recipient().center.lock();
         if self.apart.left.load(std::sync::atomic::Ordering::SeqCst) {
@@ -206,9 +171,6 @@ impl Set {
         self.notifiers.reconcile(&asked_of, &programs);
     }
 
-    /// Its node's programs read into its roster, never the app's (the rail
-    /// hears nothing of it), then [`Set::reconcile`]; while its key holds
-    /// no known account, that asked again.
     async fn read(&self) {
         let (client, network) = {
             let connection = lock(&self.connection);
@@ -233,11 +195,6 @@ impl Set {
         }
     }
 
-    /// Its chain taken up in hand, or the set dropped: what is still out
-    /// of it is refused from now on, its notifiers stop, its poll ends, and
-    /// its log is handed back, all under its centre's lock, which a post
-    /// takes (`notify`'s guard): a post lands in the log handed back, or is
-    /// refused.
     fn leave(&self) -> Log {
         let mut center = self.recipient().center.lock();
         self.apart
@@ -322,8 +279,6 @@ pub async fn follow(url: String) -> Option<Followed> {
     let remotes = crate::contract::os().dirs().remotes.clone();
     let (network, founded) = (status.network.clone(), status.time);
     let (of, file) = (chain.clone(), notify::log_file(&chain));
-    // this device's key there, and the chain's log in case none is parked
-    // by the time the set registers
     let (key, read) = tokio::task::spawn_blocking(move || {
         let key = noded_client::keyring::bind(&remotes, &network, founded)
             .ok()
@@ -374,8 +329,6 @@ pub fn follow_for_test(
 }
 
 impl Set {
-    /// A set of `chain` (on `network`) asking `client`'s node at `url`,
-    /// for this device's `key` there and the `account` it holds.
     fn new(
         url: String,
         chain: String,
@@ -414,9 +367,6 @@ impl Set {
         })
     }
 
-    /// Its node's status answered (`Some` height) or not: whether its
-    /// roster is read again, at a new height. An answer after none starts
-    /// its notifiers over on the node too (`rev` moves).
     fn polled(&self, heard: &mut Heard, answer: Option<u64>) -> bool {
         let Some(height) = answer else {
             heard.lost = true;
@@ -430,17 +380,11 @@ impl Set {
     }
 }
 
-/// What a followed set's poll last heard: its node's height, and whether
-/// its last ask went unanswered.
 struct Heard {
     height: u64,
     lost: bool,
 }
 
-/// `set` its chain's one run, its log taken up: parked, else `read`, its
-/// file's as read before (never under the registry's lock: a follow runs on
-/// the views' runtime thread). `None` while the chain is in hand, or
-/// followed already.
 fn register(set: Arc<Set>, read: Log) -> Option<Followed> {
     let chain = lock(&set.connection).chain.clone();
     let mut sets = sets();
@@ -455,8 +399,6 @@ fn register(set: Arc<Set>, read: Log) -> Option<Followed> {
     Some(Followed(set))
 }
 
-/// The account this device's `key` (hex) holds on `network`, asked with
-/// the reader; none with no key, or no answer.
 async fn account_of(client: &crate::backend::RpcClient, network: &str, key: &str) -> Option<u64> {
     let key = noded_client::hex::hex_decode(key)
         .ok()
@@ -466,11 +408,6 @@ async fn account_of(client: &crate::backend::RpcClient, network: &str, key: &str
     Some(account.ok()??.0)
 }
 
-/// A followed set's node asked its status every [`STATUS_EVERY`] while the
-/// set lives ([`Set::polled`]): a new height reads its roster again, and an
-/// answer after none starts its notifiers over on the node (a changes feed
-/// that closed meanwhile ends for good), each catching up from its store.
-/// A node down, or the machine asleep, keeps it asking.
 async fn poll(set: std::sync::Weak<Set>, mut heard: Heard) {
     loop {
         tokio::time::sleep(STATUS_EVERY).await;
@@ -488,7 +425,6 @@ async fn poll(set: std::sync::Weak<Set>, mut heard: Heard) {
     }
 }
 
-/// A followed set's banners: the OS's, as the network in hand's.
 struct OsBanners;
 
 impl Banners for OsBanners {

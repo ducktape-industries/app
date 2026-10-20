@@ -17,9 +17,7 @@ use crate::runtime::WindowKey;
 static ON: AtomicBool = AtomicBool::new(false);
 static T0: OnceLock<Instant> = OnceLock::new();
 
-/// How many samples a stage's percentiles cover.
-const RING: usize = 256;
-/// The `perf_summary` line's cadence while anything changed.
+const PERCENTILE_SAMPLE_WINDOW: usize = 256;
 const SUMMARY_EVERY: Duration = Duration::from_secs(600);
 const RSS_EVERY: Duration = Duration::from_secs(1);
 
@@ -77,16 +75,12 @@ enum Metric {
     Hist(Samples),
 }
 
-/// One stage's samples: totals since the last reset, and the last [`RING`]
-/// values for the percentiles.
-/// ponytail: one fixed ring under one global lock; fine below a few
-/// thousand samples a second, sharded rings if a profile ever shows it.
 struct Samples {
     n: u64,
     sum: u64,
     max: u64,
     last: u64,
-    ring: Box<[u64; RING]>,
+    ring: Box<[u64; PERCENTILE_SAMPLE_WINDOW]>,
 }
 
 impl Samples {
@@ -96,12 +90,12 @@ impl Samples {
             sum: 0,
             max: 0,
             last: 0,
-            ring: Box::new([0; RING]),
+            ring: Box::new([0; PERCENTILE_SAMPLE_WINDOW]),
         }
     }
 
     fn push(&mut self, value: u64) {
-        self.ring[(self.n as usize) % RING] = value;
+        self.ring[(self.n as usize) % PERCENTILE_SAMPLE_WINDOW] = value;
         self.n += 1;
         self.sum += value;
         self.max = self.max.max(value);
@@ -109,16 +103,14 @@ impl Samples {
     }
 
     fn recent(&self) -> &[u64] {
-        &self.ring[..(self.n as usize).min(RING)]
+        &self.ring[..(self.n as usize).min(PERCENTILE_SAMPLE_WINDOW)]
     }
 }
 
 struct Registry {
     metrics: BTreeMap<(Key, &'static str), Metric>,
-    /// Startup marks: ms since `t0`, the first time each is reached.
     marks: BTreeMap<&'static str, u64>,
     since: Instant,
-    /// Anything written since the last summary or reset.
     changed: bool,
 }
 
@@ -264,7 +256,6 @@ pub fn snapshot(by_instance: bool) -> serde_json::Value {
     let mut views: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
     let mut windows: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
     let mut shell = Map::new();
-    // one program's instances merge stage by stage
     let mut merged: BTreeMap<(String, &'static str), Vec<&Metric>> = BTreeMap::new();
     for ((key, stage), metric) in &registry.metrics {
         match key {
@@ -309,8 +300,6 @@ pub fn snapshot(by_instance: bool) -> serde_json::Value {
     })
 }
 
-/// Several instances' readings of one stage as one JSON value: counts
-/// sum, gauges keep the largest, histograms pool their recent samples.
 fn json_of(metrics: &[&Metric]) -> serde_json::Value {
     use serde_json::json;
     match metrics[0] {
@@ -436,8 +425,6 @@ mod tests {
         instance: 7,
     };
 
-    /// Off, nothing is recorded and no timer is made: `time` is the one
-    /// hook that would read the clock, and it answers `None` first.
     #[test]
     fn off_records_nothing_and_reads_no_clock() {
         let _off = off_for_test();
@@ -453,8 +440,6 @@ mod tests {
         assert!(snapshot["startup"]["desk"].is_null());
     }
 
-    /// The ring keeps the last 256 samples for the percentiles; the totals
-    /// cover everything.
     #[test]
     fn the_ring_is_bounded_and_the_totals_are_not() {
         let _on = on_for_test();
@@ -465,13 +450,10 @@ mod tests {
         assert_eq!(stage["n"], 300);
         assert_eq!(stage["max"], 300);
         assert_eq!(stage["last"], 300);
-        // the ring holds 45..=300: its median sits in the middle of those
         assert_eq!(stage["p50"], 45 + 255 / 2);
         assert_eq!(stage["p95"], 45 + 255 * 95 / 100);
     }
 
-    /// A snapshot carries every kind under its key, by program unless asked
-    /// by instance; a reset clears them and keeps the marks.
     #[test]
     fn snapshot_aggregates_by_program_and_reset_clears() {
         let _on = on_for_test();
@@ -479,7 +461,6 @@ mod tests {
             program: "perf-test",
             instance: 8,
         };
-        // a key no window of a test running beside this one can have
         let window = WindowKey::unique();
         let name = window.0.to_string();
         count(VIEW, "renders", 2);
@@ -513,14 +494,10 @@ mod tests {
     }
 }
 
-/// The switch for a test: on, with the registry empty, for one test at a
-/// time; off again after (feature `test-support` for the shells' tests).
 #[cfg(any(test, feature = "test-support"))]
 mod test_support {
     use super::*;
 
-    /// Tests share one process and one switch: each takes this while it
-    /// holds the switch where it needs it.
     fn serial() -> MutexGuard<'static, ()> {
         static SERIAL: Mutex<()> = Mutex::new(());
         SERIAL

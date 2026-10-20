@@ -5,10 +5,6 @@
 
 use super::*;
 
-/// `POST /reveal`, served only with `DUCKTAPE_AX_DOOR_PRIVATE=1`: the text a
-/// person reads on the showing node `id` of window `name`, which must be
-/// marked [`crate::a11y::AX_PRIVATE`]. A secure input is refused:
-/// dots are all a person ever sees of it.
 pub(super) fn reveal(name: &str, window: &Window, id: &str) -> Reply {
     let shown = snapshot(name, window, false);
     let Some(found) = shown.iter().find(|node| node.id == id) else {
@@ -36,10 +32,6 @@ pub(super) fn reveal(name: &str, window: &Window, id: &str) -> Reply {
     }
 }
 
-/// Sends `keys` (space-separated keystrokes as GPUI parses them) and then
-/// `text`, one key per character, through the window's own key dispatch:
-/// its key bindings and the focused element's handlers, as a keyboard's
-/// keys arrive — never an OS event. An unparsable keystroke sends nothing.
 pub(super) fn press_keys(
     window: &mut Window,
     cx: &mut App,
@@ -51,8 +43,6 @@ pub(super) fn press_keys(
         .map(|key| gpui_kit::Keystroke::parse(key).map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
     for stroke in strokes {
-        // down, then up: a focused element takes Enter/Space as a click on
-        // the release, as it does from a keyboard
         window.dispatch_keystroke(stroke.clone(), cx);
         window.dispatch_event(
             gpui_kit::PlatformInput::KeyUp(gpui_kit::KeyUpEvent { keystroke: stroke }),
@@ -63,9 +53,6 @@ pub(super) fn press_keys(
     Ok(())
 }
 
-/// Sends `drag` to `window` (name `name`): with an id, `from` and `to` are
-/// offset by that node's painted origin, as its tree reports it. Answers
-/// the window coordinates actually sent; 404 when the node is not showing.
 pub(super) fn drag_by_id(name: &str, window: &mut Window, cx: &mut App, drag: &Drag) -> Reply {
     let steps = match drag.checked() {
         Ok(steps) => steps,
@@ -90,9 +77,6 @@ pub(super) fn drag_by_id(name: &str, window: &mut Window, cx: &mut App, drag: &D
     Reply::ok(json!({ "from": from, "to": to, "steps": steps }))
 }
 
-/// A left-button drag through the window's own event dispatch, as a mouse's
-/// arrives: press at `from`, `steps` held moves along the line, the last
-/// exactly at `to`, release at `to`. Logical window px.
 fn drag_pointer(window: &mut Window, cx: &mut App, from: [f32; 2], to: [f32; 2], steps: u32) {
     use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
     let at = |[x, y]: [f32; 2]| gpui_kit::point(gpui_kit::px(x), gpui_kit::px(y));
@@ -142,8 +126,6 @@ pub(super) struct Shortcut {
     action: String,
 }
 
-/// The key bindings a keyboard can reach from where focus is now (the
-/// focused element's context, or the window's root when nothing is).
 pub(super) fn shortcuts(window: &Window, cx: &App) -> Vec<Shortcut> {
     let focus = window.focused(cx);
     let mut out: Vec<Shortcut> = Vec::new();
@@ -171,8 +153,6 @@ pub(super) fn shortcuts(window: &Window, cx: &App) -> Vec<Shortcut> {
     out
 }
 
-/// Every served window's [`current`] nodes, read once every seat's tick
-/// landed or the client's deadline (`until`) passed (`settled`).
 pub(super) async fn read(
     door: &super::Door<'_>,
     filter: &Filter,
@@ -195,10 +175,6 @@ pub(super) async fn read(
     out
 }
 
-/// `window`'s visible nodes off a frame drawn for this read: a window the OS
-/// stops drawing (covered, asleep, locked; #147) would otherwise serve its
-/// last tree for as long as it stays hidden. The OS presents the draw with
-/// its next frame. The first read switches the window's tree on.
 pub(super) fn current(
     name: &str,
     window: &mut Window,
@@ -209,8 +185,6 @@ pub(super) fn current(
     if !window.is_a11y_active() {
         window.activate_a11y();
     }
-    // ponytail: gpui keeps a window's dirty flag private, so every read
-    // draws; a wait's polls draw 20 times a second, and only with the door
     crate::perf::count(crate::perf::Key::Shell, "door_draws", 1);
     window.draw(cx).clear(cx);
     let Some(tree) = window.a11y_tree() else {
@@ -220,10 +194,6 @@ pub(super) fn current(
     snapshot(name, window, bounds)
 }
 
-/// Performs `action` (a word of [`super::tree::ACTIONS`], or `type`) on the
-/// node `id` names in window `name`, through the path an assistive
-/// technology's request takes; `type` and `set_value` both focus the node
-/// first, then act. False when no such node is showing.
 pub(super) fn perform_by_id(
     name: &str,
     window: &mut Window,
@@ -250,8 +220,6 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
     };
     match action {
         "set_value" => {
-            // Focus first, as `type` does: a set-value is typing, and typing
-            // goes where the keys are (#241).
             window.dispatch_a11y_action(request(Action::Focus, None), cx);
             window.dispatch_a11y_action(
                 request(Action::SetValue, Some(ActionData::Value(value.into()))),
@@ -270,7 +238,6 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
     }
 }
 
-/// `text` as keys, one per character, to whatever holds focus.
 fn type_text(window: &mut Window, cx: &mut App, text: &str) {
     for ch in text.chars() {
         let (key, text) = match ch {

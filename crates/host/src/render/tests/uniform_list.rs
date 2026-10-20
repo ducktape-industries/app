@@ -39,7 +39,6 @@ fn uniform_node(id: &str, count: usize, rows: Range<usize>) -> wire::Node {
     }
 }
 
-/// `list`'s style with `edit` applied, named in this test's table.
 fn restyle(list: &mut wire::Node, edit: impl FnOnce(&mut gpui_kit::StyleRefinement)) {
     let wire::Node::UniformList { style, .. } = list else {
         unreachable!()
@@ -107,7 +106,6 @@ fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
         assert!(state.rows.contains_key(&0));
         assert!(state.requested.is_some());
     });
-    // the same rows drawn again are the ones held, not taken again
     native.update(|_, cx| tree.update(cx, |_, cx| cx.notify()));
     native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
@@ -236,9 +234,6 @@ fn uniform_list_click_uses_native_identity_and_records_user_activation(
     assert!(tree.read_with(&native, |tree, _| tree.take_activation().is_some()));
 }
 
-/// A view that asks for the keys on a uniform list by its path hears the
-/// host say no: the host focuses a container, a field or an editor, and a
-/// list is none of them (a view focus handle tracked on it is the way).
 #[gpui_kit::test]
 fn a_focus_on_a_uniform_list_is_refused(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -261,9 +256,6 @@ fn a_focus_on_a_uniform_list_is_refused(cx: &mut gpui_kit::TestAppContext) {
     assert!(answer.is_err(), "{answer:?}");
 }
 
-/// A scroll request is the view's one-shot: applied when its revision
-/// moves, not on every frame that carries it on, so the reader's wheel
-/// keeps its place across a frame that changed nothing else (V3/V4).
 #[gpui_kit::test]
 fn a_scroll_request_is_applied_once_per_revision(cx: &mut gpui_kit::TestAppContext) {
     struct Host {
@@ -327,7 +319,6 @@ fn a_scroll_request_is_applied_once_per_revision(cx: &mut gpui_kit::TestAppConte
         Some(&1_500),
         "the request scrolled the list"
     );
-    // the reader wheels up to row 1_000
     tree.read_with(&native, |tree, _| {
         let state = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
         state
@@ -345,16 +336,11 @@ fn a_scroll_request_is_applied_once_per_revision(cx: &mut gpui_kit::TestAppConte
         "a frame carrying the request on leaves the wheel where it is: {:?}",
         shown.borrow()
     );
-    // the view asks again, under the next revision: applied
     native.update(|_, cx| tree.update(cx, |tree, cx| tree.replace(asked(100, 2), &[], cx)));
     drawn(&mut native);
     assert_eq!(shown.borrow().last(), Some(&100), "{:?}", shown.borrow());
 }
 
-/// The host keeps the bar's gutter beside every view uniform list, outside
-/// the list's own box: the box (its fill here) and its rows end where the
-/// gutter begins, and the room the view gave the list holds both. A list of
-/// few rows keeps the gutter, as a view's scroller does.
 #[gpui_kit::test]
 fn a_uniform_list_ends_where_the_bars_gutter_begins(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -372,8 +358,6 @@ fn a_uniform_list_ends_where_the_bars_gutter_begins(cx: &mut gpui_kit::TestAppCo
             crate::render::draw_frame(window, cx);
         });
         native.run_until_parked();
-        // the rows draw no quad: the list's fill starts at the window's left
-        // edge, the bar's track and thumb are the quads past it
         let (fill, bar): (Vec<_>, Vec<_>) = native.update(|window, _| {
             let scale = window.scale_factor();
             let quads = window.painted_quads();
@@ -408,9 +392,6 @@ fn a_uniform_list_ends_where_the_bars_gutter_begins(cx: &mut gpui_kit::TestAppCo
     }
 }
 
-/// The wheel over the bar's gutter scrolls the list, as it does over a
-/// scroller's bar: the gutter is outside the list's box, not outside its
-/// reach.
 #[gpui_kit::test]
 fn the_wheel_over_the_bars_gutter_scrolls_the_list(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -433,16 +414,12 @@ fn the_wheel_over_the_bars_gutter_scrolls_the_list(cx: &mut gpui_kit::TestAppCon
     assert_eq!(top, Some(10), "ten rows of 24 px down");
 }
 
-/// The wheel over a list's gutter is the wheel over its rows: the list
-/// takes it and so does a page that scrolls around the list, whether the
-/// list has rows to scroll or not.
 #[gpui_kit::test]
 fn the_wheel_over_the_bars_gutter_reaches_the_page_as_over_the_rows(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use gpui_base::ScrollbarHandle as _;
     cx.update(gpui_kit::init);
-    // the page's and the list's offsets after one wheel of 50 px at `x`
     let offsets = |cx: &mut gpui_kit::TestAppContext, count: usize, x: f32| {
         let mut style = div()
             .flex()
@@ -459,7 +436,6 @@ fn the_wheel_over_the_bars_gutter_reaches_the_page_as_over_the_rows(
             Some(fixed(300.)),
         );
         let mut list = uniform_node("uniform", count, 0..3);
-        // as the SDK sends a list: it scrolls
         restyle(&mut list, |own| {
             own.overflow.y = Some(gpui_kit::Overflow::Scroll);
         });
@@ -497,8 +473,6 @@ fn the_wheel_over_the_bars_gutter_reaches_the_page_as_over_the_rows(
     }
 }
 
-/// Each list's bar is its own: of two lists side by side, a drag on the
-/// second's thumb scrolls the second and leaves the first where it was.
 #[gpui_kit::test]
 fn each_of_two_lists_side_by_side_drags_its_own_bar(cx: &mut gpui_kit::TestAppContext) {
     use gpui_base::ScrollbarHandle as _;
@@ -519,7 +493,6 @@ fn each_of_two_lists_side_by_side_drags_its_own_bar(cx: &mut gpui_kit::TestAppCo
         crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
-    // b's thumb is at the top of b's gutter, past b's rows
     let rows_end = native.update(|window, _| window.within("b").find("b/row:0").bounds().right());
     let x = rows_end + px(8.);
     native.simulate_mouse_move(point(x, px(12.)), None, Default::default());

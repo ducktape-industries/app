@@ -35,7 +35,6 @@ pub fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result
         let _ = std::fs::remove_file(&temp);
     }
     written?;
-    // the rename itself survives a power cut only once its directory is synced
     #[cfg(unix)]
     std::fs::File::open(
         path.parent()
@@ -50,10 +49,6 @@ pub fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result
 mod tests {
     use super::*;
 
-    /// A write cut short (here by a file-size limit of 0 in a child run of
-    /// this test, the way a full disk cuts it) leaves the file it was
-    /// replacing whole; one that lands replaces it, readable by its owner
-    /// only, and leaves no temp behind.
     #[cfg(unix)]
     #[test]
     fn a_write_cut_short_leaves_the_old_file_whole() {
@@ -108,9 +103,6 @@ mod tests {
         names
     }
 
-    /// Writers racing on one file each write a temp of their own: every
-    /// write lands whole and says so, and the file ends as one writer's
-    /// bytes, never another's half or nothing.
     #[cfg(unix)]
     #[test]
     fn writers_racing_on_one_file_each_land_whole() {

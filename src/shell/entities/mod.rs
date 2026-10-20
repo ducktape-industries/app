@@ -42,7 +42,6 @@ mod windows_tests;
 
 use gpui_kit::{App, AppContext as _, Entity};
 
-/// Every app-wide entity. Each window's own are `Windows`' (`own`).
 #[derive(Clone)]
 pub(crate) struct Entities {
     shared: Shared,
@@ -58,8 +57,6 @@ impl std::ops::Deref for Entities {
 }
 
 impl Entities {
-    /// The desktop's windows over the shared entities the host made
-    /// (`ducktape_host::start`), the seats following them.
     pub(crate) fn new(shared: Shared, cx: &mut App) -> Self {
         let windows = cx.new(|cx| Windows::new(shared.clone(), cx));
         let desk_seats = cx.new(|cx| DeskSeats::new(&shared.seats, &windows, cx));
@@ -67,47 +64,32 @@ impl Entities {
         Self { shared, windows }
     }
 
-    /// As `new`, over shared entities on a roster and a centre of the
-    /// test's own, with a rail no loader thread wakes.
     #[cfg(test)]
     pub(crate) fn for_test(
         roster: crate::runtime::Roster,
         center: crate::runtime::notify::CenterHandle,
         cx: &mut App,
     ) -> Self {
-        // the process's runtime is shared with every test but one that
-        // hands it a node (`runtime::alone_for_test`)
         crate::runtime::shared_for_test();
         Self::new(Shared::for_test(roster, center, cx), cx)
     }
 }
 
-/// One OS window's own entities.
 #[derive(Clone)]
 pub(crate) struct WindowEntities {
-    /// The console (a desk of framed windows under a bar) or a window one
-    /// view fills: what its panes' bodies are measured from (`DeskSeats`),
-    /// as its layer draws them.
     pub(crate) kind: crate::shell::WindowKind,
     pub(crate) desk: Entity<Desk>,
-    /// What is open over it (only the console's opens anything), and ⌘K's
-    /// text: their methods write them.
     pub(crate) overlays: Entity<Overlays>,
     pub(crate) spotlight: Entity<Spotlight>,
-    /// Derived from `desk` (`Front::of_desk`); never written by hand.
     pub(crate) front: Entity<Slice<Front>>,
-    /// Where the bar's status well is: Chrome commits it after each frame.
     pub(crate) dot: Entity<DotSlot>,
 }
 
-/// The entities on stores of the test's own, for the entities' own tests.
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     pub(crate) use ducktape_host::session::tests::{notifies, session, source, status};
 
-    /// Every entity off a roster and a centre of the test's own, on the
-    /// desk with no window open.
     pub(crate) fn entities(cx: &mut App) -> Entities {
         let entities = Entities::for_test(Default::default(), Default::default(), cx);
         entities.screen.update(cx, |screen, cx| {
@@ -116,7 +98,6 @@ pub(crate) mod tests {
         entities
     }
 
-    /// Window `key`'s desk.
     pub(crate) fn desk_of(
         app: &Entities,
         key: crate::runtime::WindowKey,
@@ -127,7 +108,6 @@ pub(crate) mod tests {
         })
     }
 
-    /// The programs window `key`'s desk shows, pane by pane.
     pub(crate) fn programs(
         app: &Entities,
         key: crate::runtime::WindowKey,
@@ -138,7 +118,6 @@ pub(crate) mod tests {
         })
     }
 
-    /// The active program, if any.
     pub(crate) fn active(app: &Entities, cx: &gpui_kit::TestAppContext) -> Option<&'static str> {
         app.windows.read_with(cx, |windows, _| windows.active())
     }

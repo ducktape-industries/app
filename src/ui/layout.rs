@@ -9,21 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) const MIN_WIDTH: f32 = 320.;
 pub(crate) const MIN_HEIGHT: f32 = 220.;
-/// What of a window must stay on the desk past its right or bottom edge:
-/// enough of its title bar to grab. Its left and top edges stop at the
-/// desk's.
 pub(crate) const KEEP: f32 = 96.;
-/// A new window opens this far down and right of the one before it.
 const CASCADE: f32 = 28.;
-/// A new window's share of the desk, wide and high; wider where its view
-/// asks ([`Pane::width`]).
-const NEW_SHARE: (f32, f32) = (0.6, 0.7);
-/// The desk's margin: a resized desk scales frames between it, and a
-/// cascade past the desk's far corner starts again inside it.
+const NEW_WINDOW_DESK_SHARE: (f32, f32) = (0.6, 0.7);
 pub(crate) const INSET: f32 = 12.;
 pub(crate) use crate::render::GRAB;
 
-/// A window's place on the desk, in pixels from the desk's top-left.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Frame {
     pub(crate) x: f32,
@@ -33,14 +24,6 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    /// At least `min_w` wide (its pane's [`Pane::min_width`]) and the
-    /// smallest window high, no larger than the desk, never past its left
-    /// or top edge (the chrome is there: the sidebar, the bar), and never
-    /// so far off its right or bottom that its title bar can't be grabbed
-    /// back. On a desk narrower than
-    /// `min_w` it is the desk's width, and the view scrolls sideways in it.
-    /// A frame widened to its floor moves left as far as it takes to stay
-    /// on the desk.
     pub(crate) fn clamped(self, desk: (f32, f32), min_w: f32) -> Self {
         let w = self.w.max(min_w).min(desk.0.max(MIN_WIDTH));
         let h = self.h.max(MIN_HEIGHT).min(desk.1.max(MIN_HEIGHT));
@@ -57,9 +40,7 @@ impl Frame {
     }
 }
 
-/// The program of a window with nothing in it yet: it lists what it can open.
 pub(crate) const EMPTY: &str = "";
-/// The app's own help, drawn by the shell: no program behind it.
 pub(crate) const HELP: &str = "ducktape:help";
 pub(crate) const MEMORY: &str = "ducktape:memory";
 
@@ -68,18 +49,10 @@ pub(crate) struct Pane {
     /// The program shown, or [`EMPTY`] / [`HELP`] / [`MEMORY`]: `is_view`
     /// tells them apart.
     pub(crate) program: &'static str,
-    /// Unique per pane, for life: the shell keys the mounted view by it, so
-    /// a pane moved between native windows keeps its view.
     pub(crate) instance: u64,
-    /// None until the desk it lands on is measured.
     pub(crate) frame: Option<Frame>,
-    /// Stacking order: the highest is drawn on top.
     pub(crate) z: u64,
-    /// What its view named it (`host.title`), shown beside the program's
-    /// name; never `Some("")`. It travels with the pane between windows.
     pub(crate) title: Option<String>,
-    /// The person moved or sized its frame (a drag, the keyboard's hold):
-    /// a view's width that comes after no longer widens it.
     pub(crate) by_hand: bool,
     pub(crate) showing: Option<String>,
 }
@@ -107,9 +80,6 @@ impl Pane {
         !matches!(self.program, EMPTY | HELP | MEMORY)
     }
 
-    /// The narrowest its frame goes: once its view is drawn, the view's
-    /// own minimum and the frame's 1px border on each side; never under
-    /// the smallest window.
     pub(crate) fn min_width(&self) -> f32 {
         let view = self
             .is_view()
@@ -118,9 +88,6 @@ impl Pane {
             .map_or(MIN_WIDTH, |min_width| MIN_WIDTH.max(min_width + 2.))
     }
 
-    /// The width its frame opens at, once its view is drawn or compiled and
-    /// asks one: the view's width and the frame's 1px border on each side.
-    /// None for the desk's own share.
     pub(crate) fn width(&self) -> Option<f32> {
         let view = self.is_view().then(|| crate::runtime::width(self.program));
         view.flatten().map(|width| width + 2.)
@@ -132,78 +99,51 @@ pub(crate) struct Layout {
     pub(crate) panes: Vec<Pane>,
     pub(crate) focused: usize,
     top: u64,
-    /// The desk's size as the shell last measured it; `None` until drawn.
     pub(crate) desk: Option<(f32, f32)>,
-    /// Something was shown here: the desk no longer opens the active
-    /// program on its own.
     pub(crate) initialized: bool,
-    /// A window the keyboard holds (⌘⇧M): the arrows move and size it.
     pub(crate) held: Option<Held>,
-    /// Fill: the window in front, whichever it is, covers the whole desk.
-    /// Frames are never rewritten for it, so turning it off puts every
-    /// window back where it was.
     pub(crate) filled: bool,
 }
 
-/// A window the keyboard holds, and how it sat when the hold began: Escape
-/// puts it back.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Held {
     pub(crate) instance: u64,
     frame: Frame,
-    /// The desk was filled: the hold turned fill off, Escape turns it on.
     filled: bool,
 }
 
-/// What is done to one window's panes: the bar, a title bar's buttons,
-/// the desk's keys, a drag.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PaneMessage {
-    /// Shift-click on the bar: the window `program` is already in comes to
-    /// the front, else it takes the focused window's place.
     Select(&'static str),
-    /// A bar click, or a pick in an empty window: see [`Layout::open`].
     Open(&'static str),
-    /// Another pane showing `program`.
     Split(&'static str),
     Close(usize),
     Focus(usize),
-    /// The pane into a window of its own, opened `at` (where it sat).
     PopOut {
         index: usize,
         at: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
     },
-    /// This pop-out's pane back onto the console's desk.
     PopIn,
-    /// ⌘` / ⌘⇧` / ctrl-tab.
     Cycle {
         forward: bool,
     },
-    /// A title bar's double press, ⌘⇧↩, Restore: fill on or off.
     Fill,
-    /// ⌘⇧M: the keyboard holds the window (again, and it lets go).
     Hold(usize),
-    /// The keyboard lets go of the window it holds: `keep` where it is, or
-    /// else back where it was.
     Release {
         keep: bool,
     },
-    /// A drag moved or sized a window.
     Frame(usize, Frame),
 }
 
 impl Layout {
-    /// The desk's size, or nothing yet measured.
     pub(crate) fn desk(&self) -> (f32, f32) {
         self.desk.unwrap_or_default()
     }
 
-    /// Pane `index` fills the desk: fill is on and it is in front.
     pub(crate) fn fills(&self, index: usize) -> bool {
         self.filled && index == self.focused
     }
 
-    /// The focused pane's program, unless it has none.
     pub(crate) fn shown(&self) -> Option<&'static str> {
         self.panes
             .get(self.focused)
@@ -211,7 +151,6 @@ impl Layout {
             .map(|pane| pane.program)
     }
 
-    /// Every pane gone, the desk's measure kept.
     pub(crate) fn clear(&mut self) {
         *self = Self {
             desk: self.desk,
@@ -237,10 +176,6 @@ impl Layout {
         }
     }
 
-    /// The desk as the shell measured it. On a desk that changed size
-    /// (the window resized, filled the screen or left it) every window
-    /// keeps its share of it: its edges keep their place between the
-    /// desk's insets, so windows edge to edge stay flush.
     pub(crate) fn measure(&mut self, desk: (f32, f32)) {
         let Some(old) = self.desk.replace(desk).filter(|old| *old != desk) else {
             return;
@@ -273,8 +208,6 @@ impl Layout {
         }
     }
 
-    /// Frames for the windows without one, once the desk is measured. A
-    /// hold ends with the window in front that it was on.
     pub(crate) fn settle(&mut self) {
         if let Some(desk) = self.desk {
             self.place(desk);
@@ -290,8 +223,6 @@ impl Layout {
         }
     }
 
-    /// Selection reuses an existing program (the focused window first)
-    /// before replacing a focused view.
     pub(crate) fn select(&mut self, program: &'static str) -> bool {
         if self
             .panes
@@ -307,8 +238,6 @@ impl Layout {
         true
     }
 
-    /// A menu bar click: into the focused window if it is empty, else to
-    /// the window it is already open in, else in a window of its own.
     pub(crate) fn open(&mut self, program: &'static str) -> bool {
         if self.panes.get(self.focused).is_some_and(Pane::is_empty) {
             self.load(program);
@@ -321,7 +250,6 @@ impl Layout {
         true
     }
 
-    /// `program` in the focused window, in place of what it showed.
     pub(crate) fn load(&mut self, program: &'static str) {
         let mut pane = Pane::new(program);
         if let Some(current) = self.panes.get_mut(self.focused) {
@@ -336,9 +264,6 @@ impl Layout {
         }
     }
 
-    /// The next window up (`forward`: the one at the bottom comes to the
-    /// top; back: the top one goes to the bottom), so repeating it visits
-    /// every window in turn.
     pub(crate) fn cycle(&mut self, forward: bool) -> bool {
         let mut order = self.stacking();
         if order.len() < 2 {
@@ -355,7 +280,6 @@ impl Layout {
         true
     }
 
-    /// Another window beside the focused one (cascaded when it lands).
     pub(crate) fn split(&mut self, program: &'static str) {
         let index = if self.panes.is_empty() {
             0
@@ -367,7 +291,6 @@ impl Layout {
         self.raise(index);
     }
 
-    /// Focus brings a window to the top. False if nothing changed.
     pub(crate) fn focus(&mut self, index: usize) -> bool {
         if index >= self.panes.len() {
             return false;
@@ -386,7 +309,6 @@ impl Layout {
             return None;
         }
         let pane = self.panes.remove(index);
-        // the next focus is the window now on top (filled, if fill is on)
         self.focused = (0..self.panes.len())
             .max_by_key(|&index| self.panes[index].z)
             .unwrap_or(0);
@@ -396,8 +318,6 @@ impl Layout {
         Some(pane)
     }
 
-    /// `pane` onto this desk, instance and all, so its view survives the
-    /// move; placed when it lands.
     pub(crate) fn popin(&mut self, mut pane: Pane) {
         pane.frame = None;
         pane.by_hand = false;
@@ -406,13 +326,6 @@ impl Layout {
         self.raise(self.focused);
     }
 
-    /// Gives every window a frame on a desk of `desk` size: the first one
-    /// opens centred, a later one cascades from the topmost window that has
-    /// a frame. A new window is the desk's share wide, or its view's width
-    /// where that is wider, never past the desk nor under its view's
-    /// minimum; a window the person has not moved or sized grows to its
-    /// view's width when that comes after it, about its own centre. Every
-    /// frame is kept where it can be grabbed.
     pub(crate) fn place(&mut self, desk: (f32, f32)) {
         for index in 0..self.panes.len() {
             if self.panes[index].frame.is_some() {
@@ -425,13 +338,12 @@ impl Layout {
                 .max_by_key(|pane| pane.z)
                 .and_then(|pane| pane.frame);
             let pane = &self.panes[index];
-            // whole pixels: frames laid edge to edge add back up
-            let w = (desk.0 * NEW_SHARE.0)
+            let w = (desk.0 * NEW_WINDOW_DESK_SHARE.0)
                 .round()
                 .max(pane.width().unwrap_or(0.))
                 .max(pane.min_width())
                 .min(desk.0.max(MIN_WIDTH));
-            let h = (desk.1 * NEW_SHARE.1).round().max(MIN_HEIGHT);
+            let h = (desk.1 * NEW_WINDOW_DESK_SHARE.1).round().max(MIN_HEIGHT);
             let frame = match beneath {
                 None => Frame {
                     x: ((desk.0 - w) / 2.).round(),
@@ -442,7 +354,6 @@ impl Layout {
                 Some(under) => {
                     let mut x = under.x + CASCADE;
                     let mut y = under.y + CASCADE;
-                    // past the desk's far corner, start again at its top-left
                     if x + w > desk.0 || y + h > desk.1 {
                         x = INSET;
                         y = INSET;
@@ -456,8 +367,6 @@ impl Layout {
             let Some(mut frame) = pane.frame else {
                 continue;
             };
-            // the app's frame grows to its view's width about its own
-            // centre, so a window centred before its view came stays so
             if !pane.by_hand
                 && let Some(width) = pane.width()
             {
@@ -487,15 +396,10 @@ impl Layout {
         }
     }
 
-    /// Fill on, or off: every window back at its frame. A desk with no
-    /// window has nothing to fill.
     pub(crate) fn toggle_fill(&mut self) {
         self.filled = !self.filled && !self.panes.is_empty();
     }
 
-    /// The keyboard takes hold of window `index`, once it has a frame,
-    /// turning fill off first; holding the window it already holds lets
-    /// it go.
     pub(crate) fn hold(&mut self, index: usize) {
         let filled = self.filled;
         let held = self.panes.get(index).and_then(|pane| {
@@ -514,8 +418,6 @@ impl Layout {
         }
     }
 
-    /// The keyboard lets go: `keep` the window where it is, or else put it
-    /// back as it was, the desk filled or not.
     pub(crate) fn release(&mut self, keep: bool, desk: (f32, f32)) {
         let Some(held) = self.held.take().filter(|_| !keep) else {
             return;
@@ -530,8 +432,6 @@ impl Layout {
         }
     }
 
-    /// The pane `instance`'s title, `Some("")` taken as none: whether it
-    /// changed.
     pub(crate) fn set_title(&mut self, instance: u64, title: Option<String>) -> bool {
         let title = title.filter(|title| !title.is_empty());
         match self.panes.iter_mut().find(|pane| pane.instance == instance) {
@@ -554,10 +454,6 @@ impl Layout {
         }
     }
 
-    /// The window on top at `at` on the desk, its grips around it included;
-    /// while filled, the window in front, wherever on the desk. Off the
-    /// desk (on the chrome beside it) is on no window: what hangs past its
-    /// edge is not drawn there.
     pub(crate) fn under(&self, at: (f32, f32)) -> Option<usize> {
         let (w, h) = self.desk();
         if !(0. ..w).contains(&at.0) || !(0. ..h).contains(&at.1) {
@@ -574,7 +470,6 @@ impl Layout {
         })
     }
 
-    /// Indices bottom to top: the order windows are drawn in.
     pub(crate) fn stacking(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.panes.len()).collect();
         order.sort_by_key(|&index| self.panes[index].z);

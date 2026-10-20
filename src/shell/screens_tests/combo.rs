@@ -28,7 +28,6 @@ fn spotlight_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut TestAppC
         by_id(&nodes, "shell:spotlight/1")["state"],
         json!(["unselected"])
     );
-    // a row Help lists with a chord reports it (AX-114)
     assert_eq!(
         find(&nodes, "ListBoxOption", "Help")["keyboard_shortcut"],
         chord_label("/")
@@ -37,8 +36,6 @@ fn spotlight_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut TestAppC
     let nodes = native.update(draw);
     let combo = find(&nodes, "EditableComboBox", "Search");
     assert_eq!(combo["active_descendant"], "shell:spotlight/1");
-    // the field still takes what is typed, and with no rows the focus is
-    // the field's own
     native.update(|window, cx| type_into("spotlight/search", "zzz", window, cx));
     let nodes = native.update(draw);
     let combo = find(&nodes, "EditableComboBox", "Search");
@@ -71,10 +68,6 @@ fn an_empty_window_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut Te
     assert_eq!(combo["active_descendant"], "shell:empty/combotest-beta");
 }
 
-/// Two empty windows, the second cascaded over the first (⌘N twice; the
-/// desk has no halving): both lists are options, the one with the keys in
-/// its combo box, the other's under the window box whose chord (⌘1) hands
-/// that window the keys, as a press on it does (AX-012).
 #[gpui_kit::test]
 fn an_empty_window_without_the_keys_passes_the_audit(cx: &mut TestAppContext) {
     let (_view, mut native) = two_empty_windows(cx);
@@ -95,9 +88,6 @@ fn an_empty_window_without_the_keys_passes_the_audit(cx: &mut TestAppContext) {
     gate::passes(&mut native, "empty-window-unfocused", false);
 }
 
-/// A press on a row of the window without the keys, from assistive
-/// technology as from the pointer, gives that window the keys first and
-/// opens the program there; the window that had them stays empty.
 #[gpui_kit::test]
 fn a_press_on_a_row_of_a_window_without_the_keys_opens_it_there(cx: &mut TestAppContext) {
     let (view, mut native) = two_empty_windows(cx);
@@ -126,7 +116,6 @@ fn a_press_on_a_row_of_a_window_without_the_keys_opens_it_there(cx: &mut TestApp
         "the keys are in the window it opened in: {keys:?}"
     );
 
-    // the Program switch of a window without the keys gives it the keys too
     let (view, mut native) = two_empty_windows(cx);
     native.update(|window, cx| press("pane/0/view", "empty-window/program", window, cx));
     native.update(draw);
@@ -135,7 +124,6 @@ fn a_press_on_a_row_of_a_window_without_the_keys_opens_it_there(cx: &mut TestApp
     assert_eq!(layout.panes[0].program, crate::ui::layout::EMPTY);
 }
 
-/// A desk with two empty windows (⌘N twice), the second in front.
 fn two_empty_windows(cx: &mut TestAppContext) -> (Entity<WindowRoot>, VisualTestContext) {
     let (view, mut native) = open(two_programs(), cx);
     for _ in 0..2 {
@@ -147,7 +135,6 @@ fn two_empty_windows(cx: &mut TestAppContext) -> (Entity<WindowRoot>, VisualTest
     (view, native)
 }
 
-/// A desk whose network lists two programs to open.
 fn two_programs() -> Seed {
     let mut seed = gate::desk();
     seed.roster = crate::runtime::Roster::listing(&["combotest-alpha", "combotest-beta"]);

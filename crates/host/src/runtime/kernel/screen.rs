@@ -10,9 +10,6 @@ use std::collections::BTreeMap;
 
 type Routes = tokio::sync::watch::Sender<Vec<String>>;
 
-/// What each view on screen shows, by its program and pane, with the chain
-/// it shows it on, and each program's routes on each chain as `host.screen`
-/// hands them out. A leaf lock: nothing else is taken while it is held.
 #[derive(Default)]
 struct Screen {
     shown: BTreeMap<(&'static str, u64), (String, String)>,
@@ -35,9 +32,6 @@ fn screen() -> std::sync::MutexGuard<'static, Screen> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The view of `program` in pane `instance` shows `route` on `chain` on
-/// screen now, or nothing (off screen, gone, or naming none): its program's
-/// routes on that chain move, and on the chain it showed one on before.
 pub(in crate::runtime) fn shown(
     chain: &str,
     program: &'static str,
@@ -70,13 +64,10 @@ pub(in crate::runtime) fn shown(
             .collect();
         routes.sort();
         routes.dedup();
-        // sent under the lock: two moves never land out of order
         screen.routes(&chain, program).send_replace(routes);
     }
 }
 
-/// `host.screen`: the program's routes on screen on the view's chain now,
-/// then each time they move.
 pub(super) fn follow(view: &mut View, id: u64) {
     let mut routes = screen()
         .routes(&view.connection.chain, view.program)
@@ -95,8 +86,6 @@ pub(super) fn follow(view: &mut View, id: u64) {
 mod tests {
     use super::*;
 
-    /// The items `view` was handed on subscription `id` since the last
-    /// look, decoded; taking them lets the next come.
     fn heard(view: &View, id: u64) -> Vec<Vec<String>> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut items = Vec::new();
@@ -116,9 +105,6 @@ mod tests {
         items
     }
 
-    /// A program's `host.screen` lists the routes its views name
-    /// (`host.showing`) while they are on screen: nothing for a pane not in
-    /// front, its route once it is, and nothing again once it goes.
     #[test]
     fn the_screen_lists_what_the_programs_views_show_on_screen() {
         let program = "screen-tests";
@@ -157,9 +143,6 @@ mod tests {
         assert_eq!(heard(&notifier, 1), [Vec::<String>::new()]);
     }
 
-    /// One program on two networks (garage's and duckpond's `#general`): a
-    /// pane showing a route on one chain is on screen for that chain's
-    /// notifier alone, so the other network's notifier still says what came.
     #[test]
     fn one_route_on_two_chains_stands_apart() {
         let program = "screen-tests-chains";

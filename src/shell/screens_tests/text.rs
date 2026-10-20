@@ -6,7 +6,6 @@
 use super::*;
 use gpui_kit::Role;
 
-/// The Heading nodes of `window`'s last tree: their name and level.
 fn headings(window: &Window) -> Vec<(String, Option<usize>)> {
     window
         .a11y_tree()
@@ -21,7 +20,6 @@ fn headings(window: &Window) -> Vec<(String, Option<usize>)> {
         .unwrap_or_default()
 }
 
-/// The words of every Label the door shows.
 fn labels(nodes: &serde_json::Value) -> Vec<String> {
     nodes
         .as_array()
@@ -45,7 +43,6 @@ fn reads(nodes: &serde_json::Value, words: &[&str]) {
 
 #[gpui_kit::test]
 fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
-    // every launcher screen: one Heading, level 1
     for (screen, launcher, build) in gate::matrix() {
         if !launcher {
             continue;
@@ -72,11 +69,9 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         ],
     );
 
-    // Help: its lead, a section, every paragraph, the keys table
     let mut seed = gate::desk();
     seed.active = Some(layout::HELP);
     let (view, mut native) = open(seed, cx);
-    // tall enough that the door shows the whole page, unscrolled
     native.simulate_resize(size(px(1280.), px(2400.)));
     let nodes = native.update(draw);
     let heard = native.update(|window, _| headings(window));
@@ -96,14 +91,12 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
             "In a text editor, move on (Tab alone indents)",
         ],
     );
-    // no word of a Tab that only moves focus (AX-022)
     assert_eq!(
         labels(&nodes)
             .iter()
             .any(|line| line.contains("Tab switches")),
         layers::CHAT_READY
     );
-    // the sidebar picked in Settings: Help's words follow, open as it is
     let app = entities(&view, &mut native);
     app.prefs.update(&mut native, |prefs, cx| {
         prefs.set_layout(crate::backend::Layout::Sidebar, cx)
@@ -132,14 +125,12 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         "the bar's words stayed"
     );
 
-    // Settings › About: the version as Updates says it, the build named
     let about = Overlay::Settings(SettingsPage::About);
     let (_view, mut native) = open((gate::desk(), about), cx);
     let nodes = native.update(draw);
     let version = crate::update::version();
     reads(&nodes, &["About", "Ducktape", "Version", &version]);
 
-    // Settings › Updates, on a copy that is not an installed one
     let updates = Overlay::Settings(SettingsPage::Updates);
     let (_view, mut native) = open((gate::desk(), updates), cx);
     let nodes = native.update(draw);
@@ -153,7 +144,6 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         ],
     );
 
-    // the node's status, in its menu
     let mut seed = gate::desk();
     seed.chain.node = Some(crate::backend::NodeStatus {
         network: "testkit".into(),
@@ -176,7 +166,6 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         &["In sync", "testkit · ", "Height", "6,230", "Epoch"],
     );
 
-    // the account menu's header
     let mut seed = gate::desk();
     seed.account.account = Some(Some((7, "Ada Lovelace".into())));
     let (_view, mut native) = open((seed, Overlay::Menu(Popover::Account)), cx);
@@ -186,7 +175,6 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         &["Ada Lovelace", "account 7 · testkit", "This device's key"],
     );
 
-    // Approve's instruction
     let (_view, mut native) = open((gate::desk(), Overlay::Approve), cx);
     let nodes = native.update(draw);
     reads(
@@ -195,10 +183,6 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
     );
 }
 
-/// Settings › Updates on an installed copy with a release waiting: the
-/// channel switch, the status in words with when the last check ended,
-/// "Check now" and "Restart to update", each named for a screen reader,
-/// and the page through the audit.
 #[gpui_kit::test]
 fn settings_updates_reads_the_channel_the_status_and_the_restart(cx: &mut TestAppContext) {
     crate::update::show_here(Some(crate::update::Updates::Here(crate::update::Shown {
@@ -250,10 +234,6 @@ fn settings_updates_reads_the_channel_the_status_and_the_restart(cx: &mut TestAp
     crate::update::show_here(None);
 }
 
-/// Settings › Updates with updating automatically off and a newer release
-/// on the channel: the status names the release as not installed, and
-/// "Update now" is there in place of "Restart to update", named, through
-/// the audit.
 #[gpui_kit::test]
 fn settings_updates_off_names_what_is_newer_and_offers_update_now(cx: &mut TestAppContext) {
     crate::update::show_here(Some(crate::update::Updates::Here(crate::update::Shown {
@@ -298,8 +278,6 @@ fn settings_updates_off_names_what_is_newer_and_offers_update_now(cx: &mut TestA
     crate::update::show_here(None);
 }
 
-/// Settings › Updates while a check runs: its button says so, busy and
-/// off (a press queues nothing), and the page passes the audit.
 #[gpui_kit::test]
 fn settings_updates_says_a_check_runs(cx: &mut TestAppContext) {
     crate::update::show_here(Some(crate::update::Updates::Here(crate::update::Shown {
@@ -332,9 +310,6 @@ fn settings_updates_says_a_check_runs(cx: &mut TestAppContext) {
     crate::update::show_here(None);
 }
 
-/// Settings › Updates in a second process of an installed copy (on Linux a
-/// `duck://` link starts one): the copy is installed, and another of its
-/// processes runs the updater, and the page says that.
 #[gpui_kit::test]
 fn settings_updates_in_a_second_process_says_another_one_updates(cx: &mut TestAppContext) {
     crate::update::show_here(Some(crate::update::Updates::Elsewhere));

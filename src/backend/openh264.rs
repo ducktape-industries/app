@@ -14,8 +14,6 @@ use std::time::{Duration, Instant};
 use sha2::Digest as _;
 
 const VERSION: &str = "2.6.0";
-/// Cisco's file for this machine and its sha256, as the `openh264` crate's
-/// table of known builds has them (it checks again when loading).
 #[cfg(target_arch = "x86_64")]
 const BUILD: (&str, &str) = (
     "libopenh264-2.6.0-linux64.8.so",
@@ -29,16 +27,13 @@ const BUILD: (&str, &str) = (
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 const BUILD: (&str, &str) = ("", "");
 
-/// What Cisco asks a product using its binary to show.
 pub(crate) const ATTRIBUTION: &str = "OpenH264 Video Codec provided by Cisco Systems, Inc.";
 const LICENSE: &str = include_str!("openh264-license.txt");
 
-/// Tells the codecs where the library is, once at start.
 pub(crate) fn supply() {
     ducktape_av::codec::cisco::supply(library);
 }
 
-/// Whether the binary may be fetched and used: on until turned off.
 pub(crate) fn enabled() -> bool {
     super::read_prefs().unwrap_or_default()["openh264"]
         .as_bool()
@@ -49,7 +44,6 @@ pub(crate) fn set_enabled(on: bool) {
     super::edit_prefs(|prefs| prefs["openh264"] = serde_json::json!(on));
 }
 
-/// Where the licence text is saved, beside the binary (once fetched).
 pub(crate) fn license_path() -> String {
     super::data_dir()
         .map(|dir| {
@@ -61,12 +55,8 @@ pub(crate) fn license_path() -> String {
         .unwrap_or_default()
 }
 
-/// How long a fetch that failed is not tried again: a ladder step or a
-/// new encoder in the same call does not knock on Cisco's door each time.
-const RETRY_AFTER: Duration = Duration::from_secs(60);
+const FAILED_FETCH_RETRY_DELAY: Duration = Duration::from_secs(60);
 
-/// One fetch at a time (a call's publishing and playing threads ask
-/// together), and the last failure, held back for a while.
 #[derive(Default)]
 struct Fetching {
     failed: Option<(Instant, String)>,
@@ -74,9 +64,6 @@ struct Fetching {
 
 static FETCHING: Mutex<Fetching> = Mutex::new(Fetching { failed: None });
 
-/// Where the library is, fetched now if it is not yet; why not, when it is
-/// turned off or cannot be fetched. Called on a call's own thread, the
-/// first time a picture is to be sent or shown.
 fn library() -> Result<PathBuf, String> {
     if !enabled() {
         return Err("Cisco's H.264 is turned off in Settings".into());
@@ -88,14 +75,11 @@ fn library() -> Result<PathBuf, String> {
     let dir = super::data_dir()?.join("openh264");
     let path = fetched(&FETCHING, &dir, name, || {
         let packed = fetch(&format!("https://ciscobinary.openh264.org/{name}.bz2"))?;
-        unpack(&packed, sha256)
+        unpack_known_library_build(&packed, sha256)
     })?;
     Ok(path)
 }
 
-/// `dir/name`, fetched by `fetch` and written (its licence beside it)
-/// when it is not there yet: once, however many threads ask at once; a
-/// failure is answered again, without fetching, for [`RETRY_AFTER`].
 fn fetched(
     fetching: &Mutex<Fetching>,
     dir: &Path,
@@ -109,12 +93,11 @@ fn fetched(
     let mut fetching = fetching
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // another thread fetched it while this one waited
     if path.exists() {
         return Ok(path);
     }
     if let Some((when, error)) = &fetching.failed
-        && when.elapsed() < RETRY_AFTER
+        && when.elapsed() < FAILED_FETCH_RETRY_DELAY
     {
         return Err(error.clone());
     }
@@ -140,8 +123,6 @@ fn fetched(
     }
 }
 
-/// The whole of `url`, on a runtime of this thread's own (a call's
-/// thread has none); 10 s to connect, 60 s for the whole.
 fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -165,9 +146,7 @@ fn fetch(url: &str) -> Result<Vec<u8>, String> {
     })
 }
 
-/// The library out of Cisco's bzip2 file, if it is the build known by
-/// `sha256`.
-fn unpack(packed: &[u8], sha256: &str) -> Result<Vec<u8>, String> {
+fn unpack_known_library_build(packed: &[u8], sha256: &str) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
     let mut library = Vec::new();
     bzip2::read::BzDecoder::new(packed)
@@ -185,7 +164,6 @@ fn unpack(packed: &[u8], sha256: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
-    /// A file that is not the known build is refused before it is written.
     #[test]
     fn only_ciscos_known_build_unpacks() {
         let mut packed = Vec::new();
@@ -195,9 +173,13 @@ mod tests {
             encoder.write_all(b"not a library").unwrap();
             encoder.finish().unwrap();
         }
-        let refused = unpack(&packed, BUILD.1).unwrap_err();
+        let refused = unpack_known_library_build(&packed, BUILD.1).unwrap_err();
         assert!(refused.contains("not Cisco's"), "{refused}");
-        assert!(unpack(b"garbage", BUILD.1).unwrap_err().contains("bzip2"));
+        assert!(
+            unpack_known_library_build(b"garbage", BUILD.1)
+                .unwrap_err()
+                .contains("bzip2")
+        );
         let sha = {
             let digest = sha2::Sha256::digest(b"not a library");
             digest
@@ -205,12 +187,12 @@ mod tests {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
         };
-        assert_eq!(unpack(&packed, &sha).unwrap(), b"not a library");
+        assert_eq!(
+            unpack_known_library_build(&packed, &sha).unwrap(),
+            b"not a library"
+        );
     }
 
-    /// Two threads asking at once fetch once and both get the file; a
-    /// fetch that failed is not tried again at once, and the file, once
-    /// there, is answered without the lock's say.
     #[test]
     fn a_first_fetch_happens_once_for_every_thread_asking() {
         use std::sync::atomic::{AtomicUsize, Ordering};

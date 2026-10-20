@@ -28,19 +28,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::collections::HashMap;
 
-/// A title bar's height.
 pub(in crate::shell) const TITLE: f32 = 32.;
-/// The filled window's strip: as tall as the bar, drawn like it.
 pub(in crate::shell) const FILL_STRIP: f32 = 36.;
-/// A pane's border on the desk (`border_1`), each side.
 pub(in crate::shell) const BORDER: f32 = 1.;
 
-/// The body the view of `layout`'s pane `index` is laid out in, as
-/// [`PaneView::place`] draws it: `on_desk` (the console, where a pane is
-/// framed) a pane's frame less its border and title bar, or filling the
-/// desk the desk less its strip; in a window one view fills (a pop-out,
-/// `--live`) the window less the title bar, whatever frame the layout
-/// keeps for it; none until the desk is drawn. The seat widens it to the view's own minimum (`Pane::min_width`).
 pub(in crate::shell) fn view_body(
     on_desk: bool,
     layout: &layout::Layout,
@@ -54,10 +45,6 @@ pub(in crate::shell) fn view_body(
     }
 }
 
-/// A strip's name: the program's `label`, then the `title` its view gave
-/// the window. A window's strip has the label in mono and the title muted;
-/// the filled strip reads like the bar, the label muted and the title in
-/// ink, or with no title the label alone in ink.
 pub(in crate::shell) fn strip_name(
     label: &str,
     title: Option<&str>,
@@ -99,44 +86,22 @@ pub(in crate::shell) fn strip_name(
     }
 }
 
-/// The layer drew the panes as this layout has them, every pane with its
-/// view. An effect: its handler runs after the draw, in the frame that
-/// shows the panes, and skips a frame the layout has moved on from.
 struct Drawn(layout::Layout);
 
-/// The panes of one window. It observes the window's `Desk` and the app's
-/// `Seats`: a pane that came gets a `PaneView`, one that went loses it, and
-/// the seat of the pane in front is told so. It observes its `Overlays`
-/// too, whose closing hands the keys back after the draw it asks for. The keys' handoff between
-/// panes runs after every draw of the layer (`drawn`), where the frame that
-/// shows a pane is the one its first control is found in.
 pub(in crate::shell) struct PaneLayer {
     pub(in crate::shell) app: Entities,
     pub(in crate::shell) key: WindowKey,
     pub(in crate::shell) kind: WindowKind,
     pub(in crate::shell) desk: Entity<Desk>,
-    /// What is open over this window's desk: the keys and the pointer's
-    /// presses leave the panes alone while something is. Read at a press
-    /// and after a draw, never at one.
     pub(in crate::shell) overlays: Observed<Overlays>,
     seats: Entity<Seats>,
-    /// The window this layer draws in: pane messages and the overlay's
-    /// `refocus` are its.
     pub(in crate::shell) window: WeakEntity<WindowRoot>,
-    /// The desk's body while no pane is on it.
     empty_desk: Entity<EmptyPane>,
-    /// One view per pane, by the pane's instance.
     views: HashMap<u64, Entity<PaneView>>,
-    /// Each pane's own focus (its view's box), by instance, and what in it
-    /// last had the keys: a pane that comes to the front gets them back.
     pub(in crate::shell) pane_keys: HashMap<u64, (FocusHandle, Option<FocusHandle>)>,
-    /// Its panes moved (`WindowRoot::pane_message`): the draw that shows
-    /// them hands the keys to the focused one.
     pub(in crate::shell) panes_moved: bool,
     front: Option<u64>,
-    /// The keyboard holds the pane in front (⌘⇧M): see `pane_hold.rs`.
     pub(in crate::shell) holding: Option<pane_hold::Holding>,
-    /// The pointer holds a pane: see `pane_drag.rs`.
     pub(in crate::shell) drag: Option<pane_drag::Drag>,
     _subscriptions: [Subscription; 4],
 }
@@ -165,12 +130,9 @@ impl PaneLayer {
             cx.observe_in(&seats, window, |this, _, window, cx| {
                 this.reconcile(window, cx)
             }),
-            // what opened over the desk takes the keys from every seat
-            // until it closes (`reconcile`'s `keys_free`)
             cx.observe_in(&overlays, window, |this, _, window, cx| {
                 this.reconcile(window, cx)
             }),
-            // every draw of the layer ends in the keys' handoff
             cx.subscribe_in(
                 &cx.entity(),
                 window,
@@ -182,8 +144,6 @@ impl PaneLayer {
             key,
             kind,
             desk,
-            // an overlay that opened or closed: the next draw's handoff
-            // (`keys_move`) sees it
             overlays: Observed::new(&overlays, cx),
             seats,
             window: desk_window,
@@ -200,17 +160,10 @@ impl PaneLayer {
         this
     }
 
-    /// This window's panes.
     pub(in crate::shell) fn layout(&self, cx: &App) -> layout::Layout {
         self.desk.read(cx).get().clone()
     }
 
-    /// The desk, the seats or what is open over the desk moved: a view for
-    /// every pane, none for a pane that left, and each seat told whether
-    /// its view may move the keys (a compare, never a turn): its pane in
-    /// front, nothing open over the desk, no hold. A
-    /// view pane whose seat is not there yet gets its view when `Seats`
-    /// says the seat came.
     fn reconcile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let layout = self.layout(cx);
         let here = |instance: &u64| layout.panes.iter().any(|pane| pane.instance == *instance);
@@ -224,7 +177,6 @@ impl PaneLayer {
                 seat.update(cx, |seat, cx| seat.set_keys_free(keys_free, cx));
             }
             match self.views.get(&pane.instance) {
-                // the seat its view waited for came: the view is made again
                 Some(view) if seat.is_some() && view.read(cx).body.awaits_seat() => {
                     self.views.remove(&pane.instance);
                 }
@@ -301,21 +253,12 @@ impl PaneLayer {
         cx.notify();
     }
 
-    /// The layer drew `shown`: the keys go where the panes say, in the
-    /// frame that shows them. Whether they move is `keys_move`'s; the hold's
-    /// take and release, and each pane remembering what in it had them, are
-    /// read off the frame just drawn, as they were when this ran at the
-    /// draw. After the draw, so a pane's first control is in the frame
-    /// `focus_next` walks. A frame the model has moved on from is left
-    /// alone: the draw that shows the move follows, and this runs after it.
     fn drawn(&mut self, shown: &layout::Layout, window: &mut Window, cx: &mut Context<Self>) {
         let layout = self.layout(cx);
         if *shown != layout {
             return;
         }
-        let moved = self.keys_move(&layout, cx);
-        // before the panes are seated, so a pane coming to the front has
-        // the keys after the hold gives them back, not before
+        let moved = self.front_pane_or_layout_changed(&layout, cx);
         self.sync_hold(&layout, window, cx);
         for index in layout.stacking() {
             let pane = &layout.panes[index];
@@ -324,12 +267,7 @@ impl PaneLayer {
         }
     }
 
-    /// Whether the keys go to the pane in front on this draw: another came
-    /// there, whoever brought it (a key, the bar, the model), or this
-    /// window moved its panes. Not while something open over the desk
-    /// holds them; once it closes, and then to the new front (its close
-    /// gave the keys back first, before the draw, `OverlayLayer::moved`).
-    fn keys_move(&mut self, layout: &layout::Layout, cx: &mut App) -> bool {
+    fn front_pane_or_layout_changed(&mut self, layout: &layout::Layout, cx: &mut App) -> bool {
         let covered = self.overlays.read(cx).get().is_some();
         if covered {
             return false;
@@ -339,10 +277,6 @@ impl PaneLayer {
         std::mem::take(&mut self.panes_moved) || turned
     }
 
-    /// The pane with `instance` remembers what had the keys inside it.
-    /// `restore` (the pane just came to the front) puts them back: what had
-    /// them in it, if it is still there; else its first control; else the
-    /// pane itself.
     fn pane_focus(
         &mut self,
         instance: u64,
@@ -354,7 +288,6 @@ impl PaneLayer {
         let Some((own, last)) = self.pane_keys.get_mut(&instance) else {
             return;
         };
-        // the box of a held pane has the keys, and nothing in it does
         if own.contains_focused(window, cx) && !holding {
             *last = window.focused(cx);
         }
@@ -374,9 +307,6 @@ impl PaneLayer {
         }
     }
 
-    /// The desk's size, from the frame just measured, when it moved or the
-    /// console's desk is still untouched: committed from the next frame's
-    /// callback (`shown`), never from the draw.
     fn measured(&self, bounds: Bounds<Pixels>, cx: &App) -> Option<(f32, f32)> {
         let desk = (f32::from(bounds.size.width), f32::from(bounds.size.height));
         let layout = self.desk.read(cx).get();
@@ -384,10 +314,6 @@ impl PaneLayer {
         (layout.desk != Some(desk) || (console && !layout.initialized)).then_some(desk)
     }
 
-    /// The desk measured `size` (the next frame's callback): the `Desk`
-    /// takes the size, and an untouched console desk opens the active
-    /// program (`Windows.active`: one a link opened before the desk
-    /// existed, else it starts empty), read now, not at the draw.
     fn shown(
         desk: &Entity<Desk>,
         windows: &Entity<Windows>,
@@ -409,9 +335,6 @@ impl Render for PaneLayer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.panes", 1);
         let layout = self.layout(cx);
-        // an effect, run after this draw: the keys' handoff (`drawn`), once
-        // every pane the layout holds is drawn (a pane that just came is
-        // drawn by the frame after its view is made)
         if layout
             .panes
             .iter()
@@ -422,8 +345,6 @@ impl Render for PaneLayer {
         let this = cx.entity();
         let (measure, desk, windows) = (this.clone(), self.desk.clone(), self.app.windows.clone());
         let console = self.kind == WindowKind::Console;
-        // `follow` listens on every frame, not only once a hold is drawn:
-        // the moves after a press may come before the next frame does
         let canvas = canvas(
             move |bounds, window, cx| {
                 if let Some(size) = measure.read(cx).measured(bounds, cx) {
@@ -440,8 +361,6 @@ impl Render for PaneLayer {
         .absolute()
         .size_full();
         if layout.panes.is_empty() {
-            // the window itself takes the keys once the last pane leaves:
-            // the empty desk's observer gives them (`EmptyPane::moved`)
             return div()
                 .relative()
                 .size_full()
@@ -452,15 +371,6 @@ impl Render for PaneLayer {
                 )
                 .into_any_element();
         }
-        // each window a layer of its own, a deferred draw at its rank bottom
-        // to top: what its view defers or shows as a tooltip draws inside it,
-        // so a back window's layer stays under the front window. Its rank,
-        // never its `z`, which only grows: the ranks stay under `HOST_BAND`.
-        // A filled desk draws the window in front alone: the ones it covers
-        // stay mounted and seated, but out of the frame, so Tab, presses and
-        // assistive technology never reach a window no one can see. Each is
-        // clipped to the desk: one hanging off its edge goes under the
-        // sidebar, never over it.
         let views = layout
             .stacking()
             .into_iter()
@@ -502,38 +412,25 @@ impl Body {
     }
 }
 
-/// One pane, drawn: its title bar with its buttons, its body, and on the
-/// desk its frame and grips. Uncached, over its cached body; it observes its
-/// seat, so a seat that moved (a tree, a standin, a minimum) draws it again.
 pub(in crate::shell) struct PaneView {
     key: WindowKey,
     kind: WindowKind,
     instance: u64,
     desk: Entity<Desk>,
-    /// Its program's name, for the view's own label and the hold's words.
     rail: Observed<Rail>,
-    /// Its view asks to notify: the strip grows a bar, and is not cached
-    /// meanwhile (the bar's height is its words').
     notifications: Observed<Notifications>,
-    /// Dark or light, for the frame's ink.
     prefs: Observed<Slice<Prefs>>,
-    /// Its title bar and permission bar, cached.
     strip: Entity<Strip>,
     layer: WeakEntity<PaneLayer>,
-    /// The pane's own focus: it holds the keys when nothing in the view does.
     own: FocusHandle,
     body: Body,
 }
 
 impl PaneView {
-    /// What the pane shows: its seat's tree or standin, or else the app's
-    /// own Help or an empty window's finder, each a cached view of its own.
     fn body(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.body {
             Body::Seat(seat) => {
                 let seat = seat.read(cx);
-                // every draw of the seat; the tree's own `renders` are the
-                // cache misses among them
                 crate::perf::count(
                     crate::perf::Key::View {
                         program: seat.program(),
@@ -542,9 +439,6 @@ impl PaneView {
                     "draws",
                     1,
                 );
-                // a standin (a load, a failure, a stopped view) goes over
-                // any tree the seat keeps: that tree is stale until the
-                // next live frame, and its presentation carries over then
                 match (seat.standin(), seat.tree()) {
                     (Some(standin), _) => {
                         standin.element(seat.program(), seat.instance(), seat.ax_mark())
@@ -554,11 +448,6 @@ impl PaneView {
                             AnyView::from(tree).cached(StyleRefinement::default().size_full());
                         let mut context = KeyContext::default();
                         context.set("ducktape_view", format!("view{}", seat.instance()));
-                        // A view owns its own inset: a split pane runs to the
-                        // edges. Narrower than its minimum, it scrolls sideways
-                        // rather than being squeezed and cut at the window's
-                        // edge. The layer occludes: a view under another one
-                        // is never hovered, as if each were its own window.
                         div()
                             .id(seat.ax_mark())
                             .key_context(context)
@@ -588,7 +477,6 @@ impl PaneView {
         }
     }
 
-    /// The pointer takes hold of this pane (`pane_drag.rs`).
     pub(in crate::shell) fn hold(
         &self,
         index: usize,
@@ -601,9 +489,6 @@ impl PaneView {
             .update(cx, |layer, cx| layer.hold(index, sides, at, cx));
     }
 
-    /// The pane's box around `contents` (title bar, permission bar, body),
-    /// seated: filling the window it is alone in, or at its frame on the
-    /// desk with grips around it.
     fn place(
         &self,
         index: usize,
@@ -630,8 +515,6 @@ impl PaneView {
             .role(Role::Group);
         match pane.frame.filter(|_| on_desk) {
             None => body.size_full().children(contents).into_any_element(),
-            // filled: the whole desk, drawn like a page, with no border,
-            // shadow or grips; it still hides what is behind it from presses
             Some(_) if filled => body
                 .occlude()
                 .absolute()
@@ -640,13 +523,9 @@ impl PaneView {
                 .size_full()
                 .children(contents)
                 .into_any_element(),
-            // on the desk: a title bar to hold it by, and edges to size
-            // it by that reach past its border, so the grips sit in a
-            // frame `GRAB` wider than the window (the body clips)
             Some(frame) => {
                 let grab = layout::GRAB;
                 let inner = body
-                    // what's behind a window doesn't hear presses on it
                     .occlude()
                     .absolute()
                     .left(px(grab))
@@ -661,8 +540,6 @@ impl PaneView {
                     .when(focused, |pane| pane.shadow_lg())
                     .when(!focused, |pane| pane.shadow_sm())
                     .children(contents)
-                    // the keyboard holds it (`pane_hold.rs`): the focus ring
-                    // on its border, over the title bar
                     .when(held, |pane| {
                         pane.child(
                             div()
@@ -693,7 +570,6 @@ impl Render for PaneView {
             .iter()
             .position(|pane| pane.instance == self.instance)
         else {
-            // gone from its desk: dropped at the layer's next reconcile
             return div().into_any_element();
         };
         if crate::perf::on() {
@@ -711,11 +587,6 @@ impl Render for PaneView {
             && self.kind == WindowKind::Console;
         let rail = self.rail.read(cx).rows().to_vec();
         let view = self.body(cx);
-        // it holds the pane's keys when nothing in the view does; Tab
-        // never lands on it, so it offers assistive technology no focus
-        // either (as the window's root). Its name is the program's, then
-        // what its view named the window (`host.title`). On the desk it
-        // names the chord that hands it the keys (`keys::FocusPane`).
         let view = crate::a11y::Patch::default()
             .keys_fallback()
             .on(div()
@@ -728,7 +599,6 @@ impl Render for PaneView {
                 .when(self.kind == WindowKind::Console, |view| {
                     view.aria_keyshortcuts(chord_label(&(index + 1).to_string()))
                 })
-                // a held window's keys are the hold's (`pane_hold.rs`)
                 .when(held, |view| {
                     view.key_context("hold")
                         .on_key_down(cx.listener(move |this, event, _, cx| {
@@ -752,11 +622,6 @@ impl Render for PaneView {
             .min_h_0()
             .w_full()
             .child(view);
-        // Every window has a title bar, so a view owns all of its
-        // rectangle: nothing floats over its corners. The strip is cached
-        // at the title bar's height; while its view asks to notify it
-        // grows a bar of its words' height, and draws uncached; so while it
-        // says it shares live data
         let notifications = self.notifications.read(cx);
         let strip_grows = pane.is_view()
             && (notifications.asking(pane.program) || notifications.sharing(pane.program));
@@ -783,20 +648,13 @@ impl Render for PaneView {
     }
 }
 
-/// What of its desk a strip shows, compared: a frame that moves leaves the
-/// strip cached; a focus, a place in the stack, fill, a title or a pop-out
-/// draws it again.
 #[derive(Clone, Default, PartialEq)]
 struct Shown {
-    /// The pane is on its desk (else the strip is stale, and not drawn).
     here: bool,
     index: usize,
     focused: bool,
-    /// Framed on the console's desk (a title bar to hold it by).
     on_desk: bool,
-    /// It fills the desk: the filled strip, nothing to hold it by.
     filled: bool,
-    /// What its view named the window.
     title: Option<String>,
     program: &'static str,
     is_view: bool,
@@ -826,12 +684,6 @@ impl Shown {
     }
 }
 
-/// A pane's strip: its title bar (the handle it is held by on the desk,
-/// its name, its buttons at the right end) and, while its view asks to
-/// notify, the permission bar; while it shares live data, the live line.
-/// A cached view: it observes the rail (its name), the notifications (the
-/// ask), the prefs (dark, the burst) and reads its desk through a compared
-/// `Shown`. In a window of its own it names the OS window too.
 pub(in crate::shell) struct Strip {
     key: WindowKey,
     kind: WindowKind,
@@ -841,16 +693,13 @@ pub(in crate::shell) struct Strip {
     notifications: Observed<Notifications>,
     prefs: Observed<Slice<Prefs>>,
     shown: Shown,
-    /// The name it last gave its OS window (a window of its own only).
     os_title: String,
     _desk: Subscription,
 }
 
-/// A button on a pane's title bar.
 #[derive(Clone, Copy)]
 enum PaneAction {
     Split,
-    /// Fill off: on the filled strip.
     Restore,
     PopOut,
     PopIn,
@@ -858,8 +707,6 @@ enum PaneAction {
 }
 
 impl PaneAction {
-    /// Its element id, its accessible name on the window of `program` (one
-    /// window's Close is not another's: "Close Chat window"), its glyph.
     fn parts(
         self,
         rail: &[crate::runtime::RailRow],
@@ -928,15 +775,12 @@ impl Strip {
         }
     }
 
-    /// Something done to this window's panes, through the window: it hands
-    /// the keys to the pane in front.
     fn pane_message(&self, message: PaneMessage, window: &mut Window, cx: &mut App) {
         let _ = self
             .window
             .update(cx, |desk, cx| desk.pane_message(message, window, cx));
     }
 
-    /// The pointer takes hold of this pane (`pane_drag.rs`).
     fn hold(&self, index: usize, sides: pane_drag::Sides, at: Point<Pixels>, cx: &mut App) {
         let _ = self
             .layer
@@ -952,9 +796,6 @@ impl Strip {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let hover = ink.surface;
-        // The element id is stable for the AX door and tests; the AX name
-        // is a phrase a screen reader can announce on its own, not the bare
-        // verb.
         let (id, name, glyph) = action.parts(self.rail.read(cx).rows(), program);
         crate::a11y::keyboard(
             div()
@@ -967,7 +808,6 @@ impl Strip {
                 .justify_center()
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover))
-                // a press on a control isn't a hold on the title bar
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
@@ -985,8 +825,6 @@ impl Strip {
         )
     }
 
-    /// The pane's title bar: the handle it is held by on the desk, its name,
-    /// and its buttons at the right end.
     fn title_bar(
         &self,
         ink: &super::super::ink::Ink,
@@ -1013,7 +851,6 @@ impl Strip {
             .when(filled, |strip| {
                 strip.child(self.pane_button(index, program, PaneAction::Restore, ink, cx))
             })
-            // an empty or Help window has no program view to carry out
             .when(console && is_view, |strip| {
                 strip.child(self.pane_button(index, program, PaneAction::PopOut, ink, cx))
             })
@@ -1021,13 +858,8 @@ impl Strip {
                 strip.child(self.pane_button(index, program, PaneAction::PopIn, ink, cx))
             })
             .child(self.pane_button(index, program, PaneAction::Close, ink, cx));
-        // A window of its own on macOS draws no title bar of the
-        // system's: this bar is its handle, and the traffic lights sit
-        // over its left end. Elsewhere the system's bar names it.
         let lights = theme::traffic_lights(window).filter(|_| !on_desk);
         let handle = lights.is_some();
-        // the filled strip reads like the bar: its height, the page's
-        // ground, the name from 16px in
         let (height, left, right) = match filled {
             true => (FILL_STRIP, 16., 4.),
             false => (TITLE, lights.unwrap_or(12.), 2.),
@@ -1052,7 +884,6 @@ impl Strip {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     match (on_desk, event.click_count) {
                         (true, 2) => this.pane_message(PaneMessage::Fill, window, cx),
-                        // a filled window is not moved by its strip
                         (true, _) if filled => {}
                         (true, _) => this.hold(index, pane_drag::Sides::NONE, event.position, cx),
                         (false, 2) if handle => window.titlebar_double_click(),
@@ -1069,15 +900,11 @@ impl Strip {
                     ink,
                 ))
             })
-            // pushes the controls to the bar's right end
             .child(div().flex_1().min_w_0())
             .child(controls)
             .into_any_element()
     }
 
-    /// The consent line: the view opened a live track, so its window says
-    /// in one line where that data goes, until the person puts it away. It
-    /// asks nothing: no modal, and the tracks are open already.
     fn live_bar(
         &self,
         program: &'static str,
@@ -1100,7 +927,6 @@ impl Strip {
                 })
             }),
         );
-        // announced as it appears: nothing else says the data leaves
         bar(format!("live-line/{program}"), line.clone(), ink)
             .child(
                 sans(500, 14.)
@@ -1113,9 +939,6 @@ impl Strip {
             .into_any_element()
     }
 
-    /// The NotifPermission board: a view posted before the person said
-    /// anything about its notices, so its window asks, at the top. Until
-    /// they answer its notices wait in Notifications, silently.
     fn permission_bar(
         &self,
         program: &'static str,
@@ -1139,7 +962,6 @@ impl Strip {
                 answer,
             )
         };
-        // announced as it appears: nothing else says a view is waiting
         bar(
             format!("notify-ask/{program}"),
             format!("{name} wants to show desktop notifications"),
@@ -1192,8 +1014,6 @@ impl Strip {
     }
 }
 
-/// The frame of a strip's bar (the permission bar, the live line): one
-/// row under the title bar, announced as it appears.
 fn bar(id: String, announced: String, ink: &super::super::ink::Ink) -> Stateful<Div> {
     crate::a11y::live(
         div().id(SharedString::from(id)).role(Role::Group),
@@ -1211,7 +1031,6 @@ fn bar(id: String, announced: String, ink: &super::super::ink::Ink) -> Stateful<
     .border_color(ink.line)
 }
 
-/// A bar's bordered button, filled for the one answer the bar leans to.
 fn bar_button(
     id: String,
     text: &'static str,
@@ -1254,7 +1073,6 @@ impl Render for Strip {
             ..
         } = self.shown;
         if !here {
-            // gone from its desk: dropped with its pane view
             return div().into_any_element();
         }
         if crate::perf::on() {
@@ -1264,8 +1082,6 @@ impl Render for Strip {
                 1,
             );
         }
-        // a window of its own is named on the system's bar too: on Linux,
-        // Windows and in macOS fullscreen its strip draws no name
         if self.kind != WindowKind::Console {
             let label = panes::label(self.rail.read(cx).rows(), program);
             let name = match &self.shown.title {

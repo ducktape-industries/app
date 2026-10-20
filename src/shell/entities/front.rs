@@ -11,19 +11,15 @@ use gpui_kit::{App, AppContext as _, Entity};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Front {
     pub(crate) focused: Option<&'static str>,
-    /// The focused window's instance.
     pub(crate) front: Option<u64>,
-    /// Every window on the desk, in layout order.
     pub(crate) open: Vec<Listed>,
 }
 
-/// A window, as the chrome lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Listed {
     pub(crate) program: &'static str,
     pub(crate) instance: u64,
     pub(crate) title: Option<String>,
-    /// The pop-out it is alone in; `None` on the desk the list is read off.
     pub(crate) away: Option<WindowKey>,
 }
 
@@ -38,13 +34,9 @@ impl Listed {
     }
 }
 
-/// The pop-outs' windows, as the console's chrome lists them beside its
-/// own desk's.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Popped {
-    /// Each pop-out's window, in the order the pop-outs opened.
     pub(crate) open: Vec<Listed>,
-    /// Its instance, while the OS window in front is a pop-out.
     pub(crate) front: Option<u64>,
 }
 
@@ -62,8 +54,6 @@ impl Front {
         }
     }
 
-    /// The `Front` of `desk`, derived: the observer made here is its one
-    /// writer, and it notifies only when the value moved.
     pub(crate) fn of_desk(desk: &Entity<Desk>, cx: &mut App) -> Entity<Slice<Front>> {
         let first = Self::of(desk.read(cx).get());
         cx.new(|cx| {

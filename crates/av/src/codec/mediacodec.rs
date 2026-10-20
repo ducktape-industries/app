@@ -25,19 +25,15 @@ use crate::Picture;
 use crate::android_rules::{I420, Input, NV12, bgra_to_yuv};
 
 const MIME: &str = "video/avc";
-/// AVCProfileBaseline.
-const BASELINE: i32 = 1;
-/// BITRATE_MODE_CBR.
-const CBR: i32 = 2;
-/// How long one call waits on a buffer.
-const WAIT: Duration = Duration::from_millis(100);
+const AVC_PROFILE_BASELINE: i32 = 1;
+const BITRATE_MODE_CBR: i32 = 2;
+const BUFFER_DEQUEUE_WAIT_MICROSECONDS: Duration = Duration::from_millis(100);
 
 pub(super) struct Encoder {
     codec: Raw,
     width: usize,
     height: usize,
     input: Input,
-    /// The parameter sets the codec gave once, as Annex B.
     sets: Vec<u8>,
     yuv: Vec<u8>,
 }
@@ -52,27 +48,20 @@ impl Encoder {
             format.set_i32("color-format", color);
             format.set_i32("bitrate", bitrate as i32);
             format.set_i32("frame-rate", fps as i32);
-            // the host asks for a keyframe at this bound anyway; MediaCodec
-            // has no "never" that every encoder honours
             format.set_i32("i-frame-interval", 2);
-            format.set_i32("profile", BASELINE);
-            // no reordering, whatever the profile key did
+            format.set_i32("profile", AVC_PROFILE_BASELINE);
             format.set_i32("max-bframes", 0);
-            // ignored by a codec that lacks it (API 30)
             format.set_i32("latency", 1);
             if let Some(mode) = mode {
                 format.set_i32("bitrate-mode", mode);
             }
             format
         };
-        // semi-planar at constant bitrate first; a codec that refused one
-        // is thrown away (a failed configure leaves it unusable) and the
-        // next is asked of a fresh one
         let mut last = String::new();
         for (color, mode) in [
-            (NV12, Some(CBR)),
+            (NV12, Some(BITRATE_MODE_CBR)),
             (NV12, None),
-            (I420, Some(CBR)),
+            (I420, Some(BITRATE_MODE_CBR)),
             (I420, None),
         ] {
             let codec = Raw::encoder()?;
@@ -80,8 +69,6 @@ impl Encoder {
                 last = e;
                 continue;
             }
-            // what the codec echoes back: its stride and slice height, when
-            // it has them (and the call exists: API 28)
             let took = codec.input_format();
             let get = |key: &str| {
                 took.as_ref()
@@ -126,9 +113,7 @@ impl Encoder {
         bgra: &[u8],
         at: Duration,
     ) -> Result<Option<VideoPacket>, String> {
-        // the codec is full: this picture is dropped, as the rate control
-        // would
-        let Some(index) = self.codec.dequeue_input(WAIT)? else {
+        let Some(index) = self.codec.dequeue_input(BUFFER_DEQUEUE_WAIT_MICROSECONDS)? else {
             return Ok(None);
         };
         bgra_to_yuv(bgra, self.width, self.height, self.input, &mut self.yuv);
@@ -144,7 +129,10 @@ impl Encoder {
         self.codec
             .queue_input(index, self.yuv.len(), at.as_micros() as u64)?;
         loop {
-            let (index, info) = match self.codec.dequeue_output(WAIT)? {
+            let (index, info) = match self
+                .codec
+                .dequeue_output(BUFFER_DEQUEUE_WAIT_MICROSECONDS)?
+            {
                 Output::Buffer(index, info) => (index, info),
                 Output::TryAgainLater => return Ok(None),
                 Output::Changed => continue,
@@ -175,18 +163,12 @@ impl Encoder {
     }
 }
 
-/// What a dequeue of the output gives.
 enum Output {
     Buffer(usize, ndk_sys::AMediaCodecBufferInfo),
     TryAgainLater,
-    /// The format or the buffers changed: nothing to read this time.
     Changed,
 }
 
-/// The encoder's `AMediaCodec` by the NDK's own calls: the `ndk` crate's
-/// wrapper keeps its pointer to itself, and the input format (the
-/// stride and slice height the codec wants) is a call that exists from
-/// API 28, looked up at run time since the app runs from 26.
 struct Raw(std::ptr::NonNull<ndk_sys::AMediaCodec>);
 
 impl Raw {
@@ -336,7 +318,6 @@ impl Drop for Raw {
     }
 }
 
-/// How the decoder lays its output out, from its output format.
 #[derive(Clone, Copy)]
 struct Layout {
     color: i32,
@@ -364,7 +345,6 @@ impl Layout {
         })
     }
 
-    /// The picture in `bytes`, BT.601 studio range to BGRA.
     fn picture(&self, bytes: &[u8]) -> Result<Picture, String> {
         let (left, top, right, bottom) = self.crop;
         let (width, height) = (right.saturating_sub(left), bottom.saturating_sub(top));
@@ -384,10 +364,8 @@ impl Layout {
             ));
         }
         let (y_plane, chroma) = bytes.split_at(self.stride * self.slice);
-        // U and V at (x, y) of the picture, for the two layouts
         let uv: Box<dyn Fn(usize, usize) -> (u8, u8)> = match self.color {
             I420 => {
-                // V's plane a quarter of the luma's size after U's
                 let half = self.stride / 2;
                 let (u, v) = chroma.split_at(self.stride * self.slice / 4);
                 Box::new(move |x, y| (u[(y / 2) * half + x / 2], v[(y / 2) * half + x / 2]))
@@ -423,28 +401,21 @@ impl Layout {
     }
 }
 
-/// A decoder configured at one stream's parameter sets.
 struct Stream {
     sps: Vec<u8>,
     pps: Vec<u8>,
     codec: MediaCodec,
-    /// How its output is laid out, once it said.
     layout: Option<Layout>,
 }
 
 pub(super) struct Decoder {
-    /// None before the first keyframe.
     stream: Option<Stream>,
-    /// The device's default decoder gave a layout this build does not
-    /// read: Android's own software decoder from the next keyframe on.
     software: bool,
     frames: u64,
 }
 
 impl Decoder {
     pub(super) fn new() -> Result<Self, String> {
-        // a decoder is made per stream (its sets); only that one exists
-        // is checked here
         MediaCodec::from_decoder_type(MIME).ok_or("no H.264 decoder on this device")?;
         Ok(Self {
             stream: None,
@@ -481,7 +452,7 @@ impl Decoder {
         let Some(Stream { codec, layout, .. }) = &mut self.stream else {
             return Ok(None);
         };
-        let mut input = match codec.dequeue_input_buffer(WAIT) {
+        let mut input = match codec.dequeue_input_buffer(BUFFER_DEQUEUE_WAIT_MICROSECONDS) {
             Ok(DequeuedInputBufferResult::Buffer(buffer)) => buffer,
             Ok(DequeuedInputBufferResult::TryAgainLater) => return Ok(None),
             Err(e) => return Err(format!("H.264 decoder input: {e}")),
@@ -502,7 +473,7 @@ impl Decoder {
             .queue_input_buffer(input, 0, packet.len(), self.frames * 33_333, 0)
             .map_err(|e| format!("H.264 decoder queue: {e}"))?;
         loop {
-            let output = match codec.dequeue_output_buffer(WAIT) {
+            let output = match codec.dequeue_output_buffer(BUFFER_DEQUEUE_WAIT_MICROSECONDS) {
                 Ok(DequeuedOutputBufferInfoResult::Buffer(buffer)) => buffer,
                 Ok(DequeuedOutputBufferInfoResult::TryAgainLater) => return Ok(None),
                 Ok(DequeuedOutputBufferInfoResult::OutputFormatChanged) => {
@@ -531,8 +502,6 @@ impl Decoder {
             };
             let picture = layout.picture(&bytes);
             if picture.is_err() && !self.software {
-                // a layout this build does not read: the software decoder
-                // from the next keyframe on
                 self.software = true;
                 self.stream = None;
             }
@@ -549,10 +518,6 @@ impl Drop for Decoder {
     }
 }
 
-/// A decoder started on the parameter sets: the device's default, or
-/// Android's own software one (`software`; its output is a layout read
-/// here). The size is a hint the decoder corrects from the sets (its
-/// output format says the real one).
 fn open(sps: &[u8], pps: &[u8], software: bool) -> Result<MediaCodec, String> {
     let codec = match software {
         true => MediaCodec::from_codec_name("c2.android.avc.decoder")
@@ -565,7 +530,6 @@ fn open(sps: &[u8], pps: &[u8], software: bool) -> Result<MediaCodec, String> {
     format.set_str("mime", MIME);
     format.set_i32("width", 640);
     format.set_i32("height", 360);
-    // a keyframe at the ladder's top is well under this
     format.set_i32("max-input-size", 1 << 20);
     format.set_buffer("csd-0", &[&[0, 0, 0, 1], sps].concat());
     format.set_buffer("csd-1", &[&[0, 0, 0, 1], pps].concat());

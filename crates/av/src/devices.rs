@@ -7,11 +7,8 @@ use cpal::traits::{DeviceTrait as _, HostTrait as _};
 
 use crate::backend::{AudioDevice, Device, MicFeed, Status, nameable};
 
-/// A stream here is opened on its device and ends with it: an invalidated
-/// one is gone (iOS routes its one stream in place).
 pub(crate) const ROUTED_IN_PLACE: bool = false;
 
-/// The microphones and the speakers the system lists now.
 pub(crate) fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), String> {
     let host = cpal::default_host();
     let kinds = |input: bool| {
@@ -103,9 +100,6 @@ impl Drop for Prepared {
     }
 }
 
-/// The microphones (`input`) or the speakers the system lists now, as this
-/// crate names them, each with the device it is: the one list
-/// [`audio_devices`] answers from and a piece opens from ([`find`]).
 fn listed(host: &cpal::Host, input: bool) -> Result<Vec<(Device, cpal::Device)>, String> {
     let id = |device: &cpal::Device| device.id().map(|id| id.to_string()).ok();
     let (devices, default): (Vec<cpal::Device>, _) = match input {
@@ -141,15 +135,6 @@ fn listed(host: &cpal::Host, input: bool) -> Result<Vec<(Device, cpal::Device)>,
     Ok(recognizable(rows))
 }
 
-/// The devices a person recognizes, one entry per device. cpal's ALSA host
-/// lists every PCM name the configuration defines, each a way to one card
-/// (`hw`, `plughw`, `sysdefault`, `front`, `surround51`, `dmix`, `dsnoop`,
-/// their numbered twins) or a plugin (`null`, `pulse`, `pipewire`): one
-/// loopback card was twenty rows. Kept: ALSA's `default` (the system's own
-/// choice, a desktop's sound server where one runs), shown as "System
-/// default", and one `plughw` per card and device (the device with the
-/// rate and format conversions an app needs), the card's own name first,
-/// so its numbered twin is dropped. Elsewhere the system lists devices.
 #[cfg(target_os = "linux")]
 fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
     let mut seen = std::collections::HashSet::new();
@@ -176,11 +161,6 @@ fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
     devices
 }
 
-/// The microphone (`input`) or speaker a piece names: `None` the system's
-/// default, else only one this crate listed ([`listed`]), its id compared
-/// whole. A view's string never reaches the system: on Linux an id is an
-/// ALSA PCM name, and such a name can name a plugin that writes a file or
-/// runs a program.
 pub(crate) fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device> {
     match id {
         Some(id) => picked(listed(host, input).ok()?, id),
@@ -189,7 +169,6 @@ pub(crate) fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<c
     }
 }
 
-/// What `listed` holds for the device with id `id`, if it lists one.
 fn picked<T>(listed: Vec<(Device, T)>, id: &str) -> Option<T> {
     listed
         .into_iter()
@@ -197,9 +176,6 @@ fn picked<T>(listed: Vec<(Device, T)>, id: &str) -> Option<T> {
         .map(|(_, found)| found)
 }
 
-/// The name a person knows the opened microphone `input` by: its row's,
-/// as it would be listed to pick from ("System default" for ALSA's
-/// default), else the system's own.
 pub(crate) fn input_name(input: &cpal::Device) -> String {
     let name = input
         .description()
@@ -218,7 +194,6 @@ pub(crate) fn input_name(input: &cpal::Device) -> String {
         .map_or(name, |(row, ())| row.name)
 }
 
-/// The microphone the system hears by default now, as listed.
 pub(crate) fn heard() -> Option<Device> {
     let listed = listed(&cpal::default_host(), true).ok()?;
     listed
@@ -227,17 +202,11 @@ pub(crate) fn heard() -> Option<Device> {
         .find(|device| device.default)
 }
 
-/// Nothing to hold here while a microphone or the chime plays
-/// ([`activate`]).
 pub(crate) struct Active;
 
-/// A call's voice I/O coming (`on`) or going: nothing to set here, the
-/// echo canceller is the app's own.
 #[cfg(feature = "call")]
 pub(crate) fn call(_on: bool) {}
 
-/// Nothing to activate: each device opens by itself, and its stream
-/// tells its own moves and ends.
 pub(crate) fn activate(
     _microphone: Option<(&std::sync::Arc<MicFeed>, Option<&str>)>,
 ) -> Result<Active, Status> {
@@ -248,8 +217,6 @@ pub(crate) fn activate(
 mod tests {
     use super::*;
 
-    /// One loopback card's ALSA names come down to the default and one
-    /// row per card and device.
     #[cfg(target_os = "linux")]
     #[test]
     fn alsa_names_come_down_to_one_row_a_device() {
@@ -331,8 +298,6 @@ mod tests {
         );
     }
 
-    /// The default microphone is named as its row is listed: on Linux,
-    /// ALSA's default is "System default", not the PCM's own "default".
     #[cfg(target_os = "linux")]
     #[test]
     fn the_default_microphone_is_named_as_listed() {
@@ -340,10 +305,6 @@ mod tests {
         assert_eq!(input_name(&input), "System default");
     }
 
-    /// A piece opens only a device this crate listed, by its whole id: a
-    /// name it did not list (an ALSA plugin that writes a file or pipes
-    /// into a program, a card it left out, a listed id with more after it)
-    /// opens nothing.
     #[test]
     fn a_device_opens_only_by_an_id_this_crate_listed() {
         let row = |id: &str| {

@@ -24,40 +24,23 @@ pub fn props(
     })
 }
 
-/// The node the views are asked of, and the network its frames name;
-/// `rev` moves on every (re)connect so a load or a request from before it
-/// is refused rather than landed on the wrong node.
 #[derive(Clone, Default)]
 pub(super) struct Connection {
     pub(super) client: Option<crate::backend::RpcClient>,
     pub(super) network: String,
-    /// The chain id (`<network>#<salt>`) a view's `store` is kept under.
     pub(super) chain: String,
     pub(super) rev: u64,
-    /// The node's live session (`backend::live`), one per connection: the
-    /// one before closes when its last holder lets go.
     pub(super) live: Option<Arc<dyn crate::backend::live::Session>>,
-    /// A connection apart from the views' (`None`: the views' own, the
-    /// network in hand): a followed set's, whose notifiers run on another
-    /// listed network ([`super::notifier::follow`]).
     pub(super) apart: Option<Arc<Apart>>,
 }
 
-/// What a followed set's requests read where the views' read the app's:
-/// its own end and its own roster. Its queries are signed by the reader,
-/// never the seated key, which is another network's.
 #[derive(Default)]
 pub(super) struct Apart {
-    /// Its chain was taken up in hand ([`super::notifier::take_up`]) or the
-    /// set dropped: what is still out of it is refused, as a reconnect
-    /// refuses a view's.
     pub(super) left: std::sync::atomic::AtomicBool,
     pub(super) roster: Roster,
 }
 
 impl Connection {
-    /// Whether a request on it comes too late: its set left, or, the
-    /// views', the app (re)connected since.
     pub(super) fn stale(&self) -> bool {
         match &self.apart {
             Some(apart) => apart.left.load(std::sync::atomic::Ordering::SeqCst),
@@ -82,10 +65,6 @@ pub struct Roster {
     bound: Arc<Mutex<Bound>>,
 }
 
-/// The roles as the programs role answered them, and the connection (`rev`)
-/// that was asked: they are asked once per connection, and again when the
-/// roster moved (a programs upgrade is a move), never each block; no
-/// bindings answered pins nothing, and the next read asks again.
 #[derive(Default)]
 struct Bound {
     asked_of: Option<u64>,
@@ -142,15 +121,10 @@ impl Roster {
         relist(self, programs);
     }
 
-    /// Lists nothing until the next network's programs are read: the
-    /// network these were read off was left, and nothing (the rail, a link)
-    /// may be read against its programs any more.
     pub(crate) fn clear(&self) {
         relist(self, Vec::new());
     }
 
-    /// The blob a listed program's view comes from, and whether that blob is
-    /// the view itself (a view-only entry) rather than a program carrying it.
     pub(super) fn code(&self, program: &str) -> Option<(abi::BlobId, bool)> {
         self.lock()
             .iter()
@@ -158,7 +132,6 @@ impl Roster {
             .map(|entry| (entry.code, entry.bare))
     }
 
-    /// Whether a listed program or view-only entry runs `code`.
     pub(super) fn runs(&self, code: &abi::BlobId) -> bool {
         self.lock().iter().any(|entry| entry.code == *code)
     }
@@ -193,9 +166,6 @@ pub fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
     receive
 }
 
-/// `programs` in place of what `roster` listed, the one before handed
-/// back. A list that moved wakes the rail: a program that left starts no
-/// load, so this is the only word the rail gets of it.
 pub(super) fn relist(
     roster: &Roster,
     programs: Vec<crate::backend::views::Program>,
@@ -210,14 +180,12 @@ pub(super) fn relist(
     previous
 }
 
-/// The rows [`Roster::rail`] reads may have moved: the rail is told.
 pub(super) fn rail_moved() {
     if let Some(send) = &*changes().lock().expect("roster changes") {
         let _ = send.unbounded_send(());
     }
 }
 
-/// A code id as the 32-byte hash a seat records: sha256 as is, sha1 padded.
 pub(super) fn code_digest(code: &abi::BlobId) -> [u8; 32] {
     let mut digest = [0; 32];
     let bytes = code.digest();
@@ -274,7 +242,6 @@ pub enum Prep {
 }
 
 impl Prep {
-    /// How far a load showing `stage` has come; settled once it landed.
     pub(super) fn of(stage: &Slot) -> Prep {
         match stage {
             Slot::Loading => Prep::Reading,
@@ -286,8 +253,6 @@ impl Prep {
     }
 }
 
-/// How far a seat's view has come, readiest first: the rail names a
-/// program by its readiest seat.
 fn readiness(slot: &Slot) -> u8 {
     match slot {
         Slot::Ready(view) if !view.name.is_empty() => 0,
@@ -303,8 +268,6 @@ impl Roster {
     pub fn rail(&self) -> Vec<RailRow> {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "rail");
         crate::perf::count(crate::perf::Key::Shell, "rail.calls", 1);
-        // the names first, and the roster let go before the seats are
-        // locked: a roster read locks the seats, then the roster
         let programs: Vec<&'static str> = self
             .lock()
             .iter()
@@ -314,9 +277,6 @@ impl Roster {
         programs
             .into_iter()
             .map(|program| {
-                // one seat a pane: the row is the readiest one's, so two
-                // panes of a program, one still loading, never flip the row
-                // between their names as the map's order happens to fall
                 let seat = registry
                     .iter()
                     .filter(|((name, _), _)| *name == program)
@@ -326,13 +286,10 @@ impl Roster {
                     Some(Slot::Ready(view)) if !view.name.is_empty() => {
                         (view.name.clone(), None, false)
                     }
-                    // compiled, not started: as ready to open as a drawn view
                     Some(Slot::Compiled(view)) if !view.name.is_empty() => {
                         (view.name.clone(), None, false)
                     }
                     Some(Slot::Ready(_) | Slot::Compiled(_)) => (program.to_owned(), None, false),
-                    // the bytes are here, the code not started: listed by
-                    // its manifest, still loading
                     Some(Slot::Listed(listing) | Slot::Compiling(listing))
                         if !listing.name.is_empty() =>
                     {
@@ -340,9 +297,6 @@ impl Roster {
                     }
                     Some(Slot::Empty) => (program.to_owned(), None, true),
                     Some(Slot::Failed(_)) => (program.to_owned(), Some("Failed"), false),
-                    // No seat yet (a pane just let go of it, the roster hasn't
-                    // remounted it) is loading too, not a final unnamed view —
-                    // else the raw program id flashes in the rail/pane title.
                     Some(_) | None => (program.to_owned(), Some("Loading"), false),
                 };
                 let pending = matches!(
@@ -350,7 +304,6 @@ impl Roster {
                     None | Some(Slot::Loading | Slot::Fetching { .. })
                 );
                 let prep = seat.as_ref().map_or(Prep::Reading, |seat| seat.prep());
-                // the manifest's, as the name is: none before it is read
                 let (icon, tint, description) = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(view)) => {
                         (view.icon.clone(), view.tint, view.description.clone())
@@ -389,7 +342,6 @@ impl Roster {
 /// A node was connected: every seat is asked again of it, and the roster
 /// is read so the rail lists what the network runs.
 pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str) {
-    // the last connection's notifiers end; the read below starts each again
     super::notifier::stop_every();
     let snapshot = {
         let mut connection = connection().lock().expect("views rpc");
@@ -436,9 +388,6 @@ pub fn deployments_checked() {
     }
 }
 
-/// [`read_roster`] of the app's roster and seats on a thread of its own,
-/// then `then`, even after a read that panicked (the panic hook logs it);
-/// `false`, said in app.log, when the OS gives no thread.
 fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static) -> bool {
     let spawned = std::thread::Builder::new()
         .name("roster".into())
@@ -462,12 +411,6 @@ fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static)
     spawned.is_ok()
 }
 
-/// One read of the node's programs into `roster`, and of `registry`'s
-/// seats against it: a program that left gives up its seat, a new one is
-/// seated (instance 0), and every seat whose code moved, or that was never
-/// asked of this node, is queued a load. The read is over once they are
-/// queued: nothing waits on a load, which lands in its seat on its own.
-/// What it listed, unless the node did not answer or was left meanwhile.
 pub(super) fn read_roster(
     asked_of: Connection,
     roster: &Roster,
@@ -501,7 +444,6 @@ pub(super) fn read_roster(
             &*crate::backend::query_signer(),
         )) {
             Ok(roles) => Some(roles),
-            // nothing listed either: the next block reads both again
             Err(error) => {
                 tracing::warn!(
                     target: "ducktape::app",
@@ -526,14 +468,12 @@ pub(super) fn read_roster(
                 roles: Some(roles),
             };
         }
-        // a host with no screen seats nothing: its notifiers are all it runs
         if crate::contract::os().limits().preload == crate::contract::Preload::Headless {
             relist(roster, programs.clone());
             return Some(programs);
         }
         let mut registry = lock(registry);
         let names: Vec<&'static str> = programs.iter().map(|p| intern(&p.name)).collect();
-        // a program the roster no longer lists gives up its seat
         for gone in registry
             .keys()
             .copied()
@@ -547,9 +487,6 @@ pub(super) fn read_roster(
                 registry.remove(&gone);
             }
         }
-        // the revision asked again under the roster's lock (registry, then
-        // roster, then connection): a leave that moved it since
-        // (`disconnected`, then `Roster::clear`) is never listed over
         let previous = {
             let mut listed = roster.lock();
             if connection().lock().expect("views rpc").rev != asked_of.rev {
@@ -581,8 +518,6 @@ pub(super) fn read_roster(
             }
             locked.rev = asked_of.rev;
             let generation = locked.start();
-            // the network moved the program to other code: what the seat
-            // holds stays up until it lands, and the rail counts it meanwhile
             if !same_code && !locked.slot.loading() {
                 locked.replacing = Some((generation, Prep::Reading));
             }
@@ -596,9 +531,6 @@ pub(super) fn read_roster(
         }
         loads
     };
-    // the registry let go first: a load that cannot get a thread installs
-    // its failure under the seat's lock. A pane's goes straight to the
-    // loaders; the preloads' bytes are all read first
     let (claimed, preloads): (Vec<Load>, Vec<Load>) = loads
         .into_iter()
         .partition(|load| lock(&load.seat).instance != 0);
@@ -629,7 +561,6 @@ pub enum Link {
 }
 
 fn parse_link_among(link: &str, rows: &[RailRow]) -> Link {
-    // a short name first: `duck://chat` is also a well-formed chain link
     if let Some(program) = local_seat(link, rows) {
         return Link::View {
             program,
@@ -791,8 +722,6 @@ mod local_link_tests {
         }
     }
 
-    /// A route is percent-encoded in the link and handed to the view
-    /// decoded, whatever it names: a forge room's `:`, a space, Hangul.
     #[test]
     fn a_route_is_delivered_decoded() {
         let rows = [RailRow {
@@ -851,16 +780,9 @@ mod local_link_tests {
 mod rail_tests {
     use super::*;
 
-    /// A program the roster lists but whose seat hasn't been (re)mounted yet
-    /// — the gap right after a pane lets go of it and before the next
-    /// preload — must not draw as a final, unnamed view: that flashed the
-    /// raw program id ("rail-tests-unmounted") in the rail and any popped-out
-    /// pane's window title instead of a "Loading" row.
     #[test]
     fn unmounted_program_is_loading_not_a_bare_id() {
         let program = "rail-tests-unmounted";
-        // No entry for `program` is inserted into registry(): this is the
-        // `None` seat case rail() must treat as loading.
         let row = Roster::listing(&[program])
             .rail()
             .into_iter()
@@ -873,9 +795,6 @@ mod rail_tests {
         assert_eq!(row.prep, Prep::Reading, "no seat yet: its bytes not read");
     }
 
-    /// A seat preloaded only as far as compiled is a row ready to open,
-    /// named as its manifest names it, as a drawn view's is: the census
-    /// opens a view by that name.
     #[test]
     fn a_compiled_seat_is_listed_by_its_manifest_name() {
         let program = "rail-tests-compiled";
@@ -892,10 +811,6 @@ mod rail_tests {
         assert!(!row.empty && !row.pending);
     }
 
-    /// A program whose bytes are still coming is pending, and so is one whose
-    /// bytes are all here and not shown yet (the rest of its roster read's
-    /// still coming), read now; once found to ship no view it is empty, and
-    /// no longer pending.
     #[test]
     fn a_program_is_pending_until_its_code_is_read() {
         let program = "rail-tests-pending";
@@ -920,10 +835,6 @@ mod rail_tests {
         assert_eq!(row(&seat, Slot::Empty), (true, false, Prep::Settled));
     }
 
-    /// A seat whose bytes are here and whose manifest is read, its code not
-    /// yet compiled or compiling, is listed by its manifest (name, icon,
-    /// tint, description: what Home's tile draws) and still loading; the row
-    /// keeps the name from the listing through the compile.
     #[test]
     fn a_listed_seat_is_named_by_its_manifest_and_still_loading() {
         let program = "rail-tests-listed";
@@ -970,10 +881,6 @@ mod rail_tests {
         }
     }
 
-    /// Two panes of one program hold a seat each; while one is still on
-    /// its way the row keeps the name the other's view gives itself, on
-    /// every read, whatever order the seats are kept in: it flipped
-    /// between "Nodes" and "Valset · Loading" as the map's order fell.
     #[test]
     fn a_program_with_two_seats_is_named_by_its_readiest() {
         let program = "rail-tests-two-seats";
@@ -1004,8 +911,6 @@ mod rail_tests {
         }
     }
 
-    /// A view-only entry (no program behind it) is a rail row like any
-    /// program's view, keyed and linked by its own name.
     #[test]
     fn a_view_only_entry_is_a_rail_row_and_a_short_link() {
         let view = abi::BlobId::Sha256([7; 32]);

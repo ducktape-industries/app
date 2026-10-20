@@ -44,9 +44,6 @@ use ducktape_updater::{Phase, Sha, SwapState};
 
 use super::{Layout, Refusal};
 
-/// `codesign --verify --deep --strict`: the bundle's code is whole. The
-/// signed manifest and the archive digest establish release trust; this is
-/// the integrity check on what will run, not a Gatekeeper assessment.
 pub(super) fn verify_bundle(bundle: &Path) -> Result<(), Refusal> {
     let status = Command::new("/usr/bin/codesign")
         .args(["--verify", "--deep", "--strict"])
@@ -65,8 +62,6 @@ pub(super) fn verify_bundle(bundle: &Path) -> Result<(), Refusal> {
     }
 }
 
-/// Whether the bundle that runs, `own` its executable's digest, is one the
-/// state names: the release it says runs, or, mid-swap, either side.
 pub(super) fn describes(layout: &Layout, phase: &Phase, own: Sha) -> bool {
     let known = executables(layout);
     let runs = |release: Sha| known.get(&release).copied().unwrap_or(release) == own;
@@ -76,15 +71,12 @@ pub(super) fn describes(layout: &Layout, phase: &Phase, own: Sha) -> bool {
     }
 }
 
-/// A staged release's executable, recorded: after the swap it is the one
-/// [`describes`] looks for in the install dir.
 pub(super) fn record_executable(layout: &Layout, release: Sha) -> Result<(), Refusal> {
     let mut known = executables(layout);
     known.insert(release, super::digest_file(&layout.release_exe(release))?);
     keep_executables(layout, &known)
 }
 
-/// Forget the executables of every release not in `keep` (the collector's).
 pub(super) fn forget_executables(layout: &Layout, keep: &[Sha]) -> Result<(), Refusal> {
     let mut known = executables(layout);
     let before = known.len();
@@ -95,11 +87,6 @@ pub(super) fn forget_executables(layout: &Layout, keep: &[Sha]) -> Result<(), Re
     }
 }
 
-/// What `<updates>/executables.json` holds; nothing when it is missing or
-/// unreadable. A release with no entry is matched by its own name, which
-/// is its executable's digest unless it came from an archive: then the
-/// start adopts the bundle, and the state names it by its digest from then
-/// on.
 fn executables(layout: &Layout) -> BTreeMap<Sha, Sha> {
     std::fs::read_to_string(layout.executables_path())
         .ok()
@@ -112,9 +99,6 @@ fn keep_executables(layout: &Layout, known: &BTreeMap<Sha, Sha>) -> Result<(), R
     super::persist(&layout.executables_path(), text.as_bytes())
 }
 
-/// A whole bundle, copied with `/usr/bin/ditto`: the one copier that keeps
-/// it whole (symlinks, modes, extended attributes, the code signature). The
-/// quarantine bit is then removed from this managed copy only.
 pub(super) fn copy_bundle(from: &Path, to: &Path) -> Result<(), Refusal> {
     if !cfg!(target_os = "macos") {
         return Err(Refusal::new(
@@ -133,10 +117,6 @@ pub(super) fn copy_bundle(from: &Path, to: &Path) -> Result<(), Refusal> {
             format!("ditto {} {} exited {status}", from.display(), to.display()),
         ));
     }
-    // recursive (ditto keeps nested attributes, and a bundle whose inner
-    // files keep the bit is still quarantined), links not followed. Its
-    // exit is not read: xattr fails for every file that had no such
-    // attribute, which is the clean case.
     let _ = Command::new("/usr/bin/xattr")
         .args(["-r", "-s", "-d", "com.apple.quarantine"])
         .arg(to)
@@ -146,20 +126,13 @@ pub(super) fn copy_bundle(from: &Path, to: &Path) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// LaunchServices' own tool, which registers and unregisters apps.
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister";
 
 #[cfg(test)]
 thread_local! {
-    /// A test's bundles stay out of LaunchServices unless it asks.
     pub(super) static LAUNCH_SERVICES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Tell LaunchServices `bundle` is an app to open (`registered`), or no
-/// longer one. Its failure is logged and changes nothing else: the
-/// registration is what Finder and `open` offer, not what the update runs.
-/// An unregister of a bundle it never knew (a staged one, normally) exits 1
-/// with -10814, as a real failure would, so that is said at debug.
 pub(super) fn launch_services(bundle: &Path, registered: bool) {
     #[cfg(test)]
     if !LAUNCH_SERVICES.with(std::cell::Cell::get) {
@@ -197,14 +170,6 @@ pub(super) fn launch_services(bundle: &Path, registered: bool) {
     }
 }
 
-/// Start `bundle` as a new launch through LaunchServices (`open -n`), `args`
-/// its arguments. The system takes a process for the bundle it launched: an
-/// image `exec`ed in its place is still judged by that bundle's Info.plist,
-/// so a usage string only the new release carries is not there for it, and
-/// TCC ends the process at its first ask for the microphone. `-n`:
-/// LaunchServices lists an app that is exiting, or just exited, for a few
-/// ms more, and a plain `open` reopens that one (-600, procNotFound)
-/// instead of launching. What `open` said when it failed.
 pub(super) fn open_new(bundle: &Path, args: &[OsString]) -> Result<(), String> {
     let mut open = Command::new("/usr/bin/open");
     open.arg("-n").arg(bundle);
@@ -222,9 +187,6 @@ pub(super) fn open_new(bundle: &Path, args: &[OsString]) -> Result<(), String> {
     }
 }
 
-/// What a bundle swap wrote before `RENAME_SWAP`: which release is coming
-/// in, the digest of its executable, and where the outgoing bundle sits
-/// right after the swap.
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 struct Journal {
     to: Sha,
@@ -232,8 +194,6 @@ struct Journal {
     swapped_with: PathBuf,
 }
 
-/// Swap the installed bundle against the staged `to` and park the old one
-/// under `releases/<from>`.
 pub(super) fn swap_bundles(layout: &Layout, from: Sha, to: Sha) -> Result<(), Refusal> {
     let installed = layout.installed_bundle();
     let staged = layout.staged_bundle(to);
@@ -255,13 +215,15 @@ pub(super) fn swap_bundles(layout: &Layout, from: Sha, to: Sha) -> Result<(), Re
     let text = serde_json::to_string_pretty(&journal).expect("a Journal serializes");
     super::persist(&layout.journal_path(), text.as_bytes())?;
     rename_swap(&installed, &source)?;
-    finish(layout, from, to, &journal)
+    park_outgoing_bundle_and_clear_swap_journal(layout, from, to, &journal)
 }
 
-/// After the swap landed: park the outgoing bundle, point `previous` at
-/// it, drop the journal. Idempotent, so a boot that finds a journal can
-/// call it again.
-fn finish(layout: &Layout, from: Sha, to: Sha, journal: &Journal) -> Result<(), Refusal> {
+fn park_outgoing_bundle_and_clear_swap_journal(
+    layout: &Layout,
+    from: Sha,
+    to: Sha,
+    journal: &Journal,
+) -> Result<(), Refusal> {
     let park = layout.staged_bundle(from);
     let old_still_at_swap_path = std::fs::symlink_metadata(&journal.swapped_with).is_ok();
     if old_still_at_swap_path {
@@ -270,8 +232,6 @@ fn finish(layout: &Layout, from: Sha, to: Sha, journal: &Journal) -> Result<(), 
             .map_err(|error| Refusal::io("park_failed", &parent, &error))?;
         super::move_tree(&journal.swapped_with, &park)?;
     }
-    // the installed path's record is by path: it still describes the
-    // bundle that was there
     launch_services(&layout.installed_bundle(), true);
     let _ = std::fs::remove_dir(layout.release_dir(to));
     super::replace_symlink(&layout.previous_link(), &Layout::link_target(from))?;
@@ -279,9 +239,6 @@ fn finish(layout: &Layout, from: Sha, to: Sha, journal: &Journal) -> Result<(), 
     std::fs::remove_file(&path).map_err(|error| Refusal::io("journal_unremovable", &path, &error))
 }
 
-/// Which side of a crashed swap is live: no journal is a swap that never
-/// started; a journal whose digest the installed executable has is one
-/// that landed (and is finished now).
 pub(super) fn resolve_swap(layout: &Layout, from: Sha, to: Sha) -> Result<SwapState, Refusal> {
     let path = layout.journal_path();
     super::refuse_symlink(&path)?;
@@ -303,7 +260,7 @@ pub(super) fn resolve_swap(layout: &Layout, from: Sha, to: Sha) -> Result<SwapSt
     let installed = super::digest_file(&super::bundle_exe(&layout.installed_bundle()))?;
     match installed == journal.app_digest {
         true => {
-            finish(layout, from, to, &journal)?;
+            park_outgoing_bundle_and_clear_swap_journal(layout, from, to, &journal)?;
             Ok(SwapState::Landed)
         }
         false => {
@@ -314,8 +271,6 @@ pub(super) fn resolve_swap(layout: &Layout, from: Sha, to: Sha) -> Result<SwapSt
     }
 }
 
-/// The staged bundle, on the install dir's volume: itself when it already
-/// is, else a copy at `<install>/.Ducktape.app.<sha>`.
 fn same_volume_copy(staged: &Path, install: &Path, sha: Sha) -> Result<PathBuf, Refusal> {
     let device = |path: &Path, reason| {
         std::fs::metadata(path)
@@ -331,8 +286,6 @@ fn same_volume_copy(staged: &Path, install: &Path, sha: Sha) -> Result<PathBuf, 
     Ok(copy)
 }
 
-/// `renamex_np(a, b, RENAME_SWAP)`: both paths exist before and after;
-/// their contents trade places atomically.
 #[cfg(target_os = "macos")]
 fn rename_swap(a: &Path, b: &Path) -> Result<(), Refusal> {
     let c_path = |path: &Path| {
@@ -380,7 +333,6 @@ mod tests {
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// The swap, the park and the swap back land, and leave no journal.
     #[test]
     fn bundles_swap_in_park_and_swap_back() {
         let root = tempfile::tempdir().unwrap();
@@ -405,8 +357,6 @@ mod tests {
         assert!(!layout.journal_path().exists());
     }
 
-    /// A crash after the journal and before the swap reads as untouched; a
-    /// crash after the swap reads as landed and is finished.
     #[test]
     fn a_journal_tells_which_side_of_a_crashed_swap_is_live() {
         let root = tempfile::tempdir().unwrap();

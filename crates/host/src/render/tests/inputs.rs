@@ -1,14 +1,12 @@
 use super::*;
 use gpui_kit::Keystroke;
 
-/// The one-line kit state behind the first field, for a test to drive.
 fn line(tree: &Entity<ViewTree>, cx: &gpui_kit::VisualTestContext) -> Entity<InputState> {
     tree.read_with(cx, |tree, _| {
         tree.first_input_for_test().expect("a one-line field")
     })
 }
 
-/// `root` in a window, drawn once.
 fn mounted(
     root: wire::Node,
     cx: &mut gpui_kit::TestAppContext,
@@ -21,7 +19,6 @@ fn mounted(
     (tree, native)
 }
 
-/// The field at `path` takes the keys, through the view's own Focus.
 fn focus(
     tree: &Entity<ViewTree>,
     native: &mut gpui_kit::VisualTestContext,
@@ -42,7 +39,6 @@ fn focus(
     });
 }
 
-/// The text the first field holds, as the engine has it.
 fn text(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext) -> String {
     native.update(|window, cx| {
         crate::render::draw_frame(window, cx);
@@ -56,7 +52,6 @@ fn text(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext) -> St
     })
 }
 
-/// The text the field at `path` holds, as the engine has it.
 fn text_at(
     tree: &Entity<ViewTree>,
     native: &mut gpui_kit::VisualTestContext,
@@ -68,14 +63,12 @@ fn text_at(
     })
 }
 
-/// Undo's key: the kit binds it to cmd on a Mac and to ctrl elsewhere.
 const UNDO: &str = if cfg!(target_os = "macos") {
     "cmd-z"
 } else {
     "ctrl-z"
 };
 
-/// `keys`, pressed one frame apart.
 fn pressed(native: &mut gpui_kit::VisualTestContext, keys: &[&str]) {
     native.update(|window, cx| {
         for key in keys {
@@ -86,7 +79,6 @@ fn pressed(native: &mut gpui_kit::VisualTestContext, keys: &[&str]) {
     native.run_until_parked();
 }
 
-/// What the view heard of the first field's text, in order.
 fn told(events: &Rc<RefCell<Vec<wire::Event>>>) -> Vec<String> {
     events
         .borrow()
@@ -98,7 +90,6 @@ fn told(events: &Rc<RefCell<Vec<wire::Event>>>) -> Vec<String> {
         .collect()
 }
 
-/// The last change the view heard.
 fn last_change(events: &Rc<RefCell<Vec<wire::Event>>>) -> wire::TextChange {
     events
         .borrow()
@@ -111,8 +102,6 @@ fn last_change(events: &Rc<RefCell<Vec<wire::Event>>>) -> wire::TextChange {
         .expect("the view heard a change")
 }
 
-/// The view's `Replace`: `range` of the text it read at `revision` of
-/// its document `generation` becomes `text`, the caret after it.
 fn replace_in(
     generation: u64,
     target: &[wire::ElementIdWire],
@@ -131,7 +120,6 @@ fn replace_in(
     }
 }
 
-/// `replace_in` on the generation `input` and `area` mount.
 fn replace(
     target: &[wire::ElementIdWire],
     revision: u64,
@@ -228,9 +216,6 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
     );
 }
 
-/// A read-only field, as a disabled one, takes neither typing nor the text
-/// assistive technology sets, and tells the view nothing; an editable one
-/// takes both.
 #[gpui_kit::test]
 fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
@@ -292,8 +277,6 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
     }
 }
 
-/// Forge's filter row, 600 px: a field `width` wide after a 16 px margin,
-/// its border `border`, then a spacer and a 100 px box.
 fn filter_row(width: impl Into<gpui_kit::Length> + Clone, border: gpui_kit::Hsla) -> wire::Node {
     let mut field = input("Filter", false, false);
     let wire::Node::Field { style, .. } = &mut field else {
@@ -321,24 +304,14 @@ fn filter_row(width: impl Into<gpui_kit::Length> + Clone, border: gpui_kit::Hsla
     )
 }
 
-/// A focused field wears one mark, on its own box. A view's input placed by
-/// a margin and a width in a row a spacer fills (forge's filter) keeps that
-/// box, and its node is that box and no wider: a press in the spacer's room
-/// is not a press on the field. Focused, its border takes the ring's colour
-/// (with the ring, an inset shadow the scene's quads do not show; `a11y`
-/// pins the two together), and the kit's own ring, a border painted round
-/// the box, is not drawn.
 #[gpui_kit::test]
 fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    // eight bits a channel, as a colour crosses the wire
     let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let root = filter_row(px(260.), grey);
     let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    // the field's box and border as drawn, the other borders drawn over
-    // it, and its node's box
     let drawn = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
             crate::render::draw_frame(window, cx);
@@ -393,12 +366,9 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
     );
 }
 
-/// A view's input a fraction of its row wide takes that fraction once: the
-/// wrapper takes it of the row, and the kit's box the whole of the wrapper.
 #[gpui_kit::test]
 fn a_fraction_wide_field_takes_its_fraction_once(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    // eight bits a channel, as a colour crosses the wire
     let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let root = filter_row(gpui_kit::relative(0.5), grey);
     let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
@@ -420,12 +390,9 @@ fn a_fraction_wide_field_takes_its_fraction_once(cx: &mut gpui_kit::TestAppConte
     assert_eq!(width, 300.);
 }
 
-/// A disabled field that holds focus (disabled while focused, as a busy
-/// dialog's) wears no ring: the kit hides its own focus look there too.
 #[gpui_kit::test]
 fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    // eight bits a channel, as a colour crosses the wire
     let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let mut field = input("Filter", false, true);
     let wire::Node::Field { style, .. } = &mut field else {
@@ -462,11 +429,8 @@ fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(border, grey);
 }
 
-/// A growing field's box is the view's, border and padding round the text:
-/// that box, not the text inside the padding, wears the ring and its colour.
 #[gpui_kit::test]
 fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppContext) {
-    // eight bits a channel, as a colour crosses the wire
     let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let style = div()
         .w(px(240.))
@@ -495,8 +459,6 @@ fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppCo
     assert_eq!(border(&mut native), ink);
 }
 
-/// A cursor command moves the caret where it is and takes no keys: only
-/// `Focus` does, and only through the seat's gate.
 #[gpui_kit::test]
 fn a_cursor_command_moves_the_caret_without_taking_the_keys(cx: &mut gpui_kit::TestAppContext) {
     let style = div().w(px(240.)).h(px(80.)).style().clone();
@@ -546,9 +508,6 @@ fn a_cursor_command_moves_the_caret_without_taking_the_keys(cx: &mut gpui_kit::T
     );
 }
 
-/// A key typed into a field activates the view as the host receives it,
-/// claimed by the view (chat's Enter, acted on a redraw later: the
-/// activation is already there) or not; a claimed Escape does not.
 #[gpui_kit::test]
 fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
     cx: &mut gpui_kit::TestAppContext,
@@ -641,7 +600,6 @@ fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
             "a press on the field did not activate the view"
         );
     });
-    // the view's own cursor commands are no input: they stamp nothing
     for command in [
         wire::WidgetCommand::CursorFront {
             target: path.to_vec(),
@@ -693,18 +651,11 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
         options.read_only = true;
         let (_, mut native) = mounted(root, cx);
         native.update(crate::render::draw_frame);
-        // the authored box, under a host name: the view's id is its field
         let bounds = native.update(|window, _| window.find(host_id("field")).bounds());
         assert_eq!(bounds.size, size(px(240.), px(expected)));
     }
 }
 
-/// A field asked to lay out to its own content is as tall as the words in
-/// it — every line of them.
-///
-/// A card that grows with what you type is the whole reason a view asks for
-/// `Shrink`, and a shrunk field that reported one line's height made every
-/// such card hide what had just been written in it.
 #[gpui_kit::test]
 fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppContext) {
     let words = "one\ntwo\nthree\nfour\nfive\nsix";
@@ -714,13 +665,9 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
         .text_size(px(14.))
         .line_height(px(leading));
     let root = area("document", None, words, authored.style().clone());
-    // In a box with room to spare, which is the only place shrinking means
-    // anything: the field is the root of nothing in a real view, it sits
-    // inside the card's own layout.
     let root = sized("card", root, Some(fill()), Some(fill()));
     let (_, mut native) = mounted(root, cx);
     native.update(crate::render::draw_frame);
-    // the authored box, under a host name: the view's id is its field
     let bounds = native.update(|window, _| window.find(host_id("field")).bounds());
     let lines = f32::from(bounds.size.height) / leading;
     assert!(
@@ -777,9 +724,6 @@ fn geometry_and_pixels_keep_the_wire_meaning() {
     assert!(decode_image(&wire::ImageData::Encoded(vec![1, 2, 3])).is_none());
 }
 
-/// A field's selection crosses a new generation of its view, a backward one
-/// included: its words stay selected. Its caret comes back at the far end,
-/// since gpui-base 0.7.0 reads a backward range as empty (0.6.4 kept it at 2).
 #[gpui_kit::test]
 fn a_backward_selection_crosses_a_new_generation(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -787,7 +731,6 @@ fn a_backward_selection_crosses_a_new_generation(cx: &mut gpui_kit::TestAppConte
     let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root()));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    // "hunter2", the caret at 5, then Shift+Left three times: 2..5, caret at 2
     let saved = native.update(|window, cx| {
         crate::render::draw_frame(window, cx);
         let state = tree.read(cx).first_input_for_test().unwrap();
@@ -816,10 +759,6 @@ fn a_backward_selection_crosses_a_new_generation(cx: &mut gpui_kit::TestAppConte
     assert_eq!(restored, (2..5, 5));
 }
 
-/// A target is a whole authored path, as the view SDK sends it. Here one
-/// scope `b` sits inside `a` and another `b` stands alone, each with a
-/// field: the lone one's is focused, never the first field whose path
-/// only ends the same way.
 #[gpui_kit::test]
 fn a_focus_takes_the_field_at_its_whole_path(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -831,7 +770,6 @@ fn a_focus_takes_the_field_at_its_whole_path(cx: &mut gpui_kit::TestAppContext) 
         *id = named_id("input");
         node
     };
-    // an id-less root: every path starts at the scopes under it
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: None,
         style: crate::render::plain_style(),
@@ -863,9 +801,6 @@ fn a_focus_takes_the_field_at_its_whole_path(cx: &mut gpui_kit::TestAppContext) 
     });
 }
 
-/// S9 (IM-2): a commit the IME makes between the key the view last heard
-/// and the view's echo of it is kept; the echo is what the view knows,
-/// not what the field reads.
 #[gpui_kit::test]
 fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::EntityInputHandler as _;
@@ -897,7 +832,6 @@ fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContex
     });
     native.simulate_input("c");
     native.run_until_parked();
-    // the IME commits while the view's frame, built on "abc", is in flight
     native.update(|window, cx| {
         state.update(cx, |state, cx| {
             state.replace_text_in_range(None, "d", window, cx)
@@ -916,13 +850,6 @@ fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContex
     );
 }
 
-// S9: the headline cases of one text model, against the engine. Each failed
-// against the editor lane as it stood (TE.verify's drive of the real store).
-
-/// The document after the field selected `lo..hi` of `text`, the writer
-/// pressed Backspace and typed `typed`, and the view's next frame still
-/// showed the text it had: the engine's text stands, the view's is
-/// behind it.
 fn typed_over_a_selection(
     text_before: &str,
     lo: usize,
@@ -946,7 +873,6 @@ fn typed_over_a_selection(
     pressed(&mut native, &["backspace"]);
     native.simulate_input(typed);
     native.run_until_parked();
-    // the view's frame, built before any of it, echoes the old text
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.replace(area("doc", None, text_before, style), &[], cx)
@@ -956,9 +882,6 @@ fn typed_over_a_selection(
     text(&tree, &mut native)
 }
 
-/// A word selected, Backspace, a letter typed: the person sees "say x now",
-/// and the view's late frame takes nothing back; the first word too (a
-/// range from 0 once stopped the view).
 #[gpui_kit::test]
 fn a_letter_typed_behind_a_claimed_backspace_replaces_what_was_selected(
     cx: &mut gpui_kit::TestAppContext,
@@ -972,9 +895,6 @@ fn a_letter_typed_behind_a_claimed_backspace_replaces_what_was_selected(
     }
 }
 
-/// Enter claimed (the composer's Send clears the draft), a letter typed
-/// ahead of the view's answer: the draft is cleared once and the letter is
-/// kept, since the view's ask is carried over the typing it did not see.
 #[gpui_kit::test]
 fn a_letter_typed_ahead_of_a_claimed_enter_is_kept(cx: &mut gpui_kit::TestAppContext) {
     let mut root = area(
@@ -1006,7 +926,6 @@ fn a_letter_typed_ahead_of_a_claimed_enter_is_kept(cx: &mut gpui_kit::TestAppCon
     native.simulate_input("x");
     native.run_until_parked();
     assert_eq!(text(&tree, &mut native), "hellox");
-    // the view answers the Enter against the text it read: revision 0
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.execute_widget_command(replace(&path, 0, 0..5, ""), window, cx)
@@ -1015,15 +934,10 @@ fn a_letter_typed_ahead_of_a_claimed_enter_is_kept(cx: &mut gpui_kit::TestAppCon
     });
     native.run_until_parked();
     assert_eq!(text(&tree, &mut native), "x");
-    // the caret stays where the writer is, after the letter
     let heard = last_change(&events);
     assert_eq!((heard.text.as_str(), heard.cursor), ("x", (1..1).into()));
 }
 
-/// The view hears the edit a clear made, not a diff of the texts: "ok"
-/// sent while "o" was typed ahead reads "oko", then "o", and a diff of
-/// those takes the first "o" for the one that stayed. The composer cuts
-/// what a send spoke for by this edit, so the typed "o" stays the writer's.
 #[gpui_kit::test]
 fn the_view_hears_the_edit_a_clear_made_not_a_diff_of_the_texts(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(
@@ -1071,10 +985,6 @@ fn the_view_hears_the_edit_a_clear_made_not_a_diff_of_the_texts(cx: &mut gpui_ki
     );
 }
 
-/// Enter claimed with the caret inside the words, a letter typed before the
-/// clear lands: the clear takes only the words the view read, the letter
-/// stays with the caret after it, and one undo brings the words back round
-/// it.
 #[gpui_kit::test]
 fn a_letter_typed_inside_the_words_a_send_clears_is_kept(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(
@@ -1114,10 +1024,6 @@ fn a_letter_typed_inside_the_words_a_send_clears_is_kept(cx: &mut gpui_kit::Test
     assert_eq!(text(&tree, &mut native), "helxlo", "one undo step");
 }
 
-/// The frames that arrive before an ask runs keep the edits it read
-/// against: an ask runs frames after the one that carried it, and the frames
-/// between (a keystroke's tick, a Drawn-owed turn, a redraw) arrive first.
-/// The host holds the ask, so it knows what the ask still needs.
 #[gpui_kit::test]
 fn frames_arriving_before_an_ask_runs_keep_the_edits_it_read_against(
     cx: &mut gpui_kit::TestAppContext,
@@ -1127,7 +1033,6 @@ fn frames_arriving_before_an_ask_runs_keep_the_edits_it_read_against(
     let path = [named_id("doc")];
     focus(&tree, &mut native, &path);
     let (events, _subscription) = emitted(&tree, &mut native);
-    // revision 1: a letter at the end; revision 2: a letter inside "hello"
     native.simulate_input("a");
     native.update(|window, cx| {
         let crate::render::inputs::Engine::Area(state) =
@@ -1141,8 +1046,6 @@ fn frames_arriving_before_an_ask_runs_keep_the_edits_it_read_against(
     native.simulate_input("b");
     native.run_until_parked();
     assert_eq!(text(&tree, &mut native), "heblloa");
-    // the view heard both; two frames arrive and draw before its ask,
-    // built between the two letters and still queued, runs
     native.update(|window, cx| {
         for _ in 0..2 {
             let mut root = area("doc", None, "heblloa", style.clone());
@@ -1154,8 +1057,6 @@ fn frames_arriving_before_an_ask_runs_keep_the_edits_it_read_against(
             crate::render::draw_frame(window, cx);
         }
     });
-    // the ask, against "helloa": clear "hello". The "b" typed into it since
-    // stays; without the edit it was typed by, the clear would take "hebll"
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.execute_widget_command(replace(&path, 1, 0..5, ""), window, cx)
@@ -1167,7 +1068,6 @@ fn frames_arriving_before_an_ask_runs_keep_the_edits_it_read_against(
     assert_eq!(told(&events).last().map(String::as_str), Some("ba"));
 }
 
-/// Edits the view has not acknowledged never stop the view, however many.
 #[gpui_kit::test]
 fn unacknowledged_edits_never_stop_the_view(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(
@@ -1191,8 +1091,6 @@ fn unacknowledged_edits_never_stop_the_view(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(told.last().map(String::len), Some(129));
 }
 
-/// A held Backspace drains at the key's repeat rate: five presses in one
-/// frame take five characters by the next.
 #[gpui_kit::test]
 fn a_held_backspace_drains_at_repeat_rate(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(
@@ -1218,7 +1116,6 @@ fn a_held_backspace_drains_at_repeat_rate(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
-/// Undo crosses an indent: Tab is an edit like any other.
 #[gpui_kit::test]
 fn undo_crosses_a_tab(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(
@@ -1239,7 +1136,6 @@ fn undo_crosses_a_tab(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(text(&tree, &mut native), "one");
 }
 
-/// Undo works after the view cleared a sent draft: the words come back.
 #[gpui_kit::test]
 fn undo_after_the_view_cleared_a_sent_draft_brings_the_words_back(
     cx: &mut gpui_kit::TestAppContext,
@@ -1267,7 +1163,6 @@ fn undo_after_the_view_cleared_a_sent_draft_brings_the_words_back(
         })
         .next_back()
         .expect("the view heard the draft");
-    // the view sends the draft and clears its field at the revision it knows
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.execute_widget_command(replace(&path, revision, 0..2, ""), window, cx)
@@ -1280,14 +1175,10 @@ fn undo_after_the_view_cleared_a_sent_draft_brings_the_words_back(
     assert_eq!(text(&tree, &mut native), "hi");
 }
 
-/// Esc lets go of Tab for the next key: Tab then leaves the field; any
-/// other key takes Tab back for indenting (owner, 2026-09-28; AX-022).
 #[gpui_kit::test]
 fn esc_then_tab_leaves_the_field_and_any_other_key_takes_tab_back(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    // a stop after the field, for Tab to leave to, under the kit's Root,
-    // which walks the focus ring on Tab as the shell's window does
     cx.update(gpui_kit::init);
     let root = container(
         "form",
@@ -1330,9 +1221,6 @@ fn esc_then_tab_leaves_the_field_and_any_other_key_takes_tab_back(
     assert_eq!(text_at(&tree, &mut native, &path), "a  ");
 }
 
-/// A mention the view asks for lands as one span with the space it asked
-/// for after it, both carried over the first ask by the second: the view
-/// speaks at one revision for both.
 #[gpui_kit::test]
 fn a_mention_lands_as_one_span_and_its_space_follows_it(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native) = mounted(
@@ -1383,13 +1271,6 @@ fn a_mention_lands_as_one_span_and_its_space_follows_it(cx: &mut gpui_kit::TestA
     );
 }
 
-/// A Restore and an Enter the view handled in one tick: the frame carries
-/// the seeded text as a new generation and the ask a clear of it, both in
-/// the seeded text's bytes. The adopt is a new document, told with no edit;
-/// the clear names the generation and lands on it whole, not rebased over
-/// the adopt as if it were typing. An ask on the generation the view left
-/// edits nothing, and one for a generation the field has not seen waits
-/// for its frame.
 #[gpui_kit::test]
 fn a_clear_asked_against_a_seed_lands_after_the_adopt(cx: &mut gpui_kit::TestAppContext) {
     let style = div().w(px(240.)).h(px(80.)).style().clone();
@@ -1424,7 +1305,6 @@ fn a_clear_asked_against_a_seed_lands_after_the_adopt(cx: &mut gpui_kit::TestApp
         ),
         (2, 1, None, "hello")
     );
-    // the old generation's ask edits a document that is gone
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.execute_widget_command(replace_in(1, &path, 0, 0..5, "x"), window, cx)
@@ -1453,7 +1333,6 @@ fn a_clear_asked_against_a_seed_lands_after_the_adopt(cx: &mut gpui_kit::TestApp
             })
         )
     );
-    // an ask that outran its frame waits for it
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.execute_widget_command(replace_in(3, &path, 0, 0..3, "yo"), window, cx)
@@ -1471,10 +1350,6 @@ fn a_clear_asked_against_a_seed_lands_after_the_adopt(cx: &mut gpui_kit::TestApp
     assert_eq!(told(&events).last().map(String::as_str), Some("yode"));
 }
 
-/// A view's reset arrives while an IME composes: the adopt waits for the
-/// commit, and until then the field is still the old document, so what the
-/// IME does to it is told as the old generation's. The adopt lands at the
-/// commit as the new generation, with no edit.
 #[gpui_kit::test]
 fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
     cx: &mut gpui_kit::TestAppContext,
@@ -1492,7 +1367,6 @@ fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
         };
         state
     });
-    // the IME starts composing at the end of "ab"
     native.update(|window, cx| {
         state.update(cx, |state, cx| {
             state.focus(window, cx);
@@ -1501,7 +1375,6 @@ fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
         });
     });
     native.run_until_parked();
-    // the view resets to "hello" meanwhile: a frame with generation 2
     native.update(|window, cx| {
         let mut root = area("doc", None, "hello", style.clone());
         let wire::Node::Field { generation, .. } = &mut root else {
@@ -1512,7 +1385,6 @@ fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
         crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
-    // the IME goes on composing: the old document, told as the old generation
     native.update(|window, cx| {
         state.update(cx, |state, cx| {
             state.replace_and_mark_text_in_range(None, "ka", None, window, cx);
@@ -1525,7 +1397,6 @@ fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
         (1, "abka"),
         "the field is the old document until the adopt lands"
     );
-    // the commit: the adopt lands as generation 2, a new document, no edit
     native.update(|window, cx| {
         state.update(cx, |state, cx| {
             state.replace_text_in_range(None, "か", window, cx);

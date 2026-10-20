@@ -45,7 +45,6 @@ pub extern "system" fn Java_industries_ducktape_devicekey_DeviceKeyStore_attach<
     .resolve::<jni::errors::ThrowRuntimeExAndDefault>();
 }
 
-/// The 32-byte public key under `alias`, made on first ask.
 pub(super) fn public_key(alias: &str) -> KeyResult<[u8; 32]> {
     let bytes = ask(|env, class| {
         let alias = env.new_string(alias)?;
@@ -64,7 +63,6 @@ pub(super) fn public_key(alias: &str) -> KeyResult<[u8; 32]> {
         .map_err(|bytes: Vec<u8>| format!("Keystore answered a {}-byte public key", bytes.len()))
 }
 
-/// PureEdDSA over `message` with the key under `alias`.
 pub(super) fn sign(alias: &str, message: &[u8]) -> KeyResult<[u8; 64]> {
     let bytes = ask(|env, class| {
         let alias = env.new_string(alias)?;
@@ -84,8 +82,6 @@ pub(super) fn sign(alias: &str, message: &[u8]) -> KeyResult<[u8; 64]> {
         .map_err(|bytes: Vec<u8>| format!("Keystore answered a {}-byte signature", bytes.len()))
 }
 
-/// Whether the key under `alias` is sealed, and Keystore's word for the
-/// level of the key that holds or seals it.
 pub(super) fn storage(alias: &str) -> KeyResult<(bool, String)> {
     ask(|env, class| {
         let alias = env.new_string(alias)?;
@@ -107,7 +103,6 @@ pub(super) fn storage(alias: &str) -> KeyResult<(bool, String)> {
     })
 }
 
-/// `map.get(name)`.
 fn field<'local>(
     env: &mut Env<'local>,
     map: &JObject<'_>,
@@ -123,14 +118,11 @@ fn field<'local>(
     .l()
 }
 
-/// A `byte[]` answer, copied out.
 fn bytes_of(env: &mut Env<'_>, answer: JObject<'_>) -> jni::errors::Result<Vec<u8>> {
     let array = env.cast_local::<JByteArray>(answer)?;
     env.convert_byte_array(&array)
 }
 
-/// `call` on this thread's `Env` and the store's class: a thrown exception
-/// as its message, any other failure as JNI says it.
 fn ask<T>(
     call: impl FnOnce(&mut Env<'_>, &JClass<'static>) -> jni::errors::Result<T>,
 ) -> KeyResult<T> {

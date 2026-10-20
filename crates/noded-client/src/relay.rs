@@ -12,7 +12,6 @@ use sha2::{Digest as _, Sha256};
 /// How often a slot is asked for its answer.
 pub const POLL: Duration = Duration::from_millis(1500);
 
-/// The slot `id` on `page`'s origin.
 fn slot_url(page: &str, id: &str) -> Result<String, String> {
     let mut url = reqwest::Url::parse(page)
         .map_err(|error| format!("The auth host address is unusable: {error}"))?;
@@ -97,7 +96,6 @@ mod tests {
         let request = slot(page, "KQ4M9XPT", "request").unwrap();
         let consent = slot(page, "KQ4M9XPT", "consent").unwrap();
         assert_ne!(request, consent);
-        // the relay takes 43-character ids only
         let id = request.rsplit('/').next().unwrap();
         assert_eq!(id.len(), 43);
         assert!(request.starts_with("https://auth.ducktape.industries/r/"));

@@ -12,9 +12,6 @@ use tokio::net::{TcpListener, TcpStream};
 
 use super::auth_page::{Outcome, parse_result};
 
-/// One-shot, on an ephemeral 127.0.0.1 port. The port is no secret, so the
-/// callback path carries 32 random bytes and only a POST to that path ends
-/// the wait. Its answer sends the browser back to `page`'s last screen.
 pub(super) struct Listener {
     listener: TcpListener,
     path: String,
@@ -41,9 +38,6 @@ impl Listener {
         format!("http://127.0.0.1:{port}{}", self.path)
     }
 
-    /// The page's answer. Every local connection is read at once, side by
-    /// side, so one that connects and says nothing (a browser's spare
-    /// preconnect, any local process) holds up no other.
     pub(super) async fn wait(self) -> Result<Outcome, String> {
         let callback: Arc<Callback> = Arc::new(Callback {
             path: self.path,
@@ -63,23 +57,19 @@ impl Listener {
     }
 }
 
-/// What the page's one POST must name, and where its answer sends the
-/// browser back to.
 struct Callback {
     path: String,
     page: String,
 }
 
 impl Callback {
-    /// One local connection: the page's outcome, if it is the POST to the
-    /// callback path; anything else is answered `404` or dropped.
     async fn answer(self: Arc<Self>, mut stream: TcpStream) -> Option<Result<Outcome, String>> {
         let (method, path, body) = read_request(&mut stream).await.ok()?;
         let result = (path == self.path && method == "POST")
             .then(|| form_field(&body, "result"))
             .flatten();
         let Some(result) = result else {
-            reply(&mut stream, "404 Not Found").await;
+            reply_without_body_and_close(&mut stream, "404 Not Found").await;
             return None;
         };
         let outcome = parse_result(&result);
@@ -88,7 +78,7 @@ impl Callback {
             Err(_) => "failed",
         };
         let back = format!("303 See Other\r\nLocation: {}#{screen}", self.page);
-        reply(&mut stream, &back).await;
+        reply_without_body_and_close(&mut stream, &back).await;
         Some(outcome)
     }
 }
@@ -119,15 +109,12 @@ pub(super) async fn read_request(
     Ok((method, path, body))
 }
 
-/// One reply with no body, `status` and its headers; then the connection
-/// closes.
-async fn reply(stream: &mut TcpStream, head: &str) {
+async fn reply_without_body_and_close(stream: &mut TcpStream, head: &str) {
     let reply = format!("HTTP/1.1 {head}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     let _ = stream.write_all(reply.as_bytes()).await;
     let _ = stream.flush().await;
 }
 
-/// One `application/x-www-form-urlencoded` field, decoded.
 fn form_field(body: &[u8], name: &str) -> Option<String> {
     body.split(|byte| *byte == b'&').find_map(|pair| {
         let at = pair.iter().position(|byte| *byte == b'=')?;
@@ -195,7 +182,6 @@ mod tests {
         assert_eq!(waiting.await.unwrap(), Ok(Outcome::Created(key)));
     }
 
-    /// The page's own last screen takes the browser, not the listener.
     fn no_redirects() -> reqwest::Client {
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -203,9 +189,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A local client that connects first and says nothing (a browser's
-    /// spare preconnect, any process on the box) holds nothing up: the
-    /// page's POST behind it is answered while it is still connected.
     #[tokio::test]
     async fn a_stalled_local_client_does_not_hold_up_the_answer() {
         let listener = Listener::bind("https://auth.example/").await.unwrap();
@@ -234,9 +217,6 @@ mod tests {
         assert_eq!(waiting.await.unwrap(), Ok(Outcome::Created(key)));
     }
 
-    /// `Session`'s real status source reaches a node over the wire: one
-    /// GET of `/v1/status`, its borsh answer decoded. A node that answers
-    /// otherwise is a failure with a sentence, not a status.
     #[tokio::test]
     async fn the_status_source_reads_a_node_over_loopback() {
         use crate::shell::entities::Session;
@@ -284,7 +264,6 @@ mod tests {
         let source = Session::status_source(&origin);
         assert_eq!(source().await, Ok(status));
         assert_eq!(paths.recv().await.unwrap(), "/v1/status");
-        // a node gone (nothing listens): a sentence for the screen
         let gone = Session::status_source("http://127.0.0.1:1");
         assert!(gone().await.unwrap_err().contains("error sending request"));
     }

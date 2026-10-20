@@ -44,24 +44,14 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use hyper::{Request, Response, StatusCode};
 
-/// The most a registration's body may be: a token is a few hundred bytes.
 const BODY_LIMIT: usize = 4096;
 
-/// How often each kept key is asked of identity again.
 const RECHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 
-/// Registrations one client may send a minute, and all clients together.
-/// Each costs the node up to two identity queries and the log a line. A
-/// phone sends one or two at launch (voip and apns, or fcm) and retries a
-/// refused one 30 s later: 30 lets 15 iPhones behind one address launch in
-/// the same minute; 300 holds the node to 10 queries a second from here.
 const PER_CLIENT: u32 = 30;
 const OVERALL: u32 = 300;
 
-/// How long a client has for a request's headers, and then for its body:
-/// a registration is under 4 KiB, so one held back longer is let go
-/// (slowloris).
-const DEADLINE: Duration = Duration::from_secs(10);
+const REQUEST_HEAD_AND_BODY_DEADLINE: Duration = Duration::from_secs(10);
 
 /// One device's token, as the file keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -80,11 +70,7 @@ pub struct Row {
 #[derive(Default)]
 pub struct Devices {
     rows: Mutex<Vec<Row>>,
-    /// The file's modification time as last read ([`Devices::follow`]);
-    /// none once written here, so it is read again.
     seen: Mutex<Option<SystemTime>>,
-    /// Where the rows are kept; none for a test's rows or the probe's,
-    /// which live in memory only.
     file: Option<PathBuf>,
 }
 
@@ -146,11 +132,6 @@ impl Devices {
     /// signer, never one per device (chat keys its store by signer: two
     /// would announce every mention twice).
     pub fn accounts(&self) -> Vec<(u64, String)> {
-        // ponytail: the smallest key, so the signer flips when a smaller
-        // key registers or the smallest leaves, and the account's notifier
-        // starts again on a fresh store (what is there then counts as
-        // history: nothing is announced twice, badges start at 0); a kept
-        // choice per account if that proves to be felt
         let mut accounts: HashMap<u64, String> = HashMap::new();
         for row in lock(&self.rows).iter().filter(|row| !row.token.is_empty()) {
             let signer = accounts
@@ -165,15 +146,10 @@ impl Devices {
         accounts
     }
 
-    /// `row` kept in place of the one of its key and kind, when it is newer;
-    /// whether it was ([`put`]).
     pub(crate) fn put(&self, row: Row) -> std::io::Result<bool> {
         self.edit(|rows| put(rows, row))
     }
 
-    /// The row of `kind` holding `token` made a tombstone: APNs or FCM said
-    /// the token is gone. Its `at` stays, so a replay of the registration
-    /// is still refused (as a leave's is, [`put`]). Whether one was there.
     pub(crate) fn drop_token(&self, kind: &str, token: &str) -> std::io::Result<bool> {
         self.edit(|rows| {
             let mut dropped = false;
@@ -188,13 +164,6 @@ impl Devices {
         })
     }
 
-    /// `change` made to the rows as the file holds them now, and the file
-    /// written whole and renamed into place. The door and a network's
-    /// process each write it, so each holds `<file>.lock` from its read to
-    /// its rename: a write never lands over one it did not read. The rows
-    /// stay held throughout too: two writes from one process would write one
-    /// temporary file together and rename a torn one into place. Rows with
-    /// no file are changed in memory only.
     pub(crate) fn edit<T>(&self, change: impl FnOnce(&mut Vec<Row>) -> T) -> std::io::Result<T> {
         let mut rows = lock(&self.rows);
         let Some(file) = &self.file else {
@@ -220,19 +189,11 @@ impl Devices {
         std::fs::rename(&tmp, file)?;
         *rows = fresh;
         drop(rows);
-        // moved here: the next `follow` reads the file back and says so,
-        // whatever its clock, which is what stops the notifier of an
-        // account a drop left with no token (`carry`, main.rs)
         *lock(&self.seen) = None;
         Ok(answer)
     }
 }
 
-/// `row` kept in `rows` in place of the one of its key and kind, when it is
-/// newer; whether it was. A token is one install's, on the key seated there
-/// now: the same token kept under another key (the phone seated another
-/// account, and the key it left signs no leave) becomes a tombstone, whose
-/// own `at` still refuses a replay.
 fn put(rows: &mut Vec<Row>, row: Row) -> bool {
     let at = rows
         .iter()
@@ -278,8 +239,6 @@ pub fn checked(registration: &Registration, now: u64) -> Result<[u8; 32], Refuse
     if registration.token.len() > 512 || registration.chain.len() > 128 {
         return Err(bad("a token is at most 512 bytes, a chain 128"));
     }
-    // an APNs token ends the URL it is pushed to (`/3/device/<token>`):
-    // hex, never a `/`, `..` or `?` that moves the path
     if registration.kind != "fcm"
         && !registration
             .token
@@ -323,8 +282,6 @@ pub struct Followed {
 }
 
 impl Followed {
-    /// The chain id and network name, from the node's status the first
-    /// time it answers.
     async fn chain(&self) -> Option<(String, String)> {
         if let Some(chain) = lock(&self.chain).clone() {
             return Some(chain);
@@ -338,7 +295,6 @@ impl Followed {
     }
 }
 
-/// This minute's registrations, per client and in all.
 #[derive(Default)]
 struct Counts {
     since: Option<Instant>,
@@ -347,12 +303,7 @@ struct Counts {
 }
 
 impl Counts {
-    /// One more from `client` counted when it is under both limits: whether
-    /// it was. No client is kept past the overall limit, so the map holds
-    /// at most [`OVERALL`].
     fn take(&mut self, client: IpAddr) -> bool {
-        // ponytail: a fixed minute, so a client may send twice its limit
-        // across a minute's edge; a sliding window if that is ever felt
         if self
             .since
             .is_none_or(|since| since.elapsed() >= Duration::from_secs(60))
@@ -375,14 +326,10 @@ impl Counts {
     }
 }
 
-/// Who sent a request that came from `peer`. Behind the tunnel every
-/// request comes from cloudflared on this host (127.0.0.1), so the client
-/// is the address Cloudflare names in `CF-Connecting-IP`. Trusting that
-/// header is safe only because the door listens on loopback (`listen =
-/// 127.0.0.1:9201`): a peer elsewhere could name any address, so only a
-/// loopback peer's is read. An IPv6 client is its /64, the block one host
-/// is handed.
-fn client(head: &hyper::http::request::Parts, peer: IpAddr) -> IpAddr {
+fn client_address_from_trusted_loopback_proxy(
+    head: &hyper::http::request::Parts,
+    peer: IpAddr,
+) -> IpAddr {
     let named = head
         .headers
         .get("cf-connecting-ip")
@@ -408,7 +355,7 @@ impl Door {
             networks,
             reader,
             counts: Mutex::default(),
-            deadline: DEADLINE,
+            deadline: REQUEST_HEAD_AND_BODY_DEADLINE,
         }
     }
 
@@ -426,8 +373,6 @@ impl Door {
                 None => unknown = true,
             }
         }
-        // a 404 is final to a phone, which tries no more: said only when
-        // every node followed named its chain, and none is this one
         let Some((network, name)) = followed else {
             return Err(match unknown {
                 true => Refused(503, "the network's node did not answer".into()),
@@ -441,8 +386,6 @@ impl Door {
             &*self.reader,
         )
         .await
-        // the reply goes to the internet: the node's own words (its
-        // address among them) only to the log
         .map_err(|error| {
             tracing::warn!(target: "pushd", network = network.name, %error, "identity not asked");
             Refused(503, "the network's node did not answer".into())
@@ -546,8 +489,6 @@ impl Door {
                         let door = door.clone();
                         async move { Ok::<_, hyper::Error>(door.answer(request, peer.ip()).await) }
                     });
-                    // a client that holds its headers back is let go; the
-                    // timer also closes a keep-alive connection left idle
                     let served = hyper::server::conn::http1::Builder::new()
                         .timer(hyper_util::rt::TokioTimer::new())
                         .header_read_timeout(deadline)
@@ -562,7 +503,6 @@ impl Door {
         Ok(())
     }
 
-    /// One request to the door answered.
     async fn answer(
         &self,
         request: Request<hyper::body::Incoming>,
@@ -579,9 +519,8 @@ impl Door {
         match (head.method.as_str(), head.uri.path()) {
             ("GET", "/") => reply(200, "pushd\n".into()),
             ("POST", path) if path == ROUTE => {
-                // counted before anything is read or asked, and never logged:
-                // a flood reaches neither the node nor the log
-                if !lock(&self.counts).take(client(&head, peer)) {
+                if !lock(&self.counts).take(client_address_from_trusted_loopback_proxy(&head, peer))
+                {
                     return reply(429, "too many registrations: retry in a minute\n".into());
                 }
                 let body = http_body_util::Limited::new(body, BODY_LIMIT).collect();
@@ -626,7 +565,6 @@ mod tests {
         ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap()
     }
 
-    /// `registration` signed by `key` at `at`.
     pub(crate) fn signed(
         mut registration: Registration,
         key: &ed25519::PrivateKey,
@@ -655,10 +593,6 @@ mod tests {
 
     const NOW: u64 = 1_700_000_000_000;
 
-    /// A registration is taken when its key signed it, its time is near
-    /// now, and its kind and env fit; a changed field, another key's
-    /// signature, a stale time, an fcm token with an env or an APNs token
-    /// that is not hex is refused.
     #[test]
     fn a_registration_is_its_keys_word_at_about_now() {
         let key = key();
@@ -709,12 +643,6 @@ mod tests {
         assert_eq!(checked(&unknown, NOW).unwrap_err().0, 400);
     }
 
-    /// The rows keep one token per key and kind, the newest `at` winning:
-    /// a rotation replaces, a replay of what came before is refused, a
-    /// leave is a tombstone that still refuses the token it withdrew; the
-    /// account's signer is its smallest key with a token, and an account
-    /// whose devices all left has none; a token registered under another
-    /// key leaves the old key's row.
     #[test]
     fn rows_keep_the_newest_token_per_key_and_kind() {
         let devices = Devices::default();
@@ -730,15 +658,12 @@ mod tests {
         assert!(devices.put(row("bb", "apns", "t2", 10)).unwrap());
         assert!(devices.put(row("aa", "fcm", "t3", 10)).unwrap());
         assert_eq!(devices.accounts(), vec![(15, "aa".into())]);
-        // a rotation
         assert!(devices.put(row("bb", "voip", "t1b", 11)).unwrap());
-        // the old token replayed
         assert!(!devices.put(row("bb", "voip", "t1", 10)).unwrap());
         assert_eq!(
             devices.tokens(15, "voip"),
             vec![("t1b".to_owned(), "production".to_owned())]
         );
-        // aa leaves: bb is the signer now
         assert!(devices.put(row("aa", "fcm", "", 12)).unwrap());
         assert!(!devices.put(row("aa", "fcm", "t3", 10)).unwrap());
         assert!(devices.tokens(15, "fcm").is_empty());
@@ -746,9 +671,6 @@ mod tests {
         assert!(devices.put(row("bb", "voip", "", 13)).unwrap());
         assert!(devices.put(row("bb", "apns", "", 13)).unwrap());
         assert!(devices.accounts().is_empty());
-        // one install's token registered under another key (the phone
-        // seated another account): the old key's row is a tombstone, and
-        // its registration replayed changes nothing
         assert!(devices.put(row("dd", "apns", "t4", 20)).unwrap());
         assert!(
             devices
@@ -767,8 +689,6 @@ mod tests {
         assert_eq!(devices.accounts(), vec![(16, "ee".into())]);
     }
 
-    /// The file is written whole and read back; one that moved is read
-    /// again by a follower, one that did not is not.
     #[test]
     fn the_file_round_trips_and_a_follower_reads_it_when_it_moved() {
         let dir = tempfile::tempdir().unwrap();
@@ -787,15 +707,12 @@ mod tests {
         let follower = Devices::load(&file).unwrap();
         assert_eq!(follower.accounts(), vec![(2, "aa".into())]);
         assert!(!follower.follow(&file));
-        // a second within the same instant would read as unmoved on a
-        // coarse filesystem clock
         std::thread::sleep(Duration::from_millis(20));
         devices.put(fcm(3, "bb", "t3")).unwrap();
         assert!(follower.follow(&file));
         assert_eq!(follower.accounts().len(), 2);
     }
 
-    /// Registrations kept at once leave the file whole, with every row.
     #[test]
     fn saves_at_once_leave_the_file_whole() {
         let dir = tempfile::tempdir().unwrap();
@@ -823,10 +740,6 @@ mod tests {
         assert_eq!(Devices::load(&file).unwrap().accounts().len(), 8);
     }
 
-    /// The door and a network's process each hold the rows and each write
-    /// the file: a token the process drops takes no registration the door
-    /// kept since the process last read the file, and the door's next write
-    /// does not bring the dropped token back.
     #[test]
     fn two_writers_keep_each_others_rows() {
         let dir = tempfile::tempdir().unwrap();
@@ -854,9 +767,6 @@ mod tests {
         assert_eq!(tokens, ["new", "newer"]);
     }
 
-    /// A token APNs or FCM calls gone leaves a tombstone, as a leave does:
-    /// the row's `at` still refuses a replay of the registration that put
-    /// the token there.
     #[test]
     fn a_dropped_token_still_refuses_its_replay() {
         let devices = Devices::default();
@@ -877,9 +787,6 @@ mod tests {
         );
     }
 
-    /// A network's process that drops a token reads its rows back at its
-    /// next look, and says they moved (what runs `carry`), even when the
-    /// file's clock did not tick between its read and its write.
     #[test]
     fn a_drop_here_is_a_move_the_next_look_sees() {
         let dir = tempfile::tempdir().unwrap();
@@ -897,7 +804,6 @@ mod tests {
         let child = Devices::load(&file).unwrap();
         let read = std::fs::metadata(&file).unwrap().modified().unwrap();
         assert!(child.drop_token("apns", "dead").unwrap());
-        // a coarse clock: the write lands in the tick the read saw
         std::fs::File::options()
             .write(true)
             .open(&file)
@@ -909,16 +815,12 @@ mod tests {
         assert!(!child.follow(&file));
     }
 
-    /// A chain pushd does not follow is a 404, which a phone takes as final;
-    /// while a followed node has not named its chain yet, the chain may be
-    /// that one's: a 503, which the phone tries again.
     #[test]
     fn an_unfollowed_chain_is_a_404_only_once_every_node_named_its_chain() {
         let network = |chain: Option<&str>| {
             Arc::new(Followed {
                 name: "testkit".into(),
                 devices: Arc::new(Devices::default()),
-                // nothing listens: a chain not named yet stays unnamed
                 client: noded_client::Client::new("http://127.0.0.1:1"),
                 chain: Mutex::new(chain.map(|chain| (chain.into(), "testkit".into()))),
             })
@@ -935,8 +837,6 @@ mod tests {
         assert_eq!(answer(vec![network(elsewhere), network(None)]), 503);
     }
 
-    /// A door on a loopback port, giving a client `deadline` for its
-    /// headers and then its body: its address.
     fn door(networks: Vec<Arc<Followed>>, deadline: Duration) -> std::net::SocketAddr {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let at = listener.local_addr().unwrap();
@@ -948,7 +848,6 @@ mod tests {
         at
     }
 
-    /// `request` sent on a connection of its own: the status answered.
     fn sent(at: std::net::SocketAddr, request: &str) -> u16 {
         use std::io::{Read as _, Write as _};
         let mut stream = std::net::TcpStream::connect(at).unwrap();
@@ -968,14 +867,9 @@ mod tests {
         )
     }
 
-    /// A client past its registrations a minute is answered 429 before its
-    /// body is read, and another client is not: the client is the address
-    /// Cloudflare names (the peer is the tunnel on this host), an IPv6 one
-    /// its /64. All clients together stop at the overall limit, and the
-    /// counts hold no client past it.
     #[test]
     fn a_client_over_its_limit_is_told_to_wait() {
-        let at = door(Vec::new(), DEADLINE);
+        let at = door(Vec::new(), REQUEST_HEAD_AND_BODY_DEADLINE);
         for _ in 0..PER_CLIENT {
             assert_eq!(sent(at, &post("203.0.113.7", 2, "{}")), 400);
         }
@@ -993,8 +887,6 @@ mod tests {
         assert_eq!(counts.per.len(), OVERALL as usize);
     }
 
-    /// A client that never finishes its headers is let go at the deadline
-    /// (slowloris), and one whose body stalls is answered 408.
     #[test]
     fn a_client_that_holds_its_request_back_is_let_go() {
         use std::io::{Read as _, Write as _};
@@ -1017,8 +909,6 @@ mod tests {
         assert_eq!(sent(at, &post("203.0.113.7", 100, "{")), 408);
     }
 
-    /// A node whose identity answers `OfKey` for each key as `answer` says,
-    /// a reply (200) or a refusal (400): its URL.
     fn node(answer: fn(&[u8]) -> Result<identity::Reply, abi::Refusal>) -> String {
         use std::io::{BufRead as _, Read as _, Write as _};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1060,10 +950,6 @@ mod tests {
         url
     }
 
-    /// The hourly recheck drops a row only on identity's word that its key
-    /// acts as no account (it holds none, or its account is suspended); a
-    /// refusal that says nothing of the key (a body cut short, a trap)
-    /// keeps the row.
     #[test]
     fn a_recheck_drops_a_leaver_and_keeps_a_row_the_node_did_not_judge() {
         let url = node(|key| match key[0] {

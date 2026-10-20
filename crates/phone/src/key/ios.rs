@@ -38,7 +38,6 @@ unsafe extern "C" {
     fn free(pointer: *mut c_void);
 }
 
-/// The 32-byte public key under `alias`, made on first ask.
 pub(super) fn public_key(alias: &str) -> KeyResult<[u8; 32]> {
     let alias = c_string(alias)?;
     let mut out = [0; 32];
@@ -48,7 +47,6 @@ pub(super) fn public_key(alias: &str) -> KeyResult<[u8; 32]> {
     Ok(out)
 }
 
-/// PureEdDSA over `message` with the key under `alias`.
 pub(super) fn sign(alias: &str, message: &[u8]) -> KeyResult<[u8; 64]> {
     let alias = c_string(alias)?;
     let mut out = [0; 64];
@@ -65,8 +63,6 @@ pub(super) fn sign(alias: &str, message: &[u8]) -> KeyResult<[u8; 64]> {
     Ok(out)
 }
 
-/// Whether the key under `alias` is sealed, and the store's word for where
-/// it is kept (`secure-enclave`, `keychain`).
 pub(super) fn storage(alias: &str) -> KeyResult<(bool, String)> {
     let alias = c_string(alias)?;
     let mut sealed = 0u8;
@@ -76,7 +72,7 @@ pub(super) fn storage(alias: &str) -> KeyResult<(bool, String)> {
     said(unsafe { ducktape_device_key_storage(alias.as_ptr(), &mut sealed, &mut level) })?;
     Ok((
         sealed != 0,
-        owned(level).ok_or("The key store named no level.")?,
+        copy_and_free_swift_string(level).ok_or("The key store named no level.")?,
     ))
 }
 
@@ -84,8 +80,7 @@ fn c_string(alias: &str) -> KeyResult<CString> {
     CString::new(alias).map_err(|_| format!("The key alias `{alias}` holds a NUL byte."))
 }
 
-/// A `strdup` string from Swift, copied out and freed; `None` for null.
-fn owned(text: *mut c_char) -> Option<String> {
+fn copy_and_free_swift_string(text: *mut c_char) -> Option<String> {
     if text.is_null() {
         return None;
     }
@@ -98,7 +93,6 @@ fn owned(text: *mut c_char) -> Option<String> {
     Some(copied)
 }
 
-/// A call's answer: done when null, else its sentence (freed here).
 fn said(error: *mut c_char) -> KeyResult<()> {
-    owned(error).map_or(Ok(()), Err)
+    copy_and_free_swift_string(error).map_or(Ok(()), Err)
 }

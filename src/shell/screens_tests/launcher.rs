@@ -2,8 +2,6 @@
 use super::*;
 use gpui_kit::TestAppContext;
 
-/// The screen drawn: the id just inside the launcher's frame, or the
-/// desk's menu bar.
 fn drawn_ids(window: &mut Window, cx: &mut gpui_kit::App) -> std::collections::BTreeSet<String> {
     draw(window, cx);
     let nodes: Vec<_> = window
@@ -32,9 +30,6 @@ fn drawn_ids(window: &mut Window, cx: &mut gpui_kit::App) -> std::collections::B
         .collect()
 }
 
-/// For every stage and the sub-steps it draws, the console window draws
-/// that stage's screen, and it is launcher-sized exactly when that screen
-/// is not the desk.
 #[gpui_kit::test]
 fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
     use crate::shell::entities::{AccountStep, Screen};
@@ -73,8 +68,6 @@ fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
     ];
     let names: std::collections::BTreeSet<&str> = screens.iter().map(|(_, id)| *id).collect();
     for (screen, id) in &screens {
-        // the key seated or not, locked or not, an old password key or not:
-        // none of it picks the screen
         for bits in 0..8u8 {
             let mut seed = Seed::boot();
             seed.screen = *screen;
@@ -105,8 +98,6 @@ fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
     }
 }
 
-/// The launcher is fixed at its size and the desk resizes: the console
-/// opens on the launcher fixed, and each crossing switches it.
 #[gpui_kit::test]
 fn the_launcher_is_fixed_and_the_desk_resizes(cx: &mut TestAppContext) {
     use crate::shell::entities::Screen;

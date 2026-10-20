@@ -297,7 +297,6 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
     });
 }
 
-/// A sensor around a box `width` by 60, heard on route 7.
 fn measured(width: f32) -> wire::Node {
     let boxed = div().w(px(width)).h(px(60.)).flex_none().style().clone();
     wire::Node::Sensor {
@@ -308,8 +307,6 @@ fn measured(width: f32) -> wire::Node {
     }
 }
 
-/// Draws a frame and answers the bounds route 7 was told in it, as
-/// `[x, y, width, height]`.
 fn told(
     events: &RefCell<Vec<wire::Event>>,
     native: &mut gpui_kit::VisualTestContext,
@@ -328,17 +325,11 @@ fn told(
     events.borrow_mut().drain(..).filter_map(bounds).collect()
 }
 
-/// What a sensor tells, and when: its child's bounds in the window's
-/// pixels when it comes into view, and again whenever the origin or the
-/// size differs from the last told. A frame that moves nothing tells
-/// nothing; one that only moves the child tells where it is now, which a
-/// view places the pointer by.
 #[gpui_kit::test]
 fn a_sensor_tells_its_bounds_at_first_sight_and_when_they_differ(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(gpui_kit::init);
-    // a spacer `before` px wide, then the sensor
     let row = |before: f32, width: f32| {
         let spacer = div().w(px(before)).h(px(10.)).flex_none().style().clone();
         container_with_style(
@@ -347,8 +338,6 @@ fn a_sensor_tells_its_bounds_at_first_sight_and_when_they_differ(
             [container_with_style("before", spacer, []), measured(width)],
         )
     };
-    // an empty tree first: opening the window draws it, before anything
-    // listens for what a sensor in it tells
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| {
         ViewTree::new(wire::Node::empty())
     });
@@ -378,8 +367,6 @@ fn a_sensor_tells_its_bounds_at_first_sight_and_when_they_differ(
     );
 }
 
-/// A seat `left` px into its window: the view under it is cached, as a
-/// program's is.
 struct Shifted {
     tree: Entity<ViewTree>,
     left: f32,
@@ -393,10 +380,6 @@ impl Render for Shifted {
     }
 }
 
-/// A pane that moves in the window moves the view in it without a new
-/// frame from the view: the view is cached and its tree is as it was. The
-/// sensor tells where its child is now all the same, or a pointer would be
-/// placed by where the pane used to be.
 #[gpui_kit::test]
 fn a_sensor_in_a_pane_that_moved_tells_its_new_bounds(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -423,12 +406,9 @@ fn a_sensor_in_a_pane_that_moved_tells_its_new_bounds(cx: &mut gpui_kit::TestApp
     assert!(told(&events, &mut native).is_empty(), "nothing changed");
 }
 
-/// Out of view the host forgets what it told, so the next sight of the
-/// child tells its bounds again, the same ones too.
 #[gpui_kit::test]
 fn a_sensor_out_of_view_is_told_again_at_its_next_sight(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    // a clip `height` tall around the sensor: none of it shows at zero
     let clipped = |height: f32| {
         let clip = div().flex().flex_row().items_start().w(px(200.));
         let clip = clip.h(px(height)).overflow_hidden().style().clone();
@@ -452,8 +432,6 @@ fn a_sensor_out_of_view_is_told_again_at_its_next_sight(cx: &mut gpui_kit::TestA
     );
 }
 
-/// A sensor that left the tree is forgotten with it: back in the tree it
-/// is a first sight, and tells its bounds, the same ones too.
 #[gpui_kit::test]
 fn a_sensor_back_in_the_tree_tells_its_bounds_again(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -480,9 +458,6 @@ fn a_sensor_back_in_the_tree_tells_its_bounds_again(cx: &mut gpui_kit::TestAppCo
     );
 }
 
-/// A sensor nothing listens to tells nothing and keeps nothing, so the
-/// frame that gives it a listener tells the bounds it has had all along,
-/// each time it does.
 #[gpui_kit::test]
 fn a_sensor_given_a_listener_tells_its_bounds_then(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -508,10 +483,6 @@ fn a_sensor_given_a_listener_tells_its_bounds_then(cx: &mut gpui_kit::TestAppCon
     }
 }
 
-/// A scrolling container keeps its handle at its own id: the offset holds
-/// across frames that insert a sibling before it, and goes with it. One
-/// without an id keeps none — its path is its parent's, shared with any
-/// sibling scroller there.
 #[gpui_kit::test]
 fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

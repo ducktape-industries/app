@@ -8,8 +8,6 @@ use super::*;
 use crate::render::VIEW_MARK;
 use gpui_kit::accesskit::{HasPopup, Invalid, Live, Orientation};
 
-/// The actions the door offers, each with its word: a node supporting one
-/// is offered it, and `/act` performs each word (`actions::perform`).
 pub(super) const ACTIONS: [(Action, &str); 9] = [
     (Action::Click, "press"),
     (Action::Focus, "focus"),
@@ -22,8 +20,6 @@ pub(super) const ACTIONS: [(Action, &str); 9] = [
     (Action::ScrollIntoView, "scroll_into_view"),
 ];
 
-/// A composite whose rows the arrows pick: the focused row inside one is
-/// its active descendant.
 pub(super) const COMPOSITES: [&str; 8] = [
     "Tree",
     "ListBox",
@@ -44,8 +40,6 @@ pub struct AxNode {
     pub id: String,
     pub role: String,
     pub name: String,
-    /// what a screen reader reads after the name: why a control is
-    /// disabled, a field's placeholder
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,16 +48,12 @@ pub struct AxNode {
     pub actions: Vec<&'static str>,
     #[serde(flatten)]
     pub more: Properties,
-    /// `<window>` or `<window>/<program>`.
     #[serde(rename = "in")]
     pub(super) scope: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) bounds: Option<[i32; 4]>,
     #[serde(skip)]
     pub(super) node: NodeId,
-    /// A node no element draws: one an element's `a11y_synthetic_children`
-    /// pushed (a RichText's clickable range). gpui gives such a node no
-    /// focus.
     #[serde(skip)]
     pub(super) synthetic: bool,
 }
@@ -164,11 +154,6 @@ pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
         f64::from(viewport.width) * scale,
         f64::from(viewport.height) * scale,
     );
-    // each node's id prefix (`<window>:` or `<window>:<program>/`), scope
-    // and path segments, and its parent's index in `out`; the ids
-    // themselves are resolved once all are known. A synthetic child's own
-    // segment is its role, and after the first of that role under one
-    // node, its place among them: `Link`, `Link2`.
     let mut out: Vec<AxNode> = Vec::new();
     let mut paths: Vec<(String, Vec<String>)> = Vec::new();
     let mut parents: Vec<Option<usize>> = Vec::new();
@@ -211,18 +196,12 @@ pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
             ));
         }
     };
-    // the focused node's active descendant is the one focused, as the
-    // adapters have it (accesskit_consumer `TreeState::focus`): a web
-    // page's node names the page's own focus so
     let focused = nodes
         .get(&update.focus)
         .and_then(|node| node.active_descendant())
         .filter(|id| nodes.contains_key(id))
         .unwrap_or(update.focus);
-    // Children are pushed in reverse so this is a deterministic pre-order
-    // walk in paint order; the last visible modal is the nested/tree-topmost
-    // boundary, just as the last painted sibling is visually on top.
-    let modal = topmost_modal(root, &nodes);
+    let modal = last_reachable_painted_modal(root, &nodes);
     match modal {
         Some(id) => stack.push((
             id,
@@ -249,7 +228,6 @@ pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
                 ),
                 (None, path) => (format!("{name}:"), name.to_owned(), path),
             },
-            // a synthetic child: its element's path and its own segment
             None => {
                 path.push(segment);
                 (prefix, scope, path)
@@ -264,8 +242,6 @@ pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
                 && r.x0 < width
                 && r.y0 < height
         });
-        // a node the snapshot drops is no one's parent: its children's is
-        // the nearest one it keeps
         let ancestor = if shown { Some(out.len()) } else { parent };
         push_children(&mut stack, id, &prefix, &scope, &path, ancestor);
         if !shown {
@@ -274,13 +250,10 @@ pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
         let role = node.role();
         let private = node.class_name() == Some(crate::a11y::AX_PRIVATE);
         let secret = private || role == Role::PasswordInput;
-        // a Label is named by its value first, as the adapters name it
-        // (gpui's `Text` sets only the value)
         let label = match role {
             Role::Label => node.value().or(node.label()),
             _ => node.label(),
         };
-        // a private text field's name is its label; its value is the secret
         let name = match (private && !is_text_input(role), label) {
             (true, Some(_)) => MASK.to_owned(),
             (_, label) if node.class_name() == Some(crate::a11y::AX_WHOLE) => {
@@ -376,18 +349,15 @@ pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
     out
 }
 
-/// A modal scopes `window`'s snapshot now.
 pub(super) fn modal_active(window: &Window) -> bool {
     window.a11y_tree().is_some_and(|update| {
         let nodes = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
         let root = update.tree.as_ref().map_or(NodeId(0), |tree| tree.root);
-        topmost_modal(root, &nodes).is_some()
+        last_reachable_painted_modal(root, &nodes).is_some()
     })
 }
 
-/// The last painted modal that is actually reachable. A hidden ancestor hides
-/// its whole subtree, including modal descendants.
-fn topmost_modal(
+fn last_reachable_painted_modal(
     root: NodeId,
     nodes: &HashMap<NodeId, &gpui_kit::accesskit::Node>,
 ) -> Option<NodeId> {
@@ -406,8 +376,6 @@ fn topmost_modal(
     modal
 }
 
-/// Each `(prefix, path)`'s id: its last segment, widened by its ancestors'
-/// only while another node in the window shares it.
 pub(super) fn door_ids(paths: &[(String, Vec<String>)]) -> Vec<String> {
     let mut take = vec![1usize; paths.len()];
     let mut ids = loop {
@@ -436,9 +404,6 @@ pub(super) fn door_ids(paths: &[(String, Vec<String>)]) -> Vec<String> {
             break ids;
         }
     };
-    // ponytail: two elements whose paths differ only in dropped (per-run)
-    // segments still share an id; tree order tells them apart. Give such an
-    // element a name segment when one shows up.
     let mut seen: HashMap<String, usize> = HashMap::new();
     for id in &mut ids {
         let count = seen.entry(id.clone()).or_default();
@@ -450,9 +415,6 @@ pub(super) fn door_ids(paths: &[(String, Vec<String>)]) -> Vec<String> {
     ids
 }
 
-/// The scope (`<window>` or `<window>/<program>`) a snapshot gives the node
-/// an element draws, and so the scope [`Filter`] judges a refused element
-/// by.
 pub(super) fn scope_of(name: &str, element: &gpui_kit::GlobalElementId) -> String {
     match element_path(element.iter()).0 {
         Some(program) => format!("{name}/{program}"),
@@ -460,12 +422,6 @@ pub(super) fn scope_of(name: &str, element: &gpui_kit::GlobalElementId) -> Strin
     }
 }
 
-/// A path's program and its stable segments: the names call sites pass, not
-/// entities, focus handles or the kit's own type-path ids
-/// (`gpui_component::button::button::Button`). The program is what follows
-/// [`VIEW_MARK`] in the host id a seat draws around its view
-/// (`Seat::ax_mark`), the one shape of mark no view can send: a view's own
-/// `view/<other>` id is one more segment of its path.
 fn element_path<'a>(ids: impl Iterator<Item = &'a ElementId>) -> (Option<String>, Vec<String>) {
     let mut program = None;
     let mut path = Vec::new();
@@ -477,8 +433,6 @@ fn element_path<'a>(ids: impl Iterator<Item = &'a ElementId>) -> (Option<String>
                         program = Some(mark.to_owned());
                         path.clear();
                     }
-                    // a host id (`render::host_id`): its name, not its code
-                    // location
                     None => path.push(name.to_string()),
                 }
             }
@@ -516,8 +470,6 @@ fn truncate(text: &str) -> String {
     }
 }
 
-/// `compact=1`: the nodes that carry something — a name, a description, a
-/// value, a state or an action. Pure structure is dropped.
 pub(super) fn compact(nodes: &[AxNode]) -> Vec<&AxNode> {
     nodes
         .iter()
@@ -538,7 +490,6 @@ pub(super) struct Offer {
     label: String,
 }
 
-/// Everything that can be done now: one entry per node and action.
 pub(super) fn offers(nodes: &[AxNode]) -> Vec<Offer> {
     nodes
         .iter()
@@ -560,7 +511,6 @@ pub(super) struct Delta {
     changed: Vec<AxNode>,
 }
 
-/// What an act did to the tree, by id: `changed` holds a node's new self.
 pub(super) fn delta(before: &[AxNode], after: &[AxNode]) -> Delta {
     let old: HashMap<&str, String> = before
         .iter()
@@ -590,8 +540,6 @@ pub(super) fn delta(before: &[AxNode], after: &[AxNode]) -> Delta {
     delta
 }
 
-/// Up to five ids a caller most likely meant: the words of its id found in
-/// a node's name or id. Never picks one for it.
 pub(super) fn nearest(id: &str, nodes: &[AxNode]) -> Vec<String> {
     let tail = id
         .split_once(':')
@@ -622,7 +570,6 @@ pub(super) fn nearest(id: &str, nodes: &[AxNode]) -> Vec<String> {
 
 #[cfg(test)]
 mod key_tests {
-    //! The keys a node carries beyond role, name, value, states and actions.
     use super::*;
     use crate::a11y::Patch;
     use gpui_kit::{
@@ -630,7 +577,6 @@ mod key_tests {
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
     };
 
-    /// A modal dialog holding a list whose one row has every key.
     struct Keys;
 
     impl Render for Keys {
@@ -674,8 +620,6 @@ mod key_tests {
         }
     }
 
-    /// Every key the door adds, each from what the node carries; the parent
-    /// from the walk; the composite's active descendant from where focus is.
     #[gpui_kit::test]
     fn the_door_says_what_else_a_node_carries(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -723,15 +667,12 @@ mod key_tests {
 }
 #[cfg(test)]
 mod mark_tests {
-    //! The program a node is in comes off the host's mark, never a view's id.
     use super::*;
     use gpui_kit::{
         Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
     };
 
-    /// View `chat` under its mark (`Seat::ax_mark`), holding a container it
-    /// named as the mark of another program, `forge`, around a button.
     struct Forged;
 
     impl Render for Forged {
@@ -748,9 +689,6 @@ mod mark_tests {
         }
     }
 
-    /// The button is chat's, by scope and by id: a view's `view/forge` is
-    /// one more segment of its path, so `?view=forge` and the census never
-    /// take it for forge's, nor `/act` on `forge/approve` press it.
     #[gpui_kit::test]
     fn a_view_cannot_name_its_nodes_another_programs(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -796,20 +734,20 @@ mod modal_tests {
             (hidden_modal_id, &hidden_modal),
         ]);
 
-        assert_eq!(topmost_modal(root_id, &nodes), Some(visible_id));
+        assert_eq!(
+            last_reachable_painted_modal(root_id, &nodes),
+            Some(visible_id)
+        );
     }
 }
 #[cfg(test)]
 mod offer_tests {
-    //! What the door offers a node, and that `/act` performs each offer.
     use super::*;
     use gpui_kit::{
         AccessibleAction, Context, InteractiveElement as _, IntoElement, Render,
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
     };
 
-    /// Every action the door has a word for beyond press, focus and
-    /// set_value, and what each performed.
     const MORE: [(AccessibleAction, &str); 6] = [
         (AccessibleAction::Increment, "increment"),
         (AccessibleAction::Decrement, "decrement"),
@@ -819,7 +757,6 @@ mod offer_tests {
         (AccessibleAction::ScrollIntoView, "scroll_into_view"),
     ];
 
-    /// A node that handles every action in [`MORE`], writing down each one.
     struct Handles(std::rc::Rc<std::cell::RefCell<Vec<AccessibleAction>>>);
 
     impl Render for Handles {
@@ -830,7 +767,6 @@ mod offer_tests {
                     .size(px(100.))
                     .role(Role::SpinButton)
                     .aria_label("Count")
-                    // handled, but the door has no word for it
                     .on_a11y_action(AccessibleAction::ScrollDown, |_, _, _| {}),
                 |element, (action, _)| {
                     let done = self.0.clone();
@@ -841,10 +777,6 @@ mod offer_tests {
         }
     }
 
-    /// A node that handles increment, decrement, expand, collapse, a context
-    /// menu or scrolling into view is offered each, only while it does, and
-    /// `/act` performs each on it (AX-116); one it has no word for
-    /// (ScrollDown) is not offered.
     #[gpui_kit::test]
     fn the_door_offers_and_performs_each_action_a_node_handles(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -876,16 +808,12 @@ mod offer_tests {
 
 #[cfg(test)]
 mod active_descendant_tests {
-    //! A node can name its focused descendant, as a web page's node names
-    //! the page's own focus.
     use super::*;
     use gpui_kit::{
         Context, FocusHandle, InteractiveElement as _, IntoElement, Render,
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
     };
 
-    /// A focused box whose synthetic child, a field, is its active
-    /// descendant.
     struct Page(FocusHandle);
 
     impl Render for Page {
@@ -906,8 +834,6 @@ mod active_descendant_tests {
         }
     }
 
-    /// The door reports the focus where the adapters do: on the focused
-    /// node's active descendant, not on the node.
     #[gpui_kit::test]
     fn the_focused_nodes_active_descendant_is_focused(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);

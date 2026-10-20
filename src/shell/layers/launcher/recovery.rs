@@ -9,8 +9,6 @@ use super::{LauncherLayer, LauncherScreen, buttons};
 use gpui_kit::*;
 
 impl LauncherLayer {
-    /// The account's recovery key, typed: its 24 words say yes to this
-    /// device's key joining. An old device phrase works as one.
     pub(super) fn recover(&self, window: &mut Window, cx: &App) -> AnyElement {
         let account = self.account.read(cx).get();
         let ink = Ink::of(self.prefs.read(cx).get().dark());
@@ -78,15 +76,11 @@ impl LauncherLayer {
         )
     }
 
-    /// Phrase: a new recovery key's 24 words.
     pub(super) fn phrase(&self, window: &mut Window, cx: &App) -> AnyElement {
         let ink = Ink::of(self.prefs.read(cx).get().dark());
         let phrase = self.phrase.as_deref().map_or("", String::as_str);
         let words: Vec<&str> = phrase.split_whitespace().collect();
         let per_column = words.len().div_ceil(3).max(1);
-        // `grid-template-columns: repeat(3, 1fr); grid-auto-flow: column;
-        // column-gap: 24px`, each `<li>` `gap 10px; padding 6px 0;
-        // border-bottom 1px`
         let columns = words.chunks(per_column).enumerate().map(|(column, chunk)| {
             div()
                 .flex_1()
@@ -100,8 +94,6 @@ impl LauncherLayer {
                         .py(px(6.))
                         .border_b_1()
                         .border_color(ink.line)
-                        // the sheet's name reads the words; the numbers
-                        // stay out of the tree
                         .child(
                             mono(400, 12.)
                                 .text_color(ink.muted)
@@ -147,7 +139,7 @@ impl LauncherLayer {
         self.frame(
             LauncherScreen {
                 id: "recovery",
-                tight: true, // the 24 words need the room
+                tight: true,
                 caption: "Twenty-four words, on paper.".into(),
                 back: None,
                 label: "Recovery key".into(),
@@ -163,7 +155,6 @@ impl LauncherLayer {
         )
     }
 
-    /// PhraseCheck: three words typed back from the paper.
     pub(super) fn phrase_check(
         &self,
         asked: [usize; 3],

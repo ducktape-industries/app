@@ -51,13 +51,9 @@ use crate::backend::{Got, Picture, Source, Status};
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {}
 
-/// `AVMediaTypeVideo` and `AVMediaTypeAudio`, by value.
 const VIDEO: &str = "vide";
 const AUDIO: &str = "soun";
 
-/// Whether this app may use `media`. Never asked yet: the system's prompt
-/// is raised and its answer waited for (on this thread, never the main
-/// one; the answer comes on a queue of the system's).
 fn allowed(media: &str) -> bool {
     let kind = NSString::from_str(media);
     // AVAuthorizationStatus: 0 not determined, 1 restricted, 2 denied, 3 authorized
@@ -88,33 +84,25 @@ fn allowed(media: &str) -> bool {
     }
 }
 
-/// The system's microphone permission, asked the first time.
 pub(crate) fn microphone_allowed() -> bool {
     allowed(AUDIO)
 }
 
-/// The system's camera permission, asked the first time.
 pub(crate) fn camera_allowed() -> bool {
     allowed(VIDEO)
 }
 
-// ---------- the cameras ----------
-
-/// AVFoundation's video media type.
 pub(crate) fn video() -> Result<&'static NSString, String> {
     // SAFETY: an AVFoundation constant, there since macOS 10.7 and iOS 4
     unsafe { AVMediaTypeVideo }.ok_or_else(|| "AVFoundation has no video media type".into())
 }
 
-/// What the stream loop wants of the next frames: set before each wait,
-/// read on the system's queue.
 #[derive(Default)]
 struct Want {
     picture: AtomicBool,
     mirror: AtomicBool,
 }
 
-/// What the delegate holds: where frames go and what is wanted of them.
 pub(crate) struct Frames {
     tell: mpsc::Sender<Result<Got, Status>>,
     want: Arc<Want>,
@@ -131,8 +119,6 @@ define_class!(
     unsafe impl NSObjectProtocol for Delegate {}
 
     unsafe impl AVCaptureVideoDataOutputSampleBufferDelegate for Delegate {
-        /// One frame, on our dispatch queue: a picture while one is
-        /// wanted, else only word that a frame came.
         #[unsafe(method(captureOutput:didOutputSampleBuffer:fromConnection:))]
         fn frame(&self, _: &AVCaptureOutput, buffer: &CMSampleBuffer, _: &AVCaptureConnection) {
             let Frames { tell, want } = self.ivars();
@@ -155,8 +141,6 @@ impl Delegate {
     }
 }
 
-/// A BGRA pixel buffer's picture, mirrored if asked; none for another
-/// format or a buffer that does not lock.
 pub(crate) fn picture(image: &CVPixelBuffer, mirror: bool) -> Option<Picture> {
     let read = CVPixelBufferLockFlags::ReadOnly;
     // SAFETY: locked for reading around the read below
@@ -185,7 +169,6 @@ pub(crate) fn picture(image: &CVPixelBuffer, mirror: bool) -> Option<Picture> {
     picture
 }
 
-/// BGRA rows `stride` bytes apart, as one picture, mirrored if asked.
 pub(crate) fn bgra_rows(
     src: &[u8],
     width: usize,
@@ -214,8 +197,6 @@ pub(crate) fn bgra_rows(
     })
 }
 
-/// The video output: BGRA (the system converts from the camera's own
-/// format), late frames dropped, each frame to `delegate` on `queue`.
 fn output(delegate: &Delegate, queue: &DispatchQueue) -> Retained<AVCaptureVideoDataOutput> {
     // SAFETY: a CFString is an NSString (toll-free bridged)
     let key: &NSString =
@@ -233,7 +214,6 @@ fn output(delegate: &Delegate, queue: &DispatchQueue) -> Retained<AVCaptureVideo
     }
 }
 
-/// What a refused open says, as a status.
 fn refused(error: &NSError) -> Status {
     let code = error.code();
     if code == AVError::DeviceInUseByAnotherApplication.0
@@ -249,8 +229,6 @@ fn refused(error: &NSError) -> Status {
     }
 }
 
-/// One camera running: its session and everything that feeds the stream
-/// loop. Dropped, the session stops and is taken apart.
 pub(crate) struct Camera {
     session: Retained<AVCaptureSession>,
     input: Retained<AVCaptureDeviceInput>,
@@ -262,9 +240,6 @@ pub(crate) struct Camera {
     _queue: DispatchRetained<DispatchQueue>,
 }
 
-/// Opens the listed camera whose unique id is `id` (its
-/// `CameraDevice::handle`) and starts its session. The permission is
-/// asked before ([`camera_allowed`]).
 pub(crate) fn open(id: &str) -> Result<Camera, Status> {
     autoreleasepool(|_| {
         // SAFETY: AVFoundation's documented calls, on this thread of ours
@@ -291,13 +266,10 @@ pub(crate) fn open(id: &str) -> Result<Camera, Status> {
             if fits {
                 session.addInput(&input);
                 session.addOutput(&output);
-                // a phone's pictures upright for its portrait screen
                 #[cfg(target_os = "ios")]
                 crate::ios::upright(&output);
             }
             session.commitConfiguration();
-            // ended: the device unplugged, the session stopped on an error,
-            // or (iOS) interrupted, `why` saying how
             let center = NSNotificationCenter::defaultCenter();
             let observe = |name, object: &AnyObject, why: fn(&NSNotification) -> Status| {
                 let tell = tell.clone();
@@ -316,7 +288,6 @@ pub(crate) fn open(id: &str) -> Result<Camera, Status> {
             let observers = vec![
                 observe(AVCaptureDeviceWasDisconnectedNotification, &device, unsaid),
                 observe(AVCaptureSessionRuntimeErrorNotification, &session, unsaid),
-                // a call, another app or the background took the camera
                 #[cfg(target_os = "ios")]
                 observe(
                     objc2_av_foundation::AVCaptureSessionWasInterruptedNotification,
@@ -339,7 +310,6 @@ pub(crate) fn open(id: &str) -> Result<Camera, Status> {
                     "the camera does not fit a capture session".into(),
                 ));
             }
-            // blocks until the session runs (or fails: the error is sent)
             camera.session.startRunning();
             Ok(camera)
         }
@@ -367,7 +337,6 @@ impl Drop for Camera {
                 for observer in &self.observers {
                     center.removeObserver((**observer).as_ref());
                 }
-                // blocks until the flow has stopped: the light off
                 self.session.stopRunning();
                 self.output.setSampleBufferDelegate_queue(None, None);
                 self.session.beginConfiguration();
@@ -386,7 +355,6 @@ mod tests {
     use objc2_core_foundation::CFRetained;
     use objc2_core_video::CVPixelBufferCreate;
 
-    /// Padded BGRA rows come out as one picture, mirrored if asked.
     #[test]
     fn bgra_rows_are_read_by_their_stride() {
         let src = [1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 9, 9, 9, 9, 8, 8, 8, 8];
@@ -401,9 +369,6 @@ mod tests {
         assert!(bgra_rows(&src, 2, 2, 7, false).is_none());
     }
 
-    /// A pixel buffer the system made (its rows padded as it likes) gives
-    /// its picture; the delegate answers the frame selector; an output
-    /// takes our BGRA settings and our delegate. No camera is opened.
     #[test]
     fn a_system_pixel_buffer_becomes_a_picture() {
         let (width, height) = (3, 2);
@@ -449,8 +414,6 @@ mod tests {
         assert!(
             delegate.respondsToSelector(sel!(captureOutput:didOutputSampleBuffer:fromConnection:))
         );
-        // the output takes our settings (a key it refuses throws); it reads
-        // them back only once a camera feeds it, so that is not asked here
         let queue = DispatchQueue::new("industries.ducktape.camera.test", None);
         let output = output(&delegate, &queue);
         unsafe {

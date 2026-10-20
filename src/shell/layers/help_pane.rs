@@ -5,9 +5,6 @@ use super::super::entities::{Account, Prefs, Slice};
 use super::super::{WindowKey, help};
 use gpui_kit::{App, Context, Entity, IntoElement, Render, Subscription, Window};
 
-/// One Help pane's body. It draws from `welcome` (`Account`), `dark` and
-/// the layout (`Prefs`), copied by its observers and compared, so a move of
-/// either that leaves all three be draws nothing.
 pub(in crate::shell) struct HelpPane {
     key: WindowKey,
     account: Entity<Account>,
@@ -37,7 +34,6 @@ impl HelpPane {
         this
     }
 
-    /// What it shows: the welcome, the dark page, the sidebar's words.
     fn now(&self, cx: &App) -> (bool, bool, bool) {
         let prefs = self.prefs.read(cx).get();
         (

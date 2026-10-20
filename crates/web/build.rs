@@ -12,8 +12,6 @@ fn main() {
     }
     let framework = "Chromium Embedded Framework.framework";
     let cef = PathBuf::from(std::env::var("DEP_CEF_DLL_WRAPPER_CEF_DIR").expect("CEF's directory"));
-    // `<profile>/build/ducktape-web-<hash>/out`: the profile directory
-    // (`target/debug`) the binaries land in, as cef-dll-sys finds it
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     let link = out
         .ancestors()
@@ -21,10 +19,8 @@ fn main() {
         .expect("the profile directory")
         .join(framework);
     let _ = std::fs::remove_file(&link);
-    // a macOS target builds on a Unix host
     #[cfg(unix)]
     std::os::unix::fs::symlink(cef.join(framework), &link)
         .expect("CEF's framework linked beside the binaries");
-    // linked again when the link goes
     println!("cargo::rerun-if-changed={}", link.display());
 }

@@ -25,13 +25,9 @@ type Scopes = Rc<RefCell<Option<Vec<super::pointer::ScopeKey>>>>;
 /// no view draw paints or takes a click above them.
 pub const HOST_BAND: usize = usize::MAX / 2;
 
-/// The highest priority a view draw takes: a `Deferred` asks for at most
-/// this, and a view tooltip draws at it.
 pub(super) const VIEW_CEILING: usize = 16;
 
 thread_local! {
-    /// A view deferral is prepainting now: a `Deferred` met inside it
-    /// draws in place.
     static INSIDE: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -61,11 +57,7 @@ pub(super) fn deferred(child: AnyElement, priority: usize) -> SlotDeferred {
     }
 }
 
-/// A view `Deferred`: its child drawn after the window's other draws,
-/// inside its pane (the [`Layer`]'s mask), or in place when met inside
-/// another deferral.
 pub(super) struct SlotDeferred {
-    /// Held until prepaint, and on through paint when drawn in place.
     child: Option<AnyElement>,
     priority: usize,
     scopes: Scopes,
@@ -159,7 +151,6 @@ pub fn clipped(child: AnyElement, priority: usize) -> Clipped {
 
 /// See [`clipped`].
 pub struct Clipped {
-    /// Held until prepaint.
     child: Option<AnyElement>,
     priority: usize,
 }
@@ -225,14 +216,6 @@ impl Element for Clipped {
     }
 }
 
-/// A view's tree in its pane's layer: the tooltips registered and the
-/// `Deferred`s met inside it draw at [`VIEW_CEILING`] at most, fitted and
-/// clipped to the content mask the tree is drawn in (the pane's).
-///
-/// Every element of the tree is under it, so with the seat's perf key it
-/// times gpui's work for the tree, which `render` (the element build) does
-/// not hold: `layout.request`, `layout.solve`, `prepaint` and `paint`
-/// (docs/perf.md), a timer each for the whole tree and nothing for a node.
 pub(super) struct Layer(pub(super) AnyElement, pub(super) Option<crate::perf::Key>);
 
 impl Layer {
@@ -249,8 +232,6 @@ impl IntoElement for Layer {
 }
 
 impl Element for Layer {
-    /// `layout.solve`, running: gpui solves the layout between the tree's
-    /// `request_layout` and its `prepaint`.
     type RequestLayoutState = Option<crate::perf::Timer>;
     type PrepaintState = ();
 
@@ -307,9 +288,6 @@ impl Element for Layer {
     }
 }
 
-/// Runs `f` inside a view deferral, then restores the outer state, on
-/// unwind too: a panic caught mid-frame (the gpui test harness catches
-/// one per test) leaves no later frame drawing in place.
 pub(super) fn inside<R>(f: impl FnOnce() -> R) -> R {
     struct Restore(bool);
     impl Drop for Restore {
@@ -321,7 +299,6 @@ pub(super) fn inside<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// A deferred view child: prepaints as inside a deferral (`INSIDE`).
 struct Inside(AnyElement, Scopes);
 
 impl IntoElement for Inside {
@@ -433,8 +410,6 @@ mod tests {
         .unwrap();
     }
 
-    /// One draw of a seat's tree leaves one sample of each of gpui's four
-    /// passes beside its `render`; a draw the cache answers leaves none.
     #[gpui_kit::test]
     fn a_draw_times_gpuis_passes_over_the_tree(cx: &mut gpui_kit::TestAppContext) {
         let _on = crate::perf::on_for_test();
@@ -475,10 +450,6 @@ mod tests {
         assert_eq!(samples(), [1; 5], "a cached draw runs no pass");
     }
 
-    /// Eleven nested view `Deferred`s, as the sanitizer passes them, draw
-    /// without tripping gpui's deferred-depth assert, and the innermost
-    /// paints: nested directly, and through list rows (drawn as the list
-    /// prepaints, after the tree has rendered).
     #[gpui_kit::test]
     fn nested_view_deferrals_draw_in_place(cx: &mut gpui_kit::TestAppContext) {
         const DEPTH: usize = 11;
@@ -499,8 +470,6 @@ mod tests {
                 content: Box::new(content),
             }
         }
-        // each level a list whose one row is the next level; the row, with
-        // no id of its own, is filed under its index
         fn listed(level: usize, path: &mut Vec<wire::ElementIdWire>) -> wire::Node {
             if level == DEPTH {
                 return leaf();
@@ -555,7 +524,6 @@ mod tests {
         }
     }
 
-    /// A panic caught inside a deferral leaves the thread outside it.
     #[test]
     fn a_caught_panic_leaves_no_deferral_inside() {
         let caught = std::panic::catch_unwind(|| inside(|| panic!("prepaint")));

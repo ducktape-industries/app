@@ -106,9 +106,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     })
 }
 
-/// Name the archives, seal and sign the manifest, check it as the app
-/// would, and write all of it under `args.out`. The summary names what to
-/// upload, in order.
 fn publish(args: &Args, seed: &str) -> Result<String, String> {
     let signer = signing_key_from_hex(seed)
         .ok_or("RELEASE_SIGNING_KEY is not 64 hex characters (a 32-byte ed25519 seed)")?;
@@ -158,7 +155,6 @@ fn publish(args: &Args, seed: &str) -> Result<String, String> {
         signature,
     }
     .file();
-    // the app's own check, on the file exactly as it will be served
     let keys = TrustedKeys {
         pinned: args.expect,
         successor: None,
@@ -226,8 +222,6 @@ mod tests {
         assert_eq!(unnamed, "--channel is required");
     }
 
-    /// A seed whose public half is not the pinned key signs nothing and
-    /// writes nothing.
     #[test]
     fn a_seed_that_is_not_the_pinned_keys_signs_nothing() {
         let root = tempfile::tempdir().unwrap();
@@ -239,9 +233,6 @@ mod tests {
         assert!(!out.exists());
     }
 
-    /// The channel file is the channel's, verifies under the key it was
-    /// signed for, and names the archive by its own sha256 and size; it is
-    /// the one file published after the archives.
     #[test]
     fn a_publish_writes_an_archive_named_by_its_sha_and_a_pair_the_app_accepts() {
         let root = tempfile::tempdir().unwrap();

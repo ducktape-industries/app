@@ -72,31 +72,16 @@ pub enum AccountEvent {
 pub struct Account {
     state: AccountState,
     screen: Entity<Slice<Screen>>,
-    /// Read for the layout the desk waits on (`show`), written by its step.
     prefs: Entity<Slice<Prefs>>,
-    /// A new recovery key's 24 words, while its screens show.
     phrase: Option<Secret>,
-    /// The node and network the account is on (`Session`'s connection,
-    /// given as the network is taken up): what the sign-in calls are asked
-    /// of. Off a network, a client of no node.
     client: backend::RpcClient,
     network: String,
-    /// Where this network's keys live on this device
-    /// (`noded_client::keyring::bind` under `Dirs::remotes`): the name alone is not enough, two chains
-    /// can share one.
     keyring: String,
-    /// "Add a device…": the code typed, and the request it found.
     approve_code: String,
     approve_found: Option<noded_client::join::Request>,
-    /// The key being opened or made (`open_device_key`).
     seating: Option<Task<()>>,
-    /// The sign-in call out: an unlock, a phrase check, a recovery, an
-    /// account made, an approval (`busy`).
     call: Option<Task<()>>,
-    /// The node asked which account the key holds.
-    /// "From another device", waiting to be approved.
     link: Option<Task<()>>,
-    /// A passkey ceremony in the browser; dropping it cancels it.
     passkey: Option<Task<()>>,
 }
 
@@ -164,16 +149,11 @@ impl Account {
         self.phrase.as_ref()
     }
 
-    /// A field-wise edit, compared as a whole; notifies when it moved.
     fn edit(&mut self, edit: impl FnOnce(&mut AccountState), cx: &mut Context<Self>) -> bool {
         super::slice::edit_compared(&mut self.state, edit, cx)
     }
 
-    /// `screen` on the console. The desk waits while this device has no
-    /// layout: every way in shows the layout step instead, once
-    /// (`layout_chosen`).
     fn show(&self, screen: Screen, cx: &mut Context<Self>) {
-        // the layout is asked once, on a device that has more than one
         let asked =
             !contract::os().facts().one_layout && self.prefs.read(cx).get().layout.is_none();
         let screen = match screen {
@@ -185,7 +165,6 @@ impl Account {
         });
     }
 
-    /// The node the account is on; empty off a network.
     fn node(&self) -> &str {
         self.client.endpoint()
     }
@@ -201,16 +180,11 @@ impl Account {
         self.edit(|state| state.error = error, cx);
     }
 
-    /// The step left (a back, a close) with its call still out: the call is
-    /// dropped, never to land, and the next try is not refused as busy. A
-    /// node that stalls holds the step only until the person leaves it.
     fn drop_call(&mut self, cx: &mut Context<Self>) {
         if self.call.take().is_some() {
             self.edit(|state| state.busy = false, cx);
         }
     }
-
-    // ---------- the network ----------
 
     /// The network `keyring` names becomes the one in hand, on `client`'s
     /// node.
@@ -271,8 +245,6 @@ impl Account {
         spawn_on_runtime(cx, backend::lock_signer(), |_, _, _| {}).detach();
     }
 
-    // ---------- this device's key ----------
-
     /// Opens this device's key for the network in hand
     /// (`OsServices::device_key`) and seats it, made the first time this
     /// device meets the network. Nothing to do when one is seated, or the
@@ -324,7 +296,6 @@ impl Account {
                 self.edit(|state| state.key_exists = false, cx);
                 self.unlocked(pubkey, cx);
             }
-            // only a password-locked key here: the key screen asks
             Ok(None) => {
                 self.edit(|state| state.key_exists = true, cx);
             }
@@ -367,8 +338,6 @@ impl Account {
                 state.key_exists = false;
                 state.seating = false;
                 state.locked = false;
-                // another key's account is not this one's: the views hear
-                // none until `resolved` names this key's
                 if state.signer_key != pubkey {
                     state.account = None;
                 }
@@ -376,8 +345,6 @@ impl Account {
             },
             cx,
         );
-        // whose notices this network's notifiers run for while another is
-        // in hand (`runtime::follow`): the public half, no key store asked
         if !self.keyring.is_empty() {
             backend::note_device_key(&self.keyring, &self.state.signer_key);
         }
@@ -477,10 +444,6 @@ impl Account {
                 }
             }
         };
-        // never cancelled: a block landing mid-lookup would otherwise drop
-        // it, and `resolved` discards an answer for another node or key. A
-        // node that never answers one is given up on at its deadline, so
-        // lookups do not pile up one per block
         spawn_on_runtime(cx, work, move |this, account, cx| {
             if let Some(account) = account {
                 this.resolved(&node, &signer, account, cx);
@@ -519,8 +482,6 @@ impl Account {
         }
         self.edit(|state| state.account = Some(account), cx);
     }
-
-    // ---------- a new recovery key, from the account menu ----------
 
     /// "Make a recovery key…": its words (made by the shell's own step, which
     /// holds the key crate), to write down.
@@ -596,8 +557,6 @@ impl Account {
         self.clear_error(cx);
     }
 
-    /// The recovery phrase and its check, gone once passed (or abandoned):
-    /// back to the desk they were opened from.
     fn leave_phrase(&mut self, cx: &mut Context<Self>) {
         if matches!(self.screen(cx), Screen::Phrase { .. }) {
             self.show(Screen::Desk, cx);
@@ -607,8 +566,6 @@ impl Account {
         }
         self.clear_error(cx);
     }
-
-    // ---------- a recovery key typed, off the account step ----------
 
     pub fn recover_show(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
@@ -641,10 +598,10 @@ impl Account {
             return None;
         }
         self.clear_error(cx);
-        Some(zeroize::Zeroizing::new(normalize_phrase(&phrase)))
+        Some(zeroize::Zeroizing::new(
+            normalize_bip39_case_and_whitespace(&phrase),
+        ))
     }
-
-    // ---------- the account step ----------
 
     /// "From another device": a code shown, and a wait for one on the
     /// account to approve it.
@@ -782,7 +739,6 @@ impl Account {
         self.resolve(cx);
     }
 
-    /// The passkey ceremony over, however it ended.
     fn end_passkey(&mut self, cx: &mut Context<Self>) {
         self.passkey = None;
         self.edit(
@@ -877,7 +833,6 @@ impl Account {
         }
     }
 
-    /// A new account starts on Help, greeted.
     fn welcome(&mut self, cx: &mut Context<Self>) {
         self.edit(|state| state.welcome = true, cx);
         cx.emit(AccountEvent::Welcome);
@@ -887,8 +842,6 @@ impl Account {
     pub fn help_asked(&mut self, cx: &mut Context<Self>) {
         self.edit(|state| state.welcome = false, cx);
     }
-
-    // ---------- the layout step, before the desk ----------
 
     /// The layout step's Continue: `layout` saved for this device, and the
     /// desk. A press that lands after the step went (a lock) does nothing.
@@ -901,8 +854,6 @@ impl Account {
             .update(cx, |prefs, cx| prefs.set_layout(layout, cx));
         self.show(Screen::Desk, cx);
     }
-
-    // ---------- "Add a device…", on the device already on the account ----------
 
     /// The dialog opened (`Overlays::open`, by the account menu's row):
     /// what the last one held goes.
@@ -1003,7 +954,6 @@ impl Account {
         self.call = None;
         self.edit(|state| state.busy = false, cx);
         match done {
-            // the dialog closes (`Windows`), which clears what it found
             Ok(()) => {
                 cx.emit(AccountEvent::Approved);
                 cx.emit(AccountEvent::Toast(
@@ -1046,16 +996,12 @@ impl Account {
     }
 }
 
-/// Three distinct word positions (0-based, ascending) out of `words` to ask
-/// back: the person types them to show the phrase was written down.
 fn quiz_positions(words: usize) -> [usize; 3] {
     let mut picked = rand::seq::index::sample(&mut rand::thread_rng(), words.max(3), 3).into_vec();
     picked.sort_unstable();
     [picked[0], picked[1], picked[2]]
 }
 
-/// Whether each answer is the phrase's word at the position asked,
-/// ignoring case and surrounding space.
 fn quiz_matches(phrase: &str, asked: [usize; 3], answers: &[impl AsRef<str>; 3]) -> bool {
     let words: Vec<&str> = phrase.split_whitespace().collect();
     asked.iter().zip(answers).all(|(&nth, answer)| {
@@ -1065,18 +1011,13 @@ fn quiz_matches(phrase: &str, asked: [usize; 3], answers: &[impl AsRef<str>; 3])
     })
 }
 
-/// Whatever a person pastes for a recovery phrase (any run of whitespace
-/// between words, any case) folded to what BIP39 checks.
-fn normalize_phrase(raw: &str) -> String {
+fn normalize_bip39_case_and_whitespace(raw: &str) -> String {
     raw.split_whitespace()
         .map(str::to_lowercase)
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-/// A failed `Create` in plain words: a node that could not be reached
-/// reads as that, not as a transport string; a refusal names the network
-/// and says why.
 fn account_error(network: &str, error: String) -> String {
     if error.contains("error sending request") {
         return format!("Can't reach {network}'s node right now. Try again in a moment.");
@@ -1091,7 +1032,7 @@ mod tests {
     #[test]
     fn normalize_phrase_folds_whitespace_and_case() {
         assert_eq!(
-            normalize_phrase("  Canoe\n Pond\tFOREST  "),
+            normalize_bip39_case_and_whitespace("  Canoe\n Pond\tFOREST  "),
             "canoe pond forest"
         );
     }

@@ -18,7 +18,6 @@ pub struct Mixer {
 struct Shared {
     jitter: Mutex<Jitter>,
     decoder: Mutex<AudioDecoder>,
-    /// The voice's level, 0 to 1 (-60 to 0 dBFS), as `f32` bits.
     level: AtomicU32,
 }
 
@@ -48,9 +47,6 @@ impl Mixer {
     /// with nothing to play adds silence. How many voices were mixed.
     pub fn pull(&self, out: &mut [f32; FRAME]) -> usize {
         out.fill(0.);
-        // ponytail: decoded here, on the speaker's callback (an Opus frame
-        // is tens of microseconds); the upgrade is the voice thread
-        // decoding into a ring the callback only copies from
         let sources = lock(&self.sources);
         let mut mixed = 0;
         for source in sources.iter().filter_map(Weak::upgrade) {
@@ -88,20 +84,16 @@ impl Source {
     }
 }
 
-/// `frame` added onto `into`, the sum soft-clipped so two loud voices do
-/// not crack.
 pub(crate) fn mix(into: &mut [f32], frame: &[f32]) {
     for (out, sample) in into.iter_mut().zip(frame) {
         *out = soft_clip(*out + sample);
     }
 }
 
-/// Linear under half scale, bending to 1 above it.
 fn soft_clip(sample: f32) -> f32 {
     sample.tanh()
 }
 
-/// A frame's level on the feed's scale: 0 at -60 dBFS, 1 at 0 dBFS.
 pub(crate) fn level(frame: &[f32]) -> f32 {
     let power = frame.iter().map(|s| s * s).sum::<f32>() / frame.len().max(1) as f32;
     let db = 10.0 * power.max(1e-10).log10();
@@ -118,8 +110,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use super::*;
 
-    /// Two full-scale voices summed stay under full scale; a quiet one
-    /// adds nearly linearly; silence is silence.
     #[test]
     fn the_sum_is_soft_clipped() {
         let mut out = [0f32; 4];
@@ -131,7 +121,6 @@ mod tests {
         assert_eq!(out[3], 0.);
     }
 
-    /// A full-scale frame is level 1, silence 0, -30 dBFS half.
     #[test]
     fn a_level_is_dbfs_on_the_feeds_scale() {
         assert_eq!(level(&[1., -1., 1., -1.]), 1.);

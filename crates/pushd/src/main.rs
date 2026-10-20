@@ -58,45 +58,30 @@ mod registry;
 use push::{Apns, ApnsConfig, Fcm, FcmConfig, Push};
 use registry::{Devices, Door, Followed};
 
-/// How often the node's status is read: the app's own pace
-/// (`session::node::STATUS_EVERY`). A moved height reads the roster again;
-/// the registry's file is looked at too.
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 
-/// Banners a minute per program, past which one "N more" stands for the
-/// rest: the app's default.
 const BURST: u32 = 6;
 
-/// Each network, the node pushd follows on it, the door devices register
-/// through, and the credentials the pushes are sent with.
 #[derive(Debug, serde::Deserialize)]
 struct Config {
-    /// None at all: a config `probe` reads, with the credentials only.
     #[serde(default)]
     networks: Vec<Network>,
-    /// Where the registry's door listens (`127.0.0.1:9201` behind the
-    /// tunnel); none: no device can register, the ones registered stay.
     listen: Option<String>,
-    /// The team's APNs auth key: pushes to an iPhone.
     apns: Option<ApnsConfig>,
-    /// The Firebase project's service account: pushes to an Android phone.
     fcm: Option<FcmConfig>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct Network {
-    /// A name for the network here: its directory under `--data`.
     name: String,
     node_url: String,
 }
 
-/// Where a network's registered devices are kept.
 fn devices_file(data: &Path, network: &str) -> PathBuf {
     data.join(network).join("devices.json")
 }
 
 fn main() -> ExitCode {
-    // a notifier's compile, in a child so its memory leaves with it
     let mut args = std::env::args_os().skip(1);
     if args
         .next()
@@ -142,7 +127,11 @@ fn start() -> Result<(), String> {
         return probe(&config);
     }
     let data = data.ok_or(usage)?;
-    if let Some(bad) = config.networks.iter().find(|network| !named(&network.name)) {
+    if let Some(bad) = config
+        .networks
+        .iter()
+        .find(|network| !is_single_path_segment(&network.name))
+    {
         return Err(format!(
             "a network's name is [A-Za-z0-9._-]: {:?}",
             bad.name
@@ -179,8 +168,7 @@ fn start() -> Result<(), String> {
     }
 }
 
-/// A name that is one path segment.
-fn named(name: &str) -> bool {
+fn is_single_path_segment(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')
         && name
@@ -188,8 +176,6 @@ fn named(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
-/// The registry's door on `listen`, for every network of the config, when
-/// the config names one.
 fn open_door(config: &Config, data: &Path) -> Result<(), String> {
     let Some(listen) = &config.listen else {
         tracing::warn!(target: "pushd", "no `listen`: no device can register");
@@ -210,12 +196,9 @@ fn open_door(config: &Config, data: &Path) -> Result<(), String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
     tracing::info!(target: "pushd", listen, networks = networks.len(), "the door is open");
-    Arc::new(Door::new(networks, Arc::new(reader_key()))).serve(listener)
+    Arc::new(Door::new(networks, Arc::new(process_query_signing_key()))).serve(listener)
 }
 
-/// One pushd per network, each this binary with `--network`: until the
-/// first one ends, which ends them all (a supervisor such as systemd starts
-/// them again).
 fn supervise(config: &Path, data: &Path, networks: &[Network]) -> Result<(), String> {
     let me = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut children = Vec::new();
@@ -247,7 +230,6 @@ fn supervise(config: &Path, data: &Path, networks: &[Network]) -> Result<(), Str
     }
 }
 
-/// The credentials loaded, as `run` and `probe` take them.
 type Credentials = (Option<Arc<Apns>>, Option<Arc<Fcm>>);
 
 fn credentials(config: &Config) -> Result<Credentials, String> {
@@ -266,22 +248,15 @@ fn credentials(config: &Config) -> Result<Credentials, String> {
     Ok((apns, fcm))
 }
 
-/// pushd on one network: the host installed, the node connected, and its
-/// status and the registry followed for as long as it runs: one recipient
-/// per account with a device, on the account's canonical signer.
 fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
     let (apns, fcm) = credentials(config)?;
     let http: Arc<dyn push::Http> = Arc::new(push::Client::new()?);
     let home = data.join(&network.name);
     contract::install(Arc::new(Headless::new(&home)?));
-    // the notifiers run on wasmtime, their compiled code kept across runs
-    // and compiled in a child of this binary, as the desktop's views are:
-    // a compile's peak, on wasmtime's thread per core, leaves with it
     contract::install_runner(Arc::new(ducktape_host::runner::WasmtimeRunner::new(
         contract::RunnerConfig {
             signals_based_traps: true,
             cache_dir: Some(home.join("cache").join("view-code")),
-            // Linux: the running binary even once a deploy replaced its file
             compile_apart: match cfg!(target_os = "linux") {
                 true => Some("/proc/self/exe".into()),
                 false => std::env::current_exe().ok(),
@@ -298,7 +273,6 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
             }
         }
     };
-    // the chain id `duck://` links name, as the app spells it
     let chain = ducklink::ChainId::of(&status.network, &status.genesis)
         .map_or_else(|| status.network.clone(), |chain| chain.to_string());
     let file = devices_file(data, &network.name);
@@ -342,7 +316,6 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
     };
     carry(&mut carried);
     runtime::connected(&client, &status.network, &chain);
-    // the roster followed as the app follows it: read again when the height moves
     let mut height = status.height;
     loop {
         std::thread::sleep(STATUS_EVERY);
@@ -363,12 +336,6 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
     }
 }
 
-/// One push per credential to a token that is no device's, on each of
-/// Apple's servers and on Google's: the answer names the token as bad
-/// (`BadDeviceToken`, `UNREGISTERED` or `INVALID_ARGUMENT`) when the
-/// credential is good, and the credential (`InvalidProviderToken`, a 401
-/// or 403) when it is not. Nothing is printed but the status and the
-/// reason.
 fn probe(config: &Config) -> Result<(), String> {
     let (apns, fcm) = credentials(config)?;
     let http: Arc<dyn push::Http> = Arc::new(push::Client::new()?);
@@ -382,8 +349,6 @@ fn probe(config: &Config) -> Result<(), String> {
         at: 1,
     };
     if apns.is_some() {
-        // two tokens: one token is one install's, kept on one row
-        // in memory: the probe's rows are written nowhere
         let _ = devices.put(row("apns", &"0".repeat(64), "production"));
         let _ = devices.put(row("apns", &"1".repeat(64), "sandbox"));
     }
@@ -421,7 +386,6 @@ fn probe(config: &Config) -> Result<(), String> {
     }
 }
 
-/// The `log` channel: one JSON line per notice the centre lets through.
 struct Log {
     network: String,
     account: u64,
@@ -444,21 +408,16 @@ impl Banners for Log {
     }
 }
 
-/// What an account's centre lets through.
 fn settings() -> Settings {
     Settings {
         banners: true,
         in_front: false,
         burst: BURST,
         views: BTreeMap::new(),
-        // no one to ask: a program's notices go out until the account's
-        // devices say otherwise
         unasked: Some(Permission::Allow),
     }
 }
 
-/// One notice as the `log` channel writes it: whose and which, never its
-/// words (the journal is not the person's to read).
 fn line(network: &str, account: u64, notice: &Notice) -> String {
     serde_json::json!({
         "channel": "log",
@@ -475,7 +434,6 @@ fn line(network: &str, account: u64, notice: &Notice) -> String {
     .to_string()
 }
 
-/// An account's badges, per program, each logged when it moves.
 async fn badges(
     mut heard: futures::channel::mpsc::UnboundedReceiver<(&'static str, Intent)>,
     network: String,
@@ -500,9 +458,6 @@ async fn badges(
     }
 }
 
-/// The host's services with no screen and no one at it: files under the
-/// network's directory, a throwaway key that signs queries, no device key,
-/// no banners of its own (each recipient has its channel), no view seated.
 struct Headless {
     dirs: Dirs,
     reader: Arc<dyn noded_client::Signer>,
@@ -531,13 +486,12 @@ impl Headless {
                 runtime,
                 views_override: None,
             },
-            reader: Arc::new(reader_key()),
+            reader: Arc::new(process_query_signing_key()),
         })
     }
 }
 
-/// A key made for this process alone, as the desktop's reader.
-fn reader_key() -> commonware_cryptography::ed25519::PrivateKey {
+fn process_query_signing_key() -> commonware_cryptography::ed25519::PrivateKey {
     use commonware_codec::DecodeExt as _;
     use rand::RngCore as _;
     let mut seed = [0u8; 32];
@@ -546,7 +500,6 @@ fn reader_key() -> commonware_cryptography::ed25519::PrivateKey {
         .expect("32 random bytes decode")
 }
 
-/// Banners of the host's own (the app's update notice): pushd raises none.
 struct Nowhere;
 
 impl Banners for Nowhere {
@@ -588,9 +541,7 @@ impl OsServices for Headless {
             one_layout: true,
             floats: false,
             motion: ducktape_host::motion::IOS,
-            // its recipients' settings answer for them (`unasked`)
             os_asks_notices: false,
-            // notifiers alone, on no screen
             feeds_follow_screen: false,
         }
     }
@@ -599,13 +550,11 @@ impl OsServices for Headless {
         Limits {
             loaders: 1,
             preload: Preload::Headless,
-            // the notifiers run in this process: none dies apart from pushd
             snapshot_every: None,
             snapshot_to_disk: false,
         }
     }
 
-    /// pushd ships no view: every notifier is the network's.
     fn bundled_view(&self, _: &abi::BlobId) -> Option<Vec<u8>> {
         None
     }
@@ -619,9 +568,6 @@ impl OsServices for Headless {
 mod tests {
     use super::*;
 
-    /// A notice on the `log` channel is one line of JSON naming the network,
-    /// the account, the program and the notice's kind, tag and link, never
-    /// its words.
     #[test]
     fn a_log_line_names_whose_notice_it_is_not_its_words() {
         let notice = Notice {
@@ -649,8 +595,6 @@ mod tests {
         );
     }
 
-    /// The config lists networks, the door and the credentials; a network
-    /// name is one path segment.
     #[test]
     fn the_config_lists_networks_the_door_and_the_credentials() {
         let config: Config = toml::from_str(
@@ -677,7 +621,11 @@ mod tests {
             ("industries.ducktape.mobile", None)
         );
         assert!(config.fcm.is_none());
-        assert!(named("testkit") && named("duck-pond_1.x"));
-        assert!(!named("..") && !named("a/b") && !named(""));
+        assert!(is_single_path_segment("testkit") && is_single_path_segment("duck-pond_1.x"));
+        assert!(
+            !is_single_path_segment("..")
+                && !is_single_path_segment("a/b")
+                && !is_single_path_segment("")
+        );
     }
 }

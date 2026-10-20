@@ -9,7 +9,6 @@ use gpui_kit::{Entity, Keystroke, TestAppContext, VisualTestContext, Window};
 
 type Setup = (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext);
 
-/// A console with two windows on a drawn desk, the second in front.
 fn desk_of_two(cx: &mut TestAppContext) -> Setup {
     let (app, key, view, mut native) = console(cx);
     key_split(&mut native);
@@ -17,7 +16,6 @@ fn desk_of_two(cx: &mut TestAppContext) -> Setup {
     (app, key, view, native)
 }
 
-/// The keyboard focus on the element with `id`, as the AX door gives it.
 pub(super) fn focus_control(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
     draw(window, cx);
@@ -73,7 +71,6 @@ fn stroke(native: &mut VisualTestContext, stroke: &str) {
     settle(native);
 }
 
-/// The control with `id` has the keys, as the AX door reports it.
 fn has_keys(native: &mut VisualTestContext, id: &str) -> bool {
     native.update(draw).as_array().unwrap().iter().any(|node| {
         node["id"] == id
@@ -108,7 +105,6 @@ fn the_hold_chord_gives_the_arrows_to_the_window(cx: &mut TestAppContext) {
     assert!(in_front(&mut native, &view));
     assert_ne!(focused(&mut native), previous, "the box has the keys");
 
-    // 8 px an arrow, 32 with Shift
     stroke(&mut native, "right");
     stroke(&mut native, "down");
     let moved = frame(&mut native, &view, 1);
@@ -123,7 +119,6 @@ fn the_hold_chord_gives_the_arrows_to_the_window(cx: &mut TestAppContext) {
     let moved = frame(&mut native, &view, 1);
     assert_eq!((moved.x, moved.y), (start.x - 24., start.y - 24.));
 
-    // Alt sizes from the right and bottom edges, the same steps
     stroke(&mut native, "alt-right");
     stroke(&mut native, "alt-shift-down");
     let sized = frame(&mut native, &view, 1);
@@ -139,7 +134,6 @@ fn the_hold_chord_gives_the_arrows_to_the_window(cx: &mut TestAppContext) {
     assert_eq!((sized.w, sized.h), (start.w, start.h + 24.));
     assert!(held(&mut native, &view), "arrows do not end the hold");
 
-    // Return keeps it there, and the keys go back to what had them
     stroke(&mut native, "enter");
     assert!(!held(&mut native, &view));
     assert_eq!(frame(&mut native, &view, 1), sized);
@@ -151,14 +145,12 @@ fn a_hold_stops_at_the_desk_and_at_the_smallest_window(cx: &mut TestAppContext) 
     let (_, _, view, mut native) = desk_of_two(cx);
     let desk = native.update(|_, cx| view.read(cx).layout(cx).desk());
     stroke(&mut native, "secondary-shift-m");
-    // far past the desk's right edge: the window keeps a grip of itself on it
     for _ in 0..60 {
         key(&mut native, "shift-right");
     }
     settle(&mut native);
     let moved = frame(&mut native, &view, 1);
     assert_eq!(moved.x, desk.0 - layout::KEEP, "{moved:?} on {desk:?}");
-    // sized past the desk's width and down to the floors
     for _ in 0..60 {
         key(&mut native, "alt-shift-right");
     }
@@ -177,7 +169,6 @@ fn a_hold_stops_at_the_desk_and_at_the_smallest_window(cx: &mut TestAppContext) 
 fn escape_puts_the_window_back_and_a_fill_with_it(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
     let previous = focused(&mut native);
-    // moved and sized, then put back
     let start = frame(&mut native, &view, 1);
     stroke(&mut native, "secondary-shift-m");
     stroke(&mut native, "shift-right");
@@ -187,8 +178,6 @@ fn escape_puts_the_window_back_and_a_fill_with_it(cx: &mut TestAppContext) {
     assert_eq!(frame(&mut native, &view, 1), start);
     assert_eq!(focused(&mut native), previous);
 
-    // a filled desk held: fill off and the window moved, then put back
-    // filled
     stroke(&mut native, "secondary-shift-enter");
     assert!(filled(&mut native, &view));
     stroke(&mut native, "secondary-shift-m");
@@ -212,7 +201,6 @@ fn space_keeps_and_any_other_key_ends_the_hold_keeping_the_window(cx: &mut TestA
         stroke(&mut native, ending);
         assert!(!held(&mut native, &view), "{ending} left the hold on");
         assert_eq!(frame(&mut native, &view, 1), kept, "{ending} kept it");
-        // Tab's own move stands (`keys_moved_elsewhere_end_the_hold_and_stay_there`)
         if ending != "tab" {
             assert_eq!(
                 focused(&mut native),
@@ -223,18 +211,14 @@ fn space_keeps_and_any_other_key_ends_the_hold_keeping_the_window(cx: &mut TestA
     }
 }
 
-/// Keys a press, Tab or assistive technology moves during a hold end it
-/// and stay where they went; they are not taken back to what had them.
 #[gpui_kit::test]
 fn keys_moved_elsewhere_end_the_hold_and_stay_there(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
-    // assistive technology moves them from the window to the bar
     stroke(&mut native, "secondary-shift-m");
     native.update(|window, cx| focus_control("rail-connection", window, cx));
     settle(&mut native);
     assert!(!held(&mut native, &view));
     assert!(has_keys(&mut native, "console:rail-connection"));
-    // held from the bar, Tab moves them on from the window's box, into it
     stroke(&mut native, "secondary-shift-m");
     assert!(held(&mut native, &view));
     stroke(&mut native, "tab");
@@ -242,8 +226,6 @@ fn keys_moved_elsewhere_end_the_hold_and_stay_there(cx: &mut TestAppContext) {
     assert!(in_front(&mut native, &view), "Tab left them in the window");
 }
 
-/// Something opening over the desk ends the hold; when it closes, the keys
-/// go back to what had them before the hold, not to the window's box.
 #[gpui_kit::test]
 fn after_an_overlay_the_keys_go_back_to_what_had_them_before_the_hold(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
@@ -259,8 +241,6 @@ fn after_an_overlay_the_keys_go_back_to_what_had_them_before_the_hold(cx: &mut T
     assert!(has_keys(&mut native, "console:rail-connection"));
 }
 
-/// A window let go of as another comes forward still remembers what had
-/// the keys in it before the hold, not its own box.
 #[gpui_kit::test]
 fn a_held_window_sent_back_remembers_what_had_its_keys(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
@@ -280,13 +260,10 @@ fn a_held_window_sent_back_remembers_what_had_its_keys(cx: &mut TestAppContext) 
     assert_eq!(focused(&mut native), previous);
 }
 
-/// A press, or the OS window losing the keys, ends the hold; Search
-/// opening and another window coming forward are the keys' tests above.
 #[gpui_kit::test]
 fn a_press_or_the_window_losing_the_keys_ends_the_hold(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
     let previous = focused(&mut native);
-    // a press on the held window's title bar, which takes no keys itself
     let title = frame(&mut native, &view, 1);
     stroke(&mut native, "secondary-shift-m");
     assert!(held(&mut native, &view));
@@ -302,8 +279,6 @@ fn a_press_or_the_window_losing_the_keys_ends_the_hold(cx: &mut TestAppContext) 
     assert_eq!(focused(&mut native), previous, "the keys came back");
     stroke(&mut native, "secondary-shift-m");
     assert!(held(&mut native, &view));
-    // the OS window losing the keys: `Windows` hears the deactivation and
-    // drops the desk's hold
     native.update(|window, _| window.activate_window());
     native.run_until_parked();
     assert!(held(&mut native, &view), "activation dropped the hold");
@@ -312,8 +287,6 @@ fn a_press_or_the_window_losing_the_keys_ends_the_hold(cx: &mut TestAppContext) 
     assert!(!held(&mut native, &view), "the window lost the keys");
 }
 
-/// Nor does the Window menu, whose items reach the actions past the key
-/// context (macOS).
 #[gpui_kit::test]
 fn the_chords_and_the_menu_do_nothing_under_an_overlay(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
@@ -367,10 +340,6 @@ fn chords_with_shift_are_written_for_the_platform() {
     assert_eq!(chord_label("K").replace("Ctrl ", "⌘"), "⌘K");
 }
 
-/// Shift+Return on a bar tab shows its program in the window in front,
-/// as Shift-click does; a plain Return opens it, as a click does. The
-/// keys reach the tab as the rail's one Tab stop, on the front window's
-/// program, and the arrow moves them to the next.
 #[gpui_kit::test]
 fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
     let (app, _, view, mut native) = console(cx);
@@ -421,8 +390,6 @@ fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
     );
 }
 
-/// Search offers Fill and Move or size while a window has a frame; running
-/// them is the two tests below.
 #[gpui_kit::test]
 fn search_offers_fill_and_hold_while_a_window_has_a_frame(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
@@ -442,9 +409,6 @@ fn search_offers_fill_and_hold_while_a_window_has_a_frame(cx: &mut TestAppContex
     );
 }
 
-/// Search open and drawn, then "Move or size window" run from it: the keys
-/// Search gives back as it closes (deferred past the draw) are the hold's
-/// to keep, not to take the hold apart with.
 #[gpui_kit::test]
 fn a_hold_run_from_a_drawn_search_keeps_the_keys(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
@@ -464,8 +428,6 @@ fn a_hold_run_from_a_drawn_search_keeps_the_keys(cx: &mut TestAppContext) {
     );
 }
 
-/// Search open and drawn, then "Fill window" run from it: the window in
-/// front keeps the keys once Search has closed.
 #[gpui_kit::test]
 fn a_fill_run_from_a_drawn_search_leaves_the_keys_in_front(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);

@@ -55,11 +55,8 @@ use jni::{Env, EnvUnowned};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// What an entry's failure becomes for Java: a `RuntimeException` (there is
-/// none of ours; a JNI call that failed is the only way in).
 type Policy = jni::errors::ThrowRuntimeExAndDefault;
 
-/// gm's id for one Activity instance.
 fn id(host: jlong) -> host::HostId {
     host as host::HostId
 }
@@ -435,10 +432,6 @@ pub fn move_task_to_back() {
     }
 }
 
-/// Hands `ndk-context` the Java VM and the application's Context, once per
-/// process (an Activity made again finds them set): what av's JNI calls and
-/// cpal's AAudio host read. android-activity's glue does this on the
-/// NativeActivity path; the host-driven path's is this app's.
 fn hand_context(env: &mut Env, activity: &JObject) -> jni::errors::Result<()> {
     static HANDED: std::sync::Once = std::sync::Once::new();
     if HANDED.is_completed() {
@@ -467,11 +460,6 @@ fn hand_context(env: &mut Env, activity: &JObject) -> jni::errors::Result<()> {
     Ok(())
 }
 
-/// Asks the person for `permission` (`android.permission.CAMERA`) through the
-/// Activity: whether it is granted, the system's prompt raised first when it
-/// is not and may be. Blocks the calling camera or microphone thread until
-/// the person answers (`ducktape_av::asks_through`); refused when the
-/// Activity cannot be reached.
 fn ask(permission: &str) -> bool {
     let asked = gpui_mobile::android::jni::with_env(|env| {
         let activity = gpui_mobile::android::jni::activity(env)?;

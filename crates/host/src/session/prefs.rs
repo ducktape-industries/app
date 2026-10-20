@@ -54,7 +54,6 @@ impl Prefs {
     }
 }
 
-/// Timed as `reducer.desk`, the name qa's hang rule reads (docs/perf.md).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.desk")
 }

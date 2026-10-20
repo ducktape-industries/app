@@ -8,7 +8,6 @@ pub(super) struct DisplayDiagnostics {
     warned: bool,
 }
 impl DisplayDiagnostics {
-    /// Whether `cuts` is the first cut seen for this view.
     pub(super) fn first_cut(&mut self, cuts: &wire::SanitizeReport) -> bool {
         let first = !cuts.is_empty() && !self.warned;
         self.warned |= first;

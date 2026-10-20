@@ -28,12 +28,8 @@ use wasmtime::{
 };
 
 const VIEW_FUEL: u64 = i64::MAX as u64;
-/// The `memory.view_bytes` default (`crates/host/src/backend/prefs.rs`).
 const VIEW_BYTES: u64 = 64 << 20;
 
-/// A wasmtime engine the way a view runner configures one: Cranelift at
-/// speed, every feature outside [`FEATURES`] refused (the recipe the wasmtime
-/// runner applies), fuel on for the original module, off for the metered.
 fn engine(fuel: bool) -> &'static Engine {
     static ENGINES: [OnceLock<Engine>; 2] = [OnceLock::new(), OnceLock::new()];
     ENGINES[usize::from(fuel)].get_or_init(|| {
@@ -45,12 +41,6 @@ fn engine(fuel: bool) -> &'static Engine {
     })
 }
 
-/// The desktop's `ViewLimits` (`crates/host/src/runtime/view/abi.rs`): linear
-/// memory plus a pointer per table element, against one budget; past it the
-/// grow is an error, so the call traps. Asked before the module's own
-/// maximum, in wasmtime's order; a grow that maximum then refuses holds
-/// nothing, so it records nothing. The desktop's still records it until
-/// app#545 (lane H) lands that fix; from then the two agree.
 struct ViewLimits {
     budget: usize,
     memory: usize,
@@ -111,23 +101,18 @@ impl ResourceLimiter for ViewLimits {
     }
 }
 
-/// One instance, original (fuel + `ViewLimits`) or metered (no fuel, no
-/// limiter: the module bounds itself).
 struct Run {
     store: Store<ViewLimits>,
     instance: Instance,
     gas: Option<Global>,
 }
 
-/// How a call ended.
 #[derive(Debug, Clone, PartialEq)]
 enum End {
     Returned(Vec<i64>),
     Stopped(Stop),
 }
 
-/// A module compiled once, original (run with fuel and `ViewLimits`) or
-/// metered (run with neither: it bounds itself), seated as often as needed.
 struct Compiled {
     module: Module,
     budget: u64,
@@ -143,7 +128,6 @@ impl Compiled {
         }
     }
 
-    /// `metered` is `meter(code, budget)`.
     fn metered(metered: &[u8], budget: u64) -> Self {
         Self {
             module: Module::new(engine(false), metered).unwrap(),
@@ -155,7 +139,6 @@ impl Compiled {
     fn run(&self) -> Run {
         let engine = self.module.engine();
         let limits = ViewLimits {
-            // the metered run's limiter never refuses: the module does
             budget: if self.metered {
                 usize::MAX
             } else {
@@ -185,10 +168,6 @@ impl Compiled {
     }
 }
 
-/// `meter(code, budget)` for a module the test runs: [`accepts`] takes it,
-/// and then `meter` must meter it. Every module the suite meters comes
-/// through here (the sessions, the probes, the random bodies), so the rule
-/// and the pass cannot drift apart unseen.
 fn meter_accepted(code: &[u8], budget: u64) -> Vec<u8> {
     assert_eq!(accepts(code), Ok(()), "accepts takes it");
     match meter(code, budget) {
@@ -207,7 +186,6 @@ impl Run {
         }
     }
 
-    /// What is left of the fuel (metered: [`GAS`], which may be below 0).
     fn left(&mut self) -> i64 {
         match self.gas {
             Some(gas) => gas.get(&mut self.store).unwrap_i64(),
@@ -215,7 +193,6 @@ impl Run {
         }
     }
 
-    /// Calls an export with i32 arguments, armed with `fuel`.
     fn call(&mut self, name: &str, args: &[i32], fuel: u64) -> End {
         self.arm(fuel);
         let func = self.instance.get_func(&mut self.store, name).unwrap();
@@ -232,8 +209,6 @@ impl Run {
         }
     }
 
-    /// The original's trap read the way the host reads it; the metered one's
-    /// read from [`GAS`] the way the iOS runner will.
     fn stopped(&mut self, error: &wasmtime::Error) -> Stop {
         match self.gas {
             Some(gas) => {
@@ -250,7 +225,6 @@ impl Run {
     }
 }
 
-/// Both runs of one module: every call must end alike and use the same fuel.
 struct Both {
     original: Run,
     metered: Run,
@@ -265,11 +239,6 @@ impl Both {
         }
     }
 
-    /// Calls both; asserts the same end and, when the call returned or ran
-    /// out of fuel, the same fuel used as the host reports it: wasmtime's
-    /// `get_fuel` stops at 0, so a metered count past the budget is capped
-    /// at it (after any other trap neither runner has a count). Returns the
-    /// end and the original's fuel used.
     fn call(&mut self, name: &str, args: &[i32], fuel: u64) -> (End, i64) {
         let original = self.original.call(name, args, fuel);
         let metered = self.metered.call(name, args, fuel);
@@ -286,8 +255,6 @@ impl Both {
         (original, used)
     }
 
-    /// Calls `name` at every budget from 1 to 2 past what it uses: every
-    /// point the fuel can run out at must end alike.
     fn every_budget(&mut self, name: &str, args: &[i32]) {
         let (_, total) = self.call(name, args, VIEW_FUEL);
         for fuel in 1..=total.unsigned_abs() + 2 {
@@ -295,8 +262,6 @@ impl Both {
         }
     }
 
-    /// How far a call at `fuel` got: its end and the module's `trace`
-    /// counter, the same under both (the counter is reset first).
     fn reach(&mut self, name: &str, args: &[i32], fuel: u64) -> (End, i32) {
         for run in [&mut self.original, &mut self.metered] {
             let trace = run.instance.get_global(&mut run.store, "trace").unwrap();
@@ -308,12 +273,6 @@ impl Both {
         (end, original)
     }
 
-    /// [`Self::every_budget`] by bisection, for a module that bumps a
-    /// `trace` counter after every size-charged operator: how a call ends
-    /// and how far it gets only move forward as the budget grows, so where
-    /// both runs agree at the two ends of a range of budgets, they agree all
-    /// through it; a range whose ends differ is split until it is one
-    /// budget wide. A check placed differently shows as a different trace.
     fn bisect_budgets(&mut self, name: &str, args: &[i32]) {
         let (_, total) = self.call(name, args, VIEW_FUEL);
         let high = total.unsigned_abs() + 2;
@@ -342,8 +301,6 @@ impl Both {
     }
 }
 
-// --- the recorded sessions -------------------------------------------------
-
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/sessions/{name}.gz", env!("CARGO_MANIFEST_DIR"));
     let mut bytes = Vec::new();
@@ -365,8 +322,6 @@ struct Tick {
     frame: Vec<u8>,
 }
 
-/// Lane 02's recording: per tick, u8 rendered, u32le len + the event batch,
-/// u32le len + the frame the native view answered.
 fn recording(bytes: &[u8]) -> Vec<Tick> {
     let mut at = 0;
     let chunk = |at: &mut usize| {
@@ -384,7 +339,6 @@ fn recording(bytes: &[u8]) -> Vec<Tick> {
     ticks
 }
 
-/// A seated view driven the way the app drives one.
 struct Seat(Run);
 
 impl Seat {
@@ -431,8 +385,6 @@ impl Seat {
             .unwrap();
     }
 
-    /// One tick as the app runs it (armed once for alloc + write + tick):
-    /// the frame and the fuel it used.
     fn tick(&mut self, events: &[u8]) -> (Vec<u8>, u64) {
         self.0.arm(VIEW_FUEL);
         let args = self.give(events);
@@ -464,9 +416,6 @@ impl Seat {
     }
 }
 
-/// S0-webkit's restore crosscheck (`replay.js restore`): run to tick `k`,
-/// snapshot, a fresh instance restores it, the rest of the session is
-/// replayed and its frames hashed (FNV-1a 64 over u32le length + bytes).
 fn post_restore_hash(seat: impl Fn() -> Seat, ticks: &[Tick], k: usize) -> String {
     let mut first = seat();
     first.init();
@@ -487,12 +436,10 @@ fn post_restore_hash(seat: impl Fn() -> Seat, ticks: &[Tick], k: usize) -> Strin
     format!("{hash:016x}")
 }
 
-/// The custom sections of a module (name, bytes) the host may read.
 fn custom_sections(code: &[u8]) -> Vec<(String, Vec<u8>)> {
     wasmparser::Parser::new(0)
         .parse_all(code)
         .filter_map(|payload| match payload.unwrap() {
-            // the pass rewrites `name` and drops the toolchain's `producers`
             wasmparser::Payload::CustomSection(section)
                 if !["name", "producers"].contains(&section.name()) =>
             {
@@ -566,14 +513,10 @@ fn forge_session() {
     );
 }
 
-// --- the edges -------------------------------------------------------------
-
 const PAGE: u64 = 65_536;
 
 #[test]
 fn a_grow_past_the_budget_traps_as_memory_under_both() {
-    // one budget for memory and tables, as ViewLimits keeps it: 4 pages and
-    // 8 table elements, the table's own 4 already in it
     let budget = 4 * PAGE + 8 * 8;
     let mut both = Both::new(
         r#"(module
@@ -588,14 +531,12 @@ fn a_grow_past_the_budget_traps_as_memory_under_both() {
     let fuel = VIEW_FUEL;
     assert_eq!(both.call("grow", &[0], fuel).0, End::Returned(vec![1]));
     assert_eq!(both.call("grow", &[2], fuel).0, End::Returned(vec![1]));
-    // the budget is asked before any size limit, even past 4 GiB
     assert_eq!(
         both.call("grow", &[70_000], fuel).0,
         End::Stopped(Stop::Memory)
     );
     assert_eq!(both.call("grow", &[2], fuel).0, End::Stopped(Stop::Memory));
     assert_eq!(both.call("grow", &[1], fuel).0, End::Returned(vec![3]));
-    // memory is at its 4 pages: the tables' 4 more elements fit, 1 more not
     assert_eq!(
         both.call("grow_table", &[4], fuel).0,
         End::Returned(vec![4])
@@ -635,8 +576,6 @@ fn a_grow_past_the_modules_own_maximum_answers_minus_one_under_both() {
 
 #[test]
 fn a_grow_the_modules_maximum_refuses_holds_nothing_of_the_budget() {
-    // room for 3 pages and 1 table element: the refused grows below each
-    // fit the budget, so only what they would hold could fill it
     let mut both = Both::new(
         r#"(module
             (memory 1 2)
@@ -648,11 +587,8 @@ fn a_grow_the_modules_maximum_refuses_holds_nothing_of_the_budget() {
         3 * PAGE + 8,
     );
     let call = |both: &mut Both, name, delta| both.call(name, &[delta], VIEW_FUEL).0;
-    // 3 pages asked, 2 allowed: memory stays at 1, so a second element fits
     assert_eq!(call(&mut both, "grow", 2), End::Returned(vec![-1]));
     assert_eq!(call(&mut both, "grow_table", 1), End::Returned(vec![1]));
-    // 4 more elements asked, again and again, past the table's 2: the
-    // memory's second page still fits after all of them
     for _ in 0..5_000 {
         assert_eq!(call(&mut both, "grow_table", 4), End::Returned(vec![-1]));
     }
@@ -688,8 +624,6 @@ fn size_charged_operators_cost_what_wasmtime_charges() {
                 i32.const 0 i32.const 100 i32.const 1000 memory.copy))"#,
         VIEW_BYTES,
     );
-    // a constant length is folded into the cost (wasmtime checks only past
-    // 128); the count is the same either way
     let small = both.call("copy_16", &[], VIEW_FUEL).1;
     let large = both.call("copy_1000", &[], VIEW_FUEL).1;
     assert_eq!(large - small, 1000 - 16);
@@ -706,7 +640,6 @@ fn size_charged_operators_cost_what_wasmtime_charges() {
             .iter()
             .map(|&size| both.call(name, &[size], VIEW_FUEL).1)
             .collect();
-        // each element or byte is one unit of fuel, under both
         assert_eq!(used[1] - used[0], 1, "{name}");
         assert_eq!(used[2] - used[0], i64::from(sizes[2]), "{name}");
     }
@@ -825,8 +758,6 @@ fn the_shapes_no_runner_takes_are_refused_wherever_asked() {
         "i32 ".repeat(1_000),
         "i32.const 0 ".repeat(1_000)
     );
-    // the limits, refused with the margin of what the pass could add (the
-    // other side of each: `the_limits_hold_once_metered`)
     let locals = format!("(module (func (local {})))", "i32 ".repeat(49_999));
     let segments = format!(
         "(module (func $f) {})",
@@ -869,7 +800,6 @@ fn the_shapes_no_runner_takes_are_refused_wherever_asked() {
         ),
     ] {
         let code = wat::parse_str(wat).unwrap();
-        // valid wasm within FEATURES: refused by the rule, not by wasmtime
         assert!(Module::validate(engine(true), &code).is_ok(), "{what}");
         assert!(
             matches!(accepts(&code), Err(Refusal::Unsupported(_))),
@@ -887,10 +817,6 @@ fn the_shapes_no_runner_takes_are_refused_wherever_asked() {
 
 #[test]
 fn the_limits_hold_once_metered() {
-    // one under each margin `the_shapes_no_runner_takes...` refuses at:
-    // accepted, so metered into valid wasm (`meter` validates its output)
-    // a parameter and 49,997 locals, all read, and a length from the
-    // parameter: the count and the scratch local make exactly 50,000
     let gets: String = (0..49_998)
         .map(|i| format!("local.get {i} drop "))
         .collect();
@@ -908,7 +834,6 @@ fn the_limits_hold_once_metered() {
     for wat in [&locals, &segments, &body] {
         meter_accepted(&wat::parse_str(wat).unwrap(), VIEW_BYTES);
     }
-    // custom sections the validator does not read, garbage inside
     for name in ["name", "producers"] {
         let mut code = wat::parse_str(r#"(module (func (export "f")))"#).unwrap();
         let mut section = vec![u8::try_from(name.len()).unwrap()];
@@ -953,7 +878,6 @@ fn hostile_or_oversized_input_is_a_typed_refusal() {
             view_bytes: PAGE
         })
     );
-    // no memory, no table: metered all the same
     let bare = wat::parse_str(r#"(module (func (export "f")))"#).unwrap();
     assert!(meter(&bare, VIEW_BYTES).is_ok());
 }
@@ -966,17 +890,12 @@ fn stop_reads_the_gas_left() {
     assert_eq!(stop(1), Stop::Trap);
 }
 
-// --- where the fuel runs out: every budget ---------------------------------
-
-/// `(drop (i32.const 1))` `n` times: `n` fuel of straight-line code.
 fn burn(n: usize) -> String {
     "(drop (i32.const 1)) ".repeat(n)
 }
 
 #[test]
 fn a_constant_length_is_folded_wherever_wasmtime_sees_one() {
-    // a run of straight-line code around each size-charged operator: the
-    // fuel can run out inside it, where only a check would stop the call
     let b = burn(8);
     let fill = |length: &str| format!("i32.const 0 i32.const 0 {length} memory.fill");
     let wat = format!(
@@ -1065,9 +984,6 @@ fn a_constant_length_is_folded_wherever_wasmtime_sees_one() {
             both.every_budget(name, &[arg]);
         }
     }
-    // an immutable i32 global of -1 is sign-extended, as wasmtime's constant
-    // is: a length of 2^64 - 1 that costs i64::MAX, so its run has no end to
-    // sweep to; the low budgets cover it
     for fuel in 1..=64 {
         both.call("negative_global", &[], fuel);
     }
@@ -1166,7 +1082,6 @@ fn every_operator_class_stops_where_wasmtime_stops() {
         ("divide", &[2, 0]),
         ("grows", &[0, 1]),
         ("counter", &[1, 6]),
-        // last: the first call drops the segments, the next ones trap
         ("segments", &[0, 2]),
     ] {
         for &arg in args {
@@ -1175,10 +1090,9 @@ fn every_operator_class_stops_where_wasmtime_stops() {
     }
 }
 
-/// A seeded xorshift: the random modules are the same on every run.
-struct Rng(u64);
+struct SeededXorshift(u64);
 
-impl Rng {
+impl SeededXorshift {
     fn below(&mut self, n: u64) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -1191,30 +1105,16 @@ impl Rng {
     }
 }
 
-/// An enclosing label, as the generator sees it.
 #[derive(Clone, Copy)]
 enum Label {
-    /// a block or an `if` without values: a branch target
     Block,
-    /// a loop counted down on `$k{depth}`: reached again only through it
     Loop(usize),
-    /// a label with values: never branched to
     Typed,
 }
 
-/// Bumps the `trace` global after a size-charged operator: a check placed
-/// differently there shows in how far the call got.
 const TRACE: &str = "global.get $trace i32.const 1 i32.add global.set $trace ";
 
-/// A random statement list: constants moved through locals (spread over
-/// several declarations), blocks, `if`s, loops and blocks with parameters,
-/// counted loops and continues into them from nested blocks, branches,
-/// `br_table` with and without values, `select`, `call_indirect`,
-/// `table.get`, every size-charged operator with a length from all of that,
-/// and a load past the memory's maximum in an arm never taken. `labels`
-/// holds the enclosing labels. (The review of #547 wrote it; it replaced a
-/// narrower one.)
-fn statements(rng: &mut Rng, depth: usize, labels: &mut Vec<Label>, out: &mut String) {
+fn statements(rng: &mut SeededXorshift, depth: usize, labels: &mut Vec<Label>, out: &mut String) {
     const LOCALS: &[&str] = &["$a", "$b", "$c"];
     const VALUES: &[&str] = &["0", "3", "16", "128", "129", "200"];
     for _ in 0..1 + rng.below(5) {
@@ -1329,11 +1229,11 @@ fn statements(rng: &mut Rng, depth: usize, labels: &mut Vec<Label>, out: &mut St
                 *out += "(block (block ";
                 labels.extend([Label::Block, Label::Block]);
                 statements(rng, depth + 1, labels, out);
-                // the two new blocks, or an outer block two labels further
-                let pick = |rng: &mut Rng| match rng.below(2 + blocks.len() as u64) as usize {
-                    new @ 0..=1 => new,
-                    outer => blocks[outer - 2] + 2,
-                };
+                let pick =
+                    |rng: &mut SeededXorshift| match rng.below(2 + blocks.len() as u64) as usize {
+                        new @ 0..=1 => new,
+                        outer => blocks[outer - 2] + 2,
+                    };
                 let (first, second, default) = (pick(rng), pick(rng), pick(rng));
                 *out += &format!("local.get $p br_table {first} {second} {default}) ");
                 labels.pop();
@@ -1393,10 +1293,8 @@ fn statements(rng: &mut Rng, depth: usize, labels: &mut Vec<Label>, out: &mut St
     }
 }
 
-/// The module the random bodies run in: two call targets in a table, a
-/// table to grow, one to fill, copy and init, a data and an element segment.
 fn random_module(seed: u64) -> String {
-    let mut rng = Rng(0x2545_f491_4f6c_dd1d ^ seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    let mut rng = SeededXorshift(0x2545_f491_4f6c_dd1d ^ seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
     let mut functions = String::new();
     for index in 0..RANDOM_FUNCTIONS {
         let mut body = String::new();
@@ -1443,7 +1341,6 @@ fn random_bodies_stop_where_wasmtime_stops() {
         let metered = Compiled::metered(&meter_accepted(&code, VIEW_BYTES), VIEW_BYTES);
         for index in 0..RANDOM_FUNCTIONS {
             for arg in [0, 1, 300] {
-                // a fresh instance each: no table grown by an earlier call
                 let mut both = Both {
                     original: original.run(),
                     metered: metered.run(),
@@ -1453,8 +1350,6 @@ fn random_bodies_stop_where_wasmtime_stops() {
         }
     }
 }
-
-// --- what the pass costs on hostile shapes ---------------------------------
 
 #[test]
 fn a_grow_costs_the_same_however_many_tables() {
@@ -1473,15 +1368,11 @@ fn a_grow_costs_the_same_however_many_tables() {
         meter_accepted(&one, VIEW_BYTES).len(),
         meter_accepted(&many, VIEW_BYTES).len(),
     );
-    // the 99 more tables cost their declarations and one helper's lines,
-    // not a copy at each of the 4,000 grows
     assert!(many - one < 4_096, "1 table {one} bytes, 100 tables {many}");
 }
 
 #[test]
 fn a_ref_func_of_a_function_only_its_export_declares_is_metered() {
-    // the export names a wrapper now, or the import's adapter stands in:
-    // the function the ref.func names is declared in its place
     let mut both = Both::new(
         r#"(module
             (import "ducktape_view" "panicked" (func $p (param i32 i32)))
@@ -1496,13 +1387,8 @@ fn a_ref_func_of_a_function_only_its_export_declares_is_metered() {
     }
 }
 
-// --- what the rewrite writes apart -----------------------------------------
-
 #[test]
 fn an_import_used_as_a_value_is_reached_through_its_adapter_under_both() {
-    // a global's initializer, an active segment's expression and a passive
-    // segment `table.init` loads: each names the import's adapter, which a
-    // `call_indirect` of the widened type reaches
     let mut both = Both::new(
         r#"(module
             (import "ducktape_view" "panicked" (func $p (param i32 i32)))
@@ -1529,8 +1415,6 @@ fn an_import_used_as_a_value_is_reached_through_its_adapter_under_both() {
 
 #[test]
 fn a_call_indirect_to_two_results_matches_under_both() {
-    // the callee's body moves into a block of two results: its `return`
-    // and its branch to the function's label both carry them out
     let mut both = Both::new(
         r#"(module
             (type $two (func (param i32) (result i32 i64)))
@@ -1558,9 +1442,6 @@ fn a_call_indirect_to_two_results_matches_under_both() {
 
 #[test]
 fn a_function_past_127_locals_matches_under_both() {
-    // 300 locals in 300 groups of alternating types: the indices past the
-    // count's parameter move one up across the one-byte boundary (127 to
-    // 128), and the group count takes two bytes
     let locals: String = (1..=300)
         .map(|i| {
             if i % 2 == 1 {
@@ -1599,8 +1480,6 @@ fn a_function_past_127_locals_matches_under_both() {
 
 #[test]
 fn a_module_without_the_sections_the_pass_adds_to_is_metered() {
-    // no type, function, code, global or export section, in turn: the pass
-    // writes each one it adds to in its place, and [`GAS`] is there to arm
     for wat in [
         "(module)",
         r#"(module (memory (export "memory") 1))"#,
@@ -1611,7 +1490,6 @@ fn a_module_without_the_sections_the_pass_adds_to_is_metered() {
         both.metered.arm(5);
         assert_eq!(both.metered.left(), 5, "{wat}");
     }
-    // no global section: [`GAS`] is the module's only global
     let mut both = Both::new(
         r#"(module (func (export "f") (result i32) i32.const 1))"#,
         VIEW_BYTES,

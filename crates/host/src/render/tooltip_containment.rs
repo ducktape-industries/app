@@ -13,8 +13,6 @@ pub(super) fn build(
     content: Tree,
     cx: &mut App,
 ) -> gpui_kit::AnyView {
-    // the source view's pictures and their rasters: a tooltip names them
-    // as its source tree does, and the seat releases them
     let (pictures, images) = parent
         .upgrade()
         .map(|parent| {
@@ -116,7 +114,6 @@ mod tests {
         })
     }
 
-    /// The view's answer to `request`: `content`.
     fn answer(request: u32, content: wire::Node) -> wire::TooltipResponse {
         wire::TooltipResponse {
             request,
@@ -160,7 +157,6 @@ mod tests {
             } else {
                 source.tooltip(move |_, cx| build(parent.clone(), tooltip.clone().into(), cx))
             };
-            // the source in its pane's layer, as `Render for ViewTree` draws one
             div()
                 .size(px(40.))
                 .overflow_hidden()
@@ -321,8 +317,6 @@ mod tests {
         });
     }
 
-    /// A `Deferred` in a view tooltip's content draws, and paints, instead
-    /// of failing the frame.
     #[gpui_kit::test]
     fn a_deferred_inside_a_tooltip_draws(cx: &mut gpui_kit::TestAppContext) {
         struct Slot(Entity<ViewTree>);
@@ -360,9 +354,6 @@ mod tests {
         });
     }
 
-    /// The tooltip's content lives beside the tree, by route: a frame that
-    /// changes the hovered node's props (here its size) replaces the tree
-    /// and the open tooltip stays, since the route stays.
     #[gpui_kit::test]
     fn a_props_change_on_the_hovered_node_keeps_its_tooltip(cx: &mut gpui_kit::TestAppContext) {
         struct Host(Entity<ViewTree>);
@@ -404,10 +395,6 @@ mod tests {
         });
     }
 
-    /// gpui shows a tooltip with the builder of the frame the hover began
-    /// in, and the view answers that hover's request during the show
-    /// delay: the tooltip shows the answer, not what the tree held when the
-    /// hover began.
     #[gpui_kit::test]
     fn a_tooltip_shows_the_answer_that_landed_during_its_delay(cx: &mut gpui_kit::TestAppContext) {
         const OLD: u32 = 0x00ff00;
@@ -432,7 +419,6 @@ mod tests {
             .read_with(cx, |host, _| host.0.clone());
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         native.update(crate::render::draw_frame);
-        // the hover begins with OLD held, then the answer lands
         native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
         native.update(|window, cx| {
             tree.update(cx, |tree, cx| {
@@ -449,9 +435,6 @@ mod tests {
         });
     }
 
-    /// What the user sees: a tooltip whose content changed (a button's
-    /// label, say) shows the new content on the first hover after the
-    /// change, as the view answers each hover's request.
     #[gpui_kit::test]
     fn the_first_hover_after_a_tooltip_changed_shows_the_new_one(
         cx: &mut gpui_kit::TestAppContext,
@@ -473,7 +456,6 @@ mod tests {
             }
         }
         cx.update(gpui_kit::init);
-        // what the view would build for the tooltip now
         let says = Rc::new(Cell::new(FIRST));
         let view = says.clone();
         let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| {
@@ -523,10 +505,6 @@ mod tests {
         });
     }
 
-    /// A tooltip's content names its styles in the table of the frame it
-    /// came in, and is kept past that frame: the next whole frame brings
-    /// another table, where the same id is another style, and the content
-    /// is still drawn with its own.
     #[gpui_kit::test]
     fn a_tooltip_is_drawn_with_the_table_it_came_with(cx: &mut gpui_kit::TestAppContext) {
         struct Host(Entity<ViewTree>);
@@ -535,7 +513,6 @@ mod tests {
                 div().size(px(60.)).overflow_hidden().child(self.0.clone())
             }
         }
-        // the source names style 0 and the tooltip's content style 1
         let tree = |tip: u32| {
             let source = div().size(px(40.)).style().clone();
             let tip = div().size(px(20.)).bg(rgb(tip)).style().clone();
@@ -580,8 +557,6 @@ mod tests {
         });
     }
 
-    /// The store behind the tree: a response is kept only for a route the
-    /// tree holds, on every node kind that carries a tooltip.
     #[gpui_kit::test]
     fn tooltip_responses_hold_the_trees_routes(cx: &mut gpui_kit::TestAppContext) {
         let tip = |request| {

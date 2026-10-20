@@ -115,10 +115,7 @@ mod tests {
         assert!(node_key(workspace.path()).is_err());
     }
 
-    /// A node on a local socket whose routes each answer `200 OK` with one
-    /// body, one thread per connection; a request line names its route by
-    /// prefix.
-    fn fake_node(routes: Vec<(&'static str, Vec<u8>)>) -> RpcClient {
+    fn local_node_serving_routes(routes: Vec<(&'static str, Vec<u8>)>) -> RpcClient {
         use std::io::{BufRead as _, Write as _};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = RpcClient::new(format!("http://{}", listener.local_addr().unwrap()));
@@ -170,7 +167,7 @@ mod tests {
             genesis: [5; 32],
             roles: crate::backend::test_roles(),
         };
-        fake_node(vec![
+        local_node_serving_routes(vec![
             (noded_client::wire::route::STATUS, abi::encode(&status)),
             (
                 noded_client::wire::route::QUERY,

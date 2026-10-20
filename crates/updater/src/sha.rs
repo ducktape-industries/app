@@ -75,9 +75,6 @@ impl FromStr for Sha {
     }
 }
 
-/// `text` as exactly `N` bytes of lowercase-or-uppercase hex, or `None`.
-/// Shared by every fixed-size hex field in the crate (a digest, a key, a
-/// signature).
 pub(crate) fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
     let has_expected_length = text.len() == N * 2;
     if !has_expected_length {
@@ -92,7 +89,6 @@ pub(crate) fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
     Some(bytes)
 }
 
-/// `bytes` as lowercase hex.
 pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut text = String::with_capacity(bytes.len() * 2);

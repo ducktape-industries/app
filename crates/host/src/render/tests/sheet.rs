@@ -4,8 +4,6 @@ use super::*;
 
 const DISMISS: u32 = 7;
 
-/// A page with, when `open`, a sheet over it opened at half the body and
-/// dragged up to all of it.
 fn page(open: bool) -> wire::Node {
     let mut children = vec![container("base", [button("open", "Actions")])];
     if open {
@@ -26,7 +24,6 @@ fn page(open: bool) -> wire::Node {
     )
 }
 
-/// The tree in a `width` x `height` window, its events, and the window.
 fn open(
     cx: &mut gpui_kit::TestAppContext,
     width: f32,
@@ -83,13 +80,8 @@ fn drag(native: &mut gpui_kit::VisualTestContext, x: f32, from: f32, to: f32) {
     native.update(crate::render::draw_frame);
 }
 
-/// The UX QA's first finding on both phones: a sheet closed by its scrim
-/// would not open again. Here the scrim asks the view to close it, the
-/// view stops drawing it, and drawn again it opens at its first detent and
-/// takes the scrim's press as before. A press on the panel is the panel's.
 #[gpui_kit::test]
 fn a_sheet_closed_by_its_scrim_opens_again(cx: &mut gpui_kit::TestAppContext) {
-    // 390 x 844: a phone, Compact; the panel is the bottom half
     let (tree, mut native, events, _subscription) = open(cx, 390., 844.);
     assert_eq!(rest(&tree, &native), Some(0), "opened at the first detent");
     press(&mut native, 195., 600.);
@@ -116,13 +108,9 @@ fn a_sheet_closed_by_its_scrim_opens_again(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(dismissals(&events), 2, "and its scrim works again");
 }
 
-/// The handle drags the panel between its detents; let go nearer the
-/// bottom than the first detent, the sheet asks to be closed and rests at
-/// its first detent until the view's next frame drops it.
 #[gpui_kit::test]
 fn the_handle_drags_between_detents_and_down_to_dismiss(cx: &mut gpui_kit::TestAppContext) {
     let (tree, mut native, events, _subscription) = open(cx, 390., 844.);
-    // the panel's top edge is at half the body; its handle is the band below it
     drag(&mut native, 195., 432., 40.);
     assert_eq!(
         rest(&tree, &native),
@@ -146,8 +134,6 @@ fn the_handle_drags_between_detents_and_down_to_dismiss(cx: &mut gpui_kit::TestA
     assert_eq!(rest(&tree, &native), Some(0));
 }
 
-/// At a wide body the sheet is a centred modal over the same scrim: a
-/// press beside the panel closes it, one in it does not.
 #[gpui_kit::test]
 fn a_wide_body_centres_the_sheet(cx: &mut gpui_kit::TestAppContext) {
     let (_tree, mut native, events, _subscription) = open(cx, 1000., 700.);
@@ -157,7 +143,6 @@ fn a_wide_body_centres_the_sheet(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(dismissals(&events), 1, "beside it is the scrim");
 }
 
-/// Escape closes the sheet the keys are in.
 #[gpui_kit::test]
 fn escape_asks_to_close_the_sheet(cx: &mut gpui_kit::TestAppContext) {
     let (_tree, mut native, events, _subscription) = open(cx, 390., 844.);
@@ -166,8 +151,6 @@ fn escape_asks_to_close_the_sheet(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(dismissals(&events), 1);
 }
 
-/// Under touch focus rests on the dialog's trap, not on a stop inside it,
-/// and Escape (an iPad's keyboard) still closes the sheet.
 #[gpui_kit::test]
 fn escape_closes_the_sheet_under_touch_too(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -178,16 +161,10 @@ fn escape_closes_the_sheet_under_touch_too(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(dismissals(&events), 1);
 }
 
-/// A centred modal does not drag, so it has no handle; under touch the
-/// view leaves the panel's top to the host's band, which stays, empty, so
-/// the view's first row is never flush with the panel's top. On a desktop
-/// the view pads its own sheet and the host adds nothing.
 #[gpui_kit::test]
 fn a_centred_sheet_under_touch_keeps_the_handle_band(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
     let (tree, mut native, _events, _subscription) = open(cx, 1000., 700.);
-    // the panel is centred in the 700-tall body and ends where the rows
-    // end: a band over the rows puts them half the band below centre
     let below_centre = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, _| {
             let rows = window.find("rows").bounds();
@@ -207,8 +184,6 @@ fn a_centred_sheet_under_touch_keeps_the_handle_band(cx: &mut gpui_kit::TestAppC
     );
 }
 
-/// A page with a sheet that names no detents over it, holding rows
-/// `rows` tall.
 fn fitted(rows: f32) -> wire::Node {
     let sheet = wire::Node::Sheet {
         id: named_id("actions"),
@@ -234,8 +209,6 @@ fn fitted(rows: f32) -> wire::Node {
     )
 }
 
-/// A tap on a fitted sheet's handle in the first frame that draws it, before
-/// any frame has measured the child, leaves the sheet open.
 #[gpui_kit::test]
 fn a_tap_on_a_fitted_handle_never_dismisses(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -251,10 +224,6 @@ fn a_tap_on_a_fitted_handle_never_dismisses(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(dismissals(&events), 0);
 }
 
-/// A sheet that names no detents is as tall as what it holds (the Expo
-/// kit's `Sheet` without snaps), at most the body. Its handle drags it,
-/// a short drag snaps it back to that height, and a release near the
-/// bottom asks the view to close it.
 #[gpui_kit::test]
 fn a_sheet_with_no_detents_is_as_tall_as_its_child(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -270,7 +239,6 @@ fn a_sheet_with_no_detents_is_as_tall_as_its_child(cx: &mut gpui_kit::TestAppCon
         native.update(|window, _| f32::from(window.find("rows").bounds().top()))
     };
     let band = crate::render::sheet::HANDLE_BAND;
-    // the rows sit on the bottom edge, the handle's band over them
     assert!((top(&mut native) - (844. - 300.)).abs() < 1., "fitted");
     let handle = 844. - 300. - band / 2.;
     drag(&mut native, 195., handle, handle + 60.);
@@ -282,8 +250,6 @@ fn a_sheet_with_no_detents_is_as_tall_as_its_child(cx: &mut gpui_kit::TestAppCon
     assert_eq!(dismissals(&events), 0);
     drag(&mut native, 195., handle, 830.);
     assert_eq!(dismissals(&events), 1, "near the bottom it asks to close");
-    // what outgrows the body is held to it: the panel's top at the body's,
-    // the rows under its hairline and the handle's band
     tree.update(&mut native, |tree, cx| tree.replace(fitted(2000.), &[], cx));
     native.update(crate::render::draw_frame);
     let capped = top(&mut native);
@@ -293,11 +259,6 @@ fn a_sheet_with_no_detents_is_as_tall_as_its_child(cx: &mut gpui_kit::TestAppCon
     );
 }
 
-/// Under touch a docked sheet slides up by its own height as it first
-/// draws, asking for frames only while it moves, and lands on the very
-/// layout a pointer's sheet has (which never moves); one the view drops
-/// goes down as it was drawn, taking no press, and is gone at the end with
-/// no frame asked for after.
 #[gpui_kit::test]
 fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -309,7 +270,6 @@ fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit
                 .map(|rows| f32::from(rows.bounds().top()))
         })
     };
-    // the frames the last draw asked for, delivered: how many
     let frames = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| window.simulate_next_frame(cx))
     };
@@ -321,11 +281,9 @@ fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit
     native.update(crate::render::draw_frame);
     let up = rows(&mut native).expect("drawn");
     assert!(coming > up + 100., "it did not come up: {coming} -> {up}");
-    // the frame asked for before the end, drawn after it, asks for none
     frames(&mut native);
     assert_eq!(frames(&mut native), 0, "a sheet at rest asked for a frame");
 
-    // the view drops it: it goes down as it was, and a press goes through
     show(&tree, &mut native, false);
     let going = rows(&mut native).expect("a sheet going is drawn");
     assert!(frames(&mut native) > 0, "a sheet going asked for no frame");
@@ -340,7 +298,6 @@ fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit
     frames(&mut native);
     assert_eq!(frames(&mut native), 0, "a frame asked for after it went");
 
-    // a pointer's sheet: drawn at rest at once, where the touch one landed
     crate::contract::testing::touch_first_for_test(false);
     show(&tree, &mut native, true);
     assert_eq!(
@@ -351,8 +308,6 @@ fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit
     assert_eq!(frames(&mut native), 0, "a pointer's sheet moved");
 }
 
-/// Under touch a release between detents settles at the nearest from where
-/// it was let go, and at the end the panel rests exactly there.
 #[gpui_kit::test]
 fn under_touch_a_release_settles_at_its_detent(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);
@@ -365,7 +320,6 @@ fn under_touch_a_release_settles_at_its_detent(cx: &mut gpui_kit::TestAppContext
         native.update(|window, _| f32::from(window.find("rows").bounds().top()))
     };
     let half = top(&mut native);
-    // up past the middle of the two detents: it settles at the second
     drag(&mut native, 195., 432., 150.);
     assert_eq!(rest(&tree, &native), Some(1));
     let let_go = top(&mut native);
@@ -383,9 +337,6 @@ fn under_touch_a_release_settles_at_its_detent(cx: &mut gpui_kit::TestAppContext
     assert_eq!(top(&mut native), settled, "it settled off its detent");
 }
 
-/// Under touch a sheet the view drops while it is still coming up goes
-/// down from where it is, not from its rest; opened again as it goes, it
-/// comes back up from there, not from the bottom.
 #[gpui_kit::test]
 fn under_touch_a_sheet_turns_back_from_where_it_is(cx: &mut gpui_kit::TestAppContext) {
     crate::contract::testing::touch_first_for_test(true);

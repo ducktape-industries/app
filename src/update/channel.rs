@@ -51,38 +51,20 @@ use tracing::{debug, info, warn};
 use super::{Layout, TARGET, stage};
 use crate::runtime::notify::{CenterHandle, HOST};
 
-/// How often the running app asks the channel.
 pub(super) const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// The tags the two update notices stand under, their rows in the centre
-/// too (each banner's under [`HOST`]): a newer staged release's "ready"
-/// replaces the last, "installed" takes "ready" out as it goes up, and a
-/// start with nothing staged takes "ready" out and leaves "installed".
 const READY: &str = "update/ready";
 const INSTALLED: &str = "update/installed";
 
-/// The updater the boot step armed, until the first frame starts it.
 static ARMED: Mutex<Option<Updater>> = Mutex::new(None);
-/// The armed install, for Settings' picks and the restart.
 static HOME: OnceLock<Layout> = OnceLock::new();
-/// The channel the person picked; `None` while the updater is off.
-/// Settings writes it, the check loop follows it at its next turn.
 static CHOSEN: Mutex<Option<Channel>> = Mutex::new(None);
-/// Whether updates download on their own (`<updates>/automatic`). Settings
-/// writes it, the check loop follows it at its next turn.
 static AUTOMATIC: AtomicBool = AtomicBool::new(true);
-/// "Update now" was pressed: the next turn's check takes what is newer.
 static ASKED: AtomicBool = AtomicBool::new(false);
-/// A check runs: Settings says so, and "Check now" queues none behind it.
 static CHECKING: AtomicBool = AtomicBool::new(false);
-/// Wakes the check loop: a pick is checked now, not an hour from now.
 static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
-/// What Settings reads; `None` while the updater is off.
 static READING: Mutex<Option<Reading>> = Mutex::new(None);
-/// How the shell hears the reading moved ([`on_moved`]).
 static MOVED: OnceLock<fn()> = OnceLock::new();
-/// "Restart to update" was pressed: one waiter, however many presses.
 static RESTARTING: AtomicBool = AtomicBool::new(false);
-/// The boot step found another process of this install running its updater.
 static ELSEWHERE: AtomicBool = AtomicBool::new(false);
 static RENDERED: AtomicBool = AtomicBool::new(false);
 
@@ -90,28 +72,21 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The updater's state as Settings reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Reading {
     phase: Phase,
-    /// The channel the last check asked.
     channel: Channel,
     banner: Option<UpdateBanner>,
-    /// A rollback the boot step made, read at this start.
     rolled_back: Option<RolledBack>,
-    /// When the last check that asked the channel ended.
     checked: Option<Checked>,
 }
 
-/// A check that asked the channel, ended: when, by the wall clock, and
-/// whether the channel answered (unreachable or unpublished, it did not).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Checked {
     at: i64,
     answered: bool,
 }
 
-/// The boot step found this image is the installed release.
 pub(super) fn arm(layout: Layout, phase: Phase) {
     let channel = read_channel(&layout);
     let keys = trusted_keys(&layout);
@@ -125,7 +100,6 @@ pub(super) fn arm(layout: Layout, phase: Phase) {
     *lock(&ARMED) = Some(updater);
 }
 
-/// The channel this device follows: `<updates>/channel`, stable when unset.
 pub(super) fn read_channel(layout: &Layout) -> Channel {
     std::fs::read_to_string(layout.channel_path())
         .ok()
@@ -133,7 +107,6 @@ pub(super) fn read_channel(layout: &Layout) -> Channel {
         .unwrap_or_default()
 }
 
-/// What [`read_channel`] reads back.
 pub(super) fn keep_channel(layout: &Layout, channel: Channel) -> Result<(), super::Refusal> {
     super::persist(
         &layout.channel_path(),
@@ -141,13 +114,10 @@ pub(super) fn keep_channel(layout: &Layout, channel: Channel) -> Result<(), supe
     )
 }
 
-/// Whether updates download on their own: `<updates>/automatic`, on unless
-/// it says `off`.
 pub(super) fn read_automatic(layout: &Layout) -> bool {
     !std::fs::read_to_string(layout.automatic_path()).is_ok_and(|said| said.trim() == "off")
 }
 
-/// What [`read_automatic`] reads back.
 pub(super) fn keep_automatic(layout: &Layout, automatic: bool) -> Result<(), super::Refusal> {
     let said = match automatic {
         true => "on\n",
@@ -156,8 +126,6 @@ pub(super) fn keep_automatic(layout: &Layout, automatic: bool) -> Result<(), sup
     super::persist(&layout.automatic_path(), said.as_bytes())
 }
 
-/// The boot step found the install's updater running in another of its
-/// processes: Settings says so.
 pub(super) fn elsewhere() {
     ELSEWHERE.store(true, Ordering::SeqCst);
 }
@@ -171,13 +139,10 @@ pub(super) fn took_over(layout: Layout, phase: Phase) {
     }
 }
 
-/// The shell says how it hears the reading moved.
 pub(crate) fn on_moved(moved: fn()) {
     let _ = MOVED.set(moved);
 }
 
-/// A window's first frame: the healthy signal, then the checks. Only the
-/// first call does anything, and nothing without an armed updater.
 pub(crate) fn rendered() {
     #[cfg(test)]
     RENDERED_HERE.with(|count| count.set(count.get() + 1));
@@ -205,7 +170,6 @@ fn start_armed() {
                     }
                     let automatic = AUTOMATIC.load(Ordering::SeqCst);
                     if !automatic {
-                        // what it took on its own before the switch went off
                         updater.apply(Event::AutomaticOff);
                     }
                     let take = match (ASKED.swap(false, Ordering::SeqCst), automatic) {
@@ -230,10 +194,7 @@ fn start_armed() {
     }
 }
 
-/// Settings' pick: kept in `<updates>/channel`, and checked now. Nothing
-/// while the updater is off.
 pub(crate) fn choose(channel: Channel) {
-    // a test's page: the pick moves what it shows, as `CHOSEN` does
     #[cfg(test)]
     if SHOWN_HERE.with(|here| match here.borrow_mut().as_mut() {
         Some(Updates::Here(shown)) => {
@@ -257,8 +218,6 @@ pub(crate) fn choose(channel: Channel) {
     moved();
 }
 
-/// Settings' "Update automatically": kept in `<updates>/automatic`, and
-/// followed now. Nothing while the updater is off.
 pub(crate) fn automate(automatic: bool) {
     let Some(layout) = HOME.get() else {
         return;
@@ -273,9 +232,6 @@ pub(crate) fn automate(automatic: bool) {
     moved();
 }
 
-/// Settings' "Update now": one check now that downloads, verifies and stages
-/// what is newer, as updating automatically would, for the next start.
-/// Nothing while the updater is off.
 pub(crate) fn update_now() {
     if HOME.get().is_none() {
         return;
@@ -285,9 +241,6 @@ pub(crate) fn update_now() {
     WAKE.notify_one();
 }
 
-/// Settings' "Check now": the channel asked now, taking what the loop's
-/// turn would take, unless a check runs already (none queues behind it).
-/// Nothing while the updater is off.
 pub(crate) fn check_now() {
     if HOME.get().is_none() || CHECKING.swap(true, Ordering::SeqCst) {
         return;
@@ -297,12 +250,6 @@ pub(crate) fn check_now() {
     moved();
 }
 
-/// "Restart to update": this app quits (the caller's part) and the install
-/// path's app starts once this process is gone, so the next start's boot
-/// step flips to the staged release with nothing of this one still running.
-/// The waiter ([`restart_waiter`], this same executable) holds the read end
-/// of a pipe whose write end only this process has: the kernel closes it as
-/// this process exits.
 pub(crate) fn restart() -> Result<(), String> {
     HOME.get().ok_or("the updater is off")?;
     let own = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -318,7 +265,6 @@ pub(crate) fn restart() -> Result<(), String> {
         .spawn();
     match waiter {
         Ok(mut waiter) => {
-            // the write end lives exactly as long as this process
             std::mem::forget(waiter.stdin.take());
             info!(target: TARGET, event = "app_update_restart");
             Ok(())
@@ -331,23 +277,15 @@ pub(crate) fn restart() -> Result<(), String> {
     }
 }
 
-/// The argument that makes this executable the restart's waiter.
 pub(crate) const RESTART_WAITER: &str = "--restart-waiter";
 
-/// The waiter "Restart to update" leaves behind: once the app that started
-/// it is gone and has let go of the install, the install path's app starts.
-/// What happened goes to app.log. Its exit status.
 pub(crate) fn restart_waiter() -> i32 {
     use std::io::Read as _;
-    // the app's end closes as the app exits
     let _ = std::io::stdin().read_to_end(&mut Vec::new());
     let Some(layout) = Layout::host() else {
         warn!(target: TARGET, event = "app_update_restart_failed", reason = "layout_unresolvable");
         return 1;
     };
-    // the next start's boot step must find the install free; the kernel
-    // lets the old process's lock go as it closes its files, in no order
-    // with the pipe
     if let Err(refusal) = super::await_install(&layout) {
         warn!(target: TARGET, event = "app_update_restart_failed", reason = refusal.reason, detail = %refusal.detail);
         return 1;
@@ -370,12 +308,10 @@ pub(crate) fn restart_waiter() -> i32 {
     1
 }
 
-/// An archive takes as long as the line does.
 pub(super) fn client() -> reqwest::Client {
     reqwest::Client::builder().build().expect("the HTTP client")
 }
 
-/// The async work one step asks for; each answers with one [`Event`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Job {
     Fetch,
@@ -383,38 +319,26 @@ pub(super) enum Job {
     Verify(Sha),
 }
 
-/// The machine plus its files, driven by the check loop.
 pub(super) struct Updater {
     layout: Layout,
     phase: Phase,
     keys: TrustedKeys,
-    /// The channel the checks ask.
     channel: Channel,
-    /// The channel's base URL: [`layout::BASE_URL`], or a test's server.
     base: String,
     banner: Option<UpdateBanner>,
     rolled_back: Option<RolledBack>,
-    /// The highest sequence each channel's verified manifest has carried,
-    /// by channel name: `<updates>/seen.json`.
     seen: BTreeMap<String, u64>,
-    /// When the last check that asked the channel ended.
     checked: Option<Checked>,
-    /// The process's own updater ([`arm`]): it, and no test's, is what
-    /// Settings reads and what raises the desktop notice.
     published: bool,
-    /// The centre its notices' rows go into: the app's for the process's
-    /// own ([`arm`]), a test's own otherwise.
     center: CenterHandle,
 }
 
-/// The pinned key, and the successor a verified manifest announced.
 fn trusted_keys(layout: &Layout) -> TrustedKeys {
     let successor = std::fs::read_to_string(layout.successor_path())
         .ok()
         .and_then(|text| {
             let parsed = serde_json::from_str::<SuccessorKey>(&text);
             if let Err(error) = &parsed {
-                // the rotation is forgotten: the pinned key alone is trusted
                 warn!(target: TARGET, event = "app_update_successor_unreadable", %error);
             }
             parsed.ok()
@@ -435,8 +359,6 @@ impl Updater {
     ) -> Self {
         let seen = match std::fs::read_to_string(layout.seen_path()) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
-                // the marks are forgotten: the pin alone guards until the
-                // next manifest sets them again
                 warn!(target: TARGET, event = "app_update_seen_unreadable", %error);
                 BTreeMap::new()
             }),
@@ -462,16 +384,12 @@ impl Updater {
         &self.phase
     }
 
-    /// Its notices' rows into `center`, as the app's next start's updater
-    /// puts them into the one centre the last start's did.
     #[cfg(all(test, target_os = "linux"))]
     pub(super) fn with_center(mut self, center: CenterHandle) -> Self {
         self.center = center;
         self
     }
 
-    /// The first frame: a flip that came up settles, and a rollback the
-    /// boot step made is read (logged, and kept for Settings this session).
     pub(super) fn start(&mut self) {
         let was_pending = matches!(self.phase, Phase::PendingHealthy(_));
         self.apply(Event::Rendered);
@@ -484,10 +402,6 @@ impl Updater {
             self.rolled_back = Some(rolled_back.clone());
             self.apply(Event::DismissRollbackNotice);
         }
-        // a flip, a rollback or a dropped release since "ready" went up
-        // (by this process or the one before, the boot step's drop too):
-        // nothing waits for a restart. A flip says what it installed in its
-        // place; a rollback says nothing new (Settings › Updates does)
         match self.phase {
             _ if settled => self.notice(Said::Installed(&super::version())),
             Phase::Staged(_) => {}
@@ -495,8 +409,6 @@ impl Updater {
         }
     }
 
-    /// Follow `channel` from the next check on: a release the old one
-    /// offered is dropped, and its last word with it.
     pub(super) fn switch(&mut self, channel: Channel) {
         if channel == self.channel {
             return;
@@ -507,15 +419,6 @@ impl Updater {
         self.apply(Event::ChannelChanged);
     }
 
-    /// One check: `Tick`, then every job it leads to, in turn; `take` says
-    /// what it does with a newer release.
-    /// Each job's answer is for the channel the check asked: picked away
-    /// from while it ran (`<updates>/channel` moved), the answer is dropped,
-    /// never staged, and the next turn's [`Updater::switch`] drops what it
-    /// was downloading. Likewise a check updating automatically stops once
-    /// the switch is off, and the next turn's `AutomaticOff` drops the rest.
-    /// Once it ends, when it did is kept for Settings, and whether the
-    /// channel answered, if it was asked.
     pub(super) async fn check(&mut self, client: &reqwest::Client, take: Take) {
         if let Some(answered) = self.jobs(client, take).await {
             self.checked = Some(Checked {
@@ -526,8 +429,6 @@ impl Updater {
         }
     }
 
-    /// [`Updater::check`]'s jobs, in turn: whether the channel answered,
-    /// none when the turn did not ask it.
     async fn jobs(&mut self, client: &reqwest::Client, take: Take) -> Option<bool> {
         let asked = self.channel;
         let mut answered = None;
@@ -555,8 +456,6 @@ impl Updater {
         answered
     }
 
-    /// Feed one event through `step` and perform its local commands.
-    /// Returns the job to run next, if the commands asked for one.
     pub(super) fn apply(&mut self, event: Event) -> Option<Job> {
         let (phase, commands) = step(self.phase.clone(), event);
         let mut job = None;
@@ -587,7 +486,6 @@ impl Updater {
                     self.banner = Some(banner);
                 }
                 Command::Gc { keep } => super::collect(&self.layout, &keep),
-                // the boot step's; no event the running app raises leads here
                 command @ (Command::Qualify(_)
                 | Command::ResolveSwap { .. }
                 | Command::Flip { .. }
@@ -605,9 +503,6 @@ impl Updater {
         job
     }
 
-    /// The desktop notice and its row in the centre follow the staged
-    /// release: "ready" up as one is staged, and out, banner and row,
-    /// whenever none is; after a flip, "installed" in its place.
     fn notice(&self, said: Said) {
         #[cfg(test)]
         NOTICED_HERE.with(|noticed| {
@@ -641,8 +536,6 @@ impl Updater {
         }
     }
 
-    /// "ready" out: its row, and the update notices' banner (one stands
-    /// for the install, `os::post_host`), whichever process raised it.
     fn withdraw(&self) {
         self.center.lock().withdraw_host(READY);
         if self.published {
@@ -652,8 +545,6 @@ impl Updater {
         }
     }
 
-    /// One job; `None` is a check that did not happen (unreachable, nothing
-    /// published), which is not a refusal.
     async fn run(&mut self, client: &reqwest::Client, job: Job, take: Take) -> Option<Event> {
         match job {
             Job::Fetch => {
@@ -673,12 +564,6 @@ impl Updater {
         }
     }
 
-    /// Replay: whoever serves the bucket can serve an older signed manifest
-    /// that is still newer than what runs. The highest sequence each
-    /// channel's verified manifest has carried is kept beside the update
-    /// state, written before anything it offers is downloaded and never
-    /// lowered (a switch, a rollback and an install keep it); a manifest
-    /// below its channel's mark is refused.
     fn against_seen(
         &mut self,
         verified: VerifiedManifest,
@@ -708,7 +593,6 @@ impl Updater {
         }
     }
 
-    /// What Settings would show of this updater.
     #[cfg(test)]
     pub(super) fn shown(&self) -> Shown {
         Shown::of(self.channel, read_automatic(&self.layout), &self.reading())
@@ -728,34 +612,24 @@ fn moved() {
     }
 }
 
-/// What the update notice says ([`Updater::notice`]).
 #[derive(Clone, Copy)]
 enum Said<'a> {
-    /// A release is staged for the next start: its display.
     Ready(&'a str),
-    /// The flip settled: the version that runs now ([`super::version`]).
     Installed(&'a str),
-    /// Nothing is staged (dropped, superseded, rolled back, or none as
-    /// this process starts): "ready" out, banner and row.
     Withdrawn,
 }
 
-/// The update notice's banner, under `tag`: one for the install, the next
-/// replacing it. The device's banners switch decides; a click opens
-/// Settings › Updates.
 fn raise(tag: &str, title: String, body: &str) {
     let notice = crate::runtime::notify::Notice {
         title,
         body: body.into(),
         tag: format!("{HOST}/{tag}"),
-        // the host's own: no program's, and a click opens Settings › Updates
         ..Default::default()
     };
     let raised = crate::os::post_host(&notice);
     debug!(target: TARGET, event = "app_update_notice", raised);
 }
 
-/// `Fetch`: `channel`'s file, its manifest verified.
 pub(super) async fn fetch(
     client: &reqwest::Client,
     base: &str,
@@ -775,7 +649,6 @@ pub(super) async fn fetch(
     )
 }
 
-/// A whole file.
 async fn get_whole(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
     let response = client
         .get(url)
@@ -787,10 +660,6 @@ async fn get_whole(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Strin
     Ok(bytes.to_vec())
 }
 
-/// `Download`: the archive into `releases/<sha>.partial`, resuming from what
-/// is already there, sha256 running over every byte the file holds. `Ok`
-/// means the file is complete and hashes to `sha`; an error is a stable
-/// token, and only bytes proven wrong are deleted.
 pub(super) async fn download(
     client: &reqwest::Client,
     base: &str,
@@ -816,7 +685,6 @@ pub(super) async fn download(
         let _ = std::fs::remove_file(&path);
         return Err("partial_overlong".into());
     }
-    // resume: what is on disk is hashed first, streamed
     let mut hasher = sha2::Sha256::new();
     std::io::copy(&mut file, &mut hasher).map_err(|_| "io")?;
     if have < size {
@@ -831,7 +699,6 @@ pub(super) async fn download(
         let mut response = request.send().await.map_err(|_| "unreachable")?;
         match response.status().as_u16() {
             206 if have > 0 => {}
-            // the whole file: a server that ignored the range starts over
             200 => {
                 file.set_len(0).map_err(|_| "io")?;
                 hasher = sha2::Sha256::new();
@@ -865,12 +732,8 @@ pub(super) async fn download(
     Ok(())
 }
 
-/// `Verify`: the partial into `releases/<sha>/`, checked. A refusal removes
-/// what was extracted; the partial stays unless its bytes were the problem,
-/// so the next offer of the same release costs no second download.
 pub(super) fn verify(layout: &Layout, sha: Sha) -> Event {
     let release_dir = layout.release_dir(sha);
-    // macOS: its executable recorded, for the start that finds it installed
     let staged = stage::stage(&layout.partial_path(sha), sha, &release_dir).and_then(|()| {
         match cfg!(target_os = "macos") {
             true => super::macos::record_executable(layout, sha)
@@ -893,7 +756,6 @@ pub(super) fn verify(layout: &Layout, sha: Sha) -> Event {
     }
 }
 
-/// The channel's last word, in the log.
 pub(super) fn note_banner(banner: &UpdateBanner) {
     match banner {
         UpdateBanner::Ready {
@@ -907,8 +769,6 @@ pub(super) fn note_banner(banner: &UpdateBanner) {
             display: release,
         } => info!(target: TARGET, event = "app_update_available", %offered, %release),
         UpdateBanner::UpToDate => debug!(target: TARGET, event = "app_update_up_to_date"),
-        // the channel's release is older than what runs: after a switch,
-        // the wait until it passes; otherwise a replay, refused all the same
         UpdateBanner::Refused(ManifestRefusal::SequenceNotNewer) => {
             info!(target: TARGET, event = "app_update_behind")
         }
@@ -927,34 +787,21 @@ pub(super) fn note_banner(banner: &UpdateBanner) {
     }
 }
 
-/// Where this process stands, for Settings › Updates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Updates {
-    /// Not an installed copy: nothing here updates.
     Off,
-    /// An installed copy whose updater another of its processes runs.
     Elsewhere,
-    /// This process is the install's updater.
     Here(Shown),
 }
 
-/// What Settings › Updates shows of the updater this process runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Shown {
-    /// The channel the person picked.
     pub(crate) channel: Channel,
-    /// "Update automatically", as the person set it.
     pub(crate) automatic: bool,
-    /// Where the updater is, in words.
     pub(crate) status: String,
-    /// A staged release waits for the next start: "Restart to update".
     pub(crate) restart: bool,
-    /// Updating automatically is off and the channel offers a newer
-    /// release: "Update now".
     pub(crate) update_now: bool,
-    /// When the last check ended, in words, said after the status.
     pub(crate) checked: Option<String>,
-    /// A check runs: "Check now" says so, and waits.
     pub(crate) checking: bool,
 }
 
@@ -965,28 +812,21 @@ thread_local! {
     static NOTICED_HERE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// What this test thread's updaters put up and took down since the last
-/// call, published or not: `ready <display>`, `withdrawn`. Read by the
-/// Linux flow's test only.
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) fn noticed_here() -> Vec<String> {
     NOTICED_HERE.with(|noticed| std::mem::take(&mut *noticed.borrow_mut()))
 }
 
-/// How many times [`rendered`] was called on this test's thread.
 #[cfg(test)]
 pub(crate) fn rendered_here() -> usize {
     RENDERED_HERE.with(std::cell::Cell::get)
 }
 
-/// What Settings › Updates shows on this test's thread, in place of the
-/// process's (off in every test).
 #[cfg(test)]
 pub(crate) fn show_here(updates: Option<Updates>) {
     SHOWN_HERE.with(|here| *here.borrow_mut() = updates);
 }
 
-/// Settings › Updates.
 pub(crate) fn updates() -> Updates {
     #[cfg(test)]
     if let Some(updates) = SHOWN_HERE.with(|here| here.borrow().clone()) {
@@ -1005,7 +845,6 @@ pub(crate) fn updates() -> Updates {
 
 impl Shown {
     fn of(chosen: Channel, automatic: bool, reading: &Reading) -> Shown {
-        // a release taken on its own goes with the switch, at the loop's turn
         let restart = matches!(&reading.phase, Phase::Staged(staged) if staged.refused.is_none() && (automatic || staged.asked));
         let update_now = !automatic
             && matches!(
@@ -1051,15 +890,12 @@ fn status(chosen: Channel, reading: &Reading) -> String {
         _ => {}
     }
     if let Some(rolled_back) = &reading.rolled_back {
-        // the version the person saw offered; one no offer named (a swap
-        // back finished after a crash) goes by its digest
         let failed = match rolled_back.display.is_empty() {
             true => rolled_back.failed.short(),
             false => rolled_back.display.clone(),
         };
         return format!("Went back from {failed}: it never came up");
     }
-    // a pick the loop has not checked yet
     if chosen != reading.channel {
         return format!("Checking {}…", title(chosen));
     }
@@ -1084,10 +920,6 @@ fn status(chosen: Channel, reading: &Reading) -> String {
     }
 }
 
-/// When the last check that asked the channel ended, in words, for the end
-/// of the status: a check that finds nothing new leaves the status as it
-/// was, and this says it ran. None while the status moves on its own (a
-/// download, a pick the loop has not checked yet).
 fn last_check(chosen: Channel, reading: &Reading) -> Option<String> {
     if matches!(reading.phase, Phase::Downloading(_)) || chosen != reading.channel {
         return None;
@@ -1099,7 +931,6 @@ fn last_check(chosen: Channel, reading: &Reading) -> Option<String> {
     })
 }
 
-/// `wall` as this machine's clock reads it: `14:05`.
 pub(super) fn clock(wall: i64) -> String {
     let local = (wall + crate::runtime::local_offset(wall)).rem_euclid(86_400);
     format!("{:02}:{:02}", local / 3_600, local / 60 % 60)

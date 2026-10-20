@@ -37,14 +37,11 @@ impl StatusDot {
 impl Render for StatusDot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.dot", 1);
-        // nothing until the bar has laid its well out (the first frame)
         let Some(slot) = *self.slot.read(cx).get() else {
             return div();
         };
         let session = self.session.read(cx).get();
         let prefs = self.prefs.read(cx).get();
-        // the breath's colour follows the bar's word: switching or in sync
-        // breathe green, not answering breathes red
         let ok = session.connecting || !session.reconnecting;
         div()
             .absolute()

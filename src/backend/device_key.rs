@@ -34,52 +34,27 @@ use zeroize::Zeroizing;
 
 const SERVICE: &str = "dev.ducktape.app";
 
-/// What the file keychain holds once its key moved into the data protection
-/// keychain: not 32 bytes, so never a key. A build from before reads it as
-/// a damaged key, this one as a key it can't open; neither makes one.
 const MOVED: &[u8] = b"moved to the data protection keychain";
 
-// The Security framework's answers (`OSStatus`) the order below reads.
-/// `errSecItemNotFound`: nothing here.
 const NOT_FOUND: i32 = -25300;
-/// `errSecDuplicateItem`: something is here already.
 const DUPLICATE: i32 = -25299;
-/// `errSecMissingEntitlement`: this build may not use the data protection
-/// keychain.
 const NOT_ENTITLED: i32 = -34018;
-/// `errSecUserCanceled`: Touch ID or the password sheet was cancelled.
 const CANCELLED: i32 = -128;
-/// `errSecAuthFailed`: Touch ID or the password did not match.
 const AUTH_FAILED: i32 = -25293;
-/// `errSecInteractionNotAllowed`: the item is here but would have to ask,
-/// and may not: this Mac is locked, or the query said never to ask.
 const LOCKED: i32 = -25308;
 
 fn file_only() -> bool {
     cfg!(test) || std::env::var("DUCKTAPE_DEVICE_KEY_STORE").is_ok_and(|store| store == "file")
 }
 
-/// The data protection keychain's item for one key (macOS; a fake in the
-/// tests), answering in the Security framework's own codes.
 trait Keychain {
-    /// The seed kept here. Asks for Touch ID.
     fn copy(&self) -> Result<Zeroizing<Vec<u8>>, i32>;
-    /// Whether an item is here, never asking: `NOT_FOUND` when not,
-    /// `LOCKED` when it is but reading it would ask.
     fn find(&self) -> Result<(), i32>;
-    /// Keeps `seed` here only where nothing is (`DUPLICATE` otherwise),
-    /// without asking.
     fn add(&self, seed: &[u8]) -> Result<(), i32>;
 }
 
-/// The data protection keychain (macOS) and the `keyring` crate's entry
-/// (the file keychain there); `None` when the file is picked.
 type Stores = Option<(Option<Box<dyn Keychain>>, keyring::Entry)>;
 
-/// The OS stores for `keyring`'s key; none when the file is picked
-/// ([`file_only`]). Both are named by the keyring (a network, or a network
-/// and its founding when two share a name), under this home: two homes on
-/// one account keep two keys.
 fn stores(keyring: &str) -> Result<Stores, String> {
     if file_only() {
         return Ok(None);
@@ -94,15 +69,12 @@ fn stores(keyring: &str) -> Result<Stores, String> {
     Ok(Some((keychain, entry)))
 }
 
-/// [`Stores`] as the order below takes them.
 fn split(stores: &Stores) -> (Option<&dyn Keychain>, Option<&keyring::Entry>) {
     stores.as_ref().map_or((None, None), |(keychain, entry)| {
         (keychain.as_deref(), Some(entry))
     })
 }
 
-/// What the OS store keeps under `entry`: `None` only when it answers that
-/// it keeps nothing. Any other answer is a refusal, never an empty store.
 fn kept(entry: &keyring::Entry) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     match entry.get_secret() {
         Ok(seed) => Ok(Some(Zeroizing::new(seed))),
@@ -111,11 +83,6 @@ fn kept(entry: &keyring::Entry) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     }
 }
 
-/// The key screen's sentence for a store that answered with an error: what
-/// to do about it. The store's own words go to the log. On Linux a store
-/// that refuses may be no keyring at all (none made yet, no daemon), whose
-/// way out is the file store; two keys under one name is not that case,
-/// and a file there would only make a third.
 fn refused(error: keyring::Error) -> String {
     tracing::info!(target: "ducktape::keys", %error, "OS key store refused");
     let no_keyring = match cfg!(target_os = "linux") {
@@ -137,8 +104,6 @@ fn refused(error: keyring::Error) -> String {
     }
 }
 
-/// The key screen's sentence for the data protection keychain's refusal;
-/// its code goes to the log.
 fn keychain_refused(status: i32) -> String {
     tracing::info!(target: "ducktape::keys", status, "data protection keychain refused");
     match status {
@@ -158,10 +123,6 @@ fn decode(seed: &[u8]) -> Result<ed25519::PrivateKey, String> {
     ed25519::PrivateKey::decode(seed).map_err(|_| "this device's key is damaged".to_string())
 }
 
-/// This device's key for `keyring`: opened, or made the first time the
-/// device meets the network. `None` when nothing keeps one but `legacy`, a
-/// password-locked key from before, is here: its password moves it into
-/// the OS ([`save`]). A store that refuses is the error, never "no key".
 pub(crate) fn open(keyring: &str, legacy: bool) -> Result<Option<ed25519::PrivateKey>, String> {
     let stores = stores(keyring)?;
     let (keychain, entry) = split(&stores);
@@ -174,9 +135,6 @@ pub(crate) fn open_kept(keyring: &str) -> Result<Option<ed25519::PrivateKey>, St
     open_in(keychain, entry, &file(keyring)?, true)
 }
 
-/// The order: the data protection keychain's key (Touch ID); else the one
-/// the file keychain or the file keeps, moved into it once; else, unless a
-/// password-locked key waits, a new one kept there.
 fn open_in(
     keychain: Option<&dyn Keychain>,
     entry: Option<&keyring::Entry>,
@@ -187,8 +145,6 @@ fn open_in(
         Some(keychain) => match keychain.copy() {
             Ok(seed) => return decode(&seed).map(Some),
             Err(NOT_FOUND) => Some(keychain),
-            // a build without the keychain entitlement (ad-hoc, local,
-            // unbundled): its keys stay in the file keychain
             Err(NOT_ENTITLED) => None,
             Err(status) => return Err(keychain_refused(status)),
         },
@@ -204,11 +160,6 @@ fn open_in(
     }
 }
 
-/// Moves `key`, kept the old way, into the data protection keychain, then
-/// overwrites the file keychain's item with [`MOVED`]: only once the key is
-/// kept there, so a move that fails leaves the old item as it was. The key
-/// handed back is the one the keychain keeps: another instance's, when it
-/// moved the same key first.
 fn move_in(
     keychain: &dyn Keychain,
     entry: Option<&keyring::Entry>,
@@ -239,10 +190,6 @@ fn move_in(
     Ok(key)
 }
 
-/// Keeps `key` in the data protection keychain, only where nothing is:
-/// `false` when this build may not use it. A key already there is fine
-/// when it is this one, the way the file keychain's is; telling which
-/// reads it, so asks for Touch ID, which only a race comes to.
 fn add(keychain: &dyn Keychain, key: &ed25519::PrivateKey) -> Result<bool, String> {
     match keychain.add(&Zeroizing::new(key.encode().to_vec())) {
         Ok(()) => Ok(true),
@@ -255,9 +202,6 @@ fn add(keychain: &dyn Keychain, key: &ed25519::PrivateKey) -> Result<bool, Strin
     }
 }
 
-/// The key kept in the OS store, else (when the store answers that it
-/// holds nothing) in the file. [`MOVED`] there is a key behind Touch ID
-/// this build can't open: a refusal, never "nothing here".
 fn load_in(
     entry: Option<&keyring::Entry>,
     file: &Path,
@@ -281,9 +225,6 @@ fn load_file(path: &Path) -> Result<Option<ed25519::PrivateKey>, String> {
     }
 }
 
-/// Keeps `key` as this device's key for `keyring`, in the OS store (the
-/// file when it is picked), and only where nothing is kept yet: another
-/// key already there stays, and a store that refuses is the error.
 pub(crate) fn save(keyring: &str, key: &ed25519::PrivateKey) -> Result<(), String> {
     let stores = stores(keyring)?;
     let (keychain, entry) = split(&stores);
@@ -320,8 +261,6 @@ fn save_file(path: &Path, seed: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("this device's key could not be kept: {error}"))
 }
 
-/// A new key, kept before it is handed back. Only [`open_in`] makes one,
-/// when nothing keeps a key; [`save_in`] keeps it only where nothing is.
 fn mint(
     keychain: Option<&dyn Keychain>,
     entry: Option<&keyring::Entry>,
@@ -335,8 +274,6 @@ fn mint(
     Ok(key)
 }
 
-/// Where this device's key for `keyring` is kept, asked without Touch ID
-/// (`OsServices::key_storage`).
 pub(crate) fn level(keyring: &str) -> Result<KeyLevel, String> {
     match stores(keyring)? {
         Some((keychain, _)) => level_in(keychain.as_deref()),
@@ -344,8 +281,6 @@ pub(crate) fn level(keyring: &str) -> Result<KeyLevel, String> {
     }
 }
 
-/// `Keychain` only when the data protection keychain holds the item: a key
-/// not moved yet is still the file keychain's.
 fn level_in(keychain: Option<&dyn Keychain>) -> Result<KeyLevel, String> {
     let Some(keychain) = keychain else {
         return Ok(KeyLevel::OsKeyring);
@@ -357,11 +292,6 @@ fn level_in(keychain: Option<&dyn Keychain>) -> Result<KeyLevel, String> {
     }
 }
 
-/// macOS's data protection keychain, through the Security framework's item
-/// calls. A Mac app reaches it only when its signature carries an
-/// application identifier and this access group, which only an embedded
-/// provisioning profile grants (the release's); any other build is
-/// answered `errSecMissingEntitlement`.
 #[cfg(target_os = "macos")]
 mod keychain {
     use core_foundation::base::{CFType, TCFType as _, kCFAllocatorDefault};
@@ -387,21 +317,14 @@ mod keychain {
     use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching};
     use zeroize::Zeroizing;
 
-    /// The team that signs the release: `<team>.dev.ducktape.app` is the
-    /// access group its `keychain-access-groups` entitlement names.
-    const TEAM: &str = "8464KRUNQG";
-    /// What the Touch ID sheet says the read is for, after "Ducktape is
-    /// trying to".
-    const REASON: &str = "unlock this device's key";
+    const RELEASE_SIGNING_TEAM: &str = "8464KRUNQG";
+    const KEYCHAIN_READ_REASON: &str = "unlock this device's key";
 
-    // `LAContext`, whose `localizedReason` the Touch ID sheet shows
     #[link(name = "LocalAuthentication", kind = "framework")]
     unsafe extern "C" {}
 
     #[link(name = "Security", kind = "framework")]
     unsafe extern "C" {
-        /// `kSecUseAuthenticationUI`'s "fail rather than ask" (not in
-        /// `security-framework-sys`).
         static kSecUseAuthenticationUIFail: CFStringRef;
     }
 
@@ -418,14 +341,11 @@ mod keychain {
             }
         }
 
-        /// This item's query, plus `more`: a password under this service
-        /// and account, in the app's access group of the data protection
-        /// keychain, never synchronized.
         fn query<const N: usize>(
             &self,
             more: [(CFStringRef, CFType); N],
         ) -> CFDictionary<CFString, CFType> {
-            let group = format!("{TEAM}.{}", super::SERVICE);
+            let group = format!("{RELEASE_SIGNING_TEAM}.{}", super::SERVICE);
             // SAFETY: each key and the class are the Security framework's
             // constant strings
             let pairs: Vec<_> = unsafe {
@@ -454,7 +374,6 @@ mod keychain {
             CFDictionary::from_CFType_pairs(&pairs)
         }
 
-        /// `SecItemCopyMatching`'s one answer, or its code.
         fn matching<const N: usize>(
             &self,
             more: [(CFStringRef, CFType); N],
@@ -476,15 +395,16 @@ mod keychain {
             let found = self.matching(unsafe {
                 [
                     (kSecReturnData, CFBoolean::true_value().into_CFType()),
-                    (kSecUseAuthenticationContext, reason()),
+                    (
+                        kSecUseAuthenticationContext,
+                        touch_id_context_with_read_reason(),
+                    ),
                 ]
             })?;
             let seed = found.downcast_into::<CFData>().ok_or(errSecParam)?;
             Ok(Zeroizing::new(seed.bytes().to_vec()))
         }
 
-        /// Attributes only, and told never to ask: an item that would is
-        /// `errSecInteractionNotAllowed`, which is still "here".
         fn find(&self) -> Result<(), i32> {
             // SAFETY: the Security framework's constant keys and value
             self.matching(unsafe {
@@ -535,11 +455,10 @@ mod keychain {
         }
     }
 
-    /// An authentication context whose Touch ID sheet gives [`REASON`].
-    fn reason() -> CFType {
+    fn touch_id_context_with_read_reason() -> CFType {
         // SAFETY: `LAContext` is linked above; `new` and the setter are its own
         let context: Retained<AnyObject> = unsafe { msg_send_id![class!(LAContext), new] };
-        let reason = NSString::from_str(REASON);
+        let reason = NSString::from_str(KEYCHAIN_READ_REASON);
         let () = unsafe { msg_send![&*context, setLocalizedReason: &*reason] };
         // SAFETY: an Objective-C object is a CF type; CF retains it here
         unsafe { CFType::wrap_under_get_rule(Retained::as_ptr(&context).cast()) }
@@ -569,7 +488,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// An OS store entry holding `held`, its next call refused with `error`.
     fn store(held: Option<&ed25519::PrivateKey>, error: Option<keyring::Error>) -> keyring::Entry {
         let mock = keyring::mock::MockCredential::default();
         mock.inner.lock().unwrap().get_mut().secret = held.map(|key| key.encode().to_vec());
@@ -588,12 +506,6 @@ mod tests {
         text.into()
     }
 
-    /// A locked keyring, a dismissed or denied prompt, two entries: the
-    /// store's key stays, nothing is made, nothing goes to a file, and the
-    /// key screen says what to do: on Linux, where a refusal may be no
-    /// keyring at all, that includes the file store (not for two entries,
-    /// where a file would only make a third key). The store answers the
-    /// next call (the prompt allowed the second time), as in the audit's R3.
     #[test]
     fn a_store_that_refuses_never_mints_and_never_writes() {
         let dir = tempfile::tempdir().unwrap();
@@ -624,8 +536,6 @@ mod tests {
         }
     }
 
-    /// First contact: the store answers that it holds nothing, a key is made
-    /// once and kept there, and the next open is that key.
     #[test]
     fn a_store_that_holds_nothing_gets_one_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -643,8 +553,6 @@ mod tests {
         assert!(!file.exists());
     }
 
-    /// A key is kept only where nothing is: the move of a password-locked
-    /// key never replaces the key the store or the file already holds.
     #[test]
     fn a_key_is_never_kept_over_another() {
         let dir = tempfile::tempdir().unwrap();
@@ -664,9 +572,6 @@ mod tests {
         assert!(save_in(None, None, &file, &other).is_err());
         assert!(save_in(None, Some(&store(None, None)), &file, &other).is_err());
         assert_eq!(std::fs::read(&file).unwrap(), account.encode().as_ref());
-        // the data protection keychain the same way: the file keychain's key
-        // is asked first, and the keychain's own is kept again but never
-        // replaced
         let nothing = dir.path().join("nothing.key");
         let keychain = Fake::default();
         assert!(save_in(Some(&keychain), Some(&entry), &nothing, &other).is_err());
@@ -678,10 +583,6 @@ mod tests {
         assert!(held(&empty).is_none());
     }
 
-    /// A data protection keychain holding `held`: the next read answers
-    /// `read` when set, every add answers `add` when set; else it keeps a
-    /// seed only where none is, as the real one does. `asked` counts reads
-    /// and adds.
     #[derive(Default)]
     struct Fake {
         held: std::cell::RefCell<Option<Vec<u8>>>,
@@ -728,8 +629,6 @@ mod tests {
         }
     }
 
-    /// The data protection keychain's key is the key: read first, over what
-    /// the file keychain holds, and nothing is written anywhere.
     #[test]
     fn a_found_key_is_read_and_nothing_is_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -746,9 +645,6 @@ mod tests {
         assert!(!file.exists());
     }
 
-    /// The file keychain's key from an earlier build moves into the data
-    /// protection keychain, the same key, and only then is the file
-    /// keychain's item overwritten with `MOVED`.
     #[test]
     fn a_file_keychain_key_moves_once_and_stays_the_same() {
         let dir = tempfile::tempdir().unwrap();
@@ -768,9 +664,6 @@ mod tests {
         assert_eq!(again.public_key(), account.public_key());
     }
 
-    /// A move the data protection keychain refuses (here a locked Mac) is
-    /// the key screen's sentence: the file keychain's key stays where it
-    /// was, and the sentence says so; nothing is made.
     #[test]
     fn a_failed_move_leaves_the_file_keychain_key_and_mints_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -789,9 +682,6 @@ mod tests {
         assert!(!file.exists());
     }
 
-    /// A build the data protection keychain refuses (no entitlement: an
-    /// ad-hoc, local or unbundled build, at the read or only at the add)
-    /// opens, makes and keeps its key in the file keychain, as before.
     #[test]
     fn a_build_without_the_entitlement_uses_the_file_keychain() {
         let dir = tempfile::tempdir().unwrap();
@@ -839,9 +729,6 @@ mod tests {
         assert!(!file.exists());
     }
 
-    /// Touch ID cancelled or not matched, or this Mac locked: the key
-    /// screen's sentence, and nothing is made or written over the key the
-    /// keychain holds.
     #[test]
     fn touch_id_refused_never_mints_and_never_writes() {
         let dir = tempfile::tempdir().unwrap();
@@ -869,9 +756,6 @@ mod tests {
         }
     }
 
-    /// Nothing anywhere: a key is made once, kept in the data protection
-    /// keychain alone, and the next open is that key; a password-locked key
-    /// waiting makes none, and a key handed over later is not kept over it.
     #[test]
     fn nothing_anywhere_mints_once_into_the_keychain() {
         let dir = tempfile::tempdir().unwrap();
@@ -902,9 +786,6 @@ mod tests {
         assert!(!file.exists());
     }
 
-    /// Two instances moving the same key at once: the one whose add finds
-    /// the other's item reads that key instead of refusing, and leaves the
-    /// file keychain to the one that moved it.
     #[test]
     fn a_move_that_races_reads_the_moved_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -923,10 +804,6 @@ mod tests {
         assert!(!file.exists());
     }
 
-    /// After a move the file keychain holds `MOVED`, never a key: a build
-    /// that can't reach the data protection keychain refuses to open or
-    /// keep one there and makes nothing, and a build from before (its
-    /// `decode`) reads a damaged key.
     #[test]
     fn a_moved_key_is_never_replaced_by_a_build_that_cannot_open_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -948,9 +825,6 @@ mod tests {
         assert!(!file.exists());
     }
 
-    /// Key storage names the data protection keychain only once the key is
-    /// there (an item that would ask to be read is there too), else the
-    /// file keychain, where an unmoved key still is.
     #[test]
     fn key_storage_names_the_keychain_only_once_the_key_is_there() {
         let account = decode(&[3u8; 32]).unwrap();
@@ -970,12 +844,6 @@ mod tests {
         assert_eq!(level_in(None), Ok(KeyLevel::OsKeyring));
     }
 
-    /// The real keychains, under a test service: a test binary carries no
-    /// keychain entitlement, so the data protection keychain refuses it and
-    /// its key goes to the file keychain, as an ad-hoc build's does. It
-    /// writes this Mac's login keychain (and deletes what it wrote), so it
-    /// runs by hand: `cargo test -p ducktape-app --bin ducktape-app
-    /// device_key -- --ignored`.
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "writes this Mac's login keychain"]
@@ -1003,7 +871,6 @@ mod tests {
 
     #[test]
     fn an_old_recovery_phrase_is_the_same_key() {
-        // the phrase a password-locked key was minted with names its seed
         let seed = [9u8; 32];
         let words = keystore::userkey::mnemonic_of_seed(&seed);
         let from_words = decode(&keystore::userkey::seed_of_mnemonic(&words).unwrap()).unwrap();

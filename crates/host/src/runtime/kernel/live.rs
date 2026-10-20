@@ -64,11 +64,9 @@ use wire::methods::{
     Publishing, Watching,
 };
 
-/// The live tracks a view publishes: where its `live.send`s go, by track.
 #[derive(Default)]
 pub(in crate::runtime) struct Tracks {
     publications: Vec<Publication>,
-    /// The view's window has said it went live.
     told: bool,
 }
 
@@ -80,29 +78,19 @@ struct Publication {
 }
 
 impl Drop for Publication {
-    /// The view let the publication go: its writer stops.
     fn drop(&mut self) {
         self.outbox.close();
     }
 }
 
-/// What a live request follows, as a reconnect opens it again.
 pub(super) enum LiveFollow {
     Publish(LivePublish),
     Subscribe(LiveTrack),
-    /// A room's list, and the tracks it has up: what goes down before it
-    /// opens again.
-    Tracks {
-        room: String,
-        up: Up,
-    },
+    Tracks { room: String, up: Up },
 }
 
-/// The tracks a room's list has up, kept where the list's task and a
-/// reconnect both reach it.
 type Up = Arc<Mutex<Vec<LiveAnnounce>>>;
 
-/// Every track `up` has up goes down: the items that say so.
 fn downs(up: &Up) -> Vec<Answer> {
     std::mem::take(&mut *lock(up))
         .into_iter()
@@ -122,14 +110,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Tracks {
-    /// The view dropped request `id`: if it was a publication, its sends
-    /// have nowhere to go.
     pub(in crate::runtime) fn cancel(&mut self, id: u64) {
         self.publications.retain(|publication| publication.id != id);
     }
 
-    /// Publications whose task ended (the node ended the track, or refused
-    /// it) are retired: their queue is closed.
     fn retire(&mut self) {
         self.publications
             .retain(|publication| !publication.outbox.is_closed());
@@ -142,9 +126,6 @@ impl Tracks {
     }
 }
 
-/// The app quits (`runtime::quitting`): the connection's live session
-/// closes so the node hears it at once, not at its idle limit, and a quit
-/// opponent's tracks end for the others now.
 pub(in crate::runtime) fn quit() -> impl Future<Output = ()> {
     let held = super::super::connection()
         .lock()
@@ -161,8 +142,6 @@ pub(in crate::runtime) fn quit() -> impl Future<Output = ()> {
     }
 }
 
-/// `room` as the node names it, `<chain>/<program>/<room>`, held to the
-/// node's rule; `Err` says what a room is.
 fn stamp_room(chain: &str, program: &str, room: &str) -> Result<String, String> {
     let namespace = format!("{chain}/{program}/{room}");
     let room_holds = !room.is_empty() && room.chars().all(|c| plain(&c));
@@ -175,10 +154,6 @@ fn stamp_room(chain: &str, program: &str, room: &str) -> Result<String, String> 
     Ok(namespace)
 }
 
-/// `track` on its stamped room, held to the wire's one rule
-/// (`LiveTrack::check`, the sanitizer's) and the node's namespace bound:
-/// the one stamping of a view's own requests and of the tracks the host
-/// runs for its pieces ([`HostLive`]).
 fn stamp(chain: &str, program: &str, track: &LiveTrack) -> Result<Track, String> {
     track.check().map_err(str::to_owned)?;
     let namespace = stamp_room(chain, program, &track.room)?;
@@ -188,8 +163,6 @@ fn stamp(chain: &str, program: &str, track: &LiveTrack) -> Result<Track, String>
     })
 }
 
-/// [`stamp_room`] for the view's request `id`; `None` with the request
-/// refused `malformed_request`.
 fn stamped_room(view: &mut View, id: u64, room: &str) -> Option<String> {
     match stamp_room(&view.connection.chain, view.program, room) {
         Ok(namespace) => Some(namespace),
@@ -200,8 +173,6 @@ fn stamped_room(view: &mut View, id: u64, room: &str) -> Option<String> {
     }
 }
 
-/// [`stamp`] for the view's request `id`; `None` with the request refused
-/// `malformed_request`.
 fn stamped(view: &mut View, id: u64, track: &LiveTrack) -> Option<Track> {
     match stamp(&view.connection.chain, view.program, track) {
         Ok(track) => Some(track),
@@ -212,19 +183,15 @@ fn stamped(view: &mut View, id: u64, track: &LiveTrack) -> Option<Track> {
     }
 }
 
-/// A view's first live request: its window says it shares live data.
 fn went_live(view: &mut View) {
     if std::mem::replace(&mut view.tracks.told, true) {
         return;
     }
     if view.center().lock().went_live(view.program) {
-        // the window's strip redraws with the line
         view.intents.push(Intent::Notified);
     }
 }
 
-/// The session to open a request on, or the request refused: the view's
-/// connection is stale or gone (`connected`).
 fn ready(view: &mut View, id: u64) -> Option<Arc<dyn Session>> {
     went_live(view);
     connected(view, id)?;
@@ -249,7 +216,6 @@ fn live_mode(mode: Mode) -> LiveMode {
     }
 }
 
-/// `live.publish`.
 pub(super) fn publish(view: &mut View, id: u64, payload: &[u8]) {
     let ask = match methods::decode::<LivePublish>(payload) {
         Ok(ask) => ask,
@@ -265,7 +231,6 @@ fn open_publication(view: &mut View, id: u64, session: Arc<dyn Session>, ask: Li
     let Some(track) = stamped(view, id, &ask.track) else {
         return;
     };
-    // one publisher per track in the app: the view knows before the node
     view.tracks.retire();
     if view.tracks.publication(&ask.track).is_some() {
         return view.refuse(
@@ -294,15 +259,11 @@ fn open_publication(view: &mut View, id: u64, session: Arc<dyn Session>, ask: Li
         Follow::Live(LiveFollow::Publish(ask)),
         move |items| async move {
             publishing(session, open, items, key).await;
-            // the task ended: nothing takes the view's sends any more
             objects.close();
         },
     );
 }
 
-/// A publication for as long as the view holds it: published again on each
-/// new session, whose writer takes the queue over (the session's `open`
-/// holds the queue, in the ask).
 async fn publishing(session: Arc<dyn Session>, open: Ask, mut items: Items, key: crate::perf::Key) {
     loop {
         let mut request = match session.open(open.clone()).await {
@@ -331,9 +292,6 @@ async fn publishing(session: Arc<dyn Session>, open: Ask, mut items: Items, key:
     }
 }
 
-/// `live.send`: into the publication's queue; an object over its cap is
-/// refused on the publication, a stream group the queue abandoned is told
-/// on it once.
 pub(super) fn send(view: &mut View, id: u64, payload: &[u8]) {
     let send = match methods::decode::<LiveSend>(payload) {
         Ok(send) => send,
@@ -383,7 +341,6 @@ pub(super) fn send(view: &mut View, id: u64, payload: &[u8]) {
     }
 }
 
-/// `live.subscribe`.
 pub(super) fn subscribe(view: &mut View, id: u64, payload: &[u8]) {
     let ask = match methods::decode::<LiveSubscribe>(payload) {
         Ok(ask) => ask,
@@ -418,8 +375,6 @@ fn open_subscription(
     );
 }
 
-/// A subscription for as long as the view holds it: subscribed again on
-/// each new session, from the group the node holds.
 async fn subscribing(
     session: Arc<dyn Session>,
     track: Track,
@@ -488,7 +443,6 @@ fn live_item(data: Data) -> LiveItem {
     }
 }
 
-/// `live.tracks`.
 pub(super) fn tracks(view: &mut View, id: u64, payload: &[u8]) {
     let room = match methods::decode::<String>(payload) {
         Ok(room) => room,
@@ -513,9 +467,6 @@ fn open_watch(view: &mut View, id: u64, session: Arc<dyn Session>, room: String,
     );
 }
 
-/// A room's track list for as long as the view holds it. On a new session
-/// every track it had up goes down first: the node announces again what is
-/// up, and what went down meanwhile is not left standing.
 async fn watching(session: Arc<dyn Session>, namespace: String, up: Up, mut items: Items) {
     loop {
         let open = Ask::Watch {
@@ -572,10 +523,6 @@ async fn watching(session: Arc<dyn Session>, namespace: String, up: Up, mut item
     }
 }
 
-/// A connect inside the network: the request opened again on the new
-/// connection's session, as it was asked (a subscription from the group the
-/// node holds; a room's list after every track it had up went down, the
-/// same sweep a lost session makes).
 pub(super) fn reopen(view: &mut View, id: u64, follows: LiveFollow) {
     let Some(session) = view.connection.live.clone() else {
         return view.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
@@ -595,18 +542,8 @@ pub(super) fn reopen(view: &mut View, id: u64, follows: LiveFollow) {
     }
 }
 
-// ---------- the tracks the host runs for a view's pieces ----------
-
-/// How long a host-run track waits before it asks again after a refusal
-/// that is not a wait for the node's announce (no session, the node's
-/// refusal of the ask).
 const HOLD: Duration = Duration::from_secs(2);
-/// How long a publication refused `duplicate_track` waits before it asks
-/// again: the piece that held the track before is on its way out (its
-/// thread sees its stop within a frame or two).
 const REOPEN: Duration = Duration::from_millis(100);
-/// Objects a host-consumed subscription holds for the thread that decodes
-/// them: the session's own backlog, once more.
 const CONSUMED_BACKLOG: usize = 64;
 
 /// The live session a piece the host runs for a view reaches
@@ -621,7 +558,6 @@ const CONSUMED_BACKLOG: usize = 64;
 #[derive(Clone)]
 pub struct HostLive {
     program: &'static str,
-    /// A test's own session and chain, in place of the app's connection.
     fixed: Option<(Arc<dyn Session>, String)>,
 }
 
@@ -640,8 +576,6 @@ pub struct HostPublication {
 }
 
 impl HostPublication {
-    /// One object onto the track: the publication's queue, with its mode's
-    /// rule at the cap ([`Outbox::push`]).
     #[cfg_attr(not(feature = "call"), allow(dead_code))]
     pub(crate) fn push(&self, object: Object) -> Pushed {
         self.outbox.push(object)
@@ -668,7 +602,6 @@ pub struct HostSubscription {
     task: tokio::task::JoinHandle<()>,
 }
 
-/// One item of a host-consumed subscription.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Subscribed {
     Heard(TrackHeard),
@@ -676,8 +609,6 @@ pub(crate) enum Subscribed {
 }
 
 impl HostSubscription {
-    /// The next item, waited for on the calling thread (the decoder's);
-    /// `None` once the piece let the track go.
     #[cfg_attr(not(feature = "call"), allow(dead_code))]
     pub(crate) fn recv(&mut self) -> Option<Subscribed> {
         self.items.blocking_recv()
@@ -705,8 +636,6 @@ impl HostLive {
         }
     }
 
-    /// The tracks of `program`'s pieces on `session`, chain `chain`: a
-    /// test's.
     #[cfg(test)]
     pub(crate) fn on(session: Arc<dyn Session>, chain: &str, program: &'static str) -> Self {
         Self {
@@ -715,7 +644,6 @@ impl HostLive {
         }
     }
 
-    /// The session and chain to open on now.
     fn current(&self) -> Option<(Arc<dyn Session>, String)> {
         if let Some(fixed) = &self.fixed {
             return Some(fixed.clone());
@@ -762,7 +690,6 @@ impl HostLive {
             };
             let stamped = match stamp(&chain, self.program, &track) {
                 Ok(stamped) => stamped,
-                // a name that is no name never becomes one
                 Err(_) => return drop(tell.send(ended(refusal::MALFORMED_REQUEST))),
             };
             let open = Ask::Publish {
@@ -773,7 +700,6 @@ impl HostLive {
             };
             let mut request = match session.open(open).await {
                 Ok(request) => request,
-                // the piece's last publication is still closing
                 Err(refusal) if refusal.code == refusal::DUPLICATE_TRACK => {
                     tokio::time::sleep(REOPEN).await;
                     continue;
@@ -804,8 +730,6 @@ impl HostLive {
                     return;
                 }
             }
-            // the session went: told (the piece starts over, with a
-            // keyframe), and opened again on the one the app has now
             if !closed && tell.send(ended(refusal::NOT_CONNECTED)).is_err() {
                 return;
             }
@@ -852,9 +776,6 @@ impl HostLive {
             };
             let refused = match session.open(open).await {
                 Ok(mut request) => {
-                    // the host reads on its own thread, paced by the
-                    // speaker: a datagram burst is queued for it, not
-                    // thinned to the newest as for a view
                     request.latest.queue(CONSUMED_BACKLOG);
                     loop {
                         let item = tokio::select! {
@@ -864,8 +785,6 @@ impl HostLive {
                                 Some(Heard::Waiting) => tell(TrackHeard::Waiting),
                                 Some(Heard::Closed(refusal)) => break Some(refusal),
                                 Some(_) => continue,
-                                // the session went: told, and opened again on
-                                // the one the app has now
                                 None => break Some(wire::Error::new(refusal::NOT_CONNECTED, "the session went")),
                             },
                             Some(data) = request.data.recv() => Subscribed::Data(data),
@@ -884,13 +803,10 @@ impl HostLive {
             if give.send(ended(&refusal.code)).await.is_err() {
                 return;
             }
-            // the track is gone until the node announces it again
             match refusal.code.as_str() {
                 refusal::PUBLISHER_GONE | refusal::TRACK_ENDED | refusal::UNKNOWN_TRACK => {
                     announced(&session, &stamped).await;
                 }
-                // the session went: opened again at once on the one the
-                // app has now
                 refusal::NOT_CONNECTED => {}
                 _ => tokio::time::sleep(HOLD).await,
             }
@@ -898,8 +814,6 @@ impl HostLive {
     }
 }
 
-/// Waits for the node to announce `track` up in its room: the room
-/// watched until it does, or until the watch ends (then [`HOLD`]).
 async fn announced(session: &Arc<dyn Session>, track: &Track) {
     let open = Ask::Watch {
         namespace: track.namespace.clone(),

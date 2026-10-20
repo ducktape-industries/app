@@ -69,7 +69,6 @@ pub enum Curve {
     EaseInOut,
 }
 
-/// [`Curve::Spring`]'s ω₀, per second.
 const SPRING_OMEGA: f32 = 18.257_418;
 
 impl Curve {
@@ -96,16 +95,14 @@ impl Curve {
                     1. - (-x).exp() * (1. + (SPRING_OMEGA - speed) * seconds)
                 };
                 let seconds = duration.as_secs_f32();
-                // scaled so the end is exactly 1: the last frame jumps no
-                // fraction of a point
                 (settle(t * seconds) / settle(seconds)).min(1.)
             }
             Curve::Emphasized => {
                 let (a, b) = EMPHASIZED;
                 if t < a[3].0 {
-                    bezier(a, t)
+                    bezier_height_at_x(a, t)
                 } else {
-                    bezier(b, t)
+                    bezier_height_at_x(b, t)
                 }
             }
             Curve::ExpOut => 1. - 2f32.powf(-10. * t),
@@ -122,16 +119,13 @@ impl Curve {
     }
 }
 
-/// `fast_out_extra_slow_in`'s two cubic segments, each from its start
-/// point through its two controls to its end.
 type Segment = [(f32, f32); 4];
 const EMPHASIZED: (Segment, Segment) = (
     [(0., 0.), (0.05, 0.), (0.133_333, 0.06), (0.166_666, 0.4)],
     [(0.166_666, 0.4), (0.208_333, 0.82), (0.25, 1.), (1., 1.)],
 );
 
-/// The height of `segment` where its x is `x` (its x rises along it).
-fn bezier(segment: Segment, x: f32) -> f32 {
+fn bezier_height_at_x(segment: Segment, x: f32) -> f32 {
     let at = |s: f32, axis: fn(&(f32, f32)) -> f32| {
         let [p0, p1, p2, p3] = segment.map(|point| axis(&point));
         let r = 1. - s;
@@ -334,7 +328,6 @@ impl Slide {
                 false => faded,
             }
         });
-        // how far the top screen is from its place over the stack
         let out = match pop {
             true => progress,
             false => 1. - progress,
@@ -348,7 +341,6 @@ impl Slide {
     }
 }
 
-/// Reduce Motion's: nothing moves; the top screen fades.
 const CROSS_FADE: Slide = Slide {
     over: 0.,
     under: 0.,
@@ -423,7 +415,6 @@ impl Tween {
         (now.saturating_duration_since(self.started).as_secs_f32() / total).clamp(0., 1.)
     }
 
-    /// How far along its way it is by `now`, 0 to 1: 1 once it has landed.
     fn eased(&self, now: Instant) -> f32 {
         let way = self.to - self.from;
         let speed = match way == 0. {
@@ -556,7 +547,6 @@ mod tests {
         Curve::EaseInOut,
     ];
 
-    /// Every curve starts at 0, ends at exactly 1, and never goes back.
     #[test]
     fn every_curve_runs_from_zero_to_exactly_one_and_never_back() {
         for curve in CURVES {
@@ -575,9 +565,6 @@ mod tests {
         }
     }
 
-    /// UIKit's spring is most of the way there at a third of its time, as
-    /// the sheet and the push look on iOS; Android's path is too (its knee
-    /// at a sixth).
     #[test]
     fn the_springs_and_the_path_front_load_their_travel() {
         let spring = Curve::Spring.at(0.3, ms(500));
@@ -586,9 +573,6 @@ mod tests {
         assert!((path - 0.4).abs() < 1e-3, "{path}");
     }
 
-    /// A push starts with the new screen off to the right and the old one
-    /// in place, and ends with the new one in place and the old one 30 %
-    /// left under the dim; a pop is the same move backwards.
     #[test]
     fn a_push_and_a_pop_mirror_each_other() {
         for Idiom { pushed, popped, .. } in [IOS, ANDROID] {
@@ -610,8 +594,6 @@ mod tests {
         assert_eq!((gone.top, gone.under, gone.opacity), (0., 0., 0.));
     }
 
-    /// A tween is exactly at its end once its time is up, and at its start
-    /// at the start.
     #[test]
     fn a_tween_lands_exactly_on_its_end() {
         let started = Instant::now();
@@ -630,9 +612,6 @@ mod tests {
         assert_eq!(tween.at(end + ms(1)), 1.);
     }
 
-    /// A pop let go of at a finger's speed starts at that speed, not still,
-    /// and still lands exactly on its end without passing it; let go still,
-    /// it is the spring it always was.
     #[test]
     fn a_thrown_spring_starts_at_the_fingers_speed() {
         let started = Instant::now();
@@ -661,8 +640,6 @@ mod tests {
             }
             assert_eq!(tween.at(started + IOS.push.duration), 1.);
         }
-        // thrown faster than the spring settles, it lands early, and is
-        // done there
         let fast = thrown(20.);
         let landed = (0..500).find(|&millis| fast.done(started + ms(millis)));
         assert!(

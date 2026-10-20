@@ -101,16 +101,10 @@ pub struct Session {
     chain: Entity<Chain>,
     account: Entity<Account>,
     screen: Entity<Slice<Screen>>,
-    /// The notification centre: told the chain, which its links name.
     center: notify::CenterHandle,
-    /// What the network in hand lists, which the rail reads: emptied as
-    /// the network is left.
     roster: Roster,
-    /// The connected node's status, asked by the poll.
     source: Option<StatusSource>,
-    /// The connect attempt in flight; dropping it drops the request.
     connect: Option<Task<()>>,
-    /// The status poll, while connected.
     poll: Option<Task<()>>,
 }
 
@@ -155,7 +149,6 @@ impl Session {
         &self.state
     }
 
-    /// A field-wise edit, compared as a whole; notifies when it moved.
     fn edit(&mut self, edit: impl FnOnce(&mut SessionState), cx: &mut Context<Self>) -> bool {
         super::slice::edit_compared(&mut self.state, edit, cx)
     }
@@ -227,13 +220,11 @@ impl Session {
             cx,
         );
         let work = source();
-        // a new attempt drops the last one: its answer never lands
         self.connect = Some(spawn_on_runtime(cx, work, move |this, answer, cx| {
             this.connect_answered(origin, source, answer, cx)
         }));
     }
 
-    /// The first status answered, or not.
     fn connect_answered(
         &mut self,
         origin: String,
@@ -255,8 +246,6 @@ impl Session {
             Err(error) => return self.connect_failed(origin, error, cx),
         };
         crate::perf::mark("connected");
-        // refused like a node that never answered: a switch keeps the
-        // network in hand
         if status.contract != noded_client::wire::NODE_CONTRACT {
             let error = format!(
                 "this node speaks contract {}; this app speaks {}",
@@ -273,8 +262,6 @@ impl Session {
         let other_chain = keyring.other_chain;
         let chain = crate::runtime::chain_of(&status);
         let network = status.network.clone();
-        // the connection's one client: the views', the roster's and the
-        // sign-in calls'
         let client = backend::rpc_client(origin.clone());
         let left = self.account.update(cx, |account, cx| {
             account.take_up(keyring, client.clone(), network.clone(), cx)
@@ -298,13 +285,9 @@ impl Session {
             cx,
         );
         self.apply_status(&status, cx);
-        // left before the next network's programs are read
         if left {
             self.left_network(cx);
         }
-        // the centre takes the chain up (from its followed set, if one
-        // runs) only now, with the connect that stops the last chain's
-        // notifiers: one still posting meanwhile is refused (`notify`)
         crate::runtime::take_up(&self.center, &chain);
         crate::runtime::connected(&client, &network, &chain);
         cx.emit(SessionEvent::Connected);
@@ -316,11 +299,7 @@ impl Session {
         self.start_poll(STATUS_EVERY, cx);
     }
 
-    /// The node at `origin` was not reached. A switch that did not land:
-    /// the network in hand stays as it was, and the failure is said over it.
     fn connect_failed(&mut self, origin: String, error: String, cx: &mut Context<Self>) {
-        // named by its host; a node this device reached before by its
-        // network too, the way the Recent list names it
         let host = origin
             .strip_prefix("https://")
             .or_else(|| origin.strip_prefix("http://"))
@@ -370,8 +349,6 @@ impl Session {
         }
     }
 
-    /// The node's answer onto `Chain`: the height, the wall second it
-    /// moved, the second it answered (uncompared), the answer itself.
     fn apply_status(&mut self, status: &backend::NodeStatus, cx: &mut Context<Self>) {
         let height = i64::try_from(status.height).unwrap_or(-1);
         let now = notify::wall();
@@ -393,8 +370,6 @@ impl Session {
         });
     }
 
-    /// The status poll: every `STATUS_EVERY` (the first after `first`), a
-    /// node that hangs as gone as one that refuses.
     fn start_poll(&mut self, first: Duration, cx: &mut Context<Self>) {
         let Some(source) = self.source.clone() else {
             return;
@@ -476,15 +451,10 @@ impl Session {
         });
         self.screen
             .update(cx, |screen, cx| screen.set(Screen::Connect, cx));
-        // no chain in hand: the one left parks its log for its own set
-        // (`runtime::follow`), and its notifiers' last posts are refused
         crate::runtime::take_up(&self.center, "");
         self.left_network(cx);
     }
 
-    /// The network in hand was left: its node is let go (nothing still out
-    /// to it lands), its programs are listed no more, and every entity
-    /// drops what was its (`LeftNetwork`).
     fn left_network(&mut self, cx: &mut Context<Self>) {
         crate::runtime::disconnected();
         crate::runtime::notifier::disconnected();

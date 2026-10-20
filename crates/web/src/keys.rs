@@ -9,10 +9,8 @@ use gpui_kit::{App, KeyBinding, Keystroke};
 
 gpui_kit::actions!(web_page, [Tab, TabPrev]);
 
-/// The page's key context.
 pub(crate) const CONTEXT: &str = "WebPage";
 
-/// Once, when the engine starts.
 pub(crate) fn bind(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", Tab, Some(CONTEXT)),
@@ -20,7 +18,6 @@ pub(crate) fn bind(cx: &mut App) {
     ]);
 }
 
-/// The key the action stands for, as CEF hears it.
 pub(crate) fn tab(back: bool) -> Keystroke {
     Keystroke::parse(if back { "shift-tab" } else { "tab" }).expect("a keystroke")
 }

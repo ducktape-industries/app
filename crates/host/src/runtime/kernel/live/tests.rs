@@ -4,8 +4,6 @@ use crate::runtime::kernel::tests::view;
 use std::sync::mpsc as std_mpsc;
 use wire::methods::{LiveItem, LiveSend, LiveSubscribe};
 
-/// A session the test speaks for: every request it opens, in order, with
-/// the ends the node would hold; the refusals in `refusing` come first.
 struct Fake(
     Mutex<std_mpsc::Sender<(Ask, Ends)>>,
     Mutex<Vec<wire::Error>>,
@@ -22,13 +20,10 @@ impl Session for Fake {
     }
 }
 
-/// A view on a connection to chain `net#1`, its live session a [`Fake`]:
-/// the view, and each request it opens as the fake sees it.
 fn live_guest() -> (View, std_mpsc::Receiver<(Ask, Ends)>) {
     live_guest_refusing(Vec::new())
 }
 
-/// [`live_guest`], its fake refusing the first opens with `refusing`.
 fn live_guest_refusing(refusing: Vec<wire::Error>) -> (View, std_mpsc::Receiver<(Ask, Ends)>) {
     let mut view = view();
     let (opened, opens) = std_mpsc::channel();
@@ -68,8 +63,6 @@ fn opened(opens: &std_mpsc::Receiver<(Ask, Ends)>) -> (Ask, Ends) {
         .expect("the kernel opened a request")
 }
 
-/// The next answer the view's tasks hand it, waited for on the replies'
-/// own signal.
 fn next(view: &View, changes: &mut tokio::sync::watch::Receiver<()>) -> wire::Event {
     loop {
         let mut events = Vec::new();
@@ -111,12 +104,6 @@ fn send(view: &mut View, id: u64, object: u32) {
     ask(view, id, "live.send", methods::encode(&send));
 }
 
-/// The headline of the kernel's side: a publication is stamped
-/// `<chain>/<program>/<room>`, a send before the node took it waits and goes
-/// out once it did, the count reaches the view, an object the node dropped
-/// is an item that does not end the track, the node's refusal ends it, and
-/// a send after that is refused `live_not_published`. No send is answered
-/// otherwise.
 #[test]
 fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
     let (mut view, opens) = live_guest();
@@ -172,7 +159,6 @@ fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
         .unwrap();
     let (_, ended, done) = item::<Publishing>(next(&view, &mut changes));
     assert_eq!((ended, done), (Err(refusal::NOT_GRANTED.into()), true));
-    // the publication's queue closed with its task
     assert!(handle().block_on(objects.take()).is_none());
     send(&mut view, 3, 1);
     assert_eq!(
@@ -181,12 +167,6 @@ fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
     );
 }
 
-/// A stream publication's queue at its capacity: the group is abandoned
-/// whole, never an object. The view hears `Publishing::Cut` once, the
-/// queued rest of the group goes and the writer is told to reset its
-/// stream, later sends of the group are dropped quiet, and a newer group
-/// starts clean. A second `live.publish` of the track is refused
-/// `duplicate_track` by the view's own host.
 #[test]
 fn a_full_stream_queue_cuts_the_group_whole_and_a_newer_one_starts_clean() {
     let (mut view, opens) = live_guest();
@@ -253,8 +233,6 @@ fn refusal_of(view: &mut View, wanted: u64) -> Option<String> {
     })
 }
 
-/// An object over its mode's cap is refused on the publication, which goes
-/// on; a send to a track the view does not publish is refused at once.
 #[test]
 fn a_send_too_large_or_to_no_track_is_refused() {
     let (mut view, opens) = live_guest();
@@ -290,9 +268,6 @@ fn a_send_too_large_or_to_no_track_is_refused() {
     );
 }
 
-/// A subscription hears `Opened` with who publishes, each object and each
-/// group's end, a datagram-mode object through the newest slot, and the
-/// node's end in the view's word.
 #[test]
 fn a_subscription_hears_the_track_and_its_end() {
     let (mut view, opens) = live_guest();
@@ -354,9 +329,6 @@ fn a_subscription_hears_the_track_and_its_end() {
     );
 }
 
-/// A request the node holds for its grant: each kind hears one `Waiting`
-/// item, and goes on when the node answers. A publication's sends wait for
-/// it.
 #[test]
 fn a_request_the_node_holds_hears_it_waits_and_goes_on() {
     let (mut view, opens) = live_guest();
@@ -443,9 +415,6 @@ fn a_request_the_node_holds_hears_it_waits_and_goes_on() {
     );
 }
 
-/// Every word the node can end a request with is a word a view reads: a
-/// view-wire refusal. A code the live wire gains fails this match until it
-/// is given its word.
 #[test]
 fn every_code_the_node_says_is_a_word_a_view_knows() {
     let codes = [
@@ -469,8 +438,6 @@ fn every_code_the_node_says_is_a_word_a_view_knows() {
     }
 }
 
-/// A room's list: the tracks it hears come and go, and a lost session takes
-/// down every track it had up before it opens the list again.
 #[test]
 fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
     let (mut view, opens) = live_guest();
@@ -510,7 +477,6 @@ fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
         item(next(&view, &mut changes)),
         (1, Ok(announce("echo/7", true)), false)
     );
-    // the session is lost: what was up goes down, and the list opens again
     drop(ends);
     assert_eq!(
         item(next(&view, &mut changes)),
@@ -520,9 +486,6 @@ fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
     assert_eq!(again, asked);
 }
 
-/// A connect inside the network: a room's list says every track it had up
-/// went down before it opens again on the new connection's session, as it
-/// does when the session is lost.
 #[test]
 fn a_reconnect_inside_the_network_takes_a_rooms_tracks_down_first() {
     let (mut view, opens) = live_guest();
@@ -573,9 +536,6 @@ fn a_reconnect_inside_the_network_takes_a_rooms_tracks_down_first() {
     assert_eq!(downs, ["echo/7"], "echo/7 went down on the reconnect");
 }
 
-/// A connect inside the network: a live subscription opens again on the
-/// new connection's session, from the group the node holds, and is not
-/// refused.
 #[test]
 fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
     let (mut view, opens) = live_guest();
@@ -609,7 +569,6 @@ fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
     );
 }
 
-/// A room or a track name the node would not take is refused here.
 #[test]
 fn a_room_or_a_name_outside_the_rule_is_malformed() {
     let (mut view, _opens) = live_guest();
@@ -630,8 +589,6 @@ fn a_room_or_a_name_outside_the_rule_is_malformed() {
     }
 }
 
-/// A view's first live request puts the consent line on its window and
-/// asks nothing: the request goes on to the node.
 #[test]
 fn a_first_live_request_puts_the_line_on_the_window() {
     let (mut view, opens) = live_guest();
@@ -651,23 +608,16 @@ fn a_first_live_request_puts_the_line_on_the_window() {
     assert!(matches!(opened(&opens).0, Ask::Watch { .. }));
 }
 
-// ---------- the tracks the host runs for a view's pieces ----------
-
-/// A [`HostLive`] on a fake session for program `huddle` on chain `net#1`:
-/// it, and each request it opens as the fake sees it.
 fn host_live() -> (HostLive, std_mpsc::Receiver<(Ask, Ends)>) {
     host_live_refusing(Vec::new())
 }
 
-/// [`host_live`], its fake refusing the first opens with `refusing`.
 fn host_live_refusing(refusing: Vec<wire::Error>) -> (HostLive, std_mpsc::Receiver<(Ask, Ends)>) {
     let (opened, opens) = std_mpsc::channel();
     let session: Arc<dyn Session> = Arc::new(Fake(Mutex::new(opened), Mutex::new(refusing)));
     (HostLive::on(session, "net#1", "huddle"), opens)
 }
 
-/// A publication refused `duplicate_track` (the piece's last one still
-/// closing) is asked again within a moment, and nothing is told of it.
 #[test]
 fn a_duplicate_track_refusal_is_asked_again_soon_and_not_told() {
     let (live, opens) = host_live_refusing(vec![wire::Error::new(
@@ -687,9 +637,6 @@ fn a_duplicate_track_refusal_is_asked_again_soon_and_not_told() {
     );
 }
 
-/// The session going under a publication is told as `not_connected` (the
-/// piece starts over with a keyframe on the next one), which opens at
-/// once on the session the app has.
 #[test]
 fn a_publication_losing_its_session_is_told_and_opened_again() {
     let (live, opens) = host_live();
@@ -713,8 +660,6 @@ fn a_publication_losing_its_session_is_told_and_opened_again() {
     assert!(matches!(again, Ask::Publish { .. }));
 }
 
-/// The session going under a subscription is told as `not_connected`,
-/// and the track is subscribed again at once on the session the app has.
 #[test]
 fn a_subscription_losing_its_session_is_told_and_opened_again() {
     let (live, opens) = host_live();
@@ -733,9 +678,6 @@ fn a_subscription_losing_its_session_is_told_and_opened_again() {
     assert!(matches!(again, Ask::Subscribe { .. }));
 }
 
-/// A host-run subscription reads datagrams on its own thread: a burst
-/// of them reaches it whole and in order, not thinned to the newest as a
-/// view's slot is.
 #[test]
 fn a_host_subscription_queues_a_datagram_burst() {
     let (live, opens) = host_live();
@@ -776,11 +718,6 @@ fn heard_soon(publication: &mut HostPublication) -> TrackHeard {
     }
 }
 
-/// A host-run publication is stamped as a view's, in the mode and at the
-/// priority the host picks; its objects go into the ask's queue; what the
-/// node says reaches the piece as its track's state (`Published` is `Up`
-/// with no subscribers); the node's refusal ends it, and it is published
-/// again after the hold.
 #[test]
 fn a_host_publication_is_stamped_fed_and_published_again_after_a_refusal() {
     let (live, opens) = host_live();
@@ -833,7 +770,6 @@ fn a_host_publication_is_stamped_fed_and_published_again_after_a_refusal() {
             code: refusal::NOT_GRANTED.into()
         }
     );
-    // published again, on the same queue, after the hold
     let (again, _ends) = opens
         .recv_timeout(HOLD + std::time::Duration::from_secs(3))
         .expect("published again");
@@ -845,10 +781,6 @@ fn a_host_publication_is_stamped_fed_and_published_again_after_a_refusal() {
     );
 }
 
-/// A host-run subscription is stamped as a view's and starts from the
-/// group the node holds; what it hears and its objects come as one
-/// stream; ended by the node for the track unknown, it watches the room
-/// and subscribes again on the node's announce of the track.
 #[test]
 fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
     let (live, opens) = host_live();

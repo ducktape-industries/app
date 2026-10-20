@@ -33,7 +33,6 @@ impl ViewTree {
                 continue;
             };
             let same = self.tooltips.get(&response.request).is_some_and(|held| {
-                // equal ids are equal styles only in one table
                 held.character_index == response.character_index
                     && *held.content == *content
                     && styles.extends(&held.styles)
@@ -66,9 +65,6 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) {
         let Tree { mut root, styles } = tree.into();
-        // Another table, not this one grown: a row a list holds and the
-        // row the new tree brings may name different styles by one id, so
-        // no held row answers for a new one, and each is measured again.
         if !styles.extends(&self.styles) {
             for list in self.variable_lists.values_mut() {
                 list.rows.clear();
@@ -76,7 +72,6 @@ impl ViewTree {
         }
         let mut focusable = HashMap::new();
         let mut view_focus_ids = std::collections::HashSet::new();
-        // every field, with the view's revision this frame carries
         let mut fields = HashMap::new();
         let mut scrolls = std::collections::HashSet::new();
         let mut sideways = std::collections::HashSet::new();
@@ -91,8 +86,6 @@ impl ViewTree {
         walk_authored_paths(&root, None, &mut Vec::new(), &mut |node, path| {
             tooltip_routes.extend(tooltip_route(node));
             super::page_motion::first(&mut page, node, path);
-            // a scrolling container with an id keeps its handle; an id-less
-            // one has no path of its own to keep it at
             if let wire::Node::Container(view_wire::ContainerNode {
                 id: Some(_), style, ..
             }) = node
@@ -167,7 +160,6 @@ impl ViewTree {
                 _ => {}
             }
         });
-        // while the old frame and its scroll offsets are still held
         self.turn_page(page, cx);
         self.images.borrow_mut().next_frame();
         root.for_each_mut(&mut |node| {
@@ -186,8 +178,6 @@ impl ViewTree {
             .retain(|id, _| view_focus_ids.contains(id));
         self.fields.retain(|key, _| fields.contains_key(key));
         for (key, field) in self.fields.iter_mut() {
-            // an ask names its target by the whole authored path, as the
-            // view SDK sends it and `execute_widget_command` reads it
             let queued = asked
                 .iter()
                 .filter(|(target, _)| key == target)
@@ -195,9 +185,6 @@ impl ViewTree {
                 .min();
             field.frame(fields[key], queued);
         }
-        // a sheet the view stopped drawing opens at its first detent again;
-        // under touch, a docked one goes down as it was last drawn, its
-        // scrolls and lists kept where they were until it is gone
         let dropped: Vec<AuthoredPath> = self
             .sheets
             .keys()
@@ -252,7 +239,6 @@ impl ViewTree {
     }
 }
 
-/// The tooltip route a node holds, if it holds one.
 fn tooltip_route(node: &wire::Node) -> Option<u32> {
     match node {
         wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
@@ -269,7 +255,6 @@ fn tooltip_route(node: &wire::Node) -> Option<u32> {
     }
 }
 
-/// Every tooltip route the tree holds: the requests a response may answer.
 fn tooltip_routes(root: &wire::Node) -> std::collections::HashSet<u32> {
     let mut routes = std::collections::HashSet::new();
     let mut pending = vec![root];

@@ -17,12 +17,9 @@ use gpui_kit::{Edges, Window, WindowInsets, px};
 use gpui_mobile::KeyboardType;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-/// The system bars and cutout, in pixels: top, right, bottom, left.
 static SAFE: [AtomicI32; 4] = [const { AtomicI32::new(0) }; 4];
-/// The keyboard's height over the bottom edge, in pixels.
 static IME: AtomicI32 = AtomicI32::new(0);
 
-/// Keeps what the Activity's insets listener read, and tells the host.
 fn set_insets(safe: [i32; 4], ime: i32) {
     for (kept, value) in SAFE.iter().zip(safe) {
         kept.store(value, Ordering::Relaxed);

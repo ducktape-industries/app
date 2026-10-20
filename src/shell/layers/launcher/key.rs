@@ -8,8 +8,6 @@ use super::{LauncherLayer, LauncherScreen, buttons, closing};
 use gpui_kit::*;
 
 impl LauncherLayer {
-    /// SignIn: this device's key, opening, locked, failed, or (from before
-    /// keys moved into the system) behind a password asked once.
     pub(super) fn unlock(&self, window: &mut Window, cx: &App) -> AnyElement {
         let (session, account) = (self.session.read(cx).get(), self.account.read(cx).get());
         let ink = Ink::of(self.prefs.read(cx).get().dark());

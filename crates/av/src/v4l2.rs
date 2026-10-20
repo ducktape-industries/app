@@ -25,12 +25,8 @@ pub(crate) use crate::devices::{
 const YUYV: u32 = u32::from_le_bytes(*b"YUYV");
 const MJPG: u32 = u32::from_le_bytes(*b"MJPG");
 
-/// What `choose` asks a camera for first: a picture this size, this often.
 const WANT: (u32, u32, u32) = (1280, 720, 30);
 
-// ---------- the V4L2 calls (linux/videodev2.h, 64-bit) ----------
-
-// the numbers carry each struct's size; the asserts below hold the structs to it
 const VIDIOC_QUERYCAP: u64 = 0x8068_5600;
 const VIDIOC_S_FMT: u64 = 0xc0d0_5605;
 const VIDIOC_REQBUFS: u64 = 0xc014_5608;
@@ -49,7 +45,6 @@ const MEMORY_MMAP: u32 = 1;
 const BUF_FLAG_ERROR: u32 = 0x40;
 const BUFFERS: u32 = 4;
 
-/// `struct v4l2_capability`
 #[repr(C)]
 struct Capability {
     _driver_card_bus: [u8; 80],
@@ -59,8 +54,6 @@ struct Capability {
     _reserved: [u32; 3],
 }
 
-/// `struct v4l2_format` holding a `struct v4l2_pix_format`: the union
-/// starts at 8 (it holds pointers) and is 200 bytes.
 #[repr(C)]
 struct Format {
     kind: u32,
@@ -74,18 +67,15 @@ struct Format {
     _union: [u8; 152],
 }
 
-/// `struct v4l2_streamparm` holding a `struct v4l2_captureparm`.
 #[repr(C)]
 struct StreamParm {
     kind: u32,
     _capability_mode: [u32; 2],
-    /// `timeperframe`: seconds per frame, as a fraction
     numerator: u32,
     denominator: u32,
     _union: [u32; 46],
 }
 
-/// `struct v4l2_requestbuffers`
 #[repr(C)]
 struct RequestBuffers {
     count: u32,
@@ -94,21 +84,17 @@ struct RequestBuffers {
     _capabilities_flags: [u32; 2],
 }
 
-/// `struct v4l2_buffer`, single-planar, mmap'd.
 #[repr(C)]
 struct Buffer {
     index: u32,
     kind: u32,
     bytesused: u32,
     flags: u32,
-    /// `field`, an alignment hole, `timestamp`, `timecode`, `sequence`
     _between: [u32; 11],
     memory: u32,
-    /// `m.offset`; the union is 8 bytes
     offset: u32,
     _m: u32,
     length: u32,
-    /// `reserved2`, `request_fd`, the end's alignment
     _end: [u32; 3],
 }
 
@@ -117,7 +103,6 @@ const _: () = assert!(size_of::<Format>() == 208);
 const _: () = assert!(size_of::<StreamParm>() == 204);
 const _: () = assert!(size_of::<RequestBuffers>() == 20);
 const _: () = assert!(size_of::<Buffer>() == 88);
-// and the fields read, where the header puts them
 const _: () = assert!(std::mem::offset_of!(Capability, device_caps) == 88);
 const _: () = assert!(std::mem::offset_of!(Format, width) == 8);
 const _: () = assert!(std::mem::offset_of!(Format, bytesperline) == 24);
@@ -131,7 +116,6 @@ fn zeroed<T>() -> T {
     unsafe { std::mem::zeroed() }
 }
 
-/// One ioctl; `Err` is its errno. Interrupted calls are made again.
 fn ioctl<T>(fd: &OwnedFd, request: u64, arg: &mut T) -> Result<(), i32> {
     loop {
         // SAFETY: `request` is one of the numbers above, each made for `T`
@@ -166,8 +150,6 @@ fn open_node(path: &Path) -> Result<OwnedFd, i32> {
     }
 }
 
-/// What an errno says, as a status: `streaming`, the camera was
-/// delivering (a vanished device is gone, not missing).
 pub(crate) fn status(errno: i32, streaming: bool) -> Status {
     match errno {
         libc::EBUSY => Status::Busy,
@@ -178,14 +160,10 @@ pub(crate) fn status(errno: i32, streaming: bool) -> Status {
     }
 }
 
-// ---------- what a person is told, the microphone's permission ----------
-
-/// No system page allows a device for one app here.
 pub(crate) fn settings_page(_: crate::Kind) -> Option<&'static str> {
     None
 }
 
-/// How a person allows a camera or a microphone the system refused.
 pub(crate) fn allow(kind: crate::Kind) -> &'static str {
     match kind {
         crate::Kind::Camera => {
@@ -197,23 +175,14 @@ pub(crate) fn allow(kind: crate::Kind) -> &'static str {
     }
 }
 
-/// Linux asks no app for its microphone: the device's permissions (or a
-/// desktop's sound server) answer as it opens.
 pub(crate) fn microphone_allowed() -> bool {
     true
 }
 
-/// Nor for its camera: the node's permissions answer as it opens. A view
-/// whose manifest declares `camera` is the consent.
 pub(crate) fn camera_allowed() -> bool {
     true
 }
 
-/// What a listed microphone or speaker is, by its card's name, the one
-/// word ALSA has for it: a headset names itself so (a USB headset's card),
-/// and a screen's sound plays through its speakers. Anything else (the
-/// analog jack, which plays through the speakers or headphones as the
-/// jack is used) is `Other`.
 pub(crate) fn audio_kind(device: &Device, input: bool) -> AudioKind {
     let name = device.name.to_lowercase();
     if name.contains("headset") || name.contains("headphone") {
@@ -225,11 +194,6 @@ pub(crate) fn audio_kind(device: &Device, input: bool) -> AudioKind {
     }
 }
 
-// ---------- the cameras ----------
-
-/// One video node as listed: its node (`video0`), its stable id, its
-/// name, the device it hangs off, which way it looks, and what it can do
-/// (an errno when it could not be opened).
 #[derive(Debug)]
 pub(crate) struct Node {
     pub node: String,
@@ -240,16 +204,13 @@ pub(crate) struct Node {
     pub caps: Result<u32, i32>,
 }
 
-/// The cameras the system lists now; the first is the default.
 pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
     Ok(listed(nodes().map_err(|error| error.to_string())?))
 }
 
-/// Every video node sysfs lists, by number, with what it can do.
 fn nodes() -> io::Result<Vec<Node>> {
     let entries = match fs::read_dir("/sys/class/video4linux") {
         Ok(entries) => entries,
-        // no V4L2 driver loaded: no cameras
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
@@ -274,8 +235,6 @@ fn nodes() -> io::Result<Vec<Node>> {
                     _ => cap.device_caps,
                 })
             });
-            // a USB camera's interface hangs off the USB device, which
-            // says whether it is built in
             let removable = parent.as_deref().and_then(|parent| {
                 fs::read_to_string(Path::new(parent).parent()?.join("removable")).ok()
             });
@@ -283,7 +242,7 @@ fn nodes() -> io::Result<Vec<Node>> {
                 node,
                 id,
                 name: read("name").trim().to_owned(),
-                facing: facing(removable.as_deref().unwrap_or_default()),
+                facing: facing_from_firmware_removability(removable.as_deref().unwrap_or_default()),
                 parent,
                 caps,
             }
@@ -291,11 +250,6 @@ fn nodes() -> io::Result<Vec<Node>> {
         .collect())
 }
 
-/// A node's stable id, udev's `by-path` scheme: the device it hangs off
-/// (a USB camera's interface, the same at the same port across replugs)
-/// and its index there; a node with no device (a virtual one) by its
-/// own name. Two cameras in one USB device (colour and infrared) hang off
-/// two interfaces, so they differ.
 fn identity(node: &str, sys: &Path, index: &str) -> (String, Option<String>) {
     match fs::canonicalize(sys.join("device")) {
         Ok(parent) => {
@@ -306,23 +260,13 @@ fn identity(node: &str, sys: &Path, index: &str) -> (String, Option<String>) {
     }
 }
 
-/// Which way a camera looks, by what its USB device's `removable` says:
-/// `fixed` is built in (a laptop's own camera, at the person); anything
-/// else, or no USB device, is plugged in.
-// ponytail: `fixed` needs the firmware to describe the port; a laptop whose
-// firmware says `unknown` lists its own camera as plugged in.
-fn facing(removable: &str) -> Facing {
+fn facing_from_firmware_removability(removable: &str) -> Facing {
     match removable.trim() {
         "fixed" => Facing::Front,
         _ => Facing::External,
     }
 }
 
-/// The nodes a person can pick: one row a camera. A node that captures
-/// and streams is a camera; the others (a camera's metadata node, an
-/// output) are not. A node that could not be opened is listed by its
-/// name (opening it says why: refused, busy), once per device it hangs
-/// off, as its metadata twin could not be opened either.
 pub(crate) fn listed(nodes: Vec<Node>) -> Vec<CameraDevice> {
     let mut unread = std::collections::HashSet::new();
     nodes
@@ -352,9 +296,6 @@ pub(crate) fn listed(nodes: Vec<Node>) -> Vec<CameraDevice> {
         .collect()
 }
 
-// ---------- one camera ----------
-
-/// A picture mode a camera agreed to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Mode {
     pub fourcc: u32,
@@ -366,10 +307,6 @@ pub(crate) struct Mode {
     pub fps: Option<u32>,
 }
 
-/// The mode to stream, of what the camera agreed to when asked for each
-/// format at [`WANT`]: a smooth rate first (a USB 2 webcam sends YUYV at
-/// 720p only about 10 times a second, MJPEG at 30), then the larger
-/// picture up to 720p, then YUYV (no decoding).
 pub(crate) fn choose(agreed: &[Mode]) -> Option<Mode> {
     let (width, height, _) = WANT;
     agreed
@@ -385,8 +322,6 @@ pub(crate) fn choose(agreed: &[Mode]) -> Option<Mode> {
         .copied()
 }
 
-/// Asks the camera for `fourcc` at [`WANT`]'s size and rate; what it
-/// agreed to. `S_FMT` and `S_PARM` answer with what the driver took.
 fn agree(fd: &OwnedFd, fourcc: u32, width: u32, height: u32) -> Result<Mode, i32> {
     let mut format: Format = zeroed();
     format.kind = BUF_TYPE_VIDEO_CAPTURE;
@@ -398,7 +333,6 @@ fn agree(fd: &OwnedFd, fourcc: u32, width: u32, height: u32) -> Result<Mode, i32
     parm.kind = BUF_TYPE_VIDEO_CAPTURE;
     parm.numerator = 1;
     parm.denominator = WANT.2;
-    // a driver without frame rates says nothing of its rate
     let fps = ioctl(fd, VIDIOC_S_PARM, &mut parm)
         .ok()
         .filter(|()| parm.numerator > 0)
@@ -412,7 +346,6 @@ fn agree(fd: &OwnedFd, fourcc: u32, width: u32, height: u32) -> Result<Mode, i32
     })
 }
 
-/// One mapped buffer, unmapped when dropped.
 struct Mapped {
     at: *mut libc::c_void,
     length: usize,
@@ -425,9 +358,6 @@ impl Drop for Mapped {
     }
 }
 
-/// One camera streaming: its node and its mapped buffers. Dropped, the
-/// stream stops, the buffers are unmapped and the node is closed, in
-/// that order (a mapping holds the device as an open node does).
 pub(crate) struct Camera {
     mode: Mode,
     buffers: Vec<Mapped>,
@@ -438,12 +368,9 @@ impl Drop for Camera {
     fn drop(&mut self) {
         let mut kind = BUF_TYPE_VIDEO_CAPTURE as libc::c_int;
         let _ = ioctl(&self.fd, VIDIOC_STREAMOFF, &mut kind);
-        // then the fields: `buffers` unmapped, then `fd` closed
     }
 }
 
-/// Opens the listed camera whose node is `node` (its
-/// `CameraDevice::handle`, sysfs's name for it) and starts its stream.
 pub(crate) fn open(node: &str) -> Result<Camera, Status> {
     let fail = |errno| status(errno, false);
     let fd = open_node(&Path::new("/dev").join(node)).map_err(fail)?;
@@ -451,14 +378,12 @@ pub(crate) fn open(node: &str) -> Result<Camera, Status> {
     for fourcc in [YUYV, MJPG] {
         match agree(&fd, fourcc, WANT.0, WANT.1) {
             Ok(mode) => agreed.push(mode),
-            // another app streams from it
             Err(libc::EBUSY) => return Err(Status::Busy),
             Err(_) => {}
         }
     }
     let mode = choose(&agreed)
         .ok_or_else(|| Status::Failed("the camera sends neither YUYV nor MJPEG pictures".into()))?;
-    // the camera holds the last mode asked; the chosen one again if not it
     let mode = match agreed.last() == Some(&mode) {
         true => mode,
         false => agree(&fd, mode.fourcc, mode.width, mode.height).map_err(fail)?,
@@ -521,7 +446,6 @@ impl Source for Camera {
             0 => return Ok(Got::Nothing),
             -1 if errno() == libc::EINTR => return Ok(Got::Nothing),
             -1 => return Err(status(errno(), true)),
-            // readable, or an error (POLLERR) the dequeue reports
             _ => {}
         }
         let mut buffer = capture_buffer(0);
@@ -531,7 +455,6 @@ impl Source for Camera {
             Err(errno) => return Err(status(errno, true)),
         }
         let got = match self.buffers.get(buffer.index as usize) {
-            // a frame the driver marked broken is no frame
             _ if buffer.flags & BUF_FLAG_ERROR != 0 => Got::Nothing,
             Some(mapped) if wanted => {
                 let used = match buffer.bytesused {
@@ -569,10 +492,6 @@ impl Camera {
     }
 }
 
-// ---------- pictures ----------
-
-/// Packed 4:2:2 (Y0 U Y1 V, BT.601 video range) to BGRA, rows `stride`
-/// bytes apart (0: unpadded).
 pub(crate) fn yuyv_to_bgra(
     src: &[u8],
     width: u32,
@@ -615,8 +534,6 @@ fn yuv(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
     )
 }
 
-/// A MJPEG frame (one JPEG) to BGRA; none for a frame that does not
-/// decode.
 pub(crate) fn jpeg_to_bgra(src: &[u8], mirror: bool) -> Option<Picture> {
     let decoded = image::load_from_memory_with_format(src, image::ImageFormat::Jpeg).ok()?;
     let mut rgba = decoded.to_rgba8();
@@ -649,9 +566,6 @@ mod tests {
         }
     }
 
-    /// A USB 2 webcam streams MJPEG at 720p30 over YUYV at 720p10; a
-    /// camera that sends YUYV smoothly keeps YUYV; a small YUYV-only
-    /// camera is taken as it is; a format we cannot draw is not.
     #[test]
     fn the_mode_is_smooth_then_large_then_yuyv() {
         let webcam = [
@@ -678,9 +592,6 @@ mod tests {
         assert_eq!(choose(&[]), None);
     }
 
-    /// A UVC camera's capture and metadata nodes come down to its capture
-    /// node; a loopback with no writer (output only) is no camera; nodes
-    /// that could not be opened are listed once per device they hang off.
     #[test]
     fn video_nodes_come_down_to_one_row_a_camera() {
         let node = |id: &str, name: &str, parent: Option<&str>, caps: Result<u32, i32>| Node {
@@ -734,8 +645,6 @@ mod tests {
         );
     }
 
-    /// A headset's card is headphones (its microphone too), a screen's
-    /// output a speaker; the analog jack and the rest say nothing.
     #[test]
     fn a_card_says_what_it_is_by_its_name() {
         let kind = |name: &str, input: bool| {
@@ -762,17 +671,18 @@ mod tests {
         assert_eq!(kind("System default", true), AudioKind::Other);
     }
 
-    /// A camera its USB device calls `fixed` is built in, looking at the
-    /// person; any other word (or none) is a plugged-in one.
     #[test]
     fn a_built_in_camera_faces_the_person() {
-        assert_eq!(facing("fixed\n"), Facing::Front);
+        assert_eq!(facing_from_firmware_removability("fixed\n"), Facing::Front);
         for word in ["removable\n", "unknown\n", ""] {
-            assert_eq!(facing(word), Facing::External, "{word:?}");
+            assert_eq!(
+                facing_from_firmware_removability(word),
+                Facing::External,
+                "{word:?}"
+            );
         }
     }
 
-    /// The errnos a camera answers with, as the states a person sees.
     #[test]
     fn an_errno_reads_as_a_status() {
         assert_eq!(status(libc::EBUSY, false), Status::Busy);
@@ -784,31 +694,24 @@ mod tests {
         assert!(matches!(status(libc::EINVAL, false), Status::Failed(_)));
     }
 
-    /// Grey, white and a mirrored pair come out of 4:2:2 as BGRA; rows
-    /// are read by the driver's stride.
     #[test]
     fn yuyv_turns_into_bgra_and_mirrors() {
-        // two pixels: black (Y 16) then white (Y 235), no colour
         let src = [16, 128, 235, 128];
         let plain = yuyv_to_bgra(&src, 2, 1, 0, false).unwrap();
         assert_eq!(plain.bgra, [0, 0, 0, 255, 255, 255, 255, 255]);
         let mirrored = yuyv_to_bgra(&src, 2, 1, 4, true).unwrap();
         assert_eq!(mirrored.bgra, [255, 255, 255, 255, 0, 0, 0, 255]);
-        // pure red in BT.601 video range: Y 81, U 90, V 240
         let red = yuyv_to_bgra(&[81, 90, 81, 240], 2, 1, 4, false).unwrap();
         let [b, g, r, _] = red.bgra[..4] else {
             unreachable!()
         };
         assert!(r > 250 && g < 5 && b < 5, "{:?}", &red.bgra[..4]);
-        // a short buffer is no picture; a padded row is read by its stride
         assert!(yuyv_to_bgra(&src[..3], 2, 1, 4, false).is_none());
         let padded = [16, 128, 235, 128, 9, 9, 235, 128, 16, 128];
         let two = yuyv_to_bgra(&padded, 2, 2, 6, false).unwrap();
         assert_eq!(two.bgra[8..], [255, 255, 255, 255, 0, 0, 0, 255]);
     }
 
-    /// A MJPEG frame decodes to BGRA, mirrored if asked; a broken one is
-    /// no picture.
     #[test]
     fn a_jpeg_frame_turns_into_bgra() {
         let mut rgb = image::RgbImage::new(16, 8);

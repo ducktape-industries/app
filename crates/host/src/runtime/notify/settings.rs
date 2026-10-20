@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use super::center::Center;
 use crate::backend::{edit_prefs, read_prefs};
 
-/// The prefs keys, device-global like `appearance`.
 pub(super) const NOTIFY_PREF: &str = "desktop_notifications";
 pub(super) const FRONT_PREF: &str = "notify_in_front";
 pub(super) const BURST_PREF: &str = "notify_burst";
@@ -62,21 +61,14 @@ pub struct Settings {
     pub unasked: Option<Permission>,
 }
 
-/// The settings as last read: forgotten when a notice setting is saved,
-/// and replaced by every [`Settings::load`]. One for the process, as the
-/// prefs file is: views post on the window thread, notifiers on their own
-/// (`runtime::notifier`), and the shell saves on the window thread.
 #[cfg(not(any(test, feature = "test-support")))]
 static KEPT: std::sync::Mutex<Option<Settings>> = std::sync::Mutex::new(None);
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// A test's prefs are its thread's own (`backend::prefs`), and so are
-    /// the settings read off them.
     static KEPT: RefCell<Option<Settings>> = const { RefCell::new(None) };
 }
 
-/// `change` on the kept settings.
 fn kept<R>(change: impl FnOnce(&mut Option<Settings>) -> R) -> R {
     #[cfg(not(any(test, feature = "test-support")))]
     return change(&mut KEPT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
@@ -99,7 +91,6 @@ impl Settings {
         kept(|kept| kept.clone()).unwrap_or_else(Self::load)
     }
 
-    /// `prefs` as settings; `os_asks`: the OS asked for the whole app.
     pub(super) fn of(prefs: &serde_json::Value, os_asks: bool) -> Self {
         let burst = prefs[BURST_PREF]
             .as_u64()
@@ -121,7 +112,6 @@ impl Settings {
     }
 }
 
-/// A notice setting saved: the kept settings are read again on next use.
 fn edit(change: impl FnOnce(&mut serde_json::Value)) {
     edit_prefs(change);
     kept(|kept| *kept = None);

@@ -18,8 +18,6 @@ use std::path::PathBuf;
 const APP: &str = "ducktape";
 const CONFIG: [&str; 3] = ["XDG_CONFIG_HOME", ".config", "Library/Application Support"];
 
-/// preferences (`prefs.json`), and the windows each network last had
-/// (`windows.json`).
 pub(crate) fn config_dir() -> Result<PathBuf, String> {
     let [var, linux, macos] = CONFIG;
     platform_dir(var, linux, macos)
@@ -27,7 +25,7 @@ pub(crate) fn config_dir() -> Result<PathBuf, String> {
 
 pub(crate) fn config_is_default() -> bool {
     let [var, linux, macos] = CONFIG;
-    let default = resolve(
+    let default = resolve_override_or_platform_home(
         None,
         std::env::var_os("HOME"),
         var,
@@ -36,7 +34,6 @@ pub(crate) fn config_is_default() -> bool {
     config_dir().ok() == default.ok()
 }
 
-/// the self-update's install on Linux (`update::Layout`).
 pub(crate) fn data_dir() -> Result<PathBuf, String> {
     platform_dir(
         "XDG_DATA_HOME",
@@ -45,13 +42,10 @@ pub(crate) fn data_dir() -> Result<PathBuf, String> {
     )
 }
 
-/// the app's log.
 pub(crate) fn state_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_STATE_HOME", ".local/state", "Library/Logs")
 }
 
-/// rebuildable caches (the view bytes read out of program blobs), and the AX
-/// door's file where there is no `$XDG_RUNTIME_DIR`.
 pub(crate) fn cache_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_CACHE_HOME", ".cache", "Library/Caches")
 }
@@ -66,7 +60,7 @@ fn platform_dir(
     linux_default: &str,
     macos_default: &str,
 ) -> Result<PathBuf, String> {
-    resolve(
+    resolve_override_or_platform_home(
         std::env::var_os(xdg_var),
         std::env::var_os("HOME"),
         xdg_var,
@@ -81,11 +75,7 @@ fn platform_default<'a>(linux_default: &'a str, macos_default: &'a str) -> &'a s
     }
 }
 
-/// the rule over explicit inputs, so a test reads no process env: a
-/// non-empty override names the base outright, else the platform default
-/// under `$HOME`; set-but-empty is unset, like the ducktape home's own
-/// override.
-fn resolve(
+fn resolve_override_or_platform_home(
     explicit: Option<OsString>,
     home: Option<OsString>,
     xdg_var: &str,
@@ -104,25 +94,24 @@ fn resolve(
 mod tests {
     use super::*;
 
-    /// An explicit XDG variable names the directory outright — the one knob a
-    /// rig has to keep the app off the real one — and an empty one is unset.
     #[test]
     fn an_explicit_xdg_variable_wins_and_an_empty_one_is_unset() {
-        let explicit = resolve(
+        let explicit = resolve_override_or_platform_home(
             Some("/scratch/cfg".into()),
             Some("/home/op".into()),
             "XDG_CONFIG_HOME",
             ".config",
         );
         assert_eq!(explicit.unwrap(), PathBuf::from("/scratch/cfg/ducktape"));
-        let empty = resolve(
+        let empty = resolve_override_or_platform_home(
             Some("".into()),
             Some("/home/op".into()),
             "XDG_CONFIG_HOME",
             ".config",
         );
         assert_eq!(empty.unwrap(), PathBuf::from("/home/op/.config/ducktape"));
-        let homeless = resolve(None, None, "XDG_CONFIG_HOME", ".config").unwrap_err();
+        let homeless = resolve_override_or_platform_home(None, None, "XDG_CONFIG_HOME", ".config")
+            .unwrap_err();
         assert!(homeless.contains("XDG_CONFIG_HOME"), "{homeless}");
     }
 }

@@ -35,11 +35,6 @@ use super::auth_page::{Assertion, Request, asserted, created};
 use super::identity::{create_seated, submit_seated};
 use super::{RpcClient, anchor, query_signer, seated_key, seated_sign};
 
-// ---------- the flows ----------
-
-/// A new account held by a passkey, with this device's (seated) key on it
-/// too. Retry-safe: a device key that already holds an account keeps it,
-/// and the passkey joins that one.
 pub(crate) async fn create_account(
     client: &RpcClient,
     network: &str,
@@ -98,7 +93,6 @@ pub(crate) async fn create_account(
     submit(client, frame.encode()).await.map(drop)
 }
 
-/// This device's (seated) key joins the account a passkey holds.
 pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), String> {
     let hint = asserted(rand::random(), "1/2").await?;
     let number = account_of_handle(network, hint.user_handle.as_deref())?;
@@ -135,8 +129,6 @@ pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), Str
     submit_seated(client, network, &add).await.map(drop)
 }
 
-/// Which of `account`'s passkeys signed `proof` over the consent `preimage`
-/// — the page does not say which credential answered.
 fn consenting_key(account: &identity::Account, preimage: &[u8], proof: &[u8]) -> Option<Vec<u8>> {
     account
         .keys()
@@ -146,8 +138,6 @@ fn consenting_key(account: &identity::Account, preimage: &[u8], proof: &[u8]) ->
         .map(|held| held.key.clone())
 }
 
-/// A frame body whose signer is the passkey `pubkey`. A body names its
-/// scheme as `abi::Scheme`, whose `Secp256r1` is core's `KeyScheme` tag.
 pub(super) fn passkey_body(pubkey: &[u8], network: &str, anchor: Tip, payload: Vec<u8>) -> Body {
     Body {
         scheme: abi::Scheme::Secp256r1,
@@ -160,8 +150,6 @@ pub(super) fn passkey_body(pubkey: &[u8], network: &str, anchor: Tip, payload: V
     }
 }
 
-/// The frame `body` completed by `assertion`, or `None` when the assertion
-/// is not the body's signer signing it (another passkey answered).
 pub(super) fn passkey_frame(body: Body, assertion: &Assertion) -> Option<Frame> {
     let proof = assertion.proof();
     KeyScheme::Secp256r1
@@ -169,10 +157,6 @@ pub(super) fn passkey_frame(body: Body, assertion: &Assertion) -> Option<Frame> 
         .then_some(Frame { body, proof })
 }
 
-// ---------- the account a passkey names ----------
-
-/// `user.id`: `SHA-256("ducktape:passkey-account:v1\0" ‖ network)` ‖ the
-/// account number, u64 LE.
 fn user_handle(network: &str, number: u64) -> [u8; 40] {
     let mut handle = [0; 40];
     handle[..32].copy_from_slice(&network_tag(network));
@@ -187,9 +171,6 @@ fn network_tag(network: &str) -> [u8; 32] {
     hash.finalize().into()
 }
 
-/// The account a passkey's (unsigned) `userHandle` names on `network`. A
-/// hint only: the consent that follows must verify against a key the
-/// account holds.
 fn account_of_handle(network: &str, handle: Option<&[u8]>) -> Result<u64, String> {
     let handle = handle
         .and_then(|bytes| <&[u8; 40]>::try_from(bytes).ok())
@@ -216,8 +197,6 @@ mod tests {
 
     const RP: &str = "auth.ducktape.industries";
 
-    /// The page's `get` answer, as JSON, for an assertion made the way an
-    /// authenticator makes it.
     fn page_answer(
         sk: &p256::ecdsa::SigningKey,
         ns: &[u8],
@@ -252,8 +231,6 @@ mod tests {
         assert!(body.salt.is_some(), "a passkey's write carries a salt");
         let assertion = page_answer(&sk, FRAME_NAMESPACE, &body.preimage(), &[]);
         let frame = passkey_frame(body, &assertion).expect("its own signer");
-        // the node decodes the bytes, the scheme as core's `KeyScheme`, and
-        // runs `scheme.verify(signer, NS, preimage, proof)`
         let decoded: Frame = abi::decode(&frame.encode()).unwrap();
         let scheme: KeyScheme = abi::decode(&abi::encode(&decoded.body.scheme)).unwrap();
         assert_eq!(scheme, KeyScheme::Secp256r1);
@@ -264,7 +241,6 @@ mod tests {
             &decoded.proof
         ));
 
-        // another passkey answering is caught before the node sees it
         let other = page_answer(
             &testkit::passkey(4),
             FRAME_NAMESPACE,
@@ -318,7 +294,6 @@ mod tests {
         let signer = consenting_key(&account, &preimage, &proof).unwrap();
         assert_eq!(signer, testkit::passkey_pubkey(&sk));
         assert!(KeyScheme::Secp256r1.verify(&signer, CONSENT_NAMESPACE, &preimage, &proof));
-        // bound to its admission: another account's preimage does not verify
         let elsewhere = Admission {
             account: 13,
             ..admission

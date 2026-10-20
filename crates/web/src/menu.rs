@@ -25,9 +25,6 @@ use gpui_kit::{
 
 use crate::page::{Page, Shared};
 
-/// CEF's commands a page's menu keeps. Everything else is dropped: view
-/// source, print, find, undo and redo, spelling, and anything that would
-/// open an address outside the page's rule.
 const KEPT: [cef::sys::cef_menu_id_t; 7] = [
     MENU_ID_BACK,
     MENU_ID_FORWARD,
@@ -38,32 +35,24 @@ const KEPT: [cef::sys::cef_menu_id_t; 7] = [
     MENU_ID_SELECT_ALL,
 ];
 
-/// One row of a page's menu.
 #[derive(Debug, PartialEq)]
 enum Row {
     Separator,
-    /// CEF's own command: chosen, CEF runs it.
     Command {
         id: c_int,
         label: String,
         enabled: bool,
     },
-    /// The page loads again (CEF's page menu has back and forward only).
     Reload,
-    /// The link's address to the clipboard (CEF offers no such command).
     CopyLink(String),
 }
 
-/// One entry of CEF's model, as plain data.
 #[derive(Clone, Copy, PartialEq)]
 enum Entry<'a> {
     Separator,
     Command(c_int, &'a str, bool),
 }
 
-/// The rows a right-click shows: `model`'s kept commands, in its order and
-/// with its separators, plus Reload beside Forward and Copy link address
-/// over a link. No separator leads, trails or doubles.
 fn rows(model: &[Entry], link: &str) -> Vec<Row> {
     let kept = |id: c_int| KEPT.iter().any(|&kept| kept as c_int == id);
     let reload = !model
@@ -79,7 +68,6 @@ fn rows(model: &[Entry], link: &str) -> Vec<Row> {
             Entry::Command(id, label, enabled) if kept(id) => {
                 rows.push(Row::Command {
                     id,
-                    // CEF's mnemonics: `&` marks a key, `&&` is an `&`
                     label: label
                         .replace("&&", "\0")
                         .replace('&', "")
@@ -106,8 +94,6 @@ fn rows(model: &[Entry], link: &str) -> Vec<Row> {
     tidy
 }
 
-/// CEF's callback for one menu, answered once: the command chosen, or a
-/// cancel when the menu closes without one (or the page goes).
 struct Answer(Cell<Option<RunContextMenuCallback>>);
 
 impl Answer {
@@ -130,15 +116,12 @@ impl Drop for Answer {
     }
 }
 
-/// A right-click's menu, from `run_context_menu` until the page draws it.
 pub(crate) struct Asked {
-    /// Where the click was, in page pixels.
     at: (i32, i32),
     rows: Vec<Row>,
     answer: Rc<Answer>,
 }
 
-/// A menu on screen: the kit's popup where the click was.
 pub(crate) struct Open {
     menu: Entity<PopupMenu>,
     at: Point<Pixels>,
@@ -147,12 +130,10 @@ pub(crate) struct Open {
 }
 
 impl Open {
-    /// The keys are in the menu.
     pub(crate) fn has_keys(&self, window: &Window, cx: &App) -> bool {
         self.menu.focus_handle(cx).contains_focused(window, cx)
     }
 
-    /// Drawn over everything, kept inside the window.
     pub(crate) fn element(&self) -> AnyElement {
         deferred(
             anchored()
@@ -165,17 +146,12 @@ impl Open {
     }
 }
 
-/// Closed with no choice: CEF hears the cancel at once (the rows hold the
-/// answer until the kit lets go of them).
 impl Drop for Open {
     fn drop(&mut self) {
         self.answer.cancel();
     }
 }
 
-/// `asked` on screen, the page's box at `origin` in the window, with the
-/// keys. Closed (a choice, Escape, a click elsewhere), the kit gives them
-/// back to the page.
 pub(crate) fn open(
     asked: Asked,
     shared: &Rc<Shared>,
@@ -225,8 +201,6 @@ cef::wrap_context_menu_handler! {
     }
 
     impl ContextMenuHandler {
-        // the page draws the menu: CEF's model is copied out, the callback
-        // kept until the page answers it
         fn run_context_menu(
             &self,
             _browser: Option<&mut Browser>,
@@ -281,7 +255,6 @@ mod tests {
 
     #[test]
     fn a_page_menu_keeps_what_the_app_allows() {
-        // the page's own menu: back, forward, then print and view source
         let page = [
             command(MENU_ID_BACK, "&Back"),
             command(MENU_ID_FORWARD, "&Forward"),
@@ -305,7 +278,6 @@ mod tests {
                 Row::Reload,
             ]
         );
-        // a text field's: undo and redo go, and the separator they leave
         let field = [
             command(MENU_ID_UNDO, "&Undo"),
             command(MENU_ID_REDO, "&Redo"),
@@ -329,7 +301,6 @@ mod tests {
             })
             .collect();
         assert_eq!(labels, ["Cut", "Copy", "Paste", "-", "Select all"]);
-        // nothing kept: no menu
         assert!(rows(&[command(MENU_ID_PRINT, "&Print...")], "").is_empty());
     }
 }

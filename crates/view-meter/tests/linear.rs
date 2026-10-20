@@ -13,7 +13,6 @@ fn module(imports: usize) -> Vec<u8> {
     wat::parse_str(format!("(module {imports} (func (export \"f\")))")).unwrap()
 }
 
-/// The fastest of three `accepts` + `meter` runs over `code`.
 fn best_of_three(code: &[u8]) -> Duration {
     (0..3)
         .map(|_| {
@@ -30,7 +29,6 @@ fn best_of_three(code: &[u8]) -> Duration {
 fn many_imports_meter_in_linear_time() {
     let (small, large) = (module(10_000), module(40_000));
     let (small, large) = (best_of_three(&small), best_of_three(&large));
-    // four times the imports: about four times the time, not sixteen
     assert!(
         large < small * 8,
         "10k imports {small:?}, 40k imports {large:?}"

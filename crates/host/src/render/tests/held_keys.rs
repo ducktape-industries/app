@@ -8,7 +8,6 @@ use gpui_kit::{KeyUpEvent, PlatformInput, VisualTestContext};
 const DOWN: u32 = 1;
 const UP: u32 = 2;
 
-/// A board that hears keys go down on `DOWN` and come up on `up`.
 fn board(up: u32) -> wire::Node {
     let mut node = container_with_style("board", div().w(px(60.)).h(px(40.)).style().clone(), []);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
@@ -19,7 +18,6 @@ fn board(up: u32) -> wire::Node {
     node
 }
 
-/// The board beside a button that hears no keys.
 fn screen(up: u32) -> wire::Node {
     container_with_style(
         "screen",
@@ -28,7 +26,6 @@ fn screen(up: u32) -> wire::Node {
     )
 }
 
-/// The keys `handler` heard come up, in order.
 fn came_up(events: &RefCell<Vec<wire::Event>>, handler: u32) -> Vec<String> {
     events
         .borrow()
@@ -44,7 +41,6 @@ fn came_up(events: &RefCell<Vec<wire::Event>>, handler: u32) -> Vec<String> {
         .collect()
 }
 
-/// The view moves the keys to the node at `target`, and the window draws.
 fn focus(tree: &Entity<ViewTree>, target: &[&str], native: &mut VisualTestContext) {
     let target = target.iter().map(|key| named_id(key)).collect();
     native.update(|window, cx| {
@@ -78,8 +74,6 @@ fn release(native: &mut VisualTestContext, key: &str) {
     });
 }
 
-/// Alt-tab with an arrow held: the board hears it come up as the window
-/// goes to the back. A key let go in the board comes up once, as before.
 #[gpui_kit::test]
 fn a_held_key_comes_up_when_the_window_goes_to_the_back(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -106,19 +100,10 @@ fn a_held_key_comes_up_when_the_window_goes_to_the_back(cx: &mut gpui_kit::TestA
     assert_eq!(came_up(&events, UP), ["a", "left"], "and only once");
 }
 
-/// The tree's watch on the window going to the back is heard before this
-/// one, which reports what the tree still holds then.
 struct Watch {
     _to_back: Subscription,
 }
 
-/// A window that goes to the back can draw no frame before it is in front
-/// again (minimized, or covered: the platform stops drawing it), and
-/// gpui's focus event comes from a draw that sees the window's state
-/// change, so it would never come. The held key comes up as the platform
-/// says the window went to the back. gpui's test platform draws after
-/// every change of the window's state, so the test reads the tree at that
-/// moment instead.
 #[gpui_kit::test]
 fn a_held_key_comes_up_as_the_window_goes_to_the_back_not_at_a_frame(
     cx: &mut gpui_kit::TestAppContext,
@@ -152,9 +137,6 @@ fn a_held_key_comes_up_as_the_window_goes_to_the_back_not_at_a_frame(
     assert_eq!(came_up(&events, UP), ["left"], "the board heard it once");
 }
 
-/// An arrow held while the view moves the keys to its button: the board
-/// hears it come up as focus leaves it, and the real KeyUp, which goes to
-/// the button, tells it nothing more.
 #[gpui_kit::test]
 fn a_held_key_comes_up_when_focus_moves_to_another_element(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -171,9 +153,6 @@ fn a_held_key_comes_up_when_focus_moves_to_another_element(cx: &mut gpui_kit::Te
     assert_eq!(came_up(&events, UP), ["left"], "and only once");
 }
 
-/// The held key comes up on the handler the board has when focus leaves
-/// it: a listener the view dropped and set again has a new route, and
-/// the one the key went down under names nothing by then.
 #[gpui_kit::test]
 fn a_held_key_comes_up_on_the_handler_the_node_has_now(cx: &mut gpui_kit::TestAppContext) {
     const RENUMBERED: u32 = 7;
@@ -209,8 +188,6 @@ impl Render for Panes {
     }
 }
 
-/// An arrow held in one pane while the person clicks into the next: the
-/// board hears it come up as the other pane takes the keys.
 #[gpui_kit::test]
 fn a_held_key_comes_up_when_focus_moves_to_another_pane(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

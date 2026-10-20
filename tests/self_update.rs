@@ -15,17 +15,16 @@ use ducktape_updater::{PendingHealthy, Phase, Sha, Staged, state};
 
 const APP: &str = env!("CARGO_BIN_EXE_ducktape-app");
 
-/// A scratch home: the app's config, data, state and cache under one dir.
-struct Rig {
+struct IsolatedInstall {
     root: tempfile::TempDir,
     _alone: std::sync::MutexGuard<'static, ()>,
 }
 
 static STARTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-impl Rig {
-    fn new() -> Rig {
-        Rig {
+impl IsolatedInstall {
+    fn new() -> IsolatedInstall {
+        IsolatedInstall {
             _alone: STARTS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -57,7 +56,6 @@ impl Rig {
             .env("XDG_DATA_HOME", self.path("data"))
             .env("XDG_STATE_HOME", self.path("state"))
             .env("XDG_CACHE_HOME", self.path("cache"))
-            // should the boot step not exec, the app must not find a screen
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
             .env("RECORD", self.path("record"))
@@ -65,7 +63,6 @@ impl Rig {
         command
     }
 
-    /// `ducktape-app install` of the real binary: its sha and pinned phase.
     fn install(&self) -> (Sha, Phase) {
         let output = self
             .command(Path::new(APP))
@@ -94,8 +91,7 @@ impl Rig {
         std::fs::write(self.state_path(), state::encode(phase)).unwrap();
     }
 
-    /// A release whose app writes down `<pid> <args>` and exits.
-    fn recorder(&self, name: &str) -> Sha {
+    fn pid_and_args_recording_release(&self, name: &str) -> Sha {
         use std::os::unix::fs::PermissionsExt as _;
         let sha = Sha::digest(name.as_bytes());
         let dir = self.release_dir(sha);
@@ -120,8 +116,6 @@ impl Rig {
         std::fs::read_link(self.install_dir().join(name)).unwrap()
     }
 
-    /// Start the install path's app as the session does, with `args`: the
-    /// pid it started as, and what the recorder wrote down.
     fn start(&self, args: &[&str]) -> (String, String) {
         let pid_file = self.path("pid");
         let mut child = self
@@ -155,10 +149,10 @@ impl Rig {
 
 #[test]
 fn a_start_with_a_staged_release_execs_it_in_the_same_process_with_its_link() {
-    let rig = Rig::new();
+    let rig = IsolatedInstall::new();
     let (installed, phase) = rig.install();
     let pin = phase.pinned_sequence();
-    let staged = rig.recorder("next");
+    let staged = rig.pid_and_args_recording_release("next");
     rig.persist(&Phase::Staged(Staged {
         current: installed,
         previous: None,
@@ -194,13 +188,11 @@ fn a_start_with_a_staged_release_execs_it_in_the_same_process_with_its_link() {
 
 #[test]
 fn a_start_after_a_release_that_never_rendered_execs_the_one_before() {
-    let rig = Rig::new();
+    let rig = IsolatedInstall::new();
     let (installed, phase) = rig.install();
     let pin = phase.pinned_sequence();
-    let before = rig.recorder("before");
+    let before = rig.pid_and_args_recording_release("before");
     rig.link("previous", before);
-    // the installed binary is the release flipped to, and its own boot
-    // already counted it once: it never rendered
     rig.persist(&Phase::PendingHealthy(PendingHealthy {
         current: installed,
         previous: before,
@@ -223,17 +215,12 @@ fn a_start_after_a_release_that_never_rendered_execs_the_one_before() {
     );
 }
 
-/// "Restart to update"'s waiter, the real binary: it waits for the app that
-/// started it to be gone (its stdin closed) and to let the install go (the
-/// lock held here, as the exiting app's is until the kernel closes it),
-/// then becomes the install path's app in its own process, and says so in
-/// app.log.
 #[test]
 fn the_restart_waiter_starts_the_install_path_once_the_old_app_lets_go() {
     use std::os::unix::io::AsRawFd as _;
-    let rig = Rig::new();
+    let rig = IsolatedInstall::new();
     rig.install();
-    let next = rig.recorder("next");
+    let next = rig.pid_and_args_recording_release("next");
     rig.link("current", next);
     let lock = std::fs::File::create(rig.path("cfg/ducktape/updates/lock")).unwrap();
     // SAFETY: an open descriptor and a flag constant.

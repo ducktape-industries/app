@@ -13,39 +13,28 @@
 use std::process::Command;
 
 fn main() {
-    // re-run when HEAD moves. `--git-path` resolves correctly inside a git
-    // worktree, where `.git` is a file pointing elsewhere.
     for path in ["HEAD", "index"] {
-        if let Some(resolved) = git(&["rev-parse", "--git-path", path]) {
+        if let Some(resolved) = git_stdout(&["rev-parse", "--git-path", path]) {
             println!("cargo:rerun-if-changed={resolved}");
         }
     }
-    // and when the meter pass's source moves, uncommitted: the phone's iOS
-    // code cache is kept per stamp (`crates/phone/src/os.rs`), and a dev
-    // build with another pass must not read the last one's output. From
-    // the repository's root, as the phone runs this script too.
-    if let Some(top) = git(&["rev-parse", "--show-toplevel"]) {
+    if let Some(top) = git_stdout(&["rev-parse", "--show-toplevel"]) {
         println!("cargo:rerun-if-changed={top}/crates/view-meter/src");
     }
 
-    if let Some(build) = build_id() {
+    if let Some(build) = commit_with_worktree_digest() {
         println!("cargo:rustc-env=DUCKTAPE_APP_BUILD={build}");
     }
-    if let Some(time) = git(&["log", "-1", "--format=%ct", "HEAD"]) {
+    if let Some(time) = git_stdout(&["log", "-1", "--format=%ct", "HEAD"]) {
         println!("cargo:rustc-env=DUCKTAPE_APP_COMMIT_TIME={time}");
     }
 
-    // feature `web`: cef-dll-sys copies libcef.so and its files next to the
-    // binary; the loader looks there only when told to
     if std::env::var_os("CARGO_FEATURE_WEB").is_some()
         && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
     {
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN");
     }
 
-    // feature `av` on macOS: an unbundled binary has no Info.plist but the
-    // one in its own `__info_plist` section, and without the camera's and
-    // microphone's usage strings there the system raises no prompt
     if std::env::var_os("CARGO_FEATURE_AV").is_some()
         && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
     {
@@ -59,27 +48,19 @@ fn main() {
     }
 }
 
-/// `<short sha>`, or `<short sha>-<digest>` when the working tree differs from
-/// it: two different uncommitted trees at one commit must not read as the same
-/// build, so the diff is digested rather than marked `-dirty`.
-fn build_id() -> Option<String> {
-    let commit = git(&["rev-parse", "--short", "HEAD"])?;
-    // tracked changes only: untracked scratch files are not part of the build.
-    let diff = git(&["diff", "HEAD"]).unwrap_or_default();
-    if diff.is_empty() {
+fn commit_with_worktree_digest() -> Option<String> {
+    let commit = git_stdout(&["rev-parse", "--short", "HEAD"])?;
+    let tracked_worktree_diff = git_stdout(&["diff", "HEAD"]).unwrap_or_default();
+    if tracked_worktree_diff.is_empty() {
         return Some(commit);
     }
-    // display only, so `DefaultHasher` not being stable across toolchains
-    // costs nothing, and stdlib means no build-dependency for one hash.
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    diff.hash(&mut hasher);
+    tracked_worktree_diff.hash(&mut hasher);
     Some(format!("{commit}-{:x}", hasher.finish()))
 }
 
-/// Run one git command, returning its trimmed stdout. `None` for any failure —
-/// git missing, not a repository, or a non-zero exit.
-fn git(args: &[&str]) -> Option<String> {
+fn git_stdout(args: &[&str]) -> Option<String> {
     let out = Command::new("git").args(args).output().ok()?;
     if !out.status.success() {
         return None;

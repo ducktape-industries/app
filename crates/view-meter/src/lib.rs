@@ -141,15 +141,9 @@ pub const GAS: &str = "gas_left";
 /// between 0 and `i64::MAX`, and leaves [`GAS`] at minus that.
 pub const GROW_REFUSED: i64 = i64::MIN;
 
-/// A bulk operator with a constant length up to this is folded into the
-/// pending cost without a check (wasmtime `SMALL_BULK_OP_COST`).
-pub(crate) const SMALL_BULK: i64 = 128;
-/// Bytes per wasm page.
+pub(crate) const SMALL_BULK_OP_FOLDING_LIMIT: i64 = 128;
 pub(crate) const PAGE: u64 = 1 << 16;
-/// A 32-bit memory's own limit, in pages (4 GiB).
 pub(crate) const MEMORY_PAGES: u64 = 1 << 16;
-/// What one table element costs the budget: a pointer, as `ViewLimits`
-/// charges it (`size_of::<usize>()` on the 64-bit hosts views run on).
 const ELEMENT_BYTES: u64 = 8;
 
 /// Why [`meter`] gave no module.
@@ -237,53 +231,30 @@ pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
     Ok(metered)
 }
 
-/// An error rewriting a module [`accepts`] took (none is expected: it was
-/// validated first).
 fn unsupported(error: impl std::fmt::Display) -> Refusal {
     Refusal::Unsupported(error.to_string())
 }
 
 type Error = wasm_encoder::reencode::Error<Infallible>;
 
-/// One module's pass: what it keeps of the module's own sections, and the
-/// bodies it metered, between reading the module ([`Pass::read`]) and
-/// writing it ([`Reencode`]). Every count here is bounded by `accepts`, far
-/// below 2^32.
 #[derive(Default)]
 struct Pass {
     view_bytes: u64,
-    /// `view_bytes` as the budget helper compiles it in
     budget: i64,
-    /// the module's function types; after them the pass adds each one
-    /// widened (at the type's index plus their number), the budget helper's
-    /// type, and the block of each type that has more than one result
     types: Vec<FuncType>,
-    /// the block of each type's results, which a body moves into
     blocks: Vec<BlockType>,
-    /// each imported function's type
     imports: Vec<u32>,
-    /// each defined function's type
     functions: Vec<u32>,
-    /// each memory's and each table's initial size (pages, elements)
     memories: Vec<u64>,
     tables: Vec<u64>,
-    /// the globals, imported and defined: [`GAS`] comes after them
     globals: u32,
-    /// the module's own functions it exports, once per export, in order:
-    /// each export gets a wrapper (`wrapper`)
     exported: Vec<u32>,
-    /// the metered bodies
     code: CodeSection,
-    /// every function a `ref.func` in a body names
     referenced: BTreeSet<u32>,
-    /// the sections the pass adds to, once written
     written: Vec<SectionId>,
 }
 
 impl Pass {
-    /// Reads `code` for what writing it needs, and meters every body as it
-    /// goes. The bodies are written first: the element section, which comes
-    /// before the code, declares the functions their `ref.func`s name.
     fn read(code: &[u8], constants: &Constants, view_bytes: u64) -> Result<Self, Refusal> {
         let mut pass = Self {
             view_bytes,
@@ -342,9 +313,6 @@ impl Pass {
         Ok(pass)
     }
 
-    /// Refuses a module that starts past the budget; the budget as the pass
-    /// compiles it in. (The maxima are lowered to it as the memory and table
-    /// sections are written: `memory_type`, `table_type`.)
     fn budget(&self) -> Result<i64, Refusal> {
         let needs = self
             .memories
@@ -360,12 +328,9 @@ impl Pass {
         if needs > view_bytes {
             return Err(Refusal::Memory { needs, view_bytes });
         }
-        // a budget past i64::MAX would never be reached by a wasm32 view
         Ok(i64::try_from(view_bytes).unwrap_or(i64::MAX))
     }
 
-    /// The block of each type's results: a value type, or none, or the block
-    /// type the pass adds for it.
     fn blocks(&self) -> Vec<BlockType> {
         let mut added = 2 * self.types.len() as u32;
         self.types
@@ -385,8 +350,6 @@ impl Pass {
         self.imports.len() as u32
     }
 
-    /// The widened form of type `ty`: the count as one more parameter and
-    /// one more result.
     fn wide(&self, ty: u32) -> u32 {
         self.types.len() as u32 + ty
     }
@@ -395,7 +358,6 @@ impl Pass {
         self.types[ty as usize].params().len() as u32
     }
 
-    /// The (original) type of `function`.
     fn type_of(&self, function: u32) -> u32 {
         match function.checked_sub(self.imported()) {
             Some(defined) => self.functions[defined as usize],
@@ -403,14 +365,10 @@ impl Pass {
         }
     }
 
-    /// The budget helper, the first function the pass adds; then an adapter
-    /// per import, then a wrapper per export.
     fn helper(&self) -> u32 {
         self.imported() + self.functions.len() as u32
     }
 
-    /// `function` as a value (in a table, a global, a `ref.func`): an
-    /// import is reached through its adapter, which has the widened type.
     fn value(&self, function: u32) -> u32 {
         match function < self.imported() {
             true => self.helper() + 1 + function,
@@ -418,22 +376,11 @@ impl Pass {
         }
     }
 
-    /// Meters one body (see the crate doc): every operator the cost wasmtime
-    /// gives it, in a straight line of `pending` cost that each branch, call,
-    /// `if`, loop header and the end of each block or arm adds to the count
-    /// (a `block` continues the line it is in); a check at the entry and at
-    /// every loop header. Only the module's own operators are charged, never
-    /// what the pass adds. Its parameters keep their indices; the count is
-    /// one more, so the body's own locals move one up, and the scratch local
-    /// comes after them. The body moves into a block of the function's
-    /// results, with the count pushed after it: a branch to the function's
-    /// label reaches that push; a `return` pushes it first.
     fn meter_body(
         &mut self,
         body: &FunctionBody<'_>,
         constants: &Constants,
     ) -> Result<Function, Refusal> {
-        // the bodies come in the order of the function section
         let ty = self.functions[self.code.len() as usize];
         let params = self.params(ty);
         let mut locals = Vec::new();
@@ -450,7 +397,6 @@ impl Pass {
             scratch: params + 1 + declared,
             gas: self.globals,
             grow: self.helper(),
-            // a function invocation costs 1 (wasmtime: `fuel_consumed: 1`)
             pending: 1,
         };
         let local = |index: u32| index + u32::from(index >= params);
@@ -458,7 +404,6 @@ impl Pass {
         out.sink().block(self.blocks[ty as usize]);
         out.charge();
         out.check();
-        // the blocks open in the body: at 0, an `end` is the function's
         let mut depth = 0u32;
         let mut operators = body.get_operators_reader().map_err(unsupported)?;
         while !operators.eof() {
@@ -475,11 +420,9 @@ impl Pass {
                     let grow = matches!(op, Operator::TableGrow { .. });
                     let at = u32::try_from(offset).ok();
                     match at.and_then(|at| constants.get(&at)) {
-                        // wasmtime folds a constant length into the run and
-                        // checks only past 128
                         Some(&cost) => {
                             out.pending = out.pending.saturating_add(cost);
-                            if cost > SMALL_BULK {
+                            if cost > SMALL_BULK_OP_FOLDING_LIMIT {
                                 out.charge();
                                 out.check();
                             }
@@ -490,10 +433,9 @@ impl Pass {
                         }
                         None => {
                             out.charge();
-                            out.charge_len();
+                            out.charge_dynamic_bulk_length();
                         }
                     }
-                    // the budget after the fuel, in wasmtime's order
                     if grow {
                         out.ask_budget(ELEMENT_BYTES);
                     }
@@ -504,7 +446,6 @@ impl Pass {
                     out.sink().local_tee(scratch);
                     out.ask_budget(PAGE);
                 }
-                // no charge on entry: the body continues our straight line
                 Operator::Block { .. } => depth += 1,
                 Operator::Loop { blockty } => {
                     depth += 1;
@@ -519,12 +460,10 @@ impl Pass {
                     out.pending += 1;
                     out.charge();
                 }
-                // the end of an arm
                 Operator::Else => out.charge(),
                 Operator::End => {
                     out.charge();
                     if depth == 0 {
-                        // the end of the block the body moved into
                         out.sink().end().local_get(fuel).end();
                         continue;
                     }
@@ -537,7 +476,6 @@ impl Pass {
                 Operator::Call { function_index } => {
                     out.pending += 1;
                     out.charge();
-                    // an import keeps its type: it neither takes nor gives the count
                     if function_index < self.imported() {
                         out.sink().call(function_index);
                     } else {
@@ -554,7 +492,6 @@ impl Pass {
                 } => {
                     out.pending += 1;
                     out.charge();
-                    // the count goes under the table index
                     let scratch = out.scratch;
                     out.sink()
                         .local_set(scratch)
@@ -592,8 +529,6 @@ impl Pass {
                     continue;
                 }
                 Operator::Drop | Operator::Nop => {}
-                // `return_call` and `return_call_indirect` are outside FEATURES:
-                // `accepts` refuses them, and so would the final validation
                 _ => out.pending += 1,
             }
             let instruction = self.instruction(op).map_err(unsupported)?;
@@ -603,20 +538,10 @@ impl Pass {
         Ok(out.function)
     }
 
-    /// The budget helper every `memory.grow` and `table.grow` calls first
-    /// with the bytes it would add: when the memory and every table as they
-    /// are, plus those bytes, are past the budget, [`GAS`] becomes
-    /// [`GROW_REFUSED`] and the call traps (`ViewLimits::memory_growing` /
-    /// `table_growing`). One function, so a grow costs the same few
-    /// instructions however many tables the module has. A zero delta asks
-    /// nothing in wasmtime; here it asks and always fits, since every size
-    /// the module reached was asked first. The helper is the pass's own
-    /// code: never charged.
     fn budget_helper(&self) -> Function {
         let mut helper = Function::new([]);
         let mut body = helper.instructions();
         body.local_get(0);
-        // one memory at most: multi-memory is outside FEATURES
         if !self.memories.is_empty() {
             body.memory_size(0)
                 .i64_extend_i32_u()
@@ -642,12 +567,6 @@ impl Pass {
         helper
     }
 
-    /// The adapter of imported function `import`, with the widened type: it
-    /// calls the import and hands the count through. An import keeps its
-    /// own type, so a direct call to it passes nothing; the adapter is what
-    /// a table, a global or a `ref.func` holds instead, so an indirect call
-    /// through the widened type still reaches it. The adapter is the pass's
-    /// own code: never charged.
     fn adapter(&self, import: u32) -> Function {
         let params = self.params(self.imports[import as usize]);
         let mut adapter = Function::new([]);
@@ -659,11 +578,6 @@ impl Pass {
         adapter
     }
 
-    /// The wrapper an export of `function` names instead, with its original
-    /// type, that hands the count over: the fuel left in [`GAS`] goes in as
-    /// the fuel consumed (negated), and the count that comes back goes into
-    /// [`GAS`] negated again. The wrapper is the pass's own code: never
-    /// charged.
     fn wrapper(&self, function: u32) -> Function {
         let mut wrapper = Function::new([]);
         let mut body = wrapper.instructions();
@@ -681,8 +595,6 @@ impl Pass {
         wrapper
     }
 
-    /// The module's types, each one widened, the helper's type, the blocks
-    /// of more than one result (`blocks`).
     fn write_types(&mut self, types: &mut TypeSection) {
         self.written.push(SectionId::Type);
         for ty in &self.types {
@@ -699,8 +611,6 @@ impl Pass {
         }
     }
 
-    /// The module's functions with their widened types, then the helper,
-    /// the adapters and the wrappers.
     fn write_functions(&mut self, functions: &mut FunctionSection) {
         self.written.push(SectionId::Function);
         for &ty in &self.functions {
@@ -730,9 +640,6 @@ impl Pass {
         exports.export(GAS, ExportKind::Global, self.globals);
     }
 
-    /// A `ref.func` names only a declared function, and an export no longer
-    /// declares one (it names the wrapper now, or an import's adapter stands
-    /// in): every function a body's `ref.func` names is declared here.
     fn write_elements(&mut self, elements: &mut ElementSection) {
         self.written.push(SectionId::Element);
         if !self.referenced.is_empty() {
@@ -741,8 +648,6 @@ impl Pass {
         }
     }
 
-    /// The metered bodies, then the helper's, the adapters' and the
-    /// wrappers'.
     fn write_code(&mut self, code: &mut CodeSection) {
         self.written.push(SectionId::Code);
         *code = std::mem::take(&mut self.code);
@@ -755,9 +660,6 @@ impl Pass {
         }
     }
 
-    /// The name section: functions keep their names (and their indices);
-    /// the names of locals and labels, which the pass renumbers, are
-    /// dropped.
     fn names(&mut self, names: NameSectionReader<'_>) -> Result<NameSection, Error> {
         let mut out = NameSection::new();
         for subsection in names {
@@ -771,13 +673,11 @@ impl Pass {
     }
 }
 
-/// `types` with the count appended.
 fn wide(types: &[ValType]) -> impl Iterator<Item = ValType> + '_ {
     types.iter().copied().chain([ValType::I64])
 }
 
-/// Wasm's section order (their ids number them otherwise).
-const ORDER: [SectionId; 13] = [
+const WASM_SECTION_ORDER: [SectionId; 13] = [
     SectionId::Type,
     SectionId::Import,
     SectionId::Function,
@@ -794,26 +694,18 @@ const ORDER: [SectionId; 13] = [
 ];
 
 fn place(id: SectionId) -> usize {
-    ORDER
+    WASM_SECTION_ORDER
         .iter()
         .position(|&known| known == id)
-        .unwrap_or(ORDER.len())
+        .unwrap_or(WASM_SECTION_ORDER.len())
 }
 
-/// The second read: every section as it is, but the ones below.
 impl Reencode for Pass {
     type Error = Infallible;
 
-    /// A function used as a value: in an element, or a `ref.func` in a
-    /// global's or an element's expression (calls, exports and bodies'
-    /// `ref.func`s are written apart).
     fn function_index(&mut self, function: u32) -> Result<u32, Error> {
         Ok(self.value(function))
     }
-
-    // the maxima are never reached before the grow checks; they bound what
-    // the engine reserves and say the budget in the module itself (an
-    // imported memory or table is refused, so these are the module's own)
 
     fn memory_type(&mut self, memory: wasmparser::MemoryType) -> Result<MemoryType, Error> {
         let mut memory = utils::memory_type(self, memory);
@@ -861,8 +753,6 @@ impl Reencode for Pass {
         Ok(())
     }
 
-    /// An export of the module's own function names its wrapper; an
-    /// exported import stays as it is.
     fn parse_export_section(
         &mut self,
         exports: &mut ExportSection,
@@ -901,9 +791,6 @@ impl Reencode for Pass {
         Ok(())
     }
 
-    /// Every custom section as it is (the view's manifest among them), but
-    /// the toolchain's `producers`, dropped, and `name`, rewritten (dropped
-    /// when it does not parse).
     fn parse_custom_section(
         &mut self,
         module: &mut Module,
@@ -924,15 +811,13 @@ impl Reencode for Pass {
         Ok(())
     }
 
-    /// A section the pass adds to that the module does not have is written
-    /// in its place, before the first section that comes after it.
     fn intersperse_section_hook(
         &mut self,
         module: &mut Module,
         _: Option<SectionId>,
         before: Option<SectionId>,
     ) -> Result<(), Error> {
-        let next = before.map_or(ORDER.len(), place);
+        let next = before.map_or(WASM_SECTION_ORDER.len(), place);
         let added = [
             SectionId::Type,
             SectionId::Function,
@@ -984,22 +869,12 @@ impl Reencode for Pass {
     }
 }
 
-/// One body as the pass writes it.
 struct Body {
     function: Function,
-    /// the count: the function's extra parameter, which it returns as its
-    /// extra result (wasmtime's `fuel_var`: the fuel consumed, kept in a
-    /// register across calls)
     fuel: u32,
-    /// a size-charged operator's length, a grow's delta, an indirect
-    /// call's table index
     scratch: u32,
-    /// [`GAS`]: what the host sets and reads, written by the wrappers of
-    /// the exports and by the pass's traps
     gas: u32,
-    /// the budget helper
     grow: u32,
-    /// the cost of the straight line not yet added to the count
     pending: i64,
 }
 
@@ -1008,7 +883,6 @@ impl Body {
         self.function.instructions()
     }
 
-    /// `fuel += pending`; nothing when there is nothing to charge.
     fn charge(&mut self) {
         if self.pending > 0 {
             let (fuel, pending) = (self.fuel, self.pending);
@@ -1021,8 +895,6 @@ impl Body {
         self.pending = 0;
     }
 
-    /// `if fuel >= 0 { gas = -fuel; unreachable }`: wasmtime's `fuel_check`
-    /// (the fuel consumed has reached the budget).
     fn check(&mut self) {
         let (fuel, gas) = (self.fuel, self.gas);
         self.sink()
@@ -1038,11 +910,7 @@ impl Body {
             .end();
     }
 
-    /// The size charge of a bulk operator whose length (or `table.grow`
-    /// delta) is on top of the stack and not a constant wasmtime folds:
-    /// `fuel += len`, the length kept in place and in the scratch local,
-    /// then a check.
-    fn charge_len(&mut self) {
+    fn charge_dynamic_bulk_length(&mut self) {
         let (fuel, scratch) = (self.fuel, self.scratch);
         self.sink()
             .local_tee(scratch)
@@ -1054,8 +922,6 @@ impl Body {
         self.check();
     }
 
-    /// Before a grow whose delta is in the scratch local: asks the budget
-    /// helper about `delta * unit` more bytes.
     fn ask_budget(&mut self, unit: u64) {
         let (scratch, grow) = (self.scratch, self.grow);
         self.sink()

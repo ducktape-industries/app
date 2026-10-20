@@ -16,14 +16,12 @@ use gpui_kit::{Edges, EntityInputHandler as _, Keystroke};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
-/// The kit state a field's text lives in: one line, or many.
 #[derive(Clone)]
 pub(super) enum Engine {
     Line(Entity<InputState>),
     Area(Entity<TextareaState>),
 }
 
-/// Runs `body` on whichever state the field holds.
 macro_rules! engine {
     ($engine:expr, |$state:ident| $body:expr) => {
         match $engine {
@@ -33,67 +31,43 @@ macro_rules! engine {
     };
 }
 
-/// An ask held while an IME composes: the engine's text is the IME's until
-/// it commits, and an edit under a preedit would be an edit in it. An ask
-/// for a generation of the view's text the host has not adopted yet is
-/// held the same way, until the frame that carries it.
 enum Deferred {
     Replace(wire::WidgetCommand),
     Adopt(u64, String, Vec<wire::TextToken>, Range<usize>),
 }
 
-/// What moved the engine's text, for `settle` to report: the writer or the
-/// IME (the edit is the span that differs), a view's ask (the edit it made,
-/// exactly), or the adopt of a new generation of the view's text, which is
-/// a new document in the field, not an edit of the old one.
 enum Made {
     Observed,
     Asked(wire::Edit),
     Adopted,
 }
 
-/// A mounted `Node::Field`: the engine's state, the view's routes, and the
-/// text as last reported, which every later report is measured against.
 pub(super) struct Field {
     pub(super) engine: Engine,
     on_change: Option<u32>,
     on_key: Option<u32>,
     on_submit: Option<u32>,
     claims: Box<[wire::KeyClaim]>,
-    /// The view's generation the engine's text was adopted from.
     generation: u64,
-    /// The engine's text, cursor and preedit as last reported, at `revision`.
     text: String,
     cursor: wire::TextRange,
     preedit: Option<wire::TextRange>,
     revision: u64,
-    /// Every edit an ask the host still holds may have read against, at the
-    /// revision that made it (`frame`).
     log: Vec<(u64, wire::Edit)>,
     deferred: Vec<Deferred>,
-    /// Esc let go of Tab: the next Tab leaves the field instead of
-    /// indenting. Any other key takes it back.
     tab_released: bool,
     placeholder: String,
     secure: bool,
-    /// What a software keyboard is told about the field (`InputOptions::
-    /// text_input`); with `secure`, the engine's `TextInputConfiguration`.
     text_input: wire::TextInput,
-    /// Whether a growing field fills its box or grows to `cap` rows.
     fills: bool,
     cap: Option<usize>,
     _observation: Subscription,
     _events: Subscription,
-    /// On a touch device, the software keyboard up when the field takes
-    /// the keys and down when it lets them go (`OsServices::soft_keyboard`).
     _keyboard: Option<[Subscription; 2]>,
 }
 
-/// What a key pressed in a focused field came to.
 enum Pressed {
-    /// The view claimed it: its event, which stops the key here.
     Claimed(wire::Event),
-    /// The field spent it (an indent).
     Taken,
     Passed,
 }
@@ -128,9 +102,6 @@ impl ViewTree {
         let style = self.style(*style);
         let path = self.authored_path.clone();
         debug_assert_eq!(path.last(), Some(id));
-        // Native key bindings consume Enter, Tab and navigation before
-        // element key listeners: a view's claim runs at gpui's pre-action
-        // seam, one interceptor for the tree's fields.
         if self.keystrokes.is_none() {
             let tree = cx.entity().downgrade();
             self.keystrokes = Some(cx.intercept_keystrokes(move |event, window, cx| {
@@ -209,8 +180,6 @@ impl ViewTree {
                 _events: events,
                 _keyboard: keyboard,
             };
-            // the view's text, with the selection its user left in it if
-            // this is the same text a new generation of the view shows
             let (selection, focused) = match saved {
                 Some(saved) => (saved.selection, saved.focused),
                 None => (cursor.range(), false),
@@ -230,9 +199,6 @@ impl ViewTree {
         field.on_submit = *on_submit;
         field.claims.clone_from(claims);
         let mut events = Vec::new();
-        // the generation the field holds, or the one an IME is keeping it
-        // from adopting: the field's generation moves when the adopt lands,
-        // so every change until then is told as the old document's
         let awaited = field
             .deferred
             .iter()
@@ -244,7 +210,6 @@ impl ViewTree {
             .unwrap_or(field.generation);
         if awaited != *generation {
             events.extend(field.adopt(*generation, value, tokens, cursor.range(), window, cx));
-            // an ask for this generation that outran its frame
             events.extend(field.land(window, cx));
         }
         if field.placeholder != *placeholder {
@@ -268,12 +233,7 @@ impl ViewTree {
             }));
         }
         if let Engine::Area(state) = field.engine.clone() {
-            // A height the view gave is a box to fill; none (a composer's
-            // `min_h`..`max_h`) is a field as tall as its lines, which the
-            // field's own auto-grow reports up to the parent that waits on it.
             field.set_fills(style.size.height.is_some(), field_rows(&style), cx);
-            // read-only as the kit's: it refuses what the user types, and
-            // takes what the view asks
             if state.read(cx).is_editable() != editable {
                 state.update(cx, |state, cx| state.set_readonly(!editable, cx));
             }
@@ -288,11 +248,7 @@ impl ViewTree {
             cx.emit(event);
         }
         let focus = engine!(&engine, |state| state.read(cx).focus_handle(cx));
-        // a disabled field wears no ring, as the kit's own look would not
         let focused = focus.is_focused(window) && !options.disabled;
-        // assistive technology's set-value is input too, taken as the
-        // kit's own programmatic change; a field that takes no typing
-        // takes none of it either
         let set_value = {
             let tree = cx.entity().downgrade();
             let path = path.clone();
@@ -311,18 +267,6 @@ impl ViewTree {
         };
         match &engine {
             Engine::Line(state) => {
-                // The field's one node is `a11y::text_field`, carrying the
-                // mapping; a secure field is a password, which keeps its value
-                // out of the tree. The wrapper wears the view's id and is the
-                // box the view's parent lays out (`placed`); the kit's input
-                // inside takes a host name nested under it, where no view
-                // child can be. The kit fixes the line at 20px inside `8px`
-                // padding: a face over ~16px is clipped top and bottom. The
-                // line follows the face and the kit's height centres it; a
-                // view's own style still wins. Focused, the kit's box wears
-                // the ring on itself (`around_field`); the kit's own focus
-                // look is off: a second ring painted round the outside, and a
-                // border colour laid over any style given here.
                 let (placed, drawn) = placed(&style);
                 let mut input = Input::new(state)
                     .id(host_id("input"))
@@ -346,14 +290,6 @@ impl ViewTree {
                 announce(field, accessible).into_any_element()
             }
             Engine::Area(state) => {
-                // The view's box is the field's, border and padding: it wears
-                // the ring, not the text inside the padding. The box the
-                // view gave, not the room the words take: a press in the
-                // empty part of a card is a press on the card's writing. A
-                // field asked to shrink has no empty part to press — its box
-                // IS its words — and taking the parent's height there would
-                // be taking the height the parent is waiting on this field
-                // to report.
                 let pressed = path.clone();
                 let words = div()
                     .relative()
@@ -366,9 +302,6 @@ impl ViewTree {
                         }),
                     )
                     .child(announce(
-                        // the base Textarea draws no node of its own, nor a
-                        // box: the field's one node wears the view's id, as
-                        // a one-line field's does
                         crate::a11y::text_field(
                             native_id(id),
                             &focus,
@@ -378,8 +311,6 @@ impl ViewTree {
                         .when(fills, |field| field.h_full()),
                         accessible,
                     ));
-                // the view's box, under a host name: the view's id is the
-                // field's node inside it
                 let mut element = div().relative().id(host_id("field"));
                 *element.style() = (*style).clone();
                 let element =
@@ -394,10 +325,6 @@ impl ViewTree {
         }
     }
 
-    /// The engine's state moved under the writer's hands, or under a view's
-    /// ask already reported: report what differs from the last report. A
-    /// text that changed is the person's input; a caret that moved alone,
-    /// or a blink, is not.
     fn field_observed(&mut self, path: &AuthoredPath, window: &mut Window, cx: &mut Context<Self>) {
         let Some(field) = self.fields.get_mut(path) else {
             return;
@@ -414,23 +341,7 @@ impl ViewTree {
         }
     }
 
-    /// Only the keys the view claimed are taken off the focused field.
-    /// Everything else — every arrow, every Backspace, every selection —
-    /// belongs to the editing engine, and taking one of those away is how
-    /// an editor stops being one.
-    ///
-    /// The OS key is the input: it activates the view here, where the host
-    /// receives it, whatever the field or the view makes of it. Escape
-    /// leaves things and activates nothing. Esc lets go of Tab for the next
-    /// key, whatever else it does: the view that claimed it still hears it,
-    /// and the field and the view still see it pass (owner, 2026-09-28;
-    /// AX-022). A plain Tab right after Esc is not the view's even when it
-    /// claimed Tab: the claim would swallow the very key that leaves.
     fn field_key(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
-        // A lone modifier's release reaches interceptors since gpui-pre
-        // 0.3.7 (zed ba42ab9d9). It is no key here: it neither spends Esc's
-        // leave nor takes it back, and no claim takes it, which would also
-        // keep the release from the window's modifier listeners.
         if matches!(
             keystroke.key.as_str(),
             "shift" | "control" | "alt" | "platform" | "function"
@@ -448,7 +359,6 @@ impl ViewTree {
             return;
         };
         let field = self.fields.get_mut(&path).expect("the focused field");
-        // A preedit is the IME's: its keys are not the view's to claim.
         if field.composing(window, cx) {
             field.tab_released = false;
             return;
@@ -466,10 +376,6 @@ impl ViewTree {
         }
     }
 
-    /// A press in the box that the field itself did not take — the empty
-    /// room under the last line — is still a press on the writing. It puts
-    /// the caret at the end of the text, the way clicking under the words in
-    /// any text box does, instead of landing nowhere.
     fn field_pressed(
         &mut self,
         path: &AuthoredPath,
@@ -498,8 +404,6 @@ impl ViewTree {
 }
 
 impl Field {
-    /// What a software keyboard is told about the field: the view's hints,
-    /// and `secure` when the field is masked.
     fn configuration(&self) -> gpui_kit::TextInputConfiguration {
         self.text_input.configuration(self.secure)
     }
@@ -516,17 +420,12 @@ impl Field {
             .update(cx, |state, cx| { state.focus(window, cx) }));
     }
 
-    /// The field as its user left it, for a new generation's tree.
     pub(super) fn presentation(&self, window: &Window, cx: &App) -> InputPresentation {
         engine!(&self.engine, |state| {
             let state = state.read(cx);
             InputPresentation {
                 value: state.value().to_string(),
                 secure: self.secure,
-                // ponytail: forward only; gpui-base 0.7.0 reads a backward
-                // range as empty (`normalize_token_range`), so a backward
-                // selection comes back with its caret at the far end. Save
-                // `cursor()` too once upstream takes one.
                 selection: state.selected_range(),
                 focused: state.focus_handle(cx).is_focused(window),
             }
@@ -539,7 +438,6 @@ impl Field {
         }))
     }
 
-    /// The engine's text, selection, preedit and spans, in bytes.
     fn read(
         &self,
         window: &mut Window,
@@ -568,10 +466,6 @@ impl Field {
         }))
     }
 
-    /// Whether the field takes the box it was given or the room its own
-    /// words need. Set from the node's height, because a field that always
-    /// asked for all of its parent's height gave a shrinking box nothing to
-    /// shrink to.
     fn set_fills(&mut self, fills: bool, cap: Option<usize>, cx: &mut App) {
         if (self.fills, self.cap) == (fills, cap) {
             return;
@@ -584,8 +478,6 @@ impl Field {
         }
     }
 
-    /// The view's text and spans, as the engine's: the one place its history
-    /// is cleared, since the text it held is not this one.
     fn install(
         &self,
         value: &str,
@@ -613,13 +505,6 @@ impl Field {
         }));
     }
 
-    /// A new generation of the view's text: adopted, and reported at its
-    /// revision with no edit, since it is a new document and not an edit of
-    /// the old one. The edit log goes with the old document: no ask on the
-    /// new one predates it, and an ask on the old one edits nothing now
-    /// (`ask`). Held while an IME composes, and the field stays on the old
-    /// generation until it lands: what the IME does meanwhile is done to the
-    /// old document, and is told as such.
     fn adopt(
         &mut self,
         generation: u64,
@@ -645,13 +530,6 @@ impl Field {
             .and_then(|(event, _)| event)
     }
 
-    /// A frame arrived with the view at `revision`, and `queued` is the
-    /// oldest revision an ask the host still holds for this field read: the
-    /// log is kept from the older of the two, and from any ask held while an
-    /// IME composes. An ask runs frames after the one it came with
-    /// (`Seat::run_widget_commands`), and the frames between may arrive
-    /// first, so a frame's arrival alone says nothing about which edits are
-    /// still read against; what the host holds does.
     pub(super) fn frame(&mut self, revision: u64, queued: Option<u64>) {
         let held = self.deferred.iter().filter_map(|deferred| match deferred {
             Deferred::Replace(wire::WidgetCommand::Replace { revision, .. }) => Some(*revision),
@@ -661,12 +539,6 @@ impl Field {
         self.log.retain(|(at, _)| *at > floor);
     }
 
-    /// What differs from the last report, reported: the text at its next
-    /// revision when it changed, with the edit that changed it (an ask's
-    /// exactly, else the span that differs; none for an adopt), logged and
-    /// told to the view as one and the same; the cursor and the preedit as
-    /// they stand. `None` when nothing moved. The second answer says whether
-    /// the text itself changed.
     fn settle(
         &mut self,
         made: Made,
@@ -713,8 +585,6 @@ impl Field {
         Some((event, changed))
     }
 
-    /// The asks held while an IME composed land once it has committed, in
-    /// the order they came.
     fn land(&mut self, window: &mut Window, cx: &mut App) -> Vec<wire::Event> {
         if self.preedit.is_some() || self.deferred.is_empty() {
             return Vec::new();
@@ -730,18 +600,6 @@ impl Field {
             .collect()
     }
 
-    /// A view's `Replace`: carried over every edit since the revision it
-    /// read, so it takes only the bytes the view read and what was typed
-    /// into them since stays after its text; landed as one edit through the
-    /// engine's history so the writer can undo it; reported at the revision
-    /// it made. One span when the view named a token for it and nothing
-    /// typed since sits inside, as plain text when the engine refuses the
-    /// span (a masked field, a range off a grapheme) or the field is at its
-    /// span cap. Held while an IME composes. The ask names the generation of
-    /// the view's text its bytes are of: one the field has not adopted yet
-    /// is held until it has (its frame is drawn before its asks run, so
-    /// only a held adopt leaves one waiting); one the view has since left
-    /// edits a document that is gone, and nothing here.
     pub(super) fn ask(
         &mut self,
         command: wire::WidgetCommand,
@@ -812,8 +670,6 @@ impl Field {
             .and_then(|(event, _)| event)
     }
 
-    /// A view's cursor command moves the caret where it is and takes no
-    /// keys: only `Focus` does, and only past the seat's gate.
     pub(super) fn cursor_command(
         &mut self,
         command: &wire::WidgetCommand,
@@ -841,7 +697,6 @@ impl Field {
             .and_then(|(event, _)| event)
     }
 
-    /// A key pressed in this focused field, no IME composing.
     fn key(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut App) -> Pressed {
         let released = std::mem::replace(&mut self.tab_released, keystroke.key == "escape");
         let plain_tab = keystroke.key == "tab"
@@ -874,13 +729,6 @@ impl Field {
         Pressed::Passed
     }
 
-    /// Tab in a growing field, which the writer means as an indent and the
-    /// field would otherwise spend on leaving. The editing engine has an
-    /// indent of its own and will not run it here — it is switched off for
-    /// a field that grows with its text, which is every view editor — so
-    /// the keystroke walks on to the window's focus ring and the caret never
-    /// sees it. Type the indent instead, through the engine's history as
-    /// any edit. A one-line field has no indent: Tab leaves it.
     fn indent(&mut self, outward: bool, window: &mut Window, cx: &mut App) -> bool {
         let Engine::Area(state) = &self.engine else {
             return false;
@@ -896,10 +744,6 @@ impl Field {
         if !writable {
             return false;
         }
-        // Shift+Tab against a line with no indent left to give has nothing
-        // to do, and a key with nothing to do is the key that walks the
-        // focus ring. Only an indent that actually moved is one this field
-        // keeps.
         let Some((range, replacement, moved)) = indent(&text, selected, outward) else {
             return false;
         };
@@ -912,15 +756,12 @@ impl Field {
     }
 }
 
-/// `range`, in bytes of a text `len` long: ends past the text are its end,
-/// and a backward range runs forward.
 fn clamp(range: wire::TextRange, len: usize) -> Range<usize> {
     let start = (range.start as usize).min(len);
     let end = (range.end as usize).min(len);
     start.min(end)..start.max(end)
 }
 
-/// A UTF-16 range of `text`, as gpui's input handler speaks, in bytes.
 fn utf16_bytes(text: &str, range: Range<usize>) -> wire::TextRange {
     let at = |units: usize| {
         let mut counted = 0;
@@ -935,19 +776,8 @@ fn utf16_bytes(text: &str, range: Range<usize>) -> wire::TextRange {
     wire::TextRange::from(at(range.start)..at(range.end))
 }
 
-/// One indent. Two spaces, the editing engine's own tab size: what an indent
-/// has to do in prose is line the next line up under this one, and a hard tab
-/// lines it up against a stop no painter here draws.
 const INDENT: &str = "  ";
 
-/// The one edit Tab makes — the span of `text` it rewrites and what the
-/// span reads after — and where the selection lands then. `None` when the
-/// key had nothing to do.
-///
-/// A caret types an indent where it stands. A SELECTION moves whole lines
-/// instead — that is what makes Tab worth having in a list, and replacing
-/// the selected words with two spaces is a deletion nobody asked for. The
-/// lines move as one edit, so one undo gives them back.
 fn indent(
     text: &str,
     selected: Range<usize>,
@@ -960,9 +790,6 @@ fn indent(
         let at = lo + INDENT.len();
         return Some((lo..lo, INDENT.to_owned(), at..at));
     }
-    // The first line is the one the selection starts ON, wherever in it that
-    // is; the last is the last one it starts BEFORE, so a selection carried to
-    // the head of a line leaves that line alone, as it does everywhere else.
     let head = text[..lo].rfind('\n').map_or(0, |at| at + 1);
     let mut lines = String::new();
     let mut edits: Vec<(usize, usize, usize)> = Vec::new();
@@ -1010,8 +837,6 @@ fn indent(
     ))
 }
 
-/// How much of a line's leading whitespace one Shift+Tab takes back: a hard
-/// tab whole, or up to an indent's worth of spaces.
 fn outdent(line: &str) -> usize {
     if line.starts_with('\t') {
         return 1;
@@ -1022,18 +847,10 @@ fn outdent(line: &str) -> usize {
         .count()
 }
 
-/// The text size `field_rows` assumes when the node's style sets none.
-/// Note: gpui's own default is 16px (`rems(1.)`), so a field styled without
-/// a size is counted at a smaller face than it is drawn with.
 const FALLBACK_FIELD_TEXT_PX: f32 = 14.;
 
-/// gpui's default line height as a multiple of the text size (`phi()`,
-/// 1.618034, to the three places the literal always had).
 const FIELD_LINE_HEIGHT: f32 = 1.618;
 
-/// How many lines a field that grows with its words shows before it scrolls:
-/// what its node's `max_h` holds, less its vertical padding, at the field's
-/// line height.
 fn field_rows(style: &gpui_kit::StyleRefinement) -> Option<usize> {
     use gpui_kit::{AbsoluteLength, DefiniteLength, Length};
     let pixels = |length: Option<DefiniteLength>| match length {
@@ -1052,14 +869,6 @@ fn field_rows(style: &gpui_kit::StyleRefinement) -> Option<usize> {
     Some((rows.floor() as usize).max(1))
 }
 
-/// A view's `style` for its one-line field, split between the wrapper, the
-/// box the parent lays out, and the kit's box drawn inside it. Where the
-/// field sits (its margin, its place, its share of a flex line) is the
-/// wrapper's; its size is both's, so the kit's box fills the wrapper: a
-/// fraction of the parent is the wrapper's to take, and the kit's box takes
-/// the whole of the wrapper, not that fraction of it again. The rest is the
-/// kit's box. A wrapper left the full width would take a flex line's room
-/// from a spacer and its siblings, and a press there would focus the field.
 fn placed(
     style: &gpui_kit::StyleRefinement,
 ) -> (gpui_kit::StyleRefinement, gpui_kit::StyleRefinement) {
@@ -1090,12 +899,6 @@ fn placed(
     (placed, drawn)
 }
 
-/// The software keyboard on a touch device (`OsServices::soft_keyboard`):
-/// up for the field that takes the keys, with its configuration; down when
-/// a field lets them go and no field took them since. The keys moving from
-/// one field to another run one field's blur and the other's focus in
-/// either order, so the blur's hide waits for the end of the effect cycle
-/// and stands only if the keyboard is still that field's.
 mod keyboard {
     use super::*;
     use crate::contract::SoftKeyboard;
@@ -1103,16 +906,13 @@ mod keyboard {
     use std::cell::Cell;
 
     thread_local! {
-        /// The field (its engine's entity) the keyboard is up for.
         static UP_FOR: Cell<Option<EntityId>> = const { Cell::new(None) };
     }
 
-    /// The keyboard up for `field`, which took the keys.
     fn shown(field: EntityId) {
         UP_FOR.set(Some(field));
     }
 
-    /// Whether the keyboard is still `field`'s: then it is no one's.
     fn taken_from(field: EntityId) -> bool {
         let still = UP_FOR.get() == Some(field);
         if still {
@@ -1121,8 +921,6 @@ mod keyboard {
         still
     }
 
-    /// The field at `path` asks for the keyboard as it takes the keys, and
-    /// lets it go as it loses them.
     pub(super) fn follow(
         engine: &Engine,
         path: AuthoredPath,
@@ -1152,9 +950,6 @@ mod keyboard {
     mod tests {
         use super::*;
 
-        /// A blur's hide stands only while the keyboard is still that
-        /// field's: the keys moving to another field keep it up, in either
-        /// order of the two fields' blur and focus.
         #[test]
         fn the_keyboard_goes_down_only_for_the_field_it_is_up_for() {
             let (a, b) = (EntityId::from(1u64), EntityId::from(2u64));
@@ -1173,8 +968,6 @@ mod keyboard {
 mod tests {
     use super::indent;
 
-    /// A caret types an indent; a selection moves whole lines, Shift+Tab
-    /// takes them back and gives up on a line with nothing left to shed.
     #[test]
     fn tab_indents_a_caret_a_block_and_gives_it_back() {
         let after = |text: &str, selected, outward| {
@@ -1189,7 +982,6 @@ mod tests {
             after("one\ntwo\nthree", 1..9, false),
             Some(("  one\n  two\n  three".into(), 3..15))
         );
-        // a selection carried to the head of a line leaves that line alone
         assert_eq!(
             after("one\ntwo\nthree", 0..8, false),
             Some(("  one\n  two\nthree".into(), 2..12))

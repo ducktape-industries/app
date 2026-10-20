@@ -123,7 +123,6 @@ impl Platform {
 pub(crate) mod testkit {
     use super::*;
 
-    /// A sealed one-artifact manifest.
     pub(crate) fn sample(sequence: u64, platform_key: &str, artifact: Sha) -> Manifest {
         Manifest {
             schema: SCHEMA,

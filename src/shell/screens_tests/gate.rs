@@ -9,22 +9,17 @@ use gpui_kit::{TestAppContext, VisualTestContext};
 
 pub(super) type Build = Box<dyn Fn() -> Scene>;
 
-/// A screen state with nothing open over it.
 fn plain(build: impl Fn() -> Seed + 'static) -> Build {
     Box::new(move || build().into())
 }
 
-/// A screen state with `overlay` open over its desk.
 fn over(overlay: Overlay, build: impl Fn() -> Seed + 'static) -> Build {
     Box::new(move || (build(), overlay).into())
 }
 
 fn booted(screen: Screen, key: bool) -> Seed {
     let mut seed = Seed::boot();
-    // boot reads this machine's recent nodes; the screen states set their own
     seed.session.recent_endpoints.clear();
-    // and hands over the app's notification centre and roster, which every
-    // test shares: a screen state gets its own
     seed.center = Default::default();
     seed.roster = Default::default();
     seed.screen = screen;
@@ -38,7 +33,6 @@ const ACCOUNT: Screen = Screen::Account {
     step: AccountStep::Name,
 };
 
-/// The layout step, asked before the desk on a device with none picked.
 pub(super) fn layout_step() -> Seed {
     booted(Screen::Layout, true)
 }
@@ -61,16 +55,12 @@ fn on_desk(overlay: Overlay) -> Build {
     over(overlay, desk)
 }
 
-/// A desk that lists two programs: the bar's rail is a tab list the
-/// arrows move along, and Settings' Notifications page has a radio group
-/// for each.
 fn two_programs() -> Seed {
     let mut seed = desk();
     seed.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
     seed
 }
 
-/// `build`'s state in the sidebar layout.
 fn in_sidebar(build: fn() -> Seed) -> impl Fn() -> Seed {
     move || {
         let mut seed = build();
@@ -79,10 +69,6 @@ fn in_sidebar(build: fn() -> Seed) -> impl Fn() -> Seed {
     }
 }
 
-/// A sidebar listing a titled window under its program, a program standing
-/// for its one window, Help and an empty window after the hairline. (Two
-/// windows of one program still loading would share their loading body's
-/// ids, AX-015, in either layout.)
 fn sidebar_windows() -> Seed {
     use crate::ui::layout::{EMPTY, HELP};
     super::sidebar::sidebar(
@@ -96,8 +82,6 @@ fn sidebar_windows() -> Seed {
     )
 }
 
-/// A desk with a window on it, which Search opens over: its rows for the window
-/// (Fill, Move or size) are there, each reporting its chord (AX-114).
 pub(super) fn spotlight_over_window() -> Seed {
     let mut seed = desk();
     let mut layout = crate::ui::layout::Layout::default();
@@ -109,7 +93,6 @@ pub(super) fn spotlight_over_window() -> Seed {
     seed
 }
 
-/// Every screen state, with whether it is a launcher screen (AX-018).
 pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
     let words = || Secret::from(String::from("canoe pond forest"));
     vec![
@@ -392,18 +375,11 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
 fn snap(window: &mut Window, cx: &mut gpui_kit::App) -> Vec<crate::ax::AxNode> {
     window.activate_a11y();
     ducktape_host::render::draw_frame(window, cx);
-    // the frame's callbacks (the desk's size, its seed) run before the next
     window.simulate_next_frame(cx);
     ducktape_host::render::draw_frame(window, cx);
     crate::ax::snapshot("shell", window, true)
 }
 
-/// The audit of the screen `native` shows now, Tab walk included: each
-/// error-severity violation as a line. The walk's arrows pick Settings'
-/// choices, and a pick saves: the prefs file goes back as it was once the
-/// walk ends, as the door's does (`Kept`), so the next state boots on it
-/// as this one did. (Only the file: the screen keeps the prefs it was
-/// drawn with, which a seed may hold without the file.)
 pub(super) fn errors(native: &mut VisualTestContext, screen: &str, launcher: bool) -> Vec<String> {
     native.update(snap);
     let prefs = crate::backend::read_prefs().expect("a test's prefs");
@@ -428,7 +404,6 @@ pub(super) fn errors(native: &mut VisualTestContext, screen: &str, launcher: boo
         .collect()
 }
 
-/// A screen state a test built by hand passes the audit too.
 pub(super) fn passes(native: &mut VisualTestContext, screen: &str, launcher: bool) {
     let failures = errors(native, screen, launcher);
     assert!(failures.is_empty(), "\n{}\n", failures.join("\n"));
@@ -442,15 +417,9 @@ fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
         failures.extend(errors(&mut native, screen, launcher));
     }
     assert!(failures.is_empty(), "\n{}\n", failures.join("\n"));
-    // every walk put back the picks it saved: each state booted on the
-    // prefs this test's thread started with
     assert_eq!(crate::backend::read_prefs().unwrap(), serde_json::json!({}));
 }
 
-/// The walk probes the shell's tab lists and radio groups as a view's
-/// (AX-107): the layout step's cards, the bar's rail and the sidebar's
-/// list, Settings' pages and each of its radio groups, once each, and each
-/// passes.
 #[gpui_kit::test]
 fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppContext) {
     let wanted: [(&str, &[&str]); 6] = [
@@ -502,11 +471,6 @@ fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppC
     }
 }
 
-/// The rail's tab list and its chosen tab both offer focus and are one Tab
-/// stop, so the desk has more nodes offering focus than stops: the walk
-/// still closes the first time the focus is back on the first stop
-/// (docs/ax.md §1.1), one press past the last stop, and never passes the
-/// first stop again.
 #[gpui_kit::test]
 fn the_walk_closes_the_first_time_the_focus_is_back_on_the_first_stop(cx: &mut TestAppContext) {
     let (_view, mut native) = open(plain(two_programs)(), cx);
@@ -539,10 +503,6 @@ fn the_walk_closes_the_first_time_the_focus_is_back_on_the_first_stop(cx: &mut T
     assert_eq!(walked.len(), stops.len() + 1, "one lap: {walked:?}");
 }
 
-/// The walk's arrows pick Settings' choices, and a pick saves; the door
-/// puts back what they changed. From no prefs, after a walk of the
-/// Notifications page no view is answered, the one asking still asks, and
-/// the prefs are still none.
 #[gpui_kit::test]
 async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) {
     let matrix = matrix();
@@ -557,9 +517,7 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
     assert_eq!(prefs, serde_json::json!({}));
     let (_view, native) = open(scene, cx);
     let window = gpui_kit::VisualContext::window_handle(&native);
-    // the walk keeps Settings' choices and puts them back, as the app's door does
     let report = crate::ax::audit::door_audit(window, None, &crate::shell::kept_restore, cx).await;
-    // the four radio groups and the page tabs were probed
     assert!(
         report["applicable"]["AX-107"].as_u64() >= Some(5),
         "{}",
@@ -570,11 +528,8 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
     assert!(center.lock().asking("gate-a"));
 }
 
-/// Search over a window offers Fill and Move or size for it, each saying
-/// the chord Help lists (AX-114), and the audit told the chords passes.
 #[gpui_kit::test]
 fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppContext) {
-    // narrowed to the window rows: programs other tests list share the list
     let (_view, mut native) = open((spotlight_over_window(), Overlay::Spotlight), cx);
     native.update(|window, cx| type_into("spotlight/search", "window", window, cx));
     let nodes = native.update(draw);
@@ -598,9 +553,6 @@ fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppCo
     assert!(report.applicable["AX-114"] >= 2, "{:?}", report.applicable);
 }
 
-/// The walk leaves a stop Tab did not move off by Esc, Tab only outside a
-/// modal (docs/ax.md §1.1): Search, whose one Tab stop Tab comes back to,
-/// stays open the whole walk instead of closing on the Esc.
 #[gpui_kit::test]
 fn the_walk_presses_no_escape_under_a_modal(cx: &mut TestAppContext) {
     let (_view, mut native) = open(on_desk(Overlay::Spotlight)(), cx);

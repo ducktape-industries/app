@@ -135,11 +135,6 @@ mod tests {
     use super::*;
     use noded_client::Signer as _;
 
-    /// The update from the Expo build keeps the key only if the alias and the
-    /// keyring directory it is built from are the Expo build's: the keyring
-    /// is bound under `<Documents>/remotes` (mobile `node.rs:156`, kept here
-    /// by `os::dirs`), and the alias spells it as mobile `key.rs` does
-    /// (whose own test reads the same three lines).
     #[test]
     fn the_alias_and_its_keyring_are_the_expo_builds() {
         let documents = tempfile::tempdir().unwrap();
@@ -153,8 +148,6 @@ mod tests {
         assert_eq!(alias(&other.dir), "ducktape:device-key:testkit+2");
     }
 
-    /// Every word the two stores answer is read; a word without a level of
-    /// its own is said, not guessed.
     #[test]
     fn every_store_word_reads_as_a_level_or_a_sentence() {
         for (word, level) in [
@@ -169,8 +162,6 @@ mod tests {
         assert!(level_of("secure").unwrap_err().contains("`secure`"));
     }
 
-    /// The reader signs what the node verifies: Ed25519 over the namespaced
-    /// message.
     #[test]
     fn the_reader_signs_the_namespaced_message() {
         let reader = Reader::new().unwrap();

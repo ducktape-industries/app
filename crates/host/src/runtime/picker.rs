@@ -43,36 +43,25 @@ use std::sync::{Arc, Mutex};
 pub(super) struct Picker {
     pending: Vec<(u64, methods::Pick)>,
     saves: Vec<(u64, methods::SaveFile)>,
-    /// every file the view holds: picked, pasted or dropped
     held: Held,
 }
 
-/// The files one view holds, by handle, shared with the threads that open
-/// them.
 #[derive(Clone, Default)]
 pub(super) struct Held(Arc<Mutex<Open>>);
 
 #[derive(Default)]
 struct Open {
-    /// the handle the next file held is given: never one given before
     next: u64,
     files: HashMap<u64, Arc<Picked>>,
 }
 
-/// One file the view holds, or one opened for it to hold
-/// ([`Held::hold`]).
 pub(super) struct Picked {
     name: String,
-    /// its size as held: a file of another size since is not the one the
-    /// person picked
     pub(super) size: u64,
     file: Mutex<File>,
 }
 
 impl Picked {
-    /// `bytes` named `name`, written to an unnamed file of their own (gone
-    /// once the last handle to it is), on the calling thread: a pasted
-    /// picture.
     #[cfg(any(feature = "ui", test))]
     pub(super) fn bytes(name: String, bytes: &[u8]) -> Result<Self, wire::Error> {
         let named = |error: std::io::Error| fault(format!("{name}: {error}"));
@@ -87,7 +76,6 @@ impl Picked {
 }
 
 impl Held {
-    /// `files` held, each under a new handle, as the view is told them.
     #[cfg(any(feature = "ui", test))]
     pub(super) fn hold(&self, files: Vec<Picked>) -> Vec<methods::Picked> {
         let open = &mut *self.0.lock().expect("held files");
@@ -111,8 +99,6 @@ impl Held {
         open.files.get(&handle).cloned()
     }
 
-    /// Lets go of each of `handles`; one the view does not hold is passed
-    /// over. A put reading one already goes on: it holds the file itself.
     fn release(&self, handles: &[u64]) {
         let open = &mut *self.0.lock().expect("held files");
         for handle in handles {
@@ -127,18 +113,15 @@ impl Picker {
         self.saves.retain(|(pending, _)| *pending != id);
     }
 
-    /// The file `handle` names, if the view holds it.
     pub(super) fn picked(&self, handle: u64) -> Option<Arc<Picked>> {
         self.held.get(handle)
     }
 
-    /// The files the view holds, for a thread that holds more.
     #[cfg(feature = "ui")]
     pub(super) fn held(&self) -> Held {
         self.held.clone()
     }
 
-    /// `paths` picked, as the system's picker would answer them.
     #[cfg(test)]
     pub(super) fn pick(&self, paths: Vec<PathBuf>) -> Vec<methods::Picked> {
         self.held.hold(open_paths(paths).expect("opened"))
@@ -162,8 +145,6 @@ pub(super) fn answer(
     true
 }
 
-/// What is on this device leaves it only by the person's own pick, and
-/// only a press or key opens the picker.
 fn pick(view: &mut View, id: u64, payload: &[u8]) {
     match methods::decode::<methods::Pick>(payload) {
         Ok(_) if !view.take_activation() => view.refuse(
@@ -211,8 +192,6 @@ fn read_whole(picked: &Picked, offset: u64, len: u64) -> Result<Vec<u8>, wire::E
     Ok(bytes)
 }
 
-/// The view lets go of files it holds: no press needed, it only closes
-/// them.
 fn release(view: &mut View, id: u64, payload: &[u8]) {
     match methods::decode::<Vec<u64>>(payload) {
         Ok(handles) => {
@@ -223,8 +202,6 @@ fn release(view: &mut View, id: u64, payload: &[u8]) {
     }
 }
 
-/// A file is written on this device only where the person chooses, and
-/// only a press or key opens the dialog that asks.
 fn save(view: &mut View, id: u64, payload: &[u8]) {
     match methods::decode::<methods::SaveFile>(payload) {
         Ok(_) if !view.take_activation() => view.refuse(
@@ -237,15 +214,9 @@ fn save(view: &mut View, id: u64, payload: &[u8]) {
     }
 }
 
-/// Opens the system's picker for each pick asked since the last turn, and
-/// its save dialog for each save; each is answered once the person picks,
-/// chooses or cancels. A host with no window (pushd) opens none: its
-/// notifiers have no press to pick with. gpui-pre's iOS platform has no
-/// save dialog and answers so, and the save is refused with its words.
 #[cfg(feature = "ui")]
 pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
     for (id, pick) in std::mem::take(&mut view.picker.pending) {
-        // a shell with a picker of its own (a phone's) picks; else gpui's
         if let Some(files) = crate::contract::os().files() {
             let picked = shell_pick(files, pick.multiple);
             let held = view.picker.held.clone();
@@ -267,7 +238,6 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
         let held = view.picker.held.clone();
         kernel::spawn_reply(view, id, async move {
             let paths = match prompt.await {
-                // the picker went without an answer: as cancelled
                 Err(_) => Vec::new(),
                 Ok(Err(error)) => return Err(fault(error.to_string())),
                 Ok(Ok(paths)) => paths.unwrap_or_default(),
@@ -282,7 +252,6 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
         if !kernel::reaches_node(view, id) {
             continue;
         }
-        // a shell that keeps files its own way (a phone's) is handed it
         if let Some(files) = crate::contract::os().files() {
             let path = keeping_path(&crate::contract::os().dirs().cache, &save.name);
             kernel::spawn_keep(view, id, save, path, files);
@@ -297,7 +266,6 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
         let prompt = cx.prompt_for_new_path(&folder, Some(&save.name));
         kernel::spawn_save(view, id, save, async move {
             match prompt.await {
-                // the dialog went without an answer: as cancelled
                 Err(_) => Ok(None),
                 Ok(Err(error)) => Err(fault(error.to_string())),
                 Ok(Ok(path)) => Ok(path),
@@ -306,11 +274,6 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
     }
 }
 
-/// Files dropped on a node of the view that listens for them
-/// (`on_file_drop`): opened on a blocking thread and held as a pick's
-/// are, then told to the view (`Event::FileDrop`). A drop that is not all
-/// files, or one that cannot be opened, is passed over whole and logged
-/// by its name alone: the view asked nothing it could be refused.
 #[cfg(feature = "ui")]
 pub(super) fn dropped(view: &View, handler: u32, paths: Vec<PathBuf>) {
     let held = view.picker.held.clone();
@@ -336,9 +299,6 @@ pub(super) fn dropped(view: &View, handler: u32, paths: Vec<PathBuf>) {
     });
 }
 
-/// The files at `paths`, each opened and named by its own name and size,
-/// in order. A path that is not a file, or that cannot be opened, refuses
-/// them all by its name alone.
 #[cfg(any(feature = "ui", test))]
 pub(super) fn open_paths(paths: Vec<PathBuf>) -> Result<Vec<Picked>, wire::Error> {
     let mut files = Vec::with_capacity(paths.len());
@@ -349,7 +309,6 @@ pub(super) fn open_paths(paths: Vec<PathBuf>) -> Result<Vec<Picked>, wire::Error
             .unwrap_or_default();
         let named = |error: std::io::Error| fault(format!("{name}: {error}"));
         let not_a_file = || fault(format!("{name} is not a file"));
-        // looked at before it is opened: opening a pipe waits for a writer
         if !std::fs::metadata(&path).map_err(named)?.is_file() {
             return Err(not_a_file());
         }
@@ -367,9 +326,6 @@ pub(super) fn open_paths(paths: Vec<PathBuf>) -> Result<Vec<Picked>, wire::Error
     Ok(files)
 }
 
-/// The shell's own picker ([`Files::pick`]), opened now: the paths of its
-/// copies of the files picked, none when the person cancelled or the shell
-/// went without an answer.
 #[cfg(any(feature = "ui", test))]
 fn shell_pick(
     files: &dyn Files,
@@ -391,9 +347,6 @@ fn shell_pick(
     }
 }
 
-/// The shell's copies at `paths`, opened as [`open_paths`] opens files,
-/// then removed with their folders: the host holds each one open, and a
-/// copy outlives no pick.
 #[cfg(any(feature = "ui", test))]
 fn open_copies(paths: Vec<PathBuf>) -> Result<Vec<Picked>, wire::Error> {
     let opened = open_paths(paths.clone());
@@ -406,8 +359,6 @@ fn open_copies(paths: Vec<PathBuf>) -> Result<Vec<Picked>, wire::Error> {
     opened
 }
 
-/// Where a file to keep is written first: a folder of its own under
-/// `cache`, the file named as the view named it, its last part alone.
 #[cfg(any(feature = "ui", test))]
 fn keeping_path(cache: &std::path::Path, name: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -423,8 +374,6 @@ fn keeping_path(cache: &std::path::Path, name: &str) -> PathBuf {
     cache.join("kept").join(folder).join(name)
 }
 
-/// `path` handed to the shell to keep ([`Files::keep`]): whether the person
-/// kept it, `false` when the shell went without an answer.
 #[cfg(any(feature = "ui", test))]
 pub(in crate::runtime) async fn keep(
     files: &dyn Files,
@@ -444,11 +393,6 @@ pub(in crate::runtime) async fn keep(
     }
 }
 
-/// The `len` bytes of a held file from `offset` (the caller keeps them
-/// within its size as held), handed to `part` as
-/// std's buffered reader fills, until they end or `part` takes no more. A
-/// file whose size changed since it was picked is refused: its slices
-/// would mix two files.
 pub(super) fn read(
     picked: &Picked,
     offset: u64,
@@ -531,8 +475,6 @@ mod tests {
         assert_eq!(read(&held, 2, 0, 1), b"b", "the other stays");
     }
 
-    /// A shell whose picker answers `picked` and whose keep answers whether
-    /// the file holds `kept`.
     struct Shell {
         picked: Option<Result<Option<Vec<PathBuf>>, String>>,
         kept: &'static [u8],

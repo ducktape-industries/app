@@ -117,8 +117,6 @@ pub use meter::Meter;
 #[cfg(feature = "call")]
 pub use meter::Speaking;
 
-/// What a phone's microphone the system took is told (iOS's interrupted
-/// session, Android's silenced recording): neither says which took it.
 #[cfg(any(target_os = "ios", target_os = "android"))]
 const MICROPHONE_TAKEN: &str = "A call, another app or the background took the microphone.";
 
@@ -177,5 +175,4 @@ pub fn settings_page(kind: Kind) -> Option<&'static str> {
     platform::settings_page(kind)
 }
 
-/// How often a piece reads its feed.
 const POLL: std::time::Duration = std::time::Duration::from_millis(33);

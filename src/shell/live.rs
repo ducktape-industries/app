@@ -22,7 +22,6 @@ pub(crate) struct Live {
 }
 
 impl Live {
-    /// The arguments after `--live`, or the usage line and exit 2.
     pub(crate) fn parse() -> Live {
         let args: Vec<String> = std::env::args().skip(2).collect();
         let parsed = match args.as_slice() {
@@ -42,9 +41,6 @@ impl Live {
     }
 }
 
-/// The session on `live.endpoint` as `live.seed`'s key, and the view in
-/// its window. A node that does not answer ends the process with its
-/// reason: there is nothing to show without one.
 pub(crate) fn boot(live: Live, entities: &Entities, cx: &mut gpui_kit::App) {
     let runtime = crate::runtime::handle();
     let signer = runtime.block_on(crate::backend::seat_key(std::sync::Arc::new(

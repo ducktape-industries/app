@@ -8,11 +8,6 @@ use crate::shell::entities::Overlay;
 use gpui_kit::*;
 
 impl OverlayLayer {
-    /// "Add a device…": the code a new device shows, then its fingerprint
-    /// to compare, then this device's yes — consent it signs for the
-    /// account and hands over the relay. Dressed as the canvas's dialogs:
-    /// `border: 1.5px solid ink`, a soft shadow, on a scrim below the bar.
-    /// What it asks is one `Account` call, the code from its field.
     pub(super) fn approve(&self, window: &mut Window, cx: &App) -> AnyElement {
         let entity = self.account.entity().clone();
         let account = self.account.read(cx).get();

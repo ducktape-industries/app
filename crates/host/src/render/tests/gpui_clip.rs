@@ -1,12 +1,10 @@
 use super::*;
 
-// Host-owned slot clipping cannot be replaced by view refinements.
 struct ViewSlot {
     tree: Entity<ViewTree>,
 }
 impl Render for ViewSlot {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // Intentionally no clipping here: ViewTree must impose its own boundary.
         div().relative().size(px(40.)).child(self.tree.clone())
     }
 }
@@ -21,8 +19,6 @@ fn hostile_view_position_size_and_overflow_remain_inside_host_slot(
             .absolute()
             .left(px(30.))
             .size(px(100.)),
-        // negative margins and insets keep their sign (bounded): these
-        // leave part of the box over the slot, which must clip it
         gpui_kit::StyleRefinement::default()
             .size(px(1e20))
             .mr(px(-1e20))
@@ -76,8 +72,6 @@ fn hostile_view_position_size_and_overflow_remain_inside_host_slot(
     }
 }
 
-// A pane narrower than the window: a popup asked for near its right edge
-// fits the pane, whole, instead of fitting the window and being cut off.
 #[gpui_kit::test]
 fn an_anchored_popup_fits_its_slot_not_the_window(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -122,17 +116,12 @@ fn an_anchored_popup_fits_its_slot_not_the_window(cx: &mut gpui_kit::TestAppCont
             quad.bounds.origin.x.0 / scale,
             quad.bounds.origin.y.0 / scale,
         );
-        // flipped to the left of and above the point, whole inside the pane
         assert_eq!((x, y), (80., 120.), "{quad:?}");
         assert!(quad.content_mask.bounds.size.width.0 / scale >= 100.);
     })
     .unwrap();
 }
 
-// A pane smaller than the window, a list scrolled in it: a tooltip and a
-// `Deferred` popup on the list's last visible row draw whole, inside the
-// pane. The pane is their mask, not the list's clip, and the tooltip fits
-// the pane, not the window.
 #[gpui_kit::test]
 fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
     cx: &mut gpui_kit::TestAppContext,
@@ -174,13 +163,11 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
         }),
         ..Default::default()
     };
-    // 100 by 120: below the pointer it runs past the pane's foot
     let tip = |row: u32| wire::TooltipResponse {
         request: row,
         character_index: None,
         content: Some(Box::new(magenta("tip", div().w(px(100.)).h(px(120.))))),
     };
-    // 100 by 60, under its row: past the list's foot, inside the pane
     let popup = || wire::Node::Deferred {
         priority: 16,
         content: Box::new(magenta(
@@ -188,8 +175,6 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
             div().absolute().top(px(40.)).w(px(100.)).h(px(60.)),
         )),
     };
-    // five rows of 40 in a list 100 high, scrolled by one row: the fourth
-    // row is the last in view, at 80..120, cut at 100
     let list = |tooltips: bool| {
         let rows = (0..5)
             .map(|row| {
