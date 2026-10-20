@@ -119,7 +119,8 @@ fn with_causes(error: &reqwest::Error) -> String {
     let mut cause = std::error::Error::source(error);
     while let Some(inner) = cause {
         let said = inner.to_string();
-        if !said.is_empty() && !sentence.ends_with(&said) {
+        let new = !said.is_empty() && !sentence.ends_with(&said);
+        if new {
             sentence = format!("{sentence}: {said}");
         }
         cause = inner.source();

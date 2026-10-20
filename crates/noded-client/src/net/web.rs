@@ -44,7 +44,8 @@ impl Net {
         url: &str,
         body: impl Stream<Item = std::io::Result<Vec<u8>>> + 'static,
     ) -> Result<Answer> {
-        if url.starts_with("https://") && streams_requests() {
+        let streamed = url.starts_with("https://") && streams_requests();
+        if streamed {
             let parts = body.map(|part| match part {
                 Ok(bytes) => Ok(JsValue::from(js_sys::Uint8Array::from(&bytes[..]))),
                 Err(error) => Err(JsValue::from_str(&error.to_string())),
