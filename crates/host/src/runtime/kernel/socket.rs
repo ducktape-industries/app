@@ -196,10 +196,10 @@ impl Asking {
             instance,
         } = self;
         let read = kept.clone();
-        let mut allowed = tokio::task::spawn_blocking(move || approved(&read))
+        let allowed = tokio::task::spawn_blocking(move || approved(&read))
             .await
             .unwrap_or_default();
-        if hosts.iter().all(|host| allowed.contains(host)) {
+        if !asks(&allowed, &hosts) {
             return Ok(());
         }
         if !pressed {
@@ -219,16 +219,21 @@ impl Asking {
         if told.answer().await != Some(true) {
             return Err(refused("the person did not allow the connection"));
         }
-        for host in hosts {
-            if !allowed.contains(&host) {
-                allowed.push(host);
-            }
-        }
-        tokio::task::spawn_blocking(move || approve(&kept, &allowed))
+        tokio::task::spawn_blocking(move || approve(&kept, &hosts))
             .await
             .map_err(host_fault)?
             .map_err(host_fault)
     }
+}
+
+fn asks(allowed: &[String], hosts: &[String]) -> bool {
+    let mut allowed = allowed.to_vec();
+    let mut hosts = hosts.to_vec();
+    allowed.sort_unstable();
+    allowed.dedup();
+    hosts.sort_unstable();
+    hosts.dedup();
+    allowed != hosts
 }
 
 trait Out {
@@ -373,6 +378,45 @@ mod tests {
         assert_eq!(approved(&kept), hosts);
         let other = crate::runtime::store::path(folder.path(), "duckpond#1", "chat");
         assert!(approved(&other).is_empty());
+    }
+
+    #[test]
+    fn a_changed_host_list_asks_again_and_the_old_yes_does_not_carry() {
+        let hosts = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let allowed = hosts(&["venus.web.telegram.org", "flora.web.telegram.org"]);
+        assert!(!asks(
+            &allowed,
+            &hosts(&["flora.web.telegram.org", "venus.web.telegram.org"])
+        ));
+        assert!(asks(
+            &allowed,
+            &hosts(&[
+                "venus.web.telegram.org",
+                "flora.web.telegram.org",
+                "pluto.web.telegram.org"
+            ])
+        ));
+        assert!(asks(&allowed, &hosts(&["venus.web.telegram.org"])));
+        assert!(asks(
+            &allowed,
+            &hosts(&["venus.web.telegram.org", "evil.example"])
+        ));
+        assert!(asks(&[], &hosts(&["venus.web.telegram.org"])));
+        let folder = tempfile::tempdir().unwrap();
+        let kept = crate::runtime::store::path(folder.path(), "duckpond#1", "telegram");
+        approve(&kept, &allowed).unwrap();
+        let changed = hosts(&["venus.web.telegram.org"]);
+        approve(&kept, &changed).unwrap();
+        assert_eq!(
+            approved(&kept),
+            changed,
+            "a yes to the new list replaces the old"
+        );
     }
 
     #[test]

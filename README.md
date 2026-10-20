@@ -80,8 +80,9 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   session per connection, `src/backend/live.rs`), and the app's own
   (`host.*`, `clock.ticks`, `clipboard.*`, `notify.*`, `store.*`), and
   `socket.open`/`socket.send` (a WebSocket from this device to a `wss://`
-  host the view's manifest lists, once the person allowed those hosts on a
-  card; `src/runtime/kernel/socket.rs`) with `host.random`. A view
+  host the view's manifest lists, once the person allowed exactly those
+  hosts on a card, asked again whenever an update changes the list;
+  `src/runtime/kernel/socket.rs`) with `host.random`. A view
   reaches only the capabilities its manifest declares. The app forwards the
   bytes to the program the view names and signs writes with the seated key;
   it never reads a payload.
