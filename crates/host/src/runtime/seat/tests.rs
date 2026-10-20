@@ -172,7 +172,7 @@ fn a_roster_read_reads_every_program_before_it_prepares_any() {
     };
     let withheld = ::programs::View {
         name: "ahead-withheld".into(),
-        view: blob_id(b"never-served"),
+        view: unserved(),
     };
     let node = FakeNode::new(
         vec![none],
@@ -239,7 +239,7 @@ fn a_seat_claimed_mid_read_is_loaded_while_another_read_hangs() {
     };
     let hangs = ::programs::View {
         name: "seat-tests-hangs".into(),
-        view: blob_id(b"never-served"),
+        view: unserved(),
     };
     let node = FakeNode::new(Vec::new(), vec![listed_view, hangs], vec![view]);
     let (roster, registry) = (Roster::default(), Registry::default());
@@ -1104,6 +1104,11 @@ fn a_stalled_load_does_not_hold_the_roster_read() {
         .recv()
         .expect("the roster read waited on the load it queued");
     node.wait_for_held(|held| held == 1);
+}
+
+fn unserved() -> abi::BlobId {
+    let test = std::thread::current();
+    blob_id(format!("never served, asked by {}", test.name().unwrap_or("main")).as_bytes())
 }
 
 /// A view whose manifest says `name`, `icon` (none when empty), `tint`
