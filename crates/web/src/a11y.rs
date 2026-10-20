@@ -602,7 +602,6 @@ mod tests {
     //! (`testdata/`), read and built into a gpui window: no CEF.
     use super::*;
     use gpui_kit::accesskit::TreeUpdate;
-    use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
         Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
         StatefulInteractiveElement as _, Styled as _, TestAppContext, VisualTestContext, div, px,
@@ -656,7 +655,7 @@ mod tests {
         let mut native = VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
+            window.draw(cx).clear(cx);
             (
                 window.a11y_tree().unwrap().clone(),
                 f64::from(window.scale_factor()),
