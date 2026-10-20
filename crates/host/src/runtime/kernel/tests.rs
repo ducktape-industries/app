@@ -114,7 +114,7 @@ pub(super) fn fake_node(routes: Vec<(&'static str, Mode)>) -> FakeNode {
     let node = node::Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = accepted.clone();
@@ -1489,7 +1489,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         chain: "test-network#1".into(),
         rev: view.connection.rev,
         live: None,
-        apart: None,
+        on: Default::default(),
     };
     // the props say the seated key holds account 7, the one the op names
     let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
@@ -1607,7 +1607,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         chain: "test-network#1".into(),
         rev: view.connection.rev,
         live: None,
-        apart: None,
+        on: Default::default(),
     };
     let submit = |view: &mut View, id: u64, target: &str| {
         view.activation = Some(Instant::now());

@@ -269,12 +269,11 @@ impl fmt::Display for Failure {
 pub(super) type Registry = Mutex<HashMap<(&'static str, u64), Arc<Mutex<Mounted>>>>;
 
 pub(super) fn registry() -> &'static Registry {
-    static MOUNTED: OnceLock<Registry> = OnceLock::new();
-    MOUNTED.get_or_init(Mutex::default)
+    &in_hand().seats
 }
 
-pub(super) fn let_go(program: &'static str, instance: u64) {
-    let mut registry = lock(registry());
+pub(super) fn let_go(network: &Network, program: &'static str, instance: u64) {
+    let mut registry = lock(&network.seats);
     let Some(seat) = registry.remove(&(program, instance)) else {
         return;
     };
@@ -283,19 +282,23 @@ pub(super) fn let_go(program: &'static str, instance: u64) {
     }
 }
 
-pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted>> {
-    let code = roster().code(program);
-    let mut registry = lock(registry());
+pub(super) fn mounted(
+    network: &Network,
+    program: &'static str,
+    instance: u64,
+) -> Arc<Mutex<Mounted>> {
+    let code = network.roster.code(program);
+    let mut registry = lock(&network.seats);
     let seat = registry.remove(&(program, 0)).unwrap_or_else(Mounted::seat);
     registry.insert((program, instance), seat.clone());
-    let snapshot = connection().lock().expect("views rpc").clone();
+    let snapshot = lock(&network.connection).clone();
     let mut locked = lock(&seat);
     locked.instance = instance;
     if let Slot::Ready(view) = &mut locked.slot {
         view.instance = instance;
     }
     let first = locked.generation == 0;
-    let listed = !roster().lock().is_empty();
+    let listed = !network.roster.lock().is_empty();
     let asked = asks_now(snapshot.client.is_some(), code.is_some(), listed)
         || view_override(program).is_some();
     let compiled = matches!(locked.slot, Slot::Compiled(_));
@@ -450,6 +453,7 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
     if loads.is_empty() {
         return;
     }
+    let network = loads[0].asked_of.on.get();
     handle().spawn(async move {
         let began = Instant::now();
         let read = read_every(loads).await;
@@ -461,7 +465,7 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
         );
         let mut prepare = Vec::new();
         {
-            let _rail = lock(registry());
+            let _rail = network.as_ref().map(|network| lock(&network.seats));
             for (load, read, timing) in read {
                 if lock(&load.seat).generation != load.generation {
                     continue;
@@ -768,9 +772,9 @@ fn install(
     if locked.generation != generation {
         return false;
     }
-    let current = connection().lock().expect("views rpc").clone();
+    let current = asked_of.current();
     let from_the_node = view_override(program).is_none();
-    let node_since_left = current.rev != asked_of.rev;
+    let node_since_left = asked_of.stale();
     if from_the_node && node_since_left {
         return false;
     }
@@ -878,9 +882,8 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
     timing.lock_wait = waited.elapsed();
     let installed = Instant::now();
     locked.owned = false;
-    let current = connection().lock().expect("views rpc").clone();
-    let stale = locked.generation != generation
-        || (view_override(program).is_none() && current.rev != asked_of.rev);
+    let stale =
+        locked.generation != generation || (view_override(program).is_none() && asked_of.stale());
     if !stale {
         let Mounted {
             slot,

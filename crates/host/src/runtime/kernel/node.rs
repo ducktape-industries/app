@@ -24,25 +24,21 @@ type NodeMethod = fn(Node, Vec<u8>) -> Answered;
 pub(super) struct Node {
     pub(super) client: RpcClient,
     pub(super) network: String,
-    /// A followed set's own (`Connection::apart`); `None` for the views'.
-    pub(super) apart: Option<std::sync::Arc<super::super::roster::Apart>>,
+    pub(super) on: super::super::roster::On,
 }
 
 impl Node {
     /// The roster the request reads: its set's, or the app's.
-    pub(super) fn roster(&self) -> &super::super::Roster {
-        match &self.apart {
-            Some(apart) => &apart.roster,
-            None => super::super::roster::roster(),
-        }
+    pub(super) fn roster(&self) -> super::super::Roster {
+        self.on.roster()
     }
 
     /// What signs its queries: a set's, the reader (the seated key is the
     /// network in hand's); the views', the seated key or the reader.
     pub(super) fn signer(&self) -> std::sync::Arc<dyn noded_client::Signer> {
-        match &self.apart {
-            Some(_) => crate::contract::os().reader(),
-            None => backend::query_signer(),
+        match self.on.followed() {
+            true => crate::contract::os().reader(),
+            false => backend::query_signer(),
         }
     }
 }
@@ -358,7 +354,7 @@ fn node_on(connection: &super::super::Connection) -> Option<Node> {
         (Some(client), network) if !network.is_empty() => Some(Node {
             client: client.clone(),
             network: network.clone(),
-            apart: connection.apart.clone(),
+            on: connection.on.clone(),
         }),
         _ => None,
     }

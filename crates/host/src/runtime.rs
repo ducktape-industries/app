@@ -60,7 +60,7 @@ pub use roster::{
     Link, Prep, RailRow, connected, deployments_checked, deployments_due, disconnected, props,
     valid_route,
 };
-pub use roster::{Roster, changes_channel, roster};
+pub use roster::{Network, Roster, changes_channel, in_hand, roster};
 pub use seat::{Back, Failure};
 #[cfg(feature = "ui")]
 pub use seat::{Backgrounded, Placed, Seat, serve_starts};

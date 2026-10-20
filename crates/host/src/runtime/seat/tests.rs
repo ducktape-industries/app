@@ -254,7 +254,7 @@ fn a_seat_claimed_mid_read_is_loaded_while_another_read_hangs() {
     );
     node.wait_for_held(|held| held == 1);
     lock(super::registry()).insert((PROGRAM, 0), seat);
-    let opened = mounted(PROGRAM, 7401);
+    let opened = mounted(crate::runtime::in_hand(), PROGRAM, 7401);
     // with no node in a test, the pane's own load fails, offering Retry
     wait_for_seat(&opened, |seat| matches!(seat.slot, Slot::Failed(_)));
     assert_eq!(node.held().0, 1, "the other read stopped hanging");
@@ -535,7 +535,7 @@ impl FakeNode {
                 chain: format!("{network}#0"),
                 rev: connection().lock().unwrap().rev,
                 live: None,
-                apart: None,
+                on: Default::default(),
             },
             held,
             changed,
@@ -746,7 +746,7 @@ impl ProgramsNode {
                 chain: "fake-network#0".into(),
                 rev: connection().lock().unwrap().rev,
                 live: None,
-                apart: None,
+                on: Default::default(),
             },
             tip,
             running,
@@ -1501,7 +1501,7 @@ fn a_pane_opens_its_compiled_view_at_once() {
             bare: true,
         });
     lock(registry()).insert((PROGRAM, 0), seat);
-    let opened = mounted(PROGRAM, 7101);
+    let opened = mounted(crate::runtime::in_hand(), PROGRAM, 7101);
     let polled = futures::FutureExt::now_or_never(start_in(opened.clone(), PROGRAM));
     let started = polled.is_some()
         && matches!(&lock(&opened).slot, Slot::Ready(view) if view.name == "At once");
@@ -1542,11 +1542,11 @@ fn a_seat_let_go_steps_back_to_its_code_and_stays_listed() {
             bare: true,
         });
     lock(registry()).insert((PROGRAM, 0), seat);
-    let opened = mounted(PROGRAM, 7201);
+    let opened = mounted(crate::runtime::in_hand(), PROGRAM, 7201);
     let started = futures::FutureExt::now_or_never(start_in(opened.clone(), PROGRAM)).is_some()
         && matches!(&lock(&opened).slot, Slot::Ready(_));
 
-    let_go(PROGRAM, 7201);
+    let_go(crate::runtime::in_hand(), PROGRAM, 7201);
     let back = lock(registry()).get(&(PROGRAM, 0)).cloned();
     let stepped = back.as_ref().map(|seat| {
         let locked = lock(seat);
@@ -1613,7 +1613,7 @@ fn a_pane_starts_the_view_its_seat_compiled() {
     let preloaded = Mounted::seat();
     lock(&preloaded).slot = Slot::Compiled(ViewCode::for_test("Claimed", "", 320));
     lock(registry()).insert((PROGRAM, 0), preloaded);
-    let seat = mounted(PROGRAM, 7001);
+    let seat = mounted(crate::runtime::in_hand(), PROGRAM, 7001);
     wait_for_seat(&seat, |seat| matches!(seat.slot, Slot::Failed(_)));
     lock(registry()).remove(&(PROGRAM, 7001));
 }

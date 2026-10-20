@@ -424,7 +424,7 @@ pub(super) fn answer(
         // the node's key signs an invite: only a role's own view asks
         // for one (a view no vote reviewed could hand it to its program)
         (Capability::Invite, "create") => {
-            if !super::consent::bound(view.program, super::roster().roles().as_ref()) {
+            if !super::consent::bound(view.program, view.connection.on.roster().roles().as_ref()) {
                 view.refuse(
                     id,
                     refusal::UNDECLARED_CAPABILITY,
@@ -448,7 +448,7 @@ pub(super) fn answer(
                 .as_deref()
                 .and_then(|props| wire::methods::decode::<wire::methods::Session>(props).ok())
                 .and_then(|session| session.account);
-            let roles = super::roster().roles();
+            let roles = view.connection.on.roster().roles();
             match super::consent::needed(
                 view.program,
                 roles.as_ref(),

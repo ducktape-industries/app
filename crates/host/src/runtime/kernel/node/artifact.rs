@@ -86,7 +86,7 @@ fn on_network(chain: &ducklink::ChainId) -> Result<Node, Read> {
     Ok(Node {
         client,
         network: connection.network,
-        apart: None,
+        on: Default::default(),
     })
 }
 

@@ -116,7 +116,7 @@ pub(super) mod tests {
         Node {
             client: RpcClient::new("http://127.0.0.1:9"),
             network: "test#1".into(),
-            apart: None,
+            on: Default::default(),
         }
     }
 
@@ -232,14 +232,14 @@ pub(super) mod tests {
             .lock()
             .unwrap()
             .insert(code, kept(Some((hash, Arc::from(module), None))));
-        let apart = super::super::super::roster::Apart::default();
+        let apart = super::super::super::roster::Network::new(true);
         apart.roster.lock().push(crate::backend::views::Program {
             name: program.into(),
             code,
             bare: false,
         });
         let followed = Node {
-            apart: Some(Arc::new(apart)),
+            on: super::super::super::roster::On::of(&apart),
             ..node()
         };
         let read = described(&followed, program, vec![5]).await.unwrap();
@@ -282,7 +282,7 @@ mod stage {
         let node = Node {
             client,
             network,
-            apart: None,
+            on: Default::default(),
         };
         let mut counts: std::collections::BTreeMap<String, (u64, u64)> = Default::default();
         let every = Blocks {

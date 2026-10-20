@@ -42,7 +42,7 @@ fn fake_connection(
         chain: "net#1".into(),
         rev,
         live: Some(Arc::new(Fake(Mutex::new(opened), Mutex::new(refusing)))),
-        apart: None,
+        on: Default::default(),
     }
 }
 

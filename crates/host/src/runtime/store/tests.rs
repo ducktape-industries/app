@@ -467,11 +467,11 @@ fn the_quit_drain_waits_for_a_queued_set() {
 #[test]
 fn a_left_set_writes_no_store() {
     let mut view = crate::runtime::kernel::tests::view();
-    let apart = std::sync::Arc::new(super::super::roster::Apart::default());
+    let apart = super::super::roster::Network::new(true);
     view.connection = super::super::Connection {
         chain: "other-network#1".into(),
         rev: view.connection.rev.wrapping_sub(1),
-        apart: Some(apart.clone()),
+        on: super::super::roster::On::of(&apart),
         ..Default::default()
     };
     assert!(file(&view, &None).is_ok(), "{:?}", file(&view, &None));

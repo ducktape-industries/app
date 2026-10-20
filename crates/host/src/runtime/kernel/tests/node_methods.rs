@@ -17,7 +17,7 @@ pub(super) fn node_server(
     let node = node::Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let responses: Vec<(String, Vec<u8>)> = responses
         .into_iter()
@@ -92,7 +92,7 @@ async fn a_view_query_reads_what_blocks_wrote_not_the_preconfirmed_overlay() {
     let node = node::Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
@@ -572,15 +572,15 @@ async fn blob_manifest_keeps_only_code_the_network_runs() {
     }
     assert_eq!(held.accepted.load(SeqCst), 2, "each ask read the node");
 
-    let apart = crate::runtime::roster::Apart::default();
-    apart.roster.lock().push(crate::backend::views::Program {
+    let network = crate::runtime::roster::Network::new(true);
+    network.roster.lock().push(crate::backend::views::Program {
         name: "listed".into(),
         code: id,
         bare: false,
     });
-    let apart = Some(std::sync::Arc::new(apart));
+    let apart = crate::runtime::roster::On::of(&network);
     let listed = node::Node {
-        apart: apart.clone(),
+        on: apart.clone(),
         ..held.node.clone()
     };
     let answer = blob_manifest(listed, ask.clone()).await.unwrap();
@@ -588,7 +588,7 @@ async fn blob_manifest_keeps_only_code_the_network_runs() {
     assert!(kept.exists(), "code a program runs was not kept");
     let empty = fake_node(Vec::new());
     let from_disk = node::Node {
-        apart,
+        on: apart,
         ..empty.node.clone()
     };
     let answer = blob_manifest(from_disk, ask).await;

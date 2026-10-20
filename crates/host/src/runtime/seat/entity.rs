@@ -120,6 +120,7 @@ pub struct Seat {
     program: &'static str,
     instance: u64,
     mounted: Arc<Mutex<Mounted>>,
+    network: Arc<crate::runtime::Network>,
     /// The window the pane is placed in now; set by `Seats::reconcile`
     /// through `place`. Widget commands and the carried presentation need it.
     window: Option<AnyWindowHandle>,
@@ -223,9 +224,18 @@ impl Seat {
     /// The seat of the pane with this layout `instance`, which is its key
     /// in the registry: a link's route waits for it by that key.
     pub fn new(program: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
+        Self::on(crate::runtime::in_hand().clone(), program, instance, cx)
+    }
+
+    pub fn on(
+        network: Arc<crate::runtime::Network>,
+        program: &'static str,
+        instance: u64,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
         let phase = cx.observe_global::<Backgrounded>(|this, cx| this.turn(cx));
-        let mounted = mounted(program, instance);
+        let mounted = mounted(&network, program, instance);
         // a seat claimed with its code compiled starts here and now
         start_here(&mounted, program, cx);
         let mut woken = lock(&mounted).wake.subscribe();
@@ -240,6 +250,7 @@ impl Seat {
             program,
             instance,
             mounted,
+            network,
             window: None,
             body: None,
             in_front: false,
@@ -1132,7 +1143,7 @@ impl Seat {
 impl Drop for Seat {
     fn drop(&mut self) {
         // back as the program's preloaded seat, its code kept (`let_go`)
-        let_go(self.program, self.instance);
+        let_go(&self.network, self.program, self.instance);
         // a route its view never read goes with it: no seat takes its key again
         _ = take_route(self.program, self.instance);
         // the program's row is read off the seat put back, or another

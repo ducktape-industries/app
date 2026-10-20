@@ -69,7 +69,7 @@ fn a_set_answers_on_its_own_node_and_a_connect_leaves_it_running() {
 
     stop_every();
     assert_eq!(set.notifiers.running(), [program]);
-    assert!(!lock(&set.connection).stale());
+    assert!(!lock(&set.network.connection).stale());
 }
 
 #[test]
@@ -118,12 +118,12 @@ fn take_up_trades_logs_and_refuses_the_left_sets_post() {
     assert_eq!(center.lock().network(), chain);
     assert_eq!(counted(&center, program), [1], "the set's row came over");
     assert_eq!(source.lock().network(), "");
-    assert!(set.apart.left.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(set.network.left.load(std::sync::atomic::Ordering::SeqCst));
     assert!(set.notifiers.running().is_empty(), "the set runs on");
 
     let mut view = super::super::kernel::tests::view();
     view.program = program;
-    view.connection = lock(&set.connection).clone();
+    view.connection = lock(&set.network.connection).clone();
     view.recipient = set.notifiers.recipient.clone();
     let late = wire::methods::encode(&mention());
     assert!(notify::answer(

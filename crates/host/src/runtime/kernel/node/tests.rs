@@ -35,7 +35,7 @@ async fn a_host_that_runs_no_node_mints_no_invite() {
     let node = Node {
         client: RpcClient::new("http://127.0.0.1:1"),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let ask = methods::encode(&methods::CreateInvite { ttl_days: 7 });
     let refusal = invite(node, ask).await.unwrap_err();
@@ -90,7 +90,7 @@ fn applying_node_with_a_lost_answer(lost: &'static str) -> (Node, Sent) {
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let submits = Sent::default();
     let counted = submits.clone();
@@ -396,7 +396,7 @@ fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::Atomic
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let applied_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = applied_count.clone();
@@ -491,7 +491,7 @@ fn counted_changes_node(
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     handle().spawn(async move {
         use futures::{SinkExt as _, StreamExt as _};
@@ -591,7 +591,7 @@ fn flaky_changes_node() -> Flaky {
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let (up, refuses) = (
         Arc::new(AtomicBool::new(true)),
@@ -790,7 +790,7 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
         chain: String::new(),
         rev,
         live: None,
-        apart: None,
+        on: Default::default(),
     });
     assert_eq!(refused(&mut view, 2).0, refusal::STALE_CONNECTION);
     assert_eq!(view.pending, [], "a subscription was refused");
@@ -854,7 +854,7 @@ fn connection_to(view: &View, node: Node) -> crate::runtime::Connection {
         chain: String::new(),
         rev: view.connection.rev + 1,
         live: None,
-        apart: None,
+        on: Default::default(),
     }
 }
 
@@ -1016,7 +1016,7 @@ fn put_node(carried: Option<abi::Outcome>) -> PutNode {
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let fake = PutNode {
         node,
@@ -1348,7 +1348,7 @@ async fn a_put_of_a_file_whose_size_changed_since_the_pick_is_a_host_fault() {
     let nowhere = Node {
         client: RpcClient::new("http://127.0.0.1:1"),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let refusal = put(nowhere, blobs, |_| {}).await.unwrap_err();
     assert_eq!(refusal.code, refusal::HOST_FAULT);
@@ -1431,7 +1431,7 @@ async fn the_try_network_holds_a_put() {
     let node = Node {
         client: client.clone(),
         network: status.network.clone(),
-        apart: None,
+        on: Default::default(),
     };
     let asked = std::time::Instant::now();
     let held = methods::decode(&put(node, blobs, |_| {}).await.unwrap()).unwrap();
@@ -1646,7 +1646,7 @@ fn heads_go_on_after_the_last_one_handed() {
     assert_eq!(page(Some(10), 10), None);
 }
 
-/// A followed set's request (`Connection::apart`) is asked of its own node,
+/// A followed set's request (`Connection::on`) is asked of its own node,
 /// whatever the views' connection did since (a reconnect moves `rev`), and
 /// refused `stale_connection` only once its set left. A view's own is as
 /// before: refused once the app reconnected, asked otherwise.
@@ -1654,7 +1654,7 @@ fn heads_go_on_after_the_last_one_handed() {
 fn a_followed_request_is_stale_only_once_its_set_left() {
     let mut view = view();
     let rev = view.connection.rev;
-    let apart = std::sync::Arc::new(super::super::super::roster::Apart::default());
+    let apart = super::super::super::roster::Network::new(true);
     view.connection = crate::runtime::Connection {
         client: Some(RpcClient::new("http://127.0.0.1:1")),
         network: "other-network".into(),
@@ -1662,19 +1662,19 @@ fn a_followed_request_is_stale_only_once_its_set_left() {
         // from before the views' last connect
         rev: rev.wrapping_sub(1),
         live: None,
-        apart: Some(apart.clone()),
+        on: super::super::super::roster::On::of(&apart),
     };
     let node = connected(&mut view, 1).expect("asked of its own node");
-    assert!(node.apart.is_some(), "its node reads its set's roster");
+    assert!(node.on.followed(), "its node reads its set's roster");
     apart.left.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(connected(&mut view, 2).is_none());
     assert_eq!(refused(&mut view, 2).0, refusal::STALE_CONNECTION);
 
-    view.connection.apart = None;
+    view.connection.on = Default::default();
     assert!(connected(&mut view, 3).is_none());
     assert_eq!(refused(&mut view, 3).0, refusal::STALE_CONNECTION);
     view.connection.rev = rev;
-    assert!(connected(&mut view, 4).is_some_and(|node| node.apart.is_none()));
+    assert!(connected(&mut view, 4).is_some_and(|node| !node.on.followed()));
 }
 
 /// A followed set's `program.query` goes out signed by the reader, never by
@@ -1706,11 +1706,12 @@ fn a_followed_query_is_signed_by_the_reader() {
     let mut node = Node {
         client: RpcClient::new(format!("http://{address}")),
         network: "other-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     handle().block_on(query(node.clone(), ask.clone())).unwrap();
     assert_eq!(signed.recv().unwrap(), seated_key, "the views' own");
-    node.apart = Some(Default::default());
+    let followed = super::super::super::roster::Network::new(true);
+    node.on = super::super::super::roster::On::of(&followed);
     handle().block_on(query(node, ask)).unwrap();
     let reader = noded_client::Signer::public_key(&*crate::contract::os().reader()).to_vec();
     assert_eq!(signed.recv().unwrap(), reader);
