@@ -53,11 +53,6 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
             ),
         ],
     );
-    let anchor = noded_client::wire::Tip {
-        height: 1,
-        id: [1; 32],
-    };
-    node.client.heard(anchor);
     let ask = call("programs", &payload);
     assert_eq!(
         query(node.clone(), ask.clone()).await.unwrap(),
@@ -71,11 +66,7 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
     for body in bodies {
         let query: noded_client::wire::Query = abi::decode(&body).unwrap();
         assert_eq!(query.layer, backend::Layer::Confirmed);
-        let noded_client::wire::Ask::Signed(frame) = query.ask else {
-            panic!("an unsigned query");
-        };
-        let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
-        assert_eq!(frame.body.anchor, anchor);
+        let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
         assert_eq!(frame.body.target, "programs");
         assert_eq!(frame.body.network, b"test-network");
         assert_eq!(frame.body.payload, payload);
@@ -103,10 +94,6 @@ async fn a_view_query_reads_what_blocks_wrote_not_the_preconfirmed_overlay() {
         network: "test-network".into(),
         on: Default::default(),
     };
-    node.client.heard(noded_client::wire::Tip {
-        height: 1,
-        id: [0; 32],
-    });
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         let (_, received) = read_request(&mut stream);

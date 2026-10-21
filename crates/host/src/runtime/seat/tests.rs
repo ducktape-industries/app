@@ -594,10 +594,7 @@ fn answer(
     }
     if line.starts_with("POST /v1/query ") {
         let query: noded_client::wire::Query = abi::decode(&body).unwrap();
-        let noded_client::wire::Ask::Signed(frame) = query.ask else {
-            panic!("an unsigned query");
-        };
-        let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
+        let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
         let reply = match abi::decode(&frame.body.payload).unwrap() {
             ::programs::Query::Roster => ::programs::Reply::Roster {
                 height: 1,
@@ -844,10 +841,7 @@ fn serve_programs(stream: &mut std::net::TcpStream, programs: &::program::MockHo
         return respond(stream, "200 OK", &abi::encode(&None::<Vec<u8>>));
     }
     let query: noded_client::wire::Query = abi::decode(&body).unwrap();
-    let noded_client::wire::Ask::Signed(frame) = query.ask else {
-        panic!("an unsigned query");
-    };
-    let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
+    let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
     let asked = abi::decode(&frame.body.payload).unwrap();
     let env = programs_env(tip + 1, ::program::Origin::Signed(frame.body.signer));
     let reply = ::programs::Programs::query(&programs.query(env), asked).unwrap();

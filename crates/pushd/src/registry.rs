@@ -928,10 +928,7 @@ mod tests {
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
                 let query: noded_client::wire::Query = abi::decode(&body).unwrap();
-                let noded_client::wire::Ask::Signed(frame) = query.ask else {
-                    panic!("an unsigned query");
-                };
-                let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
+                let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
                 let identity::Query::OfKey { key } = abi::decode(&frame.body.payload).unwrap()
                 else {
                     panic!("the recheck asks OfKey first");
@@ -984,14 +981,7 @@ mod tests {
         let network = Followed {
             name: "testkit".into(),
             devices: devices.clone(),
-            client: {
-                let client = noded_client::Client::new(url);
-                client.heard(noded_client::wire::Tip {
-                    height: 1,
-                    id: [1; 32],
-                });
-                client
-            },
+            client: noded_client::Client::new(url),
             chain: Mutex::new(Some(("testkit-0a1b2c3d".into(), "testkit".into()))),
         };
         let door = Door::new(vec![Arc::new(network)], Arc::new(key()));

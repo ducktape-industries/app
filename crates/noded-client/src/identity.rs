@@ -5,7 +5,7 @@
 use identity::{Admission, Op, Query, Reply};
 
 use crate::wire::{Frame, Layer, salt};
-use crate::{Asked, Client, Error, Signer};
+use crate::{Client, Error, Signer};
 
 /// How long a consent stays good, in the node's milliseconds.
 pub const CONSENT_TTL_MS: u64 = 15 * 60 * 1000;
@@ -17,19 +17,17 @@ pub async fn ask(
     query: Query,
     signer: &dyn Signer,
 ) -> Result<Reply, String> {
+    let frame = Frame::query(
+        signer,
+        network.as_bytes(),
+        identity::PROGRAM,
+        abi::encode(&query),
+    )
+    .map_err(|refused| refused.to_string())?;
     let reply = client
-        .query(
-            Layer::Preconfirmed,
-            signer,
-            network.as_bytes(),
-            identity::PROGRAM,
-            abi::encode(&query),
-        )
+        .query(Layer::Preconfirmed, frame.encode())
         .await
-        .map_err(|asked| match asked {
-            Asked::Unsigned(refused) => refused.to_string(),
-            Asked::Node(error) => node_error(error.to_string()),
-        })?;
+        .map_err(|error| node_error(error.to_string()))?;
     abi::decode(&reply).map_err(|refusal| refusal.sentence)
 }
 
@@ -57,22 +55,17 @@ pub async fn account_of_key(
     key: Vec<u8>,
     signer: &dyn Signer,
 ) -> Result<Option<(u64, String)>, String> {
-    let asked = client
-        .query(
-            Layer::Preconfirmed,
-            signer,
-            network.as_bytes(),
-            identity::PROGRAM,
-            abi::encode(&Query::OfKey { key }),
-        )
-        .await;
-    let reply = match asked {
-        Err(Asked::Node(Error::Refused(refusal)))
-            if refusal.reason == abi::reason::UNAUTHORIZED =>
-        {
+    let frame = Frame::query(
+        signer,
+        network.as_bytes(),
+        identity::PROGRAM,
+        abi::encode(&Query::OfKey { key }),
+    )
+    .map_err(|refused| refused.to_string())?;
+    let reply = match client.query(Layer::Preconfirmed, frame.encode()).await {
+        Err(Error::Refused(refusal)) if refusal.reason == abi::reason::UNAUTHORIZED => {
             return Ok(None);
         }
-        Err(Asked::Unsigned(refused)) => return Err(refused.to_string()),
         reply => reply.map_err(|error| node_error(error.to_string()))?,
     };
     let number = match abi::decode(&reply).map_err(|refusal| refusal.sentence)? {
@@ -217,12 +210,7 @@ mod tests {
                 let _ = stream.write_all(&body).await;
             }
         });
-        let client = Client::new(url);
-        client.heard(crate::wire::Tip {
-            height: 1,
-            id: [1; 32],
-        });
-        client
+        Client::new(url)
     }
 
     const BYTES: &str = "application/octet-stream";

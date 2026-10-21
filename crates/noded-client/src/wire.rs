@@ -16,9 +16,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{SignError, Signer};
 
-pub const NODE_CONTRACT: u32 = 10;
+pub const NODE_CONTRACT: u32 = 9;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
-pub const QUERY_NAMESPACE: &[u8] = b"ducktape:query";
 
 pub mod route {
     pub const STATUS: &str = "/v1/status";
@@ -32,7 +31,6 @@ pub mod route {
     /// height for a block that wrote nothing there and for each epoch's last
     /// block. A client that answers no ping for a whole epoch is cut.
     pub const CHANGES: &str = "/v1/changes";
-    pub const HEADS: &str = "/v1/heads";
     pub const BLOCKS: &str = "/v1/blocks";
     pub const BLOCK: &str = "/v1/block";
     pub const TX: &str = "/v1/tx";
@@ -59,20 +57,17 @@ pub struct Tip {
     pub id: [u8; 32],
 }
 
+/// The anchor a query's frame carries: a query reads, so it is anchored to
+/// no block.
+pub const UNANCHORED: Tip = Tip {
+    height: 0,
+    id: [0; 32],
+};
+
 /// A fresh salt for a write's frame: two writes of the same bytes are two
 /// transactions.
 pub fn salt() -> u64 {
     rand::random()
-}
-
-static CLIENT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-pub fn name_client(client: String) {
-    let _ = CLIENT.set(client);
-}
-
-pub fn client() -> Option<String> {
-    CLIENT.get().cloned()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -88,7 +83,6 @@ pub struct Body {
     pub salt: Option<u64>,
     pub target: String,
     pub payload: Vec<u8>,
-    pub client: Option<String>,
 }
 
 /// How many blocks after its anchor a frame may still be carried: core's
@@ -115,7 +109,6 @@ impl Body {
             &self.salt,
             &self.target,
             &self.payload,
-            &self.client,
         );
         sha2::Sha256::digest(abi::encode(&submission)).into()
     }
@@ -142,44 +135,6 @@ impl Frame {
         target: &str,
         payload: Vec<u8>,
     ) -> Result<Frame, SignError> {
-        Frame::signed(
-            FRAME_NAMESPACE,
-            signer,
-            network,
-            anchor,
-            salt,
-            target,
-            payload,
-        )
-    }
-
-    pub fn query(
-        signer: &dyn Signer,
-        network: &[u8],
-        anchor: Tip,
-        target: &str,
-        payload: Vec<u8>,
-    ) -> Result<Frame, SignError> {
-        Frame::signed(
-            QUERY_NAMESPACE,
-            signer,
-            network,
-            anchor,
-            None,
-            target,
-            payload,
-        )
-    }
-
-    fn signed(
-        namespace: &[u8],
-        signer: &dyn Signer,
-        network: &[u8],
-        anchor: Tip,
-        salt: Option<u64>,
-        target: &str,
-        payload: Vec<u8>,
-    ) -> Result<Frame, SignError> {
         let body = Body {
             scheme: abi::Scheme::Ed25519,
             signer: signer.public_key().to_vec(),
@@ -188,10 +143,19 @@ impl Frame {
             salt,
             target: target.to_owned(),
             payload,
-            client: client(),
         };
-        let proof = signer.sign(namespace, &body.preimage())?.to_vec();
+        let proof = signer.sign(FRAME_NAMESPACE, &body.preimage())?.to_vec();
         Ok(Frame { body, proof })
+    }
+
+    /// A query's frame: [`UNANCHORED`], no salt.
+    pub fn query(
+        signer: &dyn Signer,
+        network: &[u8],
+        target: &str,
+        payload: Vec<u8>,
+    ) -> Result<Frame, SignError> {
+        Frame::sign(signer, network, UNANCHORED, None, target, payload)
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -309,13 +273,7 @@ pub enum Submitted {
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Query {
     pub layer: Layer,
-    pub ask: Ask,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub enum Ask {
-    Signed(Vec<u8>),
-    Unsigned { target: String, payload: Vec<u8> },
+    pub frame: Vec<u8>,
 }
 
 /// `host::Receipt`: what a submit answers.
@@ -334,13 +292,6 @@ pub struct Change {
     pub height: u64,
     pub root: Root,
     pub writes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Head {
-    pub height: u64,
-    pub id: [u8; 32],
-    pub time: u64,
 }
 
 /// `wire::Blocks`: a page of finalized blocks, newest first.
@@ -447,73 +398,49 @@ mod tests {
     }
 
     #[test]
-    fn a_query_frame_names_its_anchor_and_carries_no_salt() {
-        let anchor = Tip {
-            height: 3,
-            id: [4; 32],
-        };
-        let frame = Frame::query(&crate::FixedSigner, b"net", anchor, "demo", vec![1])
+    fn a_query_frame_names_the_target_and_the_network_and_carries_no_salt() {
+        let frame = Frame::query(&crate::FixedSigner, b"net", "demo", vec![1])
             .unwrap()
             .encode();
         let decoded: Frame = abi::decode(&frame).unwrap();
         assert_eq!(decoded.body.target, "demo");
         assert_eq!(decoded.body.network, b"net");
-        assert_eq!(decoded.body.anchor, anchor);
+        assert_eq!(decoded.body.anchor, UNANCHORED);
         assert_eq!(decoded.body.salt, None);
-        let asked = Query {
-            layer: Layer::Preconfirmed,
-            ask: Ask::Signed(vec![7]),
-        };
-        assert_eq!(abi::encode(&asked), [1, 0, 1, 0, 0, 0, 7]);
     }
 
-    #[cfg(feature = "commonware")]
-    #[test]
-    fn a_query_signs_under_its_own_namespace() {
-        use commonware_cryptography::{Signer as Commonware, ed25519};
-        let key = ed25519::PrivateKey::from_seed(7);
-        let anchor = Tip {
-            height: 3,
-            id: [4; 32],
-        };
-        let frame = Frame::query(&key, b"net", anchor, "demo", vec![1]).unwrap();
-        let reference = Commonware::sign(&key, QUERY_NAMESPACE, &frame.body.preimage());
-        assert_eq!(frame.proof, reference.as_ref());
-    }
-
+    /// The id is the one a block lists the frame under: this body went to a
+    /// kit stage (core fdd0fa4c6) as an identity `Create`, and the node's
+    /// `/v1/tx` found it by exactly this hash, at block 162 (mobile-core
+    /// `node.rs`, whose `Sent::of` this is). Block 161 + 256 is the last
+    /// that may carry a frame anchored at 161 (`Tip::anchors`).
     #[test]
     fn a_frame_is_known_by_its_submission_id_until_its_window_closes() {
-        use sha2::Digest as _;
         let body = Body {
             scheme: abi::Scheme::Ed25519,
-            signer: vec![1],
+            signer: vec![
+                5, 101, 82, 67, 46, 214, 228, 20, 185, 244, 223, 158, 66, 208, 230, 181, 107, 133,
+                137, 249, 180, 133, 47, 222, 44, 161, 48, 101, 70, 146, 2, 164,
+            ],
             network: b"testkit".to_vec(),
             anchor: Tip {
                 height: 161,
-                id: [4; 32],
+                id: [
+                    216, 37, 10, 50, 122, 232, 42, 32, 159, 193, 78, 79, 104, 137, 11, 176, 48, 94,
+                    226, 70, 190, 186, 228, 253, 201, 7, 238, 32, 164, 99, 227, 222,
+                ],
             },
-            salt: Some(5),
-            target: "t".into(),
-            payload: vec![6],
-            client: Some("c".into()),
+            salt: Some(17800990368157048846),
+            target: "identity".into(),
+            payload: vec![1, 5, 0, 0, 0, 112, 114, 111, 98, 101, 0],
         };
-        let mut submission = vec![1, 0, 0, 0, 1];
-        submission.extend(161u64.to_le_bytes());
-        submission.extend([4; 32]);
-        submission.push(1);
-        submission.extend(5u64.to_le_bytes());
-        submission.extend([1, 0, 0, 0, b't', 1, 0, 0, 0, 6]);
-        submission.extend([1, 1, 0, 0, 0, b'c']);
-        let id: [u8; 32] = sha2::Sha256::digest(&submission).into();
-        assert_eq!(body.id(), id);
-        let unnamed = Body {
-            client: None,
-            ..body.clone()
-        };
-        submission.truncate(submission.len() - 6);
-        submission.push(0);
-        let id: [u8; 32] = sha2::Sha256::digest(&submission).into();
-        assert_eq!(unnamed.id(), id);
+        assert_eq!(
+            body.id(),
+            [
+                80, 91, 198, 56, 196, 247, 254, 147, 177, 248, 245, 254, 195, 228, 37, 191, 52, 55,
+                60, 248, 19, 25, 229, 38, 80, 164, 73, 37, 189, 126, 13, 25,
+            ]
+        );
         assert_eq!(body.until(), 161 + 256);
     }
 
@@ -530,7 +457,6 @@ mod tests {
             salt: Some(5),
             target: "t".into(),
             payload: vec![6],
-            client: Some("c".into()),
         };
         // core's `KeyScheme` tags: Ed25519 0, Secp256k1 1, Secp256r1 2
         assert_eq!(abi::encode(&abi::Scheme::Secp256k1), [1]);
@@ -542,7 +468,6 @@ mod tests {
         bytes.push(1);
         bytes.extend(5u64.to_le_bytes());
         bytes.extend([1, 0, 0, 0, b't', 1, 0, 0, 0, 6]);
-        bytes.extend([1, 1, 0, 0, 0, b'c']);
         assert_eq!(body.preimage(), bytes);
     }
 

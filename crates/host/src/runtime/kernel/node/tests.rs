@@ -253,7 +253,6 @@ async fn a_predicted_refusal_is_still_a_pooled_frame() {
 #[test]
 fn a_query_to_a_stalled_node_holds_its_slot_until_the_view_cancels_it() {
     let fake = fake_node(vec![(noded::route::QUERY, Mode::Stall)]);
-    fake.node.client.heard(TIP);
     let mut view = view();
     let replies = view.replies.clone();
     let mut changed = view.replies.changes();
@@ -284,7 +283,6 @@ async fn a_held_answer_lands() {
             abi::encode(&vec![7u8]),
         ),
     )]);
-    fake.node.client.heard(TIP);
     let answer = query(fake.node.clone(), call_registry()).await;
     assert_eq!(answer, Ok(vec![7]), "the held answer is the answer");
 }
@@ -341,7 +339,6 @@ async fn a_redirected_submit_goes_nowhere_else() {
 #[tokio::test]
 async fn a_node_that_hangs_up_is_asked_once() {
     let fake = fake_node(vec![(noded::route::QUERY, Mode::Close)]);
-    fake.node.client.heard(TIP);
     let answer = query(fake.node.clone(), call_registry()).await;
     assert!(transport_failed(&answer.unwrap_err()));
     assert_eq!(fake.accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -772,12 +769,24 @@ fn a_node_that_refuses_the_socket_ends_the_feed_with_why() {
     assert_eq!(flaky.opened.load(SeqCst), 0);
 }
 
+/// A connect inside the network, under a view that kept its code: its
+/// `program.changes` subscription goes on, on the new node, so its follower
+/// hears `None` (re-read what moved meanwhile) and then the new node's
+/// blocks; its `chain.heads` goes on too, and ends with why when the new
+/// node answers no status (this one serves only changes); a request still
+/// running on the
+/// old connection is refused `stale_connection`. Before, the subscriptions
+/// were refused too, which ends a view's stream: the view went deaf to
+/// every block after the connect. The old node never answers the heads'
+/// status read, so the subscription is still running when the connect
+/// comes (one the old node ended first stays ended:
+/// `a_reconnect_leaves_an_ended_request_ended`).
 #[test]
 fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
     let mut view = view();
     follow_changes(&mut view, 1, changes_node(&[]), "chat".into());
     spawn_reply(&mut view, 2, std::future::pending::<Answer>());
-    let stalled = fake_node(vec![(noded::route::HEADS, Mode::Stall)]);
+    let stalled = fake_node(vec![(noded::route::STATUS, Mode::Stall)]);
     follow_heads(&mut view, 3, stalled.node.clone());
     let new = changes_node(&[7]);
     let rev = view.connection.rev + 1;
@@ -882,13 +891,7 @@ fn a_reconnect_leaves_an_ended_request_ended() {
         view.replies.drain_into(&mut after);
         assert_eq!(after, [], "and nothing came after");
     };
-    ended_then_reconnected(&|view| {
-        let closing = fake_node(vec![
-            (noded::route::HEADS, Mode::Close),
-            (noded::route::STATUS, Mode::Close),
-        ]);
-        follow_heads(view, 3, closing.node)
-    });
+    ended_then_reconnected(&|view| follow_heads(view, 3, changes_node(&[])));
     ended_then_reconnected(&|view| spawn_reply(view, 2, std::future::ready(Ok(vec![1]))));
 }
 
@@ -1452,9 +1455,7 @@ async fn the_try_network_holds_a_put() {
     for id in ids {
         let blob = abi::BlobId::Sha256(id);
         let ask = abi::encode(&blob::contract::Query::Held { blob });
-        let reply = backend::signed_query(
-            &client,
-            backend::Layer::Confirmed,
+        let frame = backend::query_frame(
             &*backend::query_signer(&status.network),
             &status.network,
             target,
@@ -1462,6 +1463,10 @@ async fn the_try_network_holds_a_put() {
         )
         .await
         .unwrap();
+        let reply = client
+            .query(backend::Layer::Confirmed, frame)
+            .await
+            .unwrap();
         let reply: blob::contract::Reply = abi::decode(&reply).unwrap();
         eprintln!("sha256:{} {reply:?}", noded_client::hex::hex_encode(&id));
         assert!(
@@ -1565,147 +1570,14 @@ fn an_app_behind_another_holds_no_socket() {
 /// asking once it is on screen.
 #[test]
 fn heads_off_screen_ask_nothing() {
-    let fake = heads_node(5);
+    let stalled = fake_node(vec![(noded::route::STATUS, Mode::Stall)]);
     let mut view = view();
     view.set_visible(false);
-    follow_heads(&mut view, 1, fake.node.clone());
-    assert_eq!(fake.sockets.try_recv().ok(), None, "a socket for no one");
+    follow_heads(&mut view, 1, stalled.node.clone());
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(counted(&stalled.accepted, 0), 0, "a status read for no one");
     view.set_visible(true);
-    assert_eq!(fake.sockets.recv().unwrap(), Socket::Opened);
-    assert_eq!(heard(&view, 1), [head_item(5)]);
-    view.set_visible(false);
-    assert_eq!(fake.sockets.recv().unwrap(), Socket::Closed);
-    fake.tip.send_replace(8);
-    view.set_visible(true);
-    assert_eq!(fake.sockets.recv().unwrap(), Socket::Opened);
-    assert_eq!(heard(&view, 1), [head_item(8)], "back, the newest head");
-}
-
-#[derive(Debug, PartialEq)]
-enum Socket {
-    Opened,
-    Closed,
-}
-
-struct HeadsNode {
-    node: Node,
-    sockets: std::sync::mpsc::Receiver<Socket>,
-    tip: tokio::sync::watch::Sender<u64>,
-}
-
-fn head_at(height: u64) -> noded::Head {
-    noded::Head {
-        height,
-        id: [height as u8; 32],
-        time: height * 1_000,
-    }
-}
-
-fn head_item(height: u64) -> wire::Event {
-    let head = head_at(height);
-    let head = methods::Head {
-        height: head.height,
-        time: head.time,
-        id: head.id,
-    };
-    wire::Event::Response {
-        id: 1,
-        result: Ok(methods::encode(&head)),
-        done: false,
-    }
-}
-
-fn heads_node(tip: u64) -> HeadsNode {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let node = Node {
-        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
-        network: "test-network".into(),
-        on: Default::default(),
-    };
-    let (told, sockets) = std::sync::mpsc::channel();
-    let (tip, heads) = tokio::sync::watch::channel(tip);
-    handle().spawn(async move {
-        use futures::{SinkExt as _, StreamExt as _};
-        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-        while let Ok((stream, _)) = listener.accept().await {
-            let (told, mut heads) = (told.clone(), heads.clone());
-            tokio::spawn(async move {
-                let Ok(socket) = tokio_tungstenite::accept_async(stream).await else {
-                    return;
-                };
-                let _ = told.send(Socket::Opened);
-                let (mut sink, mut heard) = socket.split();
-                loop {
-                    let head = abi::encode(&head_at(*heads.borrow_and_update()));
-                    let sent = tokio_tungstenite::tungstenite::Message::Binary(head);
-                    if sink.send(sent).await.is_err() {
-                        break;
-                    }
-                    let closed = tokio::select! {
-                        moved = heads.changed() => moved.is_err(),
-                        () = async { while let Some(Ok(_)) = heard.next().await {} } => true,
-                    };
-                    if closed {
-                        break;
-                    }
-                }
-                let _ = told.send(Socket::Closed);
-            });
-        }
-    });
-    HeadsNode { node, sockets, tip }
-}
-
-fn heard(view: &View, count: usize) -> Vec<wire::Event> {
-    let mut changed = view.replies.changes();
-    let mut items = Vec::new();
-    futures::executor::block_on(async {
-        loop {
-            view.replies.drain_into(&mut items);
-            if items.len() >= count {
-                break;
-            }
-            changed.changed().await.unwrap();
-        }
-    });
-    items
-}
-
-#[test]
-fn followers_of_the_heads_share_one_socket_and_a_late_one_starts_at_the_newest() {
-    let fake = heads_node(5);
-    let mut first = view();
-    follow_heads(&mut first, 1, fake.node.clone());
-    assert_eq!(heard(&first, 1), [head_item(5)]);
-    let mut second = view();
-    follow_heads(&mut second, 1, fake.node.clone());
-    assert_eq!(heard(&second, 1), [head_item(5)]);
-    fake.tip.send_replace(6);
-    assert_eq!(heard(&first, 1), [head_item(6)]);
-    assert_eq!(heard(&second, 1), [head_item(6)]);
-    assert_eq!(
-        fake.sockets.try_iter().collect::<Vec<_>>(),
-        [Socket::Opened]
-    );
-}
-
-#[test]
-fn a_heads_slot_holds_the_newest_head() {
-    let head = |height| -> Answer {
-        Ok(methods::encode(&methods::Head {
-            height,
-            time: 0,
-            id: [0; 32],
-        }))
-    };
-    let slot = Slot::merging(newest);
-    slot.offer(head(5));
-    slot.offer(head(6));
-    assert_eq!(handle().block_on(slot.take()), head(6));
-    let refused = || Err(wire::Error::new(refusal::NODE_FAILED, "refused"));
-    assert_eq!(newest(Some(refused()), head(7)), refused());
-    assert_eq!(newest(Some(head(7)), refused()), refused());
+    assert_eq!(counted(&stalled.accepted, 1), 1);
 }
 
 /// A follower's slot holds one item: two blocks that come before its view
@@ -1780,6 +1652,17 @@ fn a_view_not_presented_holds_no_socket() {
     );
 }
 
+/// `chain.heads` back on screen goes on after the last head it handed,
+/// the blocks in between asked of the archive; the first read asks for the
+/// tip alone, and a caught-up read for nothing.
+#[test]
+fn heads_go_on_after_the_last_one_handed() {
+    let page = |last, tip| advance(last, tip).map(|page| (page.before, page.limit));
+    assert_eq!(page(None, 10), Some((Some(11), 1)), "the tip alone");
+    assert_eq!(page(Some(7), 10), Some((Some(11), 3)), "8, 9 and 10");
+    assert_eq!(page(Some(10), 10), None);
+}
+
 /// A followed set's request (`Connection::on`) is asked of its own node,
 /// whatever the views' connection did since (a reconnect moves `rev`), and
 /// refused `stale_connection` only once its set left. A view's own is as
@@ -1831,11 +1714,7 @@ fn a_followed_query_is_signed_by_the_reader() {
         for mut stream in listener.incoming().flatten() {
             let (_, body) = read_request(&mut stream);
             let query: noded::Query = abi::decode(&body).unwrap();
-            let noded::Ask::Signed(frame) = query.ask else {
-                panic!("an unsigned query");
-            };
-            let frame: noded::Frame = abi::decode(&frame).unwrap();
-            assert_eq!(frame.body.anchor, TIP);
+            let frame: noded::Frame = abi::decode(&query.frame).unwrap();
             let _ = heard.send(frame.body.signer);
             respond(&mut stream, "200 OK", &abi::encode(&Vec::<u8>::new()));
         }
@@ -1849,7 +1728,6 @@ fn a_followed_query_is_signed_by_the_reader() {
         network: "other-network".into(),
         on: Default::default(),
     };
-    node.client.heard(TIP);
     handle().block_on(query(node.clone(), ask.clone())).unwrap();
     assert_eq!(signed.recv().unwrap(), seated_key, "the views' own");
     let followed = super::super::super::roster::Network::new(true);

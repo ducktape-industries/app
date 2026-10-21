@@ -176,20 +176,13 @@ async fn ask(
     signer: &dyn noded_client::Signer,
     query: ::programs::Query,
 ) -> Result<::programs::Reply, Fetch> {
-    let payload = abi::encode(&query);
-    let answer = client
-        .query(
-            Layer::Preconfirmed,
-            signer,
-            network.as_bytes(),
-            ::programs::PROGRAM,
-            payload,
-        )
+    let frame = super::query_frame(signer, network, ::programs::PROGRAM, abi::encode(&query))
         .await
-        .map_err(|asked| match asked {
-            noded_client::Asked::Unsigned(refusal) => Fetch::Refused(refusal.0),
-            noded_client::Asked::Node(error) => fetch_error(error),
-        })?;
+        .map_err(|refusal| Fetch::Refused(refusal.message))?;
+    let answer = client
+        .query(Layer::Preconfirmed, frame)
+        .await
+        .map_err(fetch_error)?;
     abi::decode(&answer).map_err(|refusal| Fetch::Unreadable(refusal.sentence))
 }
 
