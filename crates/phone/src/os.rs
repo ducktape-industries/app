@@ -633,6 +633,7 @@ const NO_STORE: &str = "This build runs on no phone, so it has no key store.";
     expect(dead_code, reason = "only a phone's launcher enters")
 )]
 pub(crate) fn start(documents: PathBuf, caches: PathBuf, cx: &mut App) {
+    name_client();
     match PhoneOs::open(documents, caches) {
         Ok(os) => crate::shell::launch(Arc::new(os), cx),
         Err(error) => {
@@ -640,6 +641,19 @@ pub(crate) fn start(documents: PathBuf, caches: PathBuf, cx: &mut App) {
             std::process::abort();
         }
     }
+}
+
+fn name_client() {
+    noded_client::wire::name_client(client());
+}
+
+fn client() -> String {
+    let build = option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown");
+    let version = env!("CARGO_PKG_VERSION");
+    format!(
+        "ducktape-app/{version}+{build} ({}; phone)",
+        std::env::consts::OS
+    )
 }
 
 /// Follows the app's place on screen into the host: iOS's own phases and
@@ -830,6 +844,36 @@ pub fn back_at_root() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_the_phone_signs_names_the_phone_as_its_client() {
+        struct Key;
+        impl noded_client::Signer for Key {
+            fn public_key(&self) -> [u8; 32] {
+                [1; 32]
+            }
+            fn sign(&self, _: &[u8], _: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
+                Ok([0; 64])
+            }
+        }
+        name_client();
+        let anchor = noded_client::wire::Tip {
+            height: 1,
+            id: [0; 32],
+        };
+        let frame = noded_client::wire::Frame::sign(&Key, b"testkit", anchor, None, "chat", vec![])
+            .map_err(|refused| refused.0);
+        let client = frame
+            .ok()
+            .and_then(|frame| frame.body.client)
+            .unwrap_or_default();
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(
+            client.starts_with(&format!("ducktape-app/{version}+")),
+            "{client:?}"
+        );
+        assert!(client.ends_with("; phone)"), "{client:?}");
+    }
 
     #[test]
     fn push_tokens_are_kept_by_kind() {

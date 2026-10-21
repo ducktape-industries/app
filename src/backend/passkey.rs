@@ -151,6 +151,7 @@ pub(super) fn passkey_body(pubkey: &[u8], network: &str, anchor: Tip, payload: V
         salt: Some(salt()),
         target: identity::PROGRAM.to_owned(),
         payload,
+        client: noded_client::wire::client(),
     }
 }
 

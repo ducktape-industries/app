@@ -57,7 +57,6 @@ pub trait OsServices: Send + Sync + 'static {
     /// Where that key is kept, in the store's own words (the Settings row
     /// "Key storage").
     fn key_storage(&self, keyring: &str) -> Result<KeyStorage, KeyRefusal>;
-    /// What signs a query while no key is seated (`backend::query_frame`).
     /// Which key that is, and whether it is linkable to the device, is the
     /// shell's call: the desktop answers a throwaway key made per process.
     /// Not in SPEC §4.2's list: §4.8 leaves the throwaway in the desktop
