@@ -232,6 +232,14 @@ fn a_method_is_reached_only_through_its_declared_capability() {
             );
             continue;
         }
+        if *kind == methods::NotifyNeeds::KIND {
+            assert_eq!(
+                refused_with(&[family], kind).as_deref(),
+                Some(refusal::UNKNOWN_REQUEST),
+                "{kind} is not hosted yet"
+            );
+            continue;
+        }
         assert!(
             !matches!(
                 refused_with(&[family], kind).as_deref(),
@@ -1686,4 +1694,63 @@ fn what_a_view_shows_goes_to_its_pane() {
     );
     assert_eq!(refusal_code(&mut view), None);
     assert_eq!(view.intents, [Intent::Showing("general".into())]);
+}
+
+#[test]
+fn debug_mode_is_told_at_subscribe_and_on_each_change() {
+    let mut view = view();
+    let (debug, heard) = tokio::sync::watch::channel(false);
+    view.debug_mode = heard;
+    view.answer(
+        wire::Request {
+            id: 9,
+            kind: "host.debug".into(),
+            payload: Vec::new(),
+        },
+        &None,
+    );
+    assert!(!answered::<bool>(&mut view));
+    let told = |view: &mut View| -> Vec<bool> {
+        view.sync_debug();
+        std::mem::take(&mut view.pending)
+            .into_iter()
+            .map(|event| match event {
+                wire::Event::Response {
+                    id: 9,
+                    result: Ok(bytes),
+                    done: false,
+                } => methods::decode(&bytes).unwrap(),
+                other => panic!("not a debug item: {other:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(told(&mut view), Vec::<bool>::new());
+    debug.send_replace(true);
+    assert_eq!(told(&mut view), [true]);
+    assert_eq!(told(&mut view), Vec::<bool>::new(), "told once");
+    debug.send_replace(false);
+    view.debug_subscriptions.clear();
+    assert_eq!(told(&mut view), Vec::<bool>::new(), "cancelled");
+}
+
+#[test]
+fn notify_needs_is_refused_as_unknown_and_not_listed_as_hosted() {
+    let mut view = view();
+    view.answer(
+        wire::Request {
+            id: 1,
+            kind: methods::NotifyNeeds::KIND.into(),
+            payload: methods::encode(&methods::Needs { items: Vec::new() }),
+        },
+        &None,
+    );
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some(refusal::UNKNOWN_REQUEST)
+    );
+    assert!(
+        !hosted(true)
+            .iter()
+            .any(|kind| kind == methods::NotifyNeeds::KIND)
+    );
 }

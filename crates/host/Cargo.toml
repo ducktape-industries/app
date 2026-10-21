@@ -61,7 +61,7 @@ identity.workspace = true
 blob.workspace = true
 # a notifier's answers and turn (`view_wire::notifier`); the tests' borsh too
 borsh.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "15c7f948de37bdbd3f33e864fa6d11d52e6a88e4", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "543b90d40bbf7ed1bf02e93d73d28894b04e7246", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -106,7 +106,7 @@ tempfile.workspace = true
 noded-client = { path = "../noded-client" }
 rt = { package = "ducktape-rt", path = "../rt" }
 # an artifact's file read and followed (`runtime/kernel/node/artifact.rs`): the files program's own query and reply
-files = { git = "https://github.com/ducktape-industries/programs", rev = "15c7f948de37bdbd3f33e864fa6d11d52e6a88e4", package = "files" }
+files = { git = "https://github.com/ducktape-industries/programs", rev = "543b90d40bbf7ed1bf02e93d73d28894b04e7246", package = "files" }
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "../web", optional = true }
 # feature `av` only: V4L2, AVFoundation, cpal and everything that names them
@@ -122,9 +122,9 @@ tokio = { version = "1", features = ["test-util"] }
 # `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # the live tests' node: its key's verifier, as the handshake pins it
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "f32719405a10519306b12dab96f6bee62b3292f1", package = "keyscheme", features = ["testkit"] }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "b22fe86c58ba05bb4c0fd81a2a40e02dba2b0a0e", package = "keyscheme", features = ["testkit"] }
 # the consent card's words for a validators' vote
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "15c7f948de37bdbd3f33e864fa6d11d52e6a88e4", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "543b90d40bbf7ed1bf02e93d73d28894b04e7246", package = "valset" }
 # the tests' keys: commonware's ed25519, through noded-client's impl
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -136,7 +136,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "15c7f948de37bdbd3f33e864fa6d11d52e6a88e4", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "543b90d40bbf7ed1bf02e93d73d28894b04e7246", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

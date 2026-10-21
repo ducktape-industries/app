@@ -39,7 +39,7 @@ pub mod web;
 #[cfg(feature = "call")]
 pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
-pub use kernel::{Answered, artifact, day, local_offset, set_in_front};
+pub use kernel::{Answered, artifact, day, local_offset, set_debug, set_in_front};
 pub(crate) use kernel::{Writes, writes};
 // a host with no screen runs each program's notifier per account (`crates/pushd`),
 // and the desktop every other listed network's (`follow`)

@@ -107,6 +107,7 @@ impl View {
             .extend(kernel::ticked(&mut self.clocks, std::time::Instant::now()));
         self.sync_visibility();
         self.sync_placement();
+        self.sync_debug();
         self.sync_offset(kernel::offset_minutes());
         self.sync_route();
         if self.staged {
@@ -167,6 +168,8 @@ impl View {
             self.visibility_subscriptions
                 .retain(|subscription| *subscription != id);
             self.placement_subscriptions
+                .retain(|subscription| *subscription != id);
+            self.debug_subscriptions
                 .retain(|subscription| *subscription != id);
             self.route_subscriptions
                 .retain(|subscription| *subscription != id);

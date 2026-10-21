@@ -215,6 +215,8 @@ pub(super) struct View {
     pub placement: wire::methods::Placement,
     pub placement_change: Option<wire::methods::Placement>,
     pub placement_subscriptions: Vec<u64>,
+    pub debug_mode: tokio::sync::watch::Receiver<bool>,
+    pub debug_subscriptions: Vec<u64>,
     /// Whether this platform keeps a window above others: what a
     /// `host.float` reply says it could do (the seat places it).
     pub keeps_above: bool,

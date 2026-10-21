@@ -710,6 +710,8 @@ impl View {
             placement: _,
             placement_change: _,
             placement_subscriptions: _,
+            debug_mode: _,
+            debug_subscriptions: _,
             keeps_above: _,
             floats: _,
             route_subscriptions: _,
@@ -1058,6 +1060,8 @@ impl View {
             placement: Default::default(),
             placement_change: None,
             placement_subscriptions: Vec::new(),
+            debug_mode: kernel::debug(),
+            debug_subscriptions: Vec::new(),
             keeps_above: false,
             floats: crate::contract::os().facts().floats,
             route_subscriptions: Vec::new(),
@@ -1166,6 +1170,16 @@ impl View {
         };
         for id in self.placement_subscriptions.clone() {
             self.stream_item(id, wire::methods::encode(&placement));
+        }
+    }
+
+    pub fn sync_debug(&mut self) {
+        if !self.debug_mode.has_changed().unwrap_or(false) {
+            return;
+        }
+        let on = *self.debug_mode.borrow_and_update();
+        for id in self.debug_subscriptions.clone() {
+            self.stream_item(id, wire::methods::encode(&on));
         }
     }
 }

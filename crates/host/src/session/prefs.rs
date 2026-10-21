@@ -133,6 +133,8 @@ impl Slice<Prefs> {
         let _timed = timed();
         backend::save_debug(on);
         crate::perf::switch(on);
+        crate::runtime::set_debug(on);
+        cx.refresh_windows();
         self.edit(|prefs| prefs.debug = on, cx);
     }
 
@@ -191,6 +193,7 @@ impl Slice<Prefs> {
             },
             cx,
         );
+        crate::runtime::set_debug(loaded.debug);
         cx.set_global(loaded.text_size);
         cx.refresh_windows();
     }

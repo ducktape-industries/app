@@ -32,6 +32,7 @@ fn hosted(floats: bool) -> Vec<String> {
         .iter()
         .filter(|kind| floats || !floating.contains(kind))
         .filter(|kind| cfg!(feature = "av") || !captures.contains(kind))
+        .filter(|kind| **kind != methods::NotifyNeeds::KIND)
         .map(|kind| (*kind).to_owned())
         .collect()
 }
@@ -73,6 +74,19 @@ pub fn set_in_front(in_front: bool) {
 /// Whether the app is in front, as a view's tasks read it.
 pub(super) fn in_front() -> tokio::sync::watch::Receiver<bool> {
     front().subscribe()
+}
+
+fn debug_mode() -> &'static tokio::sync::watch::Sender<bool> {
+    static DEBUG: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+    DEBUG.get_or_init(|| tokio::sync::watch::channel(crate::backend::load_debug()).0)
+}
+
+pub fn set_debug(on: bool) {
+    debug_mode().send_if_modified(|was| std::mem::replace(was, on) != on);
+}
+
+pub(super) fn debug() -> tokio::sync::watch::Receiver<bool> {
+    debug_mode().subscribe()
 }
 
 pub(super) use rt::task::handle;
@@ -170,6 +184,20 @@ pub(super) fn answer(
         // a host with no window to float a pane into (a phone's) knows
         // none of the three
         (Capability::Host, "float" | "unfloat" | "placement") if !view.floats => return false,
+        (Capability::Host, "debug") => {
+            if !payload.is_empty() {
+                view.refuse(
+                    id,
+                    refusal::MALFORMED_REQUEST,
+                    "debug subscription takes no payload",
+                );
+                return true;
+            }
+            view.debug_subscriptions.push(id);
+            let on = *view.debug_mode.borrow_and_update();
+            view.stream_item(id, methods::encode(&on));
+        }
+        (Capability::Notify, "needs") => return false,
         (Capability::Host, "methods") => {
             let hosted = methods::Hosted {
                 level: wire::WIRE_LEVEL,
