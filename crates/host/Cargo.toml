@@ -105,6 +105,7 @@ tempfile.workspace = true
 # seats (`noded_client::Signer`), so no key crate is named here
 noded-client = { path = "../noded-client" }
 rt = { package = "ducktape-rt", path = "../rt" }
+view-runner = { path = "../view-runner" }
 # an artifact's file read and followed (`runtime/kernel/node/artifact.rs`): the files program's own query and reply
 files = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "files" }
 # feature `web` only: CEF and everything that names it
@@ -114,6 +115,7 @@ ducktape-av = { path = "../av", optional = true }
 
 [dev-dependencies]
 flate2 = "1"
+view-runner = { path = "../view-runner", features = ["test-support"] }
 libc.workspace = true
 # what the media pieces' tests read off a piece (empty without `av`)
 ducktape-av = { path = "../av", features = ["test-support"] }

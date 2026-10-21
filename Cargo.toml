@@ -25,7 +25,7 @@ resolver = "2"
 # a dependency of the phone's iOS build only); the path dependencies under
 # them (the host, the meter pass) are members already. `crates/pushd` is no
 # dependency of the app: the host with no screen, nor yet is `crates/a11y-platform`.
-members = ["crates/phone", "crates/host-jsc", "crates/pushd", "crates/a11y-platform"]
+members = ["crates/phone", "crates/host-jsc", "crates/host-web", "crates/pushd", "crates/a11y-platform"]
 exclude = ["vendor"]
 
 [workspace.package]

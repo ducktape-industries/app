@@ -2930,6 +2930,7 @@ dependencies = [
  "usvg 0.46.0",
  "valset",
  "view-meter",
+ "view-runner",
  "view-wire",
  "wasmparser 0.251.0",
  "wasmtime",
@@ -2947,7 +2948,9 @@ dependencies = [
  "describe",
  "dispatch2",
  "ducktape-host",
+ "ducktape-rt",
  "flate2",
+ "futures",
  "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
@@ -2958,6 +2961,23 @@ dependencies = [
  "tracing",
  "view-meter",
  "view-wire",
+ "wat",
+]
+
+[[package]]
+name = "ducktape-host-web"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "describe",
+ "ducktape-rt",
+ "js-sys",
+ "view-meter",
+ "view-runner",
+ "view-wire",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
  "wat",
 ]
 
@@ -11086,6 +11106,15 @@ dependencies = [
  "wasmparser 0.251.0",
  "wasmtime",
  "wat",
+]
+
+[[package]]
+name = "view-runner"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "describe",
+ "ducktape-rt",
 ]
 
 [[package]]

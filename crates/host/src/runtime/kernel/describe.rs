@@ -56,16 +56,11 @@ pub(super) async fn described(
     let Some((hash, module, file)) = module(node, code).await? else {
         return Ok(None);
     };
-    let described = rt::task::blocking(move || {
-        let module = crate::contract::Code {
-            bytes: &module,
-            file: file.as_ref().map(|(path, at)| (path.as_path(), *at)),
-        };
-        crate::contract::runner().describe(hash, module, &op)
-    })
-    .await
-    .ok()
-    .flatten();
+    let module = crate::contract::Code {
+        bytes: &module,
+        file: file.as_ref().map(|(path, at)| (path.as_path(), *at)),
+    };
+    let described = crate::contract::runner().describe(hash, module, op).await;
     answers()
         .lock()
         .expect("describe answers")

@@ -25,6 +25,8 @@ view-meter = { path = "../view-meter" }
 view-wire.workspace = true
 describe.workspace = true
 base64.workspace = true
+futures.workspace = true
+rt = { package = "ducktape-rt", path = "../rt" }
 tracing.workspace = true
 flate2 = { version = "1", optional = true }
 sha2 = { workspace = true, optional = true }

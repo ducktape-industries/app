@@ -42,6 +42,7 @@ pub(super) mod live;
 mod node;
 pub(super) mod socket;
 pub use node::{Answered, artifact};
+#[cfg(feature = "ui")]
 pub(crate) use node::{Writes, writes};
 mod replies;
 pub(super) mod screen;

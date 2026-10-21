@@ -431,58 +431,64 @@ impl ViewRunner for JscRunner {
         &self,
         hash: [u8; 32],
         module: ducktape_host::contract::Code<'_>,
-        op: &[u8],
-    ) -> Option<view_wire::methods::Description> {
-        let module = module.bytes;
-        if MainThreadMarker::new().is_some() || self.wasm().is_err() {
-            return None;
-        }
-        let code = lock(&self.shared.described).get(&hash).cloned();
-        let code = match code {
-            Some(code) => code,
-            None => {
-                let metered = crate::metered(None, &hash, module, crate::DESCRIBE_MEMORY).ok();
-                let code = metered.map(|(bytes, _)| {
-                    let name = crate::file_name(&hash, crate::DESCRIBE_MEMORY);
-                    Code::new(format!("describe-{name}"), crate::DESCRIBE_MEMORY, bytes)
-                });
-                lock(&self.shared.described)
-                    .entry(hash)
-                    .or_insert(code)
-                    .clone()
+        op: Vec<u8>,
+    ) -> rt::Fut<'static, Option<view_wire::methods::Description>> {
+        let shared = self.shared;
+        let module: Arc<[u8]> = Arc::from(module.bytes);
+        Box::pin(async move {
+            let code = rt::task::blocking(move || described(shared, hash, &module))
+                .await
+                .ok()
+                .flatten()?;
+            let arg = base64::engine::general_purpose::STANDARD.encode(&op);
+            let mut answered = ask(&code, &arg).await?;
+            if matches!(&answered, Err(why) if why == DEAD) {
+                answered = ask(&code, &arg).await?;
             }
-        }?;
-        let arg = base64::engine::general_purpose::STANDARD.encode(op);
-        let ask = || {
-            let (send, answered) = std::sync::mpsc::channel();
-            let (code, arg) = (code.clone(), arg.clone());
-            run_or_post_on_main_thread(move |_| {
-                seating(Box::new(move |ready| match ready {
-                    Ok(life) => call(
-                        life,
-                        "describe",
-                        0,
-                        &code.name,
-                        &arg,
-                        Box::new(move |answered| {
-                            let _sent = send.send(answered);
-                        }),
-                    ),
-                    Err(why) => {
-                        let _sent = send.send(Err(why));
-                    }
-                }));
-            });
-            answered.recv().ok()
-        };
-        let mut answered = ask()?;
-        if matches!(&answered, Err(why) if why == DEAD) {
-            answered = ask()?;
-        }
-        let text = answered.ok()?;
-        let bytes = answer::read(&text).outcome.ok()?;
-        view_wire::methods::Description::decode(&bytes)
+            let text = answered.ok()?;
+            let bytes = answer::read(&text).outcome.ok()?;
+            view_wire::methods::Description::decode(&bytes)
+        })
     }
+}
+
+fn described(shared: &'static Shared, hash: [u8; 32], module: &[u8]) -> Option<Arc<Code>> {
+    JscRunner { shared }.wasm().ok()?;
+    let code = lock(&shared.described).get(&hash).cloned();
+    match code {
+        Some(code) => code,
+        None => {
+            let metered = crate::metered(None, &hash, module, crate::DESCRIBE_MEMORY).ok();
+            let code = metered.map(|(bytes, _)| {
+                let name = crate::file_name(&hash, crate::DESCRIBE_MEMORY);
+                Code::new(format!("describe-{name}"), crate::DESCRIBE_MEMORY, bytes)
+            });
+            lock(&shared.described).entry(hash).or_insert(code).clone()
+        }
+    }
+}
+
+async fn ask(code: &Arc<Code>, arg: &str) -> Option<Answered> {
+    let (send, answered) = futures::channel::oneshot::channel();
+    let (code, arg) = (code.clone(), arg.to_owned());
+    run_or_post_on_main_thread(move |_| {
+        seating(Box::new(move |ready| match ready {
+            Ok(life) => call(
+                life,
+                "describe",
+                0,
+                &code.name,
+                &arg,
+                Box::new(move |answered| {
+                    let _sent = send.send(answered);
+                }),
+            ),
+            Err(why) => {
+                let _sent = send.send(Err(why));
+            }
+        }));
+    });
+    answered.await.ok()
 }
 
 struct Stats {

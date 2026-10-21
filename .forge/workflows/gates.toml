@@ -29,7 +29,9 @@ steps = [
     "git config --global --add safe.directory '*'",
     "git clone -q \"$(git remote get-url origin | sed 's#/forge/app$#/forge/tools#')\" /var/tmp/tools",
     "sh /var/tmp/tools/gates.sh /work/app",
-    "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-rt -p noded-client -- -D warnings",
+    "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-rt -p noded-client -p view-runner -p ducktape-host-web -- -D warnings",
+    "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-host-web --tests -- -D warnings",
+    "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked -p ducktape-host --no-default-features --lib -- -D warnings",
 ]
 
 [jobs.env]

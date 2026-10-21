@@ -55,13 +55,7 @@ pub enum Group {
     Fonts,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HeldCode {
-    pub hash: [u8; 32],
-    pub mapped: u64,
-    pub resident: Option<u64>,
-    pub describe: bool,
-}
+pub use view_runner::HeldCode;
 
 pub fn read(regions: bool) -> Reading {
     #[cfg_attr(not(feature = "ui"), allow(unused_mut))]

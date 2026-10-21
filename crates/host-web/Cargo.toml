@@ -1,0 +1,29 @@
+# ducktape-host-web: the browser's view runner, view-runner's contract over the page's own WebAssembly, reached from Rust
+# through js-sys; view-meter meters each view at `prepare`, since the page counts no fuel and bounds no memory.
+# Everything that names the page is wasm32 only; natively the crate is its describe bounds and their test.
+
+[package]
+name = "ducktape-host-web"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+view-runner = { path = "../view-runner" }
+view-meter = { path = "../view-meter" }
+view-wire.workspace = true
+describe.workspace = true
+rt = { package = "ducktape-rt", path = "../rt" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+describe = { workspace = true, features = ["host"] }
+
+[target.'cfg(target_family = "wasm")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.78"
+async-channel = "2"
+wat = "1"
