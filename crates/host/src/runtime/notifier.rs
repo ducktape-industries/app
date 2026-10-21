@@ -611,4 +611,4 @@ pub(super) fn turn(bytes: &[u8]) -> Result<(wire::Frame, wire::SanitizeReport), 
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

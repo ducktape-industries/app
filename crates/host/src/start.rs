@@ -52,9 +52,8 @@ fn started(
     let center = crate::runtime::notify::center().clone();
     // the device's own rows, whichever network comes
     center.lock().open_device();
-    let roster = crate::runtime::roster().clone();
     crate::perf::mark("boot");
-    let shared = Shared::new(roster, center, changes, cx);
+    let shared = Shared::new(crate::runtime::in_hand().clone(), center, changes, cx);
     let (inbound, signals) = Inbound::channel();
     let (to_shell, from_host) = async_channel::unbounded();
     drain(signals, shared.session.downgrade(), to_shell, cx);

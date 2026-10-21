@@ -147,6 +147,33 @@ impl Network {
             self.reading.store(false, Ordering::SeqCst);
         }
     }
+
+    pub fn roster(&self) -> &Roster {
+        &self.roster
+    }
+
+    pub fn deployments_due(&self, height: u64) -> bool {
+        self.roster.due(height)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn apart() -> Arc<Self> {
+        Self::new(false)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn reached(&self) -> Option<(String, String)> {
+        let connection = lock(&self.connection);
+        let named = (connection.network.clone(), connection.chain.clone());
+        connection.client.as_ref().map(|_| named)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seated(&self, program: &str, instance: u64) -> bool {
+        lock(&self.seats)
+            .keys()
+            .any(|(name, at)| *name == program && *at == instance)
+    }
 }
 
 impl Connection {
@@ -510,10 +537,6 @@ pub fn disconnected() {
 /// latch: the loads it queues land on their own. Cheap when nothing moved.
 pub fn deployments_checked() {
     in_hand().deployments_checked();
-}
-
-pub fn deployments_due(height: u64) -> bool {
-    roster().due(height)
 }
 
 fn spawn_roster_read(

@@ -103,6 +103,7 @@ pub struct Session {
     account: Entity<Account>,
     screen: Entity<Slice<Screen>>,
     center: notify::CenterHandle,
+    network: std::sync::Arc<crate::runtime::Network>,
     roster: Roster,
     source: Option<StatusSource>,
     connect: Option<Task<()>>,
@@ -124,6 +125,7 @@ impl Session {
         account: Entity<Account>,
         screen: Entity<Slice<Screen>>,
         center: notify::CenterHandle,
+        network: std::sync::Arc<crate::runtime::Network>,
         roster: Roster,
     ) -> Self {
         Self {
@@ -132,6 +134,7 @@ impl Session {
             account,
             screen,
             center,
+            network,
             roster,
             source: None,
             connect: None,
@@ -156,7 +159,7 @@ impl Session {
     ) {
         if self.hands_runtime {
             crate::runtime::take_up(&self.center, chain);
-            crate::runtime::connected(client, network, chain);
+            self.network.connected(client, network, chain);
             self.hear_writes(client, cx);
         }
     }
@@ -165,7 +168,7 @@ impl Session {
         let programs = crate::runtime::writes(client, ::programs::PROGRAM);
         let identity = crate::runtime::writes(client, identity::PROGRAM);
         self.heard = vec![
-            Self::hear(programs, cx, |_, _| crate::runtime::deployments_checked()),
+            Self::hear(programs, cx, |this, _| this.network.deployments_checked()),
             Self::hear(identity, cx, |this, cx| {
                 this.account.update(cx, |account, cx| account.resolve(cx))
             }),
@@ -499,8 +502,10 @@ impl Session {
                 let moved =
                     i64::try_from(status.height).unwrap_or(-1) != self.chain.read(cx).height;
                 self.apply_status(&status, cx);
-                if moved && self.hands_runtime && crate::runtime::deployments_due(status.height) {
-                    crate::runtime::deployments_checked();
+                let due =
+                    moved && self.hands_runtime && self.network.deployments_due(status.height);
+                if due {
+                    self.network.deployments_checked();
                 }
                 if moved {
                     self.account
@@ -583,7 +588,7 @@ impl Session {
                 if self.hands_runtime {
                     let client = backend::rpc_client(self.state.connected_rpc.clone());
                     self.hear_writes(&client, cx);
-                    crate::runtime::deployments_checked();
+                    self.network.deployments_checked();
                     self.account.update(cx, |account, cx| account.resolve(cx));
                 }
             }
@@ -640,7 +645,7 @@ impl Session {
 
     fn left_network(&mut self, cx: &mut Context<Self>) {
         if self.hands_runtime {
-            crate::runtime::disconnected();
+            self.network.disconnected();
             crate::runtime::notifier::disconnected();
         }
         self.heard.clear();

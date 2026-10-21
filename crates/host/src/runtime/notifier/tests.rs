@@ -434,7 +434,7 @@ fn each_recipient_has_its_own_notices_and_store() {
 
 /// The tests that move the chain in hand (`take_up`) or follow a set, one
 /// at a time: the chain in hand is the process's.
-pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: Mutex<()> = Mutex::new(());
     lock(&SERIAL)
 }
