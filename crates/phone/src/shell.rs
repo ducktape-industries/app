@@ -45,6 +45,7 @@ pub mod swipe;
 use ducktape_host::a11y::Control as _;
 use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{Boot, KeyStorage, OsServices, Signal, SoftKeyboard};
+use ducktape_host::kept::Keeper;
 use ducktape_host::motion::{self, Shown, Slide, Tween};
 use ducktape_host::render::ViewTree;
 use ducktape_host::runtime::notify::{Entry, Opened as Banner, Permission};
@@ -53,6 +54,7 @@ use ducktape_host::session::{
     AccountEvent, AccountState, Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared,
 };
 use futures::StreamExt as _;
+use gpui_kit::BorrowAppContext as _;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext as _, AsyncApp, ClipboardItem, Context, Entity,
@@ -145,6 +147,7 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
     let stack = cx.new(|_| Stack::default());
     let registrar = crate::push::Registrar::start(host.shared.clone(), cx);
     log_on_connect(&host.shared, cx);
+    keep_stack(&host.shared, &stack, Keeper::load("phone.json"), cx);
     cx.set_global(Phone {
         shared: host.shared,
         stack,
@@ -238,6 +241,72 @@ fn hold_chain(session: &Entity<Session>, cx: &App) {
         true => &session.chain,
         false => "",
     });
+}
+
+/// The stack as `phone.json` keeps it for each network, and the chain it is
+/// kept for now: none until a chain is taken up, none again once the
+/// network is left.
+struct KeptStack {
+    keeper: Keeper<stack::Kept>,
+    keeping: Option<String>,
+}
+
+impl Global for KeptStack {}
+
+fn keep_stack(shared: &Shared, stack: &Entity<Stack>, keeper: Keeper<stack::Kept>, cx: &mut App) {
+    cx.set_global(KeptStack {
+        keeper,
+        keeping: None,
+    });
+    let taking = stack.clone();
+    cx.subscribe(
+        &shared.session,
+        move |session, event: &SessionEvent, cx| match event {
+            SessionEvent::Connected => take_up(&session, &taking, cx),
+            SessionEvent::LeftNetwork => cx.global_mut::<KeptStack>().keeping = None,
+            SessionEvent::Toast(_) => {}
+        },
+    )
+    .detach();
+    cx.observe(stack, |stack, cx| keep(&stack, cx)).detach();
+}
+
+fn take_up(session: &Entity<Session>, stack: &Entity<Stack>, cx: &mut App) {
+    let chain = session.read(cx).get().chain.clone();
+    let kept = cx.global::<KeptStack>();
+    let taken = kept.keeping.as_ref() == Some(&chain);
+    if taken {
+        return;
+    }
+    if !stack.read(cx).open().is_empty() {
+        return;
+    }
+    let record = kept.keeper.of(&chain).cloned();
+    cx.global_mut::<KeptStack>().keeping = Some(chain);
+    let Some(record) = record else {
+        return;
+    };
+    let routes = stack.update(cx, |stack, cx| {
+        let routes = stack.take_up(&record);
+        cx.notify();
+        routes
+    });
+    for (program, instance, route) in routes {
+        ducktape_host::runtime::route_to(
+            ducktape_host::runtime::in_hand(),
+            program,
+            instance,
+            route,
+        );
+    }
+}
+
+fn keep(stack: &Entity<Stack>, cx: &mut App) {
+    let Some(chain) = cx.global::<KeptStack>().keeping.clone() else {
+        return;
+    };
+    let record = stack.read(cx).kept();
+    cx.update_global::<KeptStack, _>(|kept, cx| kept.keeper.keep(&chain, record, cx));
 }
 
 /// The OS's notices waiting for the chain in hand, logged.
@@ -379,6 +448,7 @@ fn let_go_closed(stack: &Entity<Stack>, seats: &Entity<Seats>, cx: &mut App) {
         .read(cx)
         .open()
         .iter()
+        .filter(|opened| opened.seated)
         .map(|opened| (opened.instance, (opened.program, None, Placed::default())))
         .collect();
     seats.update(cx, |seats, cx| seats.place(kept, cx));
@@ -753,11 +823,20 @@ impl Root {
         self.set_sheet(None, cx);
         let from = self.page(cx);
         self.pages.clear();
-        let instance = self.stack.update(cx, |stack, cx| {
+        let (instance, route) = self.stack.update(cx, |stack, cx| {
+            let route = stack.waking(program);
             let instance = stack.push(program);
             cx.notify();
-            instance
+            (instance, route)
         });
+        if let Some(route) = route {
+            ducktape_host::runtime::route_to(
+                ducktape_host::runtime::in_hand(),
+                program,
+                instance,
+                route,
+            );
+        }
         self.moved(from, false, cx);
         instance
     }
@@ -1564,7 +1643,11 @@ impl Root {
             // a phone floats no pane (`OsFacts::floats`): its views' kernel
             // knows no float method, so neither comes
             SeatsEvent::Float(..) | SeatsEvent::Unfloat(_) => {}
-            SeatsEvent::Showing(..) => {}
+            SeatsEvent::Showing(instance, route) => self.stack.update(cx, |stack, cx| {
+                if stack.set_showing(*instance, route) {
+                    cx.notify();
+                }
+            }),
         }
     }
 
@@ -1612,6 +1695,7 @@ impl Root {
         let wanted: BTreeMap<u64, Place> = stack
             .open()
             .iter()
+            .filter(|opened| opened.seated)
             .map(|opened| {
                 let shown = top == Some(opened.instance) || left == Some(opened.instance);
                 let in_front = active && shown;
@@ -4680,5 +4764,168 @@ mod tests {
         assert_eq!(left(cx), None, "the page popped is still drawn");
         assert_eq!(frames(cx), 0, "a frame asked for once still");
         ducktape_host::contract::testing::touch_first_for_test(false);
+    }
+
+    fn kept_phone<'a>(
+        path: &std::path::Path,
+        chain: &str,
+        cx: &'a mut TestAppContext,
+    ) -> (
+        Entity<Root>,
+        Entity<Stack>,
+        Shared,
+        &'a mut VisualTestContext,
+    ) {
+        cx.executor().allow_parking();
+        cx.update(gpui_kit::init);
+        let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
+        let stack = cx.new(|_| Stack::default());
+        cx.update(|cx| {
+            let registrar = crate::push::Registrar::start(shared.clone(), cx);
+            keep_stack(&shared, &stack, Keeper::at(path.to_owned()), cx);
+            cx.set_global(Phone {
+                shared: shared.clone(),
+                stack: stack.clone(),
+                window: None,
+                waiting: Vec::new(),
+                notices: Vec::new(),
+                registrar,
+            })
+        });
+        let (root, cx) =
+            cx.add_window_view(|window, cx| Root::new(shared.clone(), stack.clone(), window, cx));
+        cx.update(|window, _| window.activate_window());
+        shared.screen.update(cx, |screen, cx| {
+            screen.set(Screen::Desk, cx);
+        });
+        let state = ducktape_host::session::SessionState {
+            connected: true,
+            chain: chain.into(),
+            ..Default::default()
+        };
+        shared.session.update(cx, |session, cx| {
+            session.seed(state, cx);
+            cx.emit(SessionEvent::Connected);
+        });
+        cx.run_until_parked();
+        (root, stack, shared, cx)
+    }
+
+    #[gpui_kit::test]
+    fn a_launch_brings_back_the_stack_and_seats_only_what_was_on_screen(
+        cx_a: &mut TestAppContext,
+        cx_b: &mut TestAppContext,
+    ) {
+        const CHAIN: &str = "kept#0d0d0d0d";
+        const CHAT: &str = "phone-kept-chat";
+        const FILES: &str = "phone-kept-files";
+        let dir = tempfile::tempdir().expect("a folder");
+        let path = dir.path().join("phone.json");
+        let read = |path: &std::path::Path| -> serde_json::Value {
+            let bytes = std::fs::read(path).expect("phone.json written");
+            serde_json::from_slice(&bytes).expect("phone.json reads")
+        };
+
+        let (root, _, _, cx) = kept_phone(&path, CHAIN, cx_a);
+        let files = root.update(cx, |root, cx| root.open(FILES, cx));
+        cx.run_until_parked();
+        root.update(cx, |root, cx| root.back(cx));
+        run_out(cx);
+        let chat = root.update(cx, |root, cx| root.open(CHAT, cx));
+        run_out(cx);
+        root.update(cx, |root, cx| {
+            root.seats_said(&SeatsEvent::Showing(chat, "general".into()), cx);
+            root.seats_said(&SeatsEvent::Showing(files, "home/tech".into()), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            read(&path),
+            serde_json::json!({ "kept#0d0d0d0d": {
+                "tab": "home",
+                "pushed": [CHAT],
+                "open": [
+                    { "program": CHAT, "showing": "general" },
+                    { "program": FILES, "showing": "home/tech" },
+                ],
+            }}),
+            "the stack is kept as it moves"
+        );
+
+        let (root, stack, shared, cx) = kept_phone(&path, CHAIN, cx_b);
+        let opened = stack.read_with(cx, |stack, _| {
+            let open = stack.open().iter();
+            open.map(|opened| (opened.program, opened.seated))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            opened,
+            [(CHAT, true), (FILES, false)],
+            "every program open came back, only the one on screen seated"
+        );
+        assert_eq!(top(&stack, cx), Some(CHAT));
+        let instance = |program: &str, cx: &mut VisualTestContext| {
+            stack
+                .read_with(cx, |stack, _| stack.instance(program))
+                .expect("listed")
+        };
+        let placed = |program: &str, cx: &mut VisualTestContext| {
+            let at = instance(program, cx);
+            root.read_with(cx, |root, _| root.placed.0.contains_key(&at))
+        };
+        let routed = |program: &'static str, cx: &mut VisualTestContext| {
+            let at = instance(program, cx);
+            ducktape_host::runtime::take_route(ducktape_host::runtime::in_hand(), program, at)
+        };
+        assert!(placed(CHAT, cx), "the program on screen was not seated");
+        assert!(
+            !placed(FILES, cx),
+            "a program off screen was seated at launch"
+        );
+        assert_eq!(
+            routed(CHAT, cx),
+            Some("general".to_owned()),
+            "the view on screen is handed the room it showed"
+        );
+        assert_eq!(
+            routed(FILES, cx),
+            None,
+            "a program not seated was handed a route"
+        );
+
+        let seated = |program: &str, cx: &mut VisualTestContext| {
+            let at = instance(program, cx);
+            shared
+                .seats
+                .read_with(cx, |seats, _| seats.seat(at).is_some())
+        };
+        root.update(cx, |root, cx| root.close_program(CHAT, cx));
+        run_out(cx);
+        cx.update(|_, cx| handed_on(Signal::MemoryWarning, cx));
+        run_out(cx);
+        assert!(
+            !seated(FILES, cx),
+            "a close and a trim seated a program listed from the last launch"
+        );
+        assert!(!placed(FILES, cx));
+
+        root.update(cx, |root, cx| root.open(FILES, cx));
+        run_out(cx);
+        assert!(placed(FILES, cx), "a tap did not seat it");
+        assert_eq!(
+            routed(FILES, cx),
+            Some("home/tech".to_owned()),
+            "its first seat is handed the place it showed"
+        );
+
+        shared
+            .session
+            .update(cx, |_, cx| cx.emit(SessionEvent::LeftNetwork));
+        cx.run_until_parked();
+        assert!(stack.read_with(cx, |stack, _| stack.open().is_empty()));
+        assert_eq!(
+            read(&path)["kept#0d0d0d0d"]["pushed"],
+            serde_json::json!([FILES]),
+            "leaving the network wrote over what it had open"
+        );
     }
 }

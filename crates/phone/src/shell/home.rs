@@ -21,7 +21,7 @@ use gpui_kit::{
     Styled as _, div, px, relative, svg,
 };
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The label over Home's grid of every program: the store's shape, never
 /// the store's word (SPEC §7.2, App Store 4.7), on screen whenever Home is.
@@ -550,6 +550,23 @@ pub fn ago(since: Duration) -> String {
     }
 }
 
+fn open_caption(title: Option<&str>, opened: &Opened, now: Instant) -> Option<String> {
+    let title = title.filter(|title| !title.is_empty());
+    let when = match opened.seated {
+        true => Some(
+            opened
+                .left
+                .map_or_else(|| "now".to_owned(), |left| ago(now - left)),
+        ),
+        false => None,
+    };
+    match (title, when) {
+        (Some(title), Some(when)) => Some(format!("{title} · {when}")),
+        (Some(title), None) => Some(title.to_owned()),
+        (None, when) => when,
+    }
+}
+
 /// Open: the programs open, the latest first, each with the title its view
 /// gave its window and when it was last on screen; a press goes back to
 /// where it was left, the × lets it go (it stays on Home). In debug mode
@@ -608,13 +625,8 @@ pub fn open(
         let program = opened.program;
         let row = row_of(shared, program, cx);
         let name = row.as_ref().map_or_else(|| program.to_owned(), name_of);
-        let when = opened
-            .left
-            .map_or_else(|| "now".to_owned(), |left| ago(now - left));
-        let caption = match titles.get(&opened.instance) {
-            Some(title) if !title.is_empty() => format!("{title} · {when}"),
-            _ => when,
-        };
+        let title = titles.get(&opened.instance).map(String::as_str);
+        let caption = open_caption(title, opened, now);
         let icon = row
             .as_ref()
             .map(|row| row.icon.clone())
@@ -669,11 +681,11 @@ pub fn open(
                             .truncate()
                             .child(name.clone()),
                     )
-                    .child(
+                    .children(caption.map(|caption| {
                         look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
                             .truncate()
-                            .child(caption),
-                    )
+                            .child(caption)
+                    }))
                     .children(cost),
             )
             .on_click(cx.listener(move |root, _, window, cx| {
@@ -1059,6 +1071,36 @@ mod tests {
             pending: false,
             prep: Prep::Settled,
         }
+    }
+
+    #[test]
+    fn an_open_row_says_its_age_only_once_it_is_seated_in_this_run() {
+        let then = Instant::now();
+        let later = then + Duration::from_secs(180);
+        let opened = |left, seated| Opened {
+            program: "chat",
+            instance: 1,
+            left,
+            seated,
+        };
+        let listed = opened(None, false);
+        assert_eq!(
+            open_caption(None, &listed, later),
+            None,
+            "from the last launch"
+        );
+        assert_eq!(open_caption(Some(""), &listed, later), None);
+        assert_eq!(
+            open_caption(Some("general"), &listed, later),
+            Some("general".to_owned())
+        );
+        let on_top = opened(None, true);
+        assert_eq!(open_caption(None, &on_top, later), Some("now".to_owned()));
+        let left = opened(Some(then), true);
+        assert_eq!(
+            open_caption(Some("general"), &left, later),
+            Some("general · 3m ago".to_owned())
+        );
     }
 
     #[test]

@@ -62,6 +62,7 @@ view-wire.workspace = true
 reqwest.workspace = true
 # debug mode reads the host's perf registry as `GET /perf` serves it
 serde_json.workspace = true
+serde.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # the camera and microphone pieces open the phone's own (AVFoundation and

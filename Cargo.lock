@@ -2973,6 +2973,7 @@ dependencies = [
  "objc2-ui-kit",
  "reqwest",
  "ring",
+ "serde",
  "serde_json",
  "tempfile",
  "tracing",

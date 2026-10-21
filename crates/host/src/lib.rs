@@ -52,6 +52,8 @@ pub mod contract;
 pub mod fonts;
 #[cfg(feature = "ui")]
 pub mod frames;
+#[cfg(feature = "ui")]
+pub mod kept;
 pub mod memory;
 pub mod motion;
 pub mod perf;

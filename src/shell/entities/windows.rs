@@ -24,7 +24,7 @@
 //! window thread comes over the `Posted` channel (`posted`); a banner of
 //! another listed network's switches to it first and opens its row there
 //! (`switching`).
-use super::arrangement::{self, Arrangement, Keeper};
+use super::arrangement::{self, Arrangement};
 use super::{
     AccountEvent, Desk, DeskSeats, Entities, Front, Listed, Overlay, Overlays, Popped, Screen,
     SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
@@ -106,7 +106,7 @@ pub(crate) struct Windows {
     /// waits (a cold start). Set once at launch (`launch::run`); a test's
     /// windows have none unless it gives them one.
     follower: Option<Entity<crate::shell::follow::Follower>>,
-    kept: Keeper,
+    kept: ducktape_host::kept::Keeper<Arrangement>,
     keeping: Option<String>,
     placed: BTreeMap<WindowKey, WindowBounds>,
     moves: BTreeMap<WindowKey, Subscription>,
@@ -230,7 +230,7 @@ impl Windows {
             held: Vec::new(),
             starting: None,
             follower: None,
-            kept: Keeper::load(),
+            kept: ducktape_host::kept::Keeper::load("windows.json"),
             keeping: None,
             placed: BTreeMap::new(),
             moves: BTreeMap::new(),
