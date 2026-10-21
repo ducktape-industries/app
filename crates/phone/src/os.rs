@@ -18,6 +18,25 @@ mod keeps;
 pub mod ios {
     pub mod ffi;
 
+    /// Tells gpui_ios the keyboard a field asks for, which its text view
+    /// answers UIKit's `keyboardType` and `isSecureTextEntry` with.
+    pub fn keyboard(keyboard: ducktape_host::contract::Keyboard) {
+        use ducktape_gpui_ios::KeyboardKind as Kind;
+        use view_wire::VirtualKeyboard as Asked;
+        ducktape_gpui_ios::ios::set_keyboard(ducktape_gpui_ios::Keyboard {
+            kind: match keyboard.kind {
+                Asked::Text => Kind::Text,
+                Asked::Numeric => Kind::Numeric,
+                Asked::Decimal => Kind::Decimal,
+                Asked::Tel => Kind::Tel,
+                Asked::Email => Kind::Email,
+                Asked::Url => Kind::Url,
+                Asked::Search => Kind::Search,
+            },
+            secure: keyboard.secure,
+        });
+    }
+
     /// Which of Apple's servers this build's APNs tokens belong to: the
     /// `aps-environment` of the provisioning profile the app was signed
     /// with (`embedded.mobileprovision` beside the executable, its plist in
@@ -586,7 +605,12 @@ impl OsServices for PhoneOs {
         }
         #[cfg(not(target_os = "android"))]
         match want {
-            SoftKeyboard::Show(_) => window.request_virtual_keyboard(),
+            SoftKeyboard::Show(keyboard) => {
+                #[cfg(target_os = "ios")]
+                ios::keyboard(keyboard);
+                let _ = keyboard;
+                window.request_virtual_keyboard()
+            }
             SoftKeyboard::Hide => window.dismiss_virtual_keyboard(),
         }
     }

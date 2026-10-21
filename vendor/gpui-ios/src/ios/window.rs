@@ -127,6 +127,18 @@ pub fn set_status_bar_style(style: crate::StatusBarContentStyle) {
     }
 }
 
+/// Set the software keyboard the focused text field opens with.
+///
+/// Every window's text input view takes it, and one showing the keyboard
+/// reloads it.
+pub fn set_keyboard(keyboard: crate::Keyboard) {
+    if let Some(platform) = super::application::current_platform() {
+        platform.application.with_windows(|window| {
+            window.text_input_view.set_keyboard(keyboard);
+        });
+    }
+}
+
 define_class!(
     #[unsafe(super = UIView)]
     #[thread_kind = MainThreadOnly]

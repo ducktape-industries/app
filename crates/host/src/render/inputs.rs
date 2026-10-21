@@ -245,6 +245,7 @@ impl ViewTree {
                 state.set_placeholder(placeholder.clone(), window, cx)
             }));
         }
+        let asked = field.keyboard();
         let reconfigured = field.text_input != options.text_input || field.secure != *secure;
         if field.secure != *secure {
             field.secure = *secure;
@@ -256,6 +257,12 @@ impl ViewTree {
             field.text_input = options.text_input;
             let configuration = field.configuration();
             field.contract.configure(configuration, cx);
+            let raised = field.keyboard() != asked
+                && crate::contract::os().facts().touch_first
+                && field.is_focused(window, cx);
+            if raised {
+                keyboard::raise(field, window);
+            }
         }
         if let Engine::Area(state) = field.engine.clone() {
             field.set_fills(style.size.height.is_some(), field_rows(&style), cx);
@@ -460,6 +467,13 @@ impl ViewTree {
 impl Field {
     fn configuration(&self) -> gpui_kit::TextInputConfiguration {
         self.text_input.configuration(self.secure)
+    }
+
+    fn keyboard(&self) -> crate::contract::Keyboard {
+        crate::contract::Keyboard {
+            kind: self.text_input.virtual_keyboard,
+            secure: self.secure,
+        }
     }
 
     pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {
@@ -963,7 +977,7 @@ mod keyboard {
 
     pub(super) fn raise(field: &Field, window: &Window) {
         shown(engine!(&field.engine, |state| state.entity_id()));
-        crate::contract::os().soft_keyboard(window, SoftKeyboard::Show(field.configuration()));
+        crate::contract::os().soft_keyboard(window, SoftKeyboard::Show(field.keyboard()));
     }
 
     pub(super) fn follow(

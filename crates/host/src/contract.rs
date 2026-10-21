@@ -36,7 +36,7 @@ use crate::runtime::Answered;
 use crate::runtime::notify::Opened;
 use crate::runtime::notify::{Click, Notice};
 #[cfg(feature = "ui")]
-use gpui_kit::{AppLifecyclePhase, TextInputConfiguration, Window, WindowInsets};
+use gpui_kit::{AppLifecyclePhase, Window, WindowInsets};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -253,16 +253,26 @@ pub trait Banners: Send + Sync {
     fn withdraw(&self, chain: &str, tag: &str);
 }
 
-/// The software keyboard a focused field wants. (The fork's
-/// `VirtualKeyboard`, the one field gpui lacks, joins `Show` with the fork
-/// pin that adds it.)
+/// The software keyboard a focused field wants.
 #[cfg(feature = "ui")]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoftKeyboard {
     /// Up, for a field configured so.
-    Show(TextInputConfiguration),
+    Show(Keyboard),
     /// Down.
     Hide,
+}
+
+/// The keyboard a field asks for: the keys it opens with, and whether what
+/// is typed is a secret, which a phone keeps from suggestions and other
+/// keyboards. The shell tells its OS both (iOS: `ducktape_gpui_ios::ios::set_keyboard`).
+#[cfg(feature = "ui")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Keyboard {
+    /// The keys: text, digits, an address.
+    pub kind: view_wire::VirtualKeyboard,
+    /// The field is masked.
+    pub secure: bool,
 }
 
 /// Constants per OS.
@@ -1042,12 +1052,24 @@ pub mod testing {
         TOUCH_FIRST.set(touch);
     }
 
+    #[cfg(feature = "ui")]
     thread_local! {
-        static SOFT_KEYBOARD: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+        static SOFT_KEYBOARD: std::cell::RefCell<Vec<SoftKeyboard>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui"))]
     pub(crate) fn soft_keyboard_asked_for_test() -> Vec<&'static str> {
+        keyboards_asked_for_test()
+            .into_iter()
+            .map(|asked| match asked {
+                SoftKeyboard::Show(_) => "show",
+                SoftKeyboard::Hide => "hide",
+            })
+            .collect()
+    }
+
+    #[cfg(all(test, feature = "ui"))]
+    pub(crate) fn keyboards_asked_for_test() -> Vec<SoftKeyboard> {
         SOFT_KEYBOARD.take()
     }
 
@@ -1131,12 +1153,7 @@ pub mod testing {
 
         #[cfg(feature = "ui")]
         fn soft_keyboard(&self, _: &Window, want: SoftKeyboard) {
-            SOFT_KEYBOARD.with_borrow_mut(|asked| {
-                asked.push(match want {
-                    SoftKeyboard::Show(_) => "show",
-                    SoftKeyboard::Hide => "hide",
-                })
-            });
+            SOFT_KEYBOARD.with_borrow_mut(|asked| asked.push(want));
         }
 
         fn facts(&self) -> OsFacts {

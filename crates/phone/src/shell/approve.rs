@@ -44,7 +44,7 @@ pub fn field(
                 .account
                 .update(cx, |account, cx| account.clear_error(cx)),
             InputEvent::PressEnter { .. } => find(&root.shared, code, cx),
-            InputEvent::Focus => join::keyboard(window, Some(keyboard())),
+            InputEvent::Focus => join::keyboard(window, Some(Default::default())),
             InputEvent::Blur => join::keyboard(window, None),
         },
     );

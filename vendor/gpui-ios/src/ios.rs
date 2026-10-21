@@ -49,8 +49,8 @@ impl<T> CallbackSlot<T> {
 
 pub(crate) use display::*;
 pub use platform::*;
-pub use window::set_status_bar_style;
 pub(crate) use window::*;
+pub use window::{set_keyboard, set_status_bar_style};
 
 /// Returns the native platform implementation for iOS.
 pub fn current_platform(_headless: bool) -> std::rc::Rc<dyn gpui::Platform> {

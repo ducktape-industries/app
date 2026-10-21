@@ -1,7 +1,8 @@
 use super::window::{IosWindowState, WindowReference};
+use crate::{Keyboard, KeyboardKind};
 use gpui::{
     Autocapitalize, PlatformInputHandler, TextInputAction, TextInputConfiguration,
-    TextInputStateChange, VirtualKeyboard, px,
+    TextInputStateChange, px,
 };
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -114,6 +115,7 @@ pub(super) struct TextInputIvars {
     input_field: Cell<Option<gpui::FocusId>>,
     session: RefCell<Rc<()>>,
     configuration: RefCell<TextInputConfiguration>,
+    keyboard: Cell<Keyboard>,
     delegate: RefCell<Weak<ProtocolObject<dyn UITextInputDelegate>>>,
     marked_style: RefCell<Option<Retained<NSDictionary<NSAttributedStringKey, AnyObject>>>>,
     keyboard_desired: Cell<bool>,
@@ -224,18 +226,18 @@ define_class!(
     unsafe impl UITextInputTraits for TextInputView {
         #[unsafe(method(keyboardType))]
         fn keyboard_type(&self) -> UIKeyboardType {
-            match self.ivars().configuration.borrow().virtual_keyboard {
-                VirtualKeyboard::Text => UIKeyboardType::Default,
-                VirtualKeyboard::Numeric => UIKeyboardType::NumberPad,
-                VirtualKeyboard::Decimal => UIKeyboardType::DecimalPad,
-                VirtualKeyboard::Tel => UIKeyboardType::PhonePad,
-                VirtualKeyboard::Email => UIKeyboardType::EmailAddress,
-                VirtualKeyboard::Url => UIKeyboardType::URL,
-                VirtualKeyboard::Search => UIKeyboardType::WebSearch,
+            match self.ivars().keyboard.get().kind {
+                KeyboardKind::Text => UIKeyboardType::Default,
+                KeyboardKind::Numeric => UIKeyboardType::NumberPad,
+                KeyboardKind::Decimal => UIKeyboardType::DecimalPad,
+                KeyboardKind::Tel => UIKeyboardType::PhonePad,
+                KeyboardKind::Email => UIKeyboardType::EmailAddress,
+                KeyboardKind::Url => UIKeyboardType::URL,
+                KeyboardKind::Search => UIKeyboardType::WebSearch,
             }
         }
         #[unsafe(method(isSecureTextEntry))]
-        fn is_secure_text_entry(&self) -> bool { self.ivars().configuration.borrow().secure }
+        fn is_secure_text_entry(&self) -> bool { self.ivars().keyboard.get().secure }
         #[unsafe(method(autocorrectionType))]
         fn autocorrection_type(&self) -> UITextAutocorrectionType {
             if self.ivars().configuration.borrow().autocorrect { UITextAutocorrectionType::Yes } else { UITextAutocorrectionType::No }
@@ -496,6 +498,7 @@ impl TextInputView {
             input_field: Cell::new(None),
             session: RefCell::new(Rc::new(())),
             configuration: RefCell::new(TextInputConfiguration::default()),
+            keyboard: Cell::new(Keyboard::default()),
             delegate: RefCell::new(Weak::default()),
             marked_style: RefCell::new(None),
             keyboard_desired: Cell::new(false),
@@ -629,6 +632,14 @@ impl TextInputView {
             return;
         }
         *self.ivars().configuration.borrow_mut() = configuration.clone();
+        self.ivars().configuration_changed.set(true);
+        self.refresh_keyboard();
+    }
+
+    pub(super) fn set_keyboard(&self, keyboard: Keyboard) {
+        if self.ivars().keyboard.replace(keyboard) == keyboard {
+            return;
+        }
         self.ivars().configuration_changed.set(true);
         self.refresh_keyboard();
     }
@@ -894,11 +905,22 @@ pub(super) mod tests {
             autocapitalize: Autocapitalize::Sentences,
             suggestions: true,
             input_action: TextInputAction::Search,
-            virtual_keyboard: VirtualKeyboard::Email,
+            ..TextInputConfiguration::default()
+        });
+        assert_eq!(view.keyboardType(), UIKeyboardType::Default);
+        assert!(!view.isSecureTextEntry());
+        view.set_keyboard(Keyboard {
+            kind: KeyboardKind::Email,
             secure: true,
         });
         assert_eq!(view.keyboardType(), UIKeyboardType::EmailAddress);
         assert!(view.isSecureTextEntry());
+        view.ivars().configuration_changed.set(false);
+        view.set_keyboard(Keyboard {
+            kind: KeyboardKind::Email,
+            secure: true,
+        });
+        assert!(!view.ivars().configuration_changed.get());
         assert_eq!(view.autocorrectionType(), UITextAutocorrectionType::Yes);
         assert_eq!(
             view.autocapitalizationType(),

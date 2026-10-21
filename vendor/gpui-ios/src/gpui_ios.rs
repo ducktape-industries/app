@@ -19,3 +19,32 @@ pub enum StatusBarContentStyle {
     #[default]
     Dark,
 }
+
+/// The software keyboard a text field opens with ([`ios::set_keyboard`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Keyboard {
+    /// The keys it shows.
+    pub kind: KeyboardKind,
+    /// What is typed is a secret: no suggestions, no third-party keyboard.
+    pub secure: bool,
+}
+
+/// The keys a software keyboard shows (UIKit's `UIKeyboardType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyboardKind {
+    /// Letters.
+    #[default]
+    Text,
+    /// Digits.
+    Numeric,
+    /// Digits and a decimal point.
+    Decimal,
+    /// A phone number.
+    Tel,
+    /// An email address.
+    Email,
+    /// A web address.
+    Url,
+    /// A search.
+    Search,
+}

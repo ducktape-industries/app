@@ -1491,3 +1491,70 @@ fn return_from_a_software_keyboard_submits_a_one_line_field_once(
     assert_eq!(submits, 2, "a hardware Enter is one more submit, never two");
     assert_eq!(text(&tree, &mut native), before);
 }
+
+#[gpui_kit::test]
+fn a_field_raises_the_keyboard_it_asks_for_and_again_when_that_changes(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::contract::{Keyboard, SoftKeyboard};
+    crate::contract::testing::touch_first_for_test(true);
+    let form_acting = |secure, action| {
+        let mut field = input("Email", secure, false);
+        let wire::Node::Field { options, .. } = &mut field else {
+            unreachable!()
+        };
+        options.text_input.virtual_keyboard = wire::VirtualKeyboard::Email;
+        options.text_input.input_action = action;
+        container("form", [field])
+    };
+    let form = |secure| form_acting(secure, wire::TextInputAction::Unspecified);
+    let email = |secure| {
+        SoftKeyboard::Show(Keyboard {
+            kind: wire::VirtualKeyboard::Email,
+            secure,
+        })
+    };
+    let (tree, mut native) = mounted(form(false), cx);
+    native.update(|window, _| window.activate_window());
+    native.run_until_parked();
+    crate::contract::testing::keyboards_asked_for_test();
+    focus(&tree, &mut native, &[named_id("form"), named_id("i")]);
+    native.run_until_parked();
+    assert_eq!(
+        crate::contract::testing::keyboards_asked_for_test(),
+        [email(false)],
+        "taking the keys raised the field's own keyboard"
+    );
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| tree.replace(form(true), &[], cx));
+        crate::render::draw_frame(window, cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        crate::contract::testing::keyboards_asked_for_test(),
+        [email(true)],
+        "a field that turns secret while it holds the keys tells the keyboard again"
+    );
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| tree.replace(form(true), &[], cx));
+        crate::render::draw_frame(window, cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        crate::contract::testing::keyboards_asked_for_test(),
+        [],
+        "a frame that changes nothing asks nothing"
+    );
+    native.update(|window, cx| {
+        let sends = form_acting(true, wire::TextInputAction::Send);
+        tree.update(cx, |tree, cx| tree.replace(sends, &[], cx));
+        crate::render::draw_frame(window, cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        crate::contract::testing::keyboards_asked_for_test(),
+        [],
+        "a field that changes only its return key keeps the keyboard it has"
+    );
+    crate::contract::testing::touch_first_for_test(false);
+}

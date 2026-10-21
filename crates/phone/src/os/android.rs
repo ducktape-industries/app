@@ -63,18 +63,16 @@ pub fn phone() -> String {
 
 /// Raises the keyboard the focused field asks for, or lowers it.
 pub fn soft_keyboard(want: SoftKeyboard) {
-    use gpui_kit::VirtualKeyboard as Asked;
+    use view_wire::VirtualKeyboard as Asked;
     match want {
-        SoftKeyboard::Show(field) => {
-            gpui_mobile::show_keyboard_with_type(match field.virtual_keyboard {
-                Asked::Text | Asked::Search => KeyboardType::Default,
-                Asked::Numeric => KeyboardType::NumberPad,
-                Asked::Decimal => KeyboardType::Decimal,
-                Asked::Tel => KeyboardType::Phone,
-                Asked::Email => KeyboardType::EmailAddress,
-                Asked::Url => KeyboardType::URL,
-            })
-        }
+        SoftKeyboard::Show(field) => gpui_mobile::show_keyboard_with_type(match field.kind {
+            Asked::Text | Asked::Search => KeyboardType::Default,
+            Asked::Numeric => KeyboardType::NumberPad,
+            Asked::Decimal => KeyboardType::Decimal,
+            Asked::Tel => KeyboardType::Phone,
+            Asked::Email => KeyboardType::EmailAddress,
+            Asked::Url => KeyboardType::URL,
+        }),
         SoftKeyboard::Hide => gpui_mobile::hide_keyboard(),
     }
 }

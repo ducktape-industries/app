@@ -19,10 +19,15 @@ was (its one symlink, `LICENSE-APACHE`, copied as the file it named); the commit
 - `src/ios/display.rs`: zed's `unsafe impl Send for IosDisplay {}` / `unsafe impl Sync for IosDisplay {}`
   are deleted. `IosDisplay` wraps a `Retained<UIScreen>`, a `MainThreadOnly` class, and nothing needs
   the bounds (every use is `Rc<dyn PlatformDisplay>` on the main thread).
-- `src/ios/text_input.rs`: `keyboardType` answers the core's `TextInputConfiguration::virtual_keyboard`
-  (`VirtualKeyboard` -> `UIKeyboardType`; zed answers `Default` always) and `isSecureTextEntry` answers
-  its `secure` (zed has neither); the harness test asserts both. The core field is the gpui-pre fork's
-  until step 10, when the phone tells this crate the keyboard directly.
+- `src/gpui_ios.rs`, `src/ios.rs`, `src/ios/window.rs`, `src/ios/text_input.rs`: `keyboardType` and
+  `isSecureTextEntry` answer the keyboard the phone last told the crate with
+  `ios::set_keyboard(Keyboard { kind, secure })` (`KeyboardKind` -> `UIKeyboardType`; zed answers
+  `Default` and not secure always), and a change while the keyboard is up reloads it. The core's
+  `TextInputConfiguration` is read only for the fields published gpui has (autocorrect, autocapitalize,
+  suggestions, input action). The harness test asserts the default, the told keyboard, and that telling
+  the same one again reloads nothing.
+- `tests/text_input.rs`: it includes `src/ios/text_input.rs` by path, so it imports the crate's `Keyboard`
+  and `KeyboardKind` at its root, where that file's `use crate::{Keyboard, KeyboardKind}` finds them.
 - `src/ios/window.rs`, `src/ios/application.rs`: the display link is demand-driven. `IosWindow`
   implements `frame_waker` and `schedule_frame` (zed's has neither), `renderFrame:` pauses the link
   after a tick in which no window asked for another frame, and a window's next demand resumes it
@@ -58,7 +63,10 @@ selection_bounds_for_range}`, a public `Window::last_input_was_touch`, and
 
 `vendor/` is outside the app's workspace; this crate builds only for iOS, so no Linux gate compiles
 it. From the app's root on a Mac: `IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo build -p ducktape-gpui-ios
---target aarch64-apple-ios-sim`, or the phone itself (`phone/Makefile`). `backtrace` 0.3.76 needs
+--target aarch64-apple-ios-sim`, or the phone itself (`phone/Makefile`). The harness test
+(`tests/text_input.rs`) needs the crate's dev-dependencies, which cargo reads only for a workspace
+member: in a local copy that adds `vendor/gpui-ios` to the root's `members`, `cargo test -p
+ducktape-gpui-ios --target aarch64-apple-ios-sim`. `backtrace` 0.3.76 needs
 libc <= 0.2.189 on iOS, which the app's lock holds.
 
 ## On a bump
