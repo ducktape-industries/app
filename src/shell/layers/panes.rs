@@ -365,10 +365,10 @@ impl Render for PaneLayer {
                 .relative()
                 .size_full()
                 .child(canvas)
-                .child(
-                    AnyView::from(self.empty_desk.clone())
-                        .cached(StyleRefinement::default().size_full()),
-                )
+                .child(ducktape_host::a11y::cached(
+                    AnyView::from(self.empty_desk.clone()),
+                    StyleRefinement::default().size_full(),
+                ))
                 .into_any_element();
         }
         let views = layout
@@ -447,8 +447,10 @@ impl PaneView {
                         seat.ax_mark(),
                     ),
                     (None, Some(tree)) => {
-                        let view =
-                            AnyView::from(tree).cached(StyleRefinement::default().size_full());
+                        let view = ducktape_host::a11y::cached(
+                            AnyView::from(tree),
+                            StyleRefinement::default().size_full(),
+                        );
                         let mut context = KeyContext::default();
                         context.set("ducktape_view", format!("view{}", seat.instance()));
                         div()
@@ -469,12 +471,16 @@ impl PaneView {
                     (None, None) => div().size_full().into_any_element(),
                 }
             }
-            Body::Help(help) => AnyView::from(help.clone())
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
-            Body::Empty(empty) => AnyView::from(empty.clone())
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
+            Body::Help(help) => ducktape_host::a11y::cached(
+                AnyView::from(help.clone()),
+                StyleRefinement::default().size_full(),
+            )
+            .into_any_element(),
+            Body::Empty(empty) => ducktape_host::a11y::cached(
+                AnyView::from(empty.clone()),
+                StyleRefinement::default().size_full(),
+            )
+            .into_any_element(),
             Body::Memory(memory) => AnyView::from(memory.clone()).into_any_element(),
             Body::Missing => div().size_full().into_any_element(),
         }
@@ -632,14 +638,14 @@ impl Render for PaneView {
             self.kind == WindowKind::Console && pane.frame.is_some() && layout.fills(index);
         let strip = match strip_grows {
             true => self.strip.clone().into_any_element(),
-            false => AnyView::from(self.strip.clone())
-                .cached(
-                    StyleRefinement::default()
-                        .w_full()
-                        .h(px(if filled { FILL_STRIP } else { TITLE }))
-                        .flex_shrink_0(),
-                )
-                .into_any_element(),
+            false => ducktape_host::a11y::cached(
+                AnyView::from(self.strip.clone()),
+                StyleRefinement::default()
+                    .w_full()
+                    .h(px(if filled { FILL_STRIP } else { TITLE }))
+                    .flex_shrink_0(),
+            )
+            .into_any_element(),
         };
         self.place(
             index,

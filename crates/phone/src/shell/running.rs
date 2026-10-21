@@ -43,7 +43,10 @@ pub fn body(
             seat.ax_mark(),
         ),
         (None, Some(tree)) => {
-            let view = AnyView::from(tree).cached(StyleRefinement::default().size_full());
+            let view = ducktape_host::a11y::cached(
+                AnyView::from(tree),
+                StyleRefinement::default().size_full(),
+            );
             let mut context = KeyContext::default();
             context.set("ducktape_view", format!("view{}", seat.instance()));
             div()
