@@ -9,7 +9,7 @@
 
 use ducktape_host::contract::{
     Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
-    Preload, Signal, SoftKeyboard,
+    Preload, Secrets, Signal, SoftKeyboard,
 };
 use ducktape_host::runtime::Answered;
 use ducktape_host::runtime::notify::{Click, Notice, Settings};
@@ -162,6 +162,10 @@ impl OsServices for DesktopOs {
             sealed: false,
             level: crate::backend::device_key::level(keyring).map_err(KeyRefusal::Denied)?,
         })
+    }
+
+    fn secrets(&self) -> Option<&dyn Secrets> {
+        Some(&crate::backend::secrets::DesktopSecrets)
     }
 
     fn reader(&self) -> Arc<dyn noded_client::Signer> {

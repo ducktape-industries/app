@@ -99,7 +99,13 @@ mkdir -p /tmp/ducktape && tar xzf /tmp/ducktape.tar.gz -C /tmp/ducktape
   `socket.open`/`socket.send` (a WebSocket from this device to a `wss://`
   host the view's manifest lists, once the person allowed exactly those
   hosts on a card, asked again whenever an update changes the list;
-  `src/runtime/kernel/socket.rs`) with `host.random`. A view
+  `src/runtime/kernel/socket.rs`) with `host.random`, and
+  `store.secret_get`/`store.secret_set` (a view's secrets in the OS key
+  store, one item each under its network, key, program and name, never in
+  its store file: `src/runtime/secret.rs` over each shell's
+  `contract::Secrets`; the desktop's Secret Service or keychain item, or a
+  file only this user reads with `DUCKTAPE_DEVICE_KEY_STORE=file`; none yet
+  on the phones and pushd, which refuse `no_secret_store`). A view
   reaches only the capabilities its manifest declares. A view instance
   belongs to the key it was seated with: when the seated key moves to
   another, or the session locks, every view and notifier on that network

@@ -43,7 +43,7 @@ const CANCELLED: i32 = -128;
 const AUTH_FAILED: i32 = -25293;
 const LOCKED: i32 = -25308;
 
-fn file_only() -> bool {
+pub(crate) fn file_only() -> bool {
     cfg!(test) || std::env::var("DUCKTAPE_DEVICE_KEY_STORE").is_ok_and(|store| store == "file")
 }
 
@@ -83,7 +83,7 @@ fn kept(entry: &keyring::Entry) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     }
 }
 
-fn refused(error: keyring::Error) -> String {
+pub(crate) fn refused(error: keyring::Error) -> String {
     tracing::info!(target: "ducktape::keys", %error, "OS key store refused");
     let no_keyring = match cfg!(target_os = "linux") {
         true => {

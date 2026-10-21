@@ -52,7 +52,7 @@ pub mod ios {
 use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{
     Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
-    Preload, RunnerConfig, Signal, SoftKeyboard, ViewRunner,
+    Preload, RunnerConfig, Secrets, Signal, SoftKeyboard, ViewRunner,
 };
 use ducktape_host::motion;
 use ducktape_host::runtime::Answered;
@@ -511,6 +511,10 @@ impl OsServices for PhoneOs {
             let _ = keyring;
             Err(KeyRefusal::NoStore(NO_STORE.into()))
         }
+    }
+
+    fn secrets(&self) -> Option<&dyn Secrets> {
+        None
     }
 
     fn reader(&self) -> Arc<dyn noded_client::Signer> {

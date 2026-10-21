@@ -57,6 +57,10 @@ pub trait OsServices: Send + Sync + 'static {
     /// Where that key is kept, in the store's own words (the Settings row
     /// "Key storage").
     fn key_storage(&self, keyring: &str) -> Result<KeyStorage, KeyRefusal>;
+    /// The OS's store of views' secrets (`store.secret_get`,
+    /// `store.secret_set`); `None` where this device has none, which a view
+    /// hears as `no_secret_store`.
+    fn secrets(&self) -> Option<&dyn Secrets>;
     /// Which key that is, and whether it is linkable to the device, is the
     /// shell's call: the desktop answers a throwaway key made per process.
     /// Not in SPEC §4.2's list: §4.8 leaves the throwaway in the desktop
@@ -220,6 +224,16 @@ impl KeyRefusal {
             Self::NoStore(s) | Self::Denied(s) | Self::Broken(s) => s.clone(),
         }
     }
+}
+
+/// The OS's own store of secrets, which keeps a view's (`runtime::secret`):
+/// each call may block on the OS (a prompt, a daemon) and is made off the
+/// window thread, one after another per name.
+pub trait Secrets: Send + Sync {
+    /// The secret kept under `name`, or `None` where none is.
+    fn get(&self, name: &str) -> Result<Option<Vec<u8>>, KeyRefusal>;
+    /// Keeps `value` under `name`, or removes what is kept there with `None`.
+    fn set(&self, name: &str, value: Option<&[u8]>) -> Result<(), KeyRefusal>;
 }
 
 /// OS banners. Both calls block on the OS: a view's run through
@@ -929,6 +943,64 @@ pub mod testing {
         }
     }
 
+    static SECRETS: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+    static SECRET_REFUSALS: std::sync::Mutex<Vec<(String, KeyRefusal)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// Every secret the test key store keeps now, by name, from every test.
+    pub fn secrets_kept() -> std::collections::BTreeMap<String, Vec<u8>> {
+        SECRETS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// From now on the test key store refuses every secret whose name holds
+    /// `part`, with `refusal`.
+    pub fn refuse_secrets(part: &str, refusal: KeyRefusal) {
+        SECRET_REFUSALS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((part.to_owned(), refusal));
+    }
+
+    /// The test services' key store: secrets in memory, shared by every test.
+    pub struct TestSecrets;
+
+    fn secret_refusal(name: &str) -> Result<(), KeyRefusal> {
+        let refusals = SECRET_REFUSALS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match refusals
+            .iter()
+            .find(|(part, _)| name.contains(part.as_str()))
+        {
+            Some((_, refusal)) => Err(refusal.clone()),
+            None => Ok(()),
+        }
+    }
+
+    impl Secrets for TestSecrets {
+        fn get(&self, name: &str) -> Result<Option<Vec<u8>>, KeyRefusal> {
+            secret_refusal(name)?;
+            Ok(secrets_kept().get(name).cloned())
+        }
+
+        fn set(&self, name: &str, value: Option<&[u8]>) -> Result<(), KeyRefusal> {
+            secret_refusal(name)?;
+            let mut kept = SECRETS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match value {
+                Some(value) => kept.insert(name.to_owned(), value.to_vec()),
+                None => kept.remove(name),
+            };
+            Ok(())
+        }
+    }
+
     static OPENED: std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> =
         std::sync::Mutex::new(Vec::new());
 
@@ -1034,6 +1106,10 @@ pub mod testing {
                 sealed: false,
                 level: KeyLevel::File,
             })
+        }
+
+        fn secrets(&self) -> Option<&dyn Secrets> {
+            Some(&TestSecrets)
         }
 
         fn reader(&self) -> Arc<dyn noded_client::Signer> {

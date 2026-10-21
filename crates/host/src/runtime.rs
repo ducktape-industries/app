@@ -31,6 +31,7 @@ mod owners;
 mod picker;
 mod roster;
 mod seat;
+mod secret;
 mod store;
 mod view;
 pub mod web;

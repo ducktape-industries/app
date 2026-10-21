@@ -142,11 +142,12 @@ pub(super) fn answer(
     payload: &[u8],
     props: &Option<Vec<u8>>,
 ) -> bool {
-    if super::clipboard::answer(view, capability, operation, id, payload)
+    let answered_by_its_module = super::clipboard::answer(view, capability, operation, id, payload)
         || super::picker::answer(view, capability, operation, id, payload)
         || super::notify::answer(view, capability, operation, id, payload)
         || super::store::answer(view, capability, operation, id, payload, props)
-    {
+        || super::secret::answer(view, capability, operation, id, payload, props);
+    if answered_by_its_module {
         return true;
     }
     match (capability, operation) {

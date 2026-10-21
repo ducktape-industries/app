@@ -259,7 +259,7 @@ fn file(view: &View, props: &Option<Vec<u8>>) -> Result<File, wire::Error> {
     Ok(located(&store, &connection.chain, &signer, view.program))
 }
 
-fn signer_of(props: &[u8]) -> Option<String> {
+pub(super) fn signer_of(props: &[u8]) -> Option<String> {
     methods::decode::<methods::Session>(props)
         .ok()
         .map(|session| session.signer)
@@ -291,7 +291,7 @@ fn located(store: &Path, chain: &str, signer: &str, program: &str) -> File {
     }
 }
 
-fn escaped(name: &str) -> String {
+pub(super) fn escaped(name: &str) -> String {
     name.bytes()
         .map(|byte| match byte.is_ascii_alphanumeric() || byte == b'-' {
             true => char::from(byte).to_string(),
