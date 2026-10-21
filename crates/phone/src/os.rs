@@ -541,14 +541,17 @@ impl OsServices for PhoneOs {
         }
     }
 
-    /// gpui_ios raises and lowers the keyboard with the focused field (the
-    /// UIKit text contract); gm's host path is told.
     fn soft_keyboard(&self, window: &Window, want: SoftKeyboard) {
-        let _ = window;
         #[cfg(target_os = "android")]
-        android::soft_keyboard(want);
+        {
+            let _ = window;
+            android::soft_keyboard(want);
+        }
         #[cfg(not(target_os = "android"))]
-        let _ = want;
+        match want {
+            SoftKeyboard::Show(_) => window.request_virtual_keyboard(),
+            SoftKeyboard::Hide => window.dismiss_virtual_keyboard(),
+        }
     }
 
     fn facts(&self) -> OsFacts {

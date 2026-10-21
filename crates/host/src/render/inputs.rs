@@ -265,6 +265,12 @@ impl ViewTree {
                 });
             }
         };
+        let touched = {
+            let path = path.clone();
+            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                this.field_touched(&path, event, window, cx)
+            })
+        };
         match &engine {
             Engine::Line(state) => {
                 let (placed, drawn) = placed(&style);
@@ -286,6 +292,7 @@ impl ViewTree {
                     set_value,
                     input.role(gpui_kit::component::RoleOverride::Presentational),
                 )
+                .capture_any_mouse_down(touched)
                 .refine_style(&placed);
                 announce(field, accessible).into_any_element()
             }
@@ -308,7 +315,8 @@ impl ViewTree {
                             set_value,
                             Textarea::new(state),
                         )
-                        .when(fills, |field| field.h_full()),
+                        .when(fills, |field| field.h_full())
+                        .capture_any_mouse_down(touched),
                         accessible,
                     ));
                 let mut element = div().relative().id(host_id("field"));
@@ -400,6 +408,24 @@ impl ViewTree {
             }
             state.focus(window, cx);
         });
+    }
+
+    fn field_touched(
+        &mut self,
+        path: &AuthoredPath,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(field) = self.fields.get(path) else {
+            return;
+        };
+        let pressed_again_while_it_holds_the_keys = event.button == MouseButton::Left
+            && crate::contract::os().facts().touch_first
+            && field.is_focused(window, cx);
+        if pressed_again_while_it_holds_the_keys {
+            keyboard::raise(field, window);
+        }
     }
 }
 
@@ -921,6 +947,11 @@ mod keyboard {
         still
     }
 
+    pub(super) fn raise(field: &Field, window: &Window) {
+        shown(engine!(&field.engine, |state| state.entity_id()));
+        crate::contract::os().soft_keyboard(window, SoftKeyboard::Show(field.configuration()));
+    }
+
     pub(super) fn follow(
         engine: &Engine,
         path: AuthoredPath,
@@ -930,11 +961,9 @@ mod keyboard {
         let focus = engine!(engine, |state| state.read(cx).focus_handle(cx));
         let field = engine!(engine, |state| state.entity_id());
         let up = cx.on_focus(&focus, window, move |tree, window, _| {
-            let Some(configuration) = tree.fields.get(&path).map(Field::configuration) else {
-                return;
-            };
-            shown(field);
-            crate::contract::os().soft_keyboard(window, SoftKeyboard::Show(configuration));
+            if let Some(focused) = tree.fields.get(&path) {
+                raise(focused, window);
+            }
         });
         let down = cx.on_blur(&focus, window, move |_, window, cx| {
             window.defer(cx, move |window, _| {

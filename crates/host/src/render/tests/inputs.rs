@@ -1410,3 +1410,46 @@ fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
     );
     assert_eq!(text(&tree, &mut native), "hello");
 }
+
+#[gpui_kit::test]
+fn under_touch_a_press_on_the_field_that_holds_the_keys_asks_for_the_keyboard_again(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    crate::contract::testing::touch_first_for_test(true);
+    let filled = || crate::render::test_style(sized_style(Some(fill()), Some(fill())));
+    let mut line = input("Name", false, false);
+    if let wire::Node::Field { style, .. } = &mut line {
+        *style = filled();
+    }
+    let composer = area(
+        "c",
+        Some("Message"),
+        "hi",
+        sized_style(Some(fill()), Some(fill())),
+    );
+    for (field, id) in [(line, "i"), (composer, "c")] {
+        let root = sized("root", field, Some(fill()), Some(fill()));
+        let (tree, mut native) = mounted(root, cx);
+        native.update(|window, _| window.activate_window());
+        native.run_until_parked();
+        crate::contract::testing::soft_keyboard_asked_for_test();
+        focus(&tree, &mut native, &[named_id("root"), named_id(id)]);
+        native.run_until_parked();
+        assert_eq!(
+            crate::contract::testing::soft_keyboard_asked_for_test(),
+            ["show"],
+            "{id}: taking the keys raised the keyboard once"
+        );
+        native.simulate_click(
+            gpui_kit::point(px(200.), px(150.)),
+            gpui_kit::Modifiers::none(),
+        );
+        native.run_until_parked();
+        assert_eq!(
+            crate::contract::testing::soft_keyboard_asked_for_test(),
+            ["show"],
+            "{id}: the keyboard went down while the field kept the keys, and a press on it never asked for it again"
+        );
+    }
+    crate::contract::testing::touch_first_for_test(false);
+}

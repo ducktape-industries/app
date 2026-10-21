@@ -967,6 +967,15 @@ pub mod testing {
         TOUCH_FIRST.set(touch);
     }
 
+    thread_local! {
+        static SOFT_KEYBOARD: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn soft_keyboard_asked_for_test() -> Vec<&'static str> {
+        SOFT_KEYBOARD.take()
+    }
+
     impl OsServices for TestOs {
         fn dirs(&self) -> &Dirs {
             thread_local! {
@@ -1042,7 +1051,14 @@ pub mod testing {
         }
 
         #[cfg(feature = "ui")]
-        fn soft_keyboard(&self, _: &Window, _: SoftKeyboard) {}
+        fn soft_keyboard(&self, _: &Window, want: SoftKeyboard) {
+            SOFT_KEYBOARD.with_borrow_mut(|asked| {
+                asked.push(match want {
+                    SoftKeyboard::Show(_) => "show",
+                    SoftKeyboard::Hide => "hide",
+                })
+            });
+        }
 
         fn facts(&self) -> OsFacts {
             OsFacts {
