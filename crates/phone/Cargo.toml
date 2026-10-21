@@ -75,7 +75,7 @@ ducktape-host-jsc = { path = "../host-jsc" }
 ducktape-gpui-ios.workspace = true
 # the log on the simulator's console (Android's goes to logcat through gm's
 # `android_logger`, which tracing's `log` records reach)
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
 # the system's version App settings names (`os::phone`); gpui_ios's own
 # Foundation bindings
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
