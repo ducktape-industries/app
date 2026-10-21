@@ -726,6 +726,7 @@ impl View {
             picker: _,
             clocks: _,
             fault: _,
+            past_memory: _,
             alive: _,
             staged: _,
             notifier,
@@ -775,7 +776,7 @@ impl View {
     /// Why the view stopped, as its seat shows it: one built against
     /// another wire than this app's says so beside the reason.
     pub fn failure(&self, reason: String) -> Failure {
-        match foreign_wire(&self.wire) {
+        match foreign_wire(&self.wire).filter(|_| !self.past_memory) {
             Some(wire) => Failure::Wire(format!("{reason} ({wire})")),
             None => Failure::Trapped(reason),
         }
@@ -1076,6 +1077,7 @@ impl View {
             picker: Default::default(),
             clocks: Vec::new(),
             fault: None,
+            past_memory: false,
             hash: None,
             alive: Arc::new(()),
             staged: false,

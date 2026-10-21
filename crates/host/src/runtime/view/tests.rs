@@ -525,6 +525,59 @@ fn a_view_on_another_wire_runs_and_its_failure_names_the_node_and_both_wires() {
     assert_eq!(view.failure(fault.clone()), Failure::Trapped(fault));
 }
 
+fn growing_past_memory(in_init: bool) -> View {
+    let pages = crate::backend::memory_bounds().view_bytes / 65536 + 1;
+    let grow = format!("(drop (memory.grow (i32.const {pages})))");
+    let (init, tick) = match in_init {
+        true => (grow.as_str(), ""),
+        false => ("", grow.as_str()),
+    };
+    let bytes = wat::parse_str(format!(
+        r#"(module
+            (@custom "{}" "ducktape.view.manifest\nForeign\n\n\n320\n0\n\n\nnone")
+            (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init") {init})
+            (func (export "tick") (param i32 i32) (result i64) {tick} (i64.const 0))
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
+        wire::manifest::MANIFEST_SECTION
+    ))
+    .unwrap();
+    let runner = crate::contract::runner();
+    let (code, _held) =
+        View::prepare(&**runner, Code::of(&bytes), "past-memory").expect("prepared");
+    let mut view =
+        View::instantiate("past-memory", runner, code, "past-memory").expect("instantiated");
+    view.wire = "0".into();
+    view
+}
+
+#[test]
+fn a_view_past_its_memory_in_init_stops_as_that_whatever_wire_it_was_built_at() {
+    let mut view = growing_past_memory(true);
+    let mut timing = LoadTiming::default();
+    let failure = futures::executor::block_on(view.timed_inited("past-memory", &mut timing))
+        .expect_err("the grow stopped the view's init");
+    assert_eq!(failure.title(), "This view stopped");
+    assert!(
+        failure.to_string().ends_with(&Fault::Memory.to_string()),
+        "{failure}"
+    );
+}
+
+#[test]
+fn a_view_past_its_memory_stops_as_that_whatever_wire_it_was_built_at() {
+    let mut view = growing_past_memory(false);
+    view.init("past-memory").expect("init grows nothing");
+    view.tick();
+    let fault = view.fault.clone().expect("the grow stopped the view");
+    assert_eq!(fault, Fault::Memory.to_string());
+    let failure = view.failure(fault.clone());
+    assert_eq!(failure.title(), "This view stopped");
+    assert_eq!(failure, Failure::Trapped(fault));
+}
+
 // The host reads a manifest's line 6 as `Manifest::level` does: a level
 // in canonical decimal, else a view built before J-085, at 0.
 #[test]

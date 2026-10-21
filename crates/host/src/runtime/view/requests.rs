@@ -433,7 +433,10 @@ impl View {
         self.ticking = false;
         let answer = match landed {
             Landed::Frame(frame) => Ok(frame),
-            Landed::Fault(fault) => Err(fault.to_string()),
+            Landed::Fault(fault) => {
+                self.past_memory |= fault == Fault::Memory;
+                Err(fault.to_string())
+            }
             other => Err(format!("the view answered a tick with {other:?}")),
         };
         if perf::on() {

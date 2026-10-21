@@ -251,6 +251,7 @@ pub(super) struct View {
     pub clocks: Vec<kernel::Clock>,
     /// The trap that ended the view, if one did. A faulted view never ticks again.
     pub fault: Option<String>,
+    pub(crate) past_memory: bool,
     /// sha256 of the view bytes this instance was built from; none for a
     /// file the developer's override supplies.
     pub hash: Option<[u8; 32]>,
@@ -300,7 +301,9 @@ impl View {
     /// returned on the wasmtime runner, later on one that answers across a
     /// process boundary.
     async fn landed(&mut self) -> Landed {
-        next(&self.landing).await
+        let landed = next(&self.landing).await;
+        self.past_memory |= matches!(landed, Landed::Fault(Fault::Memory));
+        landed
     }
 
     /// The answer to the call just begun, taken at once, as a test takes it
