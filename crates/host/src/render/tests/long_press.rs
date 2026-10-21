@@ -459,7 +459,7 @@ fn mentioned(tooltip: u32) -> wire::Node {
         text: "beta\nalpha".into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),
-        clickable_ranges: vec![0..4],
+        clickable_ranges: std::iter::once(0..4).collect(),
         on_click: Some(9),
         on_hover: None,
         tooltip: Some(tooltip),

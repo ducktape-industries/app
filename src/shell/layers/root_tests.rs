@@ -1061,7 +1061,7 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
+fn a_dialogs_scrim_over_a_views_tooltip_source_closes_the_tooltip(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
     use view_wire as wire;
     const MAGENTA: u32 = 0xff00ff;
@@ -1141,13 +1141,12 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
             .expect("the dialog's scrim paints");
         let tip = quads
             .iter()
-            .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(MAGENTA).into()))
-            .unwrap_or_else(|| panic!("{program}: the tooltip still paints"));
+            .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(MAGENTA).into()));
         assert!(
-            tip.order < scrim.order,
-            "{program}: the tooltip {} over the scrim {}",
-            tip.order,
-            scrim.order
+            tip.is_none(),
+            "{program}: the dialog's scrim {} covers the source, yet its tooltip paints at {:?}",
+            scrim.order,
+            tip.map(|tip| tip.order)
         );
         let at = gpui_kit::point(
             gpui_kit::px(pane.origin.x.0 / scale + 8.),

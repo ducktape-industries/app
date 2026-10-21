@@ -625,6 +625,65 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn a_tip_drawn_over_the_next_source_gives_way_to_that_sources_own(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        const LEFT: u32 = 0x00ff00;
+        const RIGHT: u32 = 0x0000ff;
+        cx.update(gpui_kit::init);
+        let page_style = div().size_full().flex().style().clone();
+        let page = wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name("page".into())),
+            style: crate::render::test_style(page_style),
+            interactivity: None,
+            children: vec![
+                named_source("left-source", 1, 40.),
+                named_source("right-source", 2, 40.),
+            ],
+        });
+        let mut covering = colored(3000., LEFT, None);
+        if let wire::Node::Container(view_wire::ContainerNode {
+            interactivity: Some(interactivity),
+            ..
+        }) = &mut covering
+        {
+            interactivity.occlude = true;
+        }
+        let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| {
+            let tree = cx.new(|_| ViewTree::new(page));
+            tree.update(cx, |tree, cx| {
+                let answers = [answer(1, covering), answer(2, colored(10., RIGHT, None))];
+                tree.tooltip_responses(answered(answers), cx)
+            });
+            TooltipFixture(tree, 200.)
+        });
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(crate::render::draw_frame);
+        for (at, shown, place) in [
+            (10., Some(LEFT), "on the left source"),
+            (
+                60.,
+                None,
+                "onto the right source, under the left one's tip: it closes",
+            ),
+            (
+                61.,
+                Some(RIGHT),
+                "the next move on the right source opens its own",
+            ),
+        ] {
+            native.simulate_mouse_move(point(px(at), px(10.)), None, Default::default());
+            native.update(|window, cx| {
+                crate::render::draw_frame(window, cx);
+                crate::render::draw_frame(window, cx);
+                let painted = [LEFT, RIGHT].map(|tip| painted(window, tip).then_some(tip));
+                let painted: Vec<_> = painted.into_iter().flatten().collect();
+                assert_eq!(painted, Vec::from_iter(shown), "{place}");
+            });
+        }
+    }
+
+    #[gpui_kit::test]
     fn a_tooltip_paints_and_takes_clicks_under_the_pane_above_its_pane(
         cx: &mut gpui_kit::TestAppContext,
     ) {

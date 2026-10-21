@@ -538,6 +538,23 @@ impl Router {
         self.open.as_ref().is_some_and(|open| open.hoverable) && self.over_surface(window)
     }
 
+    fn under_its_tip(&mut self, window: &Window) -> bool {
+        let Some(open) = self.open.clone() else {
+            return false;
+        };
+        if !self.over_surface(window) {
+            return false;
+        }
+        let at = window.mouse_position();
+        self.tips.retain(|source| source.strong_count() > 0);
+        self.tips.iter().filter_map(Weak::upgrade).any(|source| {
+            let source = source.borrow();
+            let its_own = source.tree.entity_id() == open.tree.entity_id()
+                && source.spec.request == open.request;
+            its_own && visible(&source.hitbox).contains(&at)
+        })
+    }
+
     fn tip_to(&mut self, wanted: Option<OpenTip>) -> TipChange {
         let same = match (&self.open, &wanted) {
             (Some(open), Some(wanted)) => open.same(wanted),
@@ -548,7 +565,7 @@ impl Router {
     }
 
     fn hovered(&mut self, window: &Window) -> TipChange {
-        let kept_open = self.held || self.over_open(window);
+        let kept_open = self.held || self.over_open(window) || self.under_its_tip(window);
         if kept_open {
             return None;
         }
