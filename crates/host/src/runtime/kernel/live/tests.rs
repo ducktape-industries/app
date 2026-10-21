@@ -667,7 +667,7 @@ fn a_subscription_losing_its_session_is_told_and_opened_again() {
     let (_, ends) = opened(&opens);
     drop(ends);
     assert_eq!(
-        subscription.recv(),
+        handle().block_on(subscription.recv()),
         Some(Subscribed::Heard(TrackHeard::Ended {
             code: refusal::NOT_CONNECTED.into()
         }))
@@ -691,7 +691,7 @@ fn a_host_subscription_queues_a_datagram_burst() {
         })
         .unwrap();
     assert_eq!(
-        subscription.recv(),
+        handle().block_on(subscription.recv()),
         Some(Subscribed::Heard(TrackHeard::Up { subscribers: 0 }))
     );
     let object = |object: u32| Data::Object {
@@ -703,7 +703,10 @@ fn a_host_subscription_queues_a_datagram_burst() {
         ends.latest.put(object(n));
     }
     for n in 0..3 {
-        assert_eq!(subscription.recv(), Some(Subscribed::Data(object(n))));
+        assert_eq!(
+            handle().block_on(subscription.recv()),
+            Some(Subscribed::Data(object(n)))
+        );
     }
 }
 
@@ -803,7 +806,7 @@ fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
         })
         .unwrap();
     assert_eq!(
-        subscription.recv(),
+        handle().block_on(subscription.recv()),
         Some(Subscribed::Heard(TrackHeard::Up { subscribers: 0 }))
     );
     let object = Data::Object {
@@ -812,7 +815,10 @@ fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
         body: vec![7],
     };
     handle().block_on(ends.data.send(object.clone())).unwrap();
-    assert_eq!(subscription.recv(), Some(Subscribed::Data(object)));
+    assert_eq!(
+        handle().block_on(subscription.recv()),
+        Some(Subscribed::Data(object))
+    );
     ends.heard
         .send(Heard::Closed(wire::Error::new(
             refusal::UNKNOWN_TRACK,
@@ -820,7 +826,7 @@ fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
         )))
         .unwrap();
     assert_eq!(
-        subscription.recv(),
+        handle().block_on(subscription.recv()),
         Some(Subscribed::Heard(TrackHeard::Ended {
             code: refusal::UNKNOWN_TRACK.into()
         }))

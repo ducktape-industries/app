@@ -495,13 +495,11 @@ pub(super) fn queue(load: Load) {
     }
     loaders.running += 1;
     drop(loaders);
-    let spawned = std::thread::Builder::new()
-        .name("view-loader".into())
-        .spawn(|| {
-            while let Some(load) = next_load() {
-                load.run();
-            }
-        });
+    let spawned = rt::task::worker("view-loader", async {
+        while let Some(load) = next_load() {
+            load.run().await;
+        }
+    });
     let Err(error) = spawned else {
         return;
     };
@@ -557,7 +555,7 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
         return;
     }
     let network = loads[0].asked_of.on.get();
-    handle().spawn(async move {
+    drop(rt::task::spawn(async move {
         let began = Instant::now();
         let read = read_every(loads).await;
         let (programs, from_node) = (
@@ -604,7 +602,7 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
         for load in prepare {
             queue(load);
         }
-    });
+    }));
 }
 
 enum Source {
@@ -760,17 +758,20 @@ fn read_listing(load: &Load, timing: &mut LoadTiming, bytes: ViewBytes) -> Read 
 }
 
 impl Load {
-    fn run(self) {
-        self.land(|load, timing| {
-            View::load(
-                load.program,
-                load.code,
-                &load.asked_of,
-                load.generation,
-                &load.seat,
-                timing,
-            )
-        });
+    async fn run(self) {
+        use futures::FutureExt as _;
+        use std::panic::AssertUnwindSafe;
+        let mut timing = LoadTiming::default();
+        let loading = View::load(
+            self.program,
+            self.code,
+            &self.asked_of,
+            self.generation,
+            &self.seat,
+            &mut timing,
+        );
+        let loaded = AssertUnwindSafe(loading).catch_unwind().await;
+        self.settle(loaded, timing);
     }
 
     pub(super) fn land(
@@ -778,21 +779,25 @@ impl Load {
         loading: impl FnOnce(&Load, &mut LoadTiming) -> Result<Loaded, Unloaded>,
     ) {
         use std::panic::{AssertUnwindSafe, catch_unwind};
+        let mut timing = LoadTiming::default();
+        let loaded = catch_unwind(AssertUnwindSafe(|| loading(&self, &mut timing)));
+        self.settle(loaded, timing);
+    }
+
+    fn settle(self, loaded: std::thread::Result<Result<Loaded, Unloaded>>, mut timing: LoadTiming) {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
         let Load {
             program,
             generation,
             ..
         } = self;
         let asked_for = self.code.map(|(code, _)| code_digest(&code));
-        let mut timing = LoadTiming::default();
-        let loaded = catch_unwind(AssertUnwindSafe(|| loading(&self, &mut timing))).unwrap_or_else(
-            |panic| {
-                Err(Unloaded {
-                    hash: asked_for,
-                    failure: loader_panic_with_stage("loading", &*panic),
-                })
-            },
-        );
+        let loaded = loaded.unwrap_or_else(|panic| {
+            Err(Unloaded {
+                hash: asked_for,
+                failure: loader_panic_with_stage("loading", &*panic),
+            })
+        });
         let waited = Instant::now();
         let mut locked = lock(&self.seat);
         timing.lock_wait = waited.elapsed();

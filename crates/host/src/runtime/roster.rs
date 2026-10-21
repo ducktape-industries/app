@@ -544,19 +544,18 @@ fn spawn_roster_read(
     asked_of: Connection,
     then: impl FnOnce() + Send + 'static,
 ) -> bool {
-    let spawned = std::thread::Builder::new()
-        .name("roster".into())
-        .spawn(move || {
-            let read = std::panic::AssertUnwindSafe(|| {
-                if let Some(programs) =
-                    read_roster(asked_of.clone(), &network.roster, &network.seats)
-                {
-                    super::notifier::reconcile_all(&asked_of, &programs);
-                }
-            });
-            let _ = std::panic::catch_unwind(read);
-            then();
+    let spawned = rt::task::worker("roster", async move {
+        use futures::FutureExt as _;
+        let read = std::panic::AssertUnwindSafe(async {
+            if let Some(programs) =
+                read_roster(asked_of.clone(), &network.roster, &network.seats).await
+            {
+                super::notifier::reconcile_all(&asked_of, &programs);
+            }
         });
+        let _ = read.catch_unwind().await;
+        then();
+    });
     if let Err(error) = &spawned {
         tracing::warn!(
             target: "ducktape::app",
@@ -568,18 +567,19 @@ fn spawn_roster_read(
     spawned.is_ok()
 }
 
-pub(super) fn read_roster(
+pub(super) async fn read_roster(
     asked_of: Connection,
     roster: &Roster,
     registry: &Registry,
 ) -> Option<Vec<crate::backend::views::Program>> {
     let client = asked_of.client.as_ref()?;
     let read = crate::perf::time(crate::perf::Key::Shell, "roster");
-    let programs = handle().block_on(crate::backend::views::programs(
+    let programs = crate::backend::views::programs(
         client,
         &asked_of.network,
         &*crate::backend::query_signer(&asked_of.network),
-    ));
+    )
+    .await;
     drop(read);
     let programs = match programs {
         Ok(programs) => programs,
@@ -594,11 +594,13 @@ pub(super) fn read_roster(
             return None;
         }
     };
-    let due = match handle().block_on(crate::backend::views::next_scheduled(
+    let scheduled = crate::backend::views::next_scheduled(
         client,
         &asked_of.network,
         &*crate::backend::query_signer(&asked_of.network),
-    )) {
+    )
+    .await;
+    let due = match scheduled {
         Ok(Some(height)) => Due::At(height),
         Ok(None) => Due::Never,
         Err(error) => {
@@ -613,11 +615,13 @@ pub(super) fn read_roster(
     };
     let roles_due = roster.bound().asked_of != Some(asked_of.rev) || *roster.lock() != programs;
     let roles = if roles_due {
-        match handle().block_on(crate::backend::views::roles(
+        let roles = crate::backend::views::roles(
             client,
             &asked_of.network,
             &*crate::backend::query_signer(&asked_of.network),
-        )) {
+        )
+        .await;
+        match roles {
             Ok(roles) => Some(roles),
             Err(error) => {
                 tracing::warn!(

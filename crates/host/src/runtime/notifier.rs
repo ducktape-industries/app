@@ -287,14 +287,14 @@ fn start(
     // it starts reads the same
     #[cfg(any(test, feature = "test-support"))]
     let prefs = crate::backend::read_prefs().unwrap_or_default();
-    let found = move || {
+    let found = async move {
         #[cfg(any(test, feature = "test-support"))]
         crate::backend::edit_prefs(|kept| *kept = prefs.clone());
         for (program, code, stopped) in programs {
             if *stopped.borrow() {
                 continue;
             }
-            let Some(mut notifier) = load(program, &code, &asked_of) else {
+            let Some(mut notifier) = load(program, &code, &asked_of).await else {
                 continue;
             };
             let session = match &recipient {
@@ -304,23 +304,18 @@ fn start(
             notifier.recipient = recipient.clone();
             #[cfg(any(test, feature = "test-support"))]
             let prefs = prefs.clone();
-            let spawned = std::thread::Builder::new()
-                .name(format!("notifier {program}"))
-                .spawn(move || {
-                    #[cfg(any(test, feature = "test-support"))]
-                    crate::backend::edit_prefs(|kept| *kept = prefs);
-                    drive(notifier, stopped, session);
-                });
+            let spawned = rt::task::worker(&format!("notifier {program}"), async move {
+                #[cfg(any(test, feature = "test-support"))]
+                crate::backend::edit_prefs(|kept| *kept = prefs);
+                drive(notifier, stopped, session).await;
+            });
             if let Err(error) = spawned {
                 tracing::warn!(target: "ducktape::app", program, %error, "no thread to run the notifier on");
             }
         }
         drop(loading);
     };
-    if let Err(error) = std::thread::Builder::new()
-        .name("notifiers".into())
-        .spawn(found)
-    {
+    if let Err(error) = rt::task::worker("notifiers", found) {
         tracing::warn!(target: "ducktape::app", %error, "no thread to find the notifiers on");
     }
 }
@@ -354,11 +349,11 @@ impl Drop for Loading {
 /// loads at a time ([`loading`]): started for many recipients at once, it
 /// is fetched and compiled once, and the rest take it from the caches
 /// (`backend::views::notifier_of`, the runner's compiled code).
-fn load(program: &'static str, code: &abi::BlobId, asked_of: &Connection) -> Option<View> {
+async fn load(program: &'static str, code: &abi::BlobId, asked_of: &Connection) -> Option<View> {
     let client = asked_of.client.as_ref()?;
     let gate = loading(code);
-    let _loading = lock(&gate);
-    let blob = handle().block_on(crate::backend::views::notifier_of(client, code));
+    let _loading = gate.lock().await;
+    let blob = crate::backend::views::notifier_of(client, code).await;
     let refused = |reason: String| {
         tracing::warn!(target: "ducktape::app", program, reason = %reason, "notifier not started");
     };
@@ -370,7 +365,7 @@ fn load(program: &'static str, code: &abi::BlobId, asked_of: &Connection) -> Opt
             return None;
         }
     };
-    let notifier = handle().block_on(View::notifier(program, blob.code(), asked_of));
+    let notifier = View::notifier(program, blob.code(), asked_of).await;
     if let Err(reason) = &notifier {
         refused(reason.clone());
     }
@@ -378,15 +373,15 @@ fn load(program: &'static str, code: &abi::BlobId, asked_of: &Connection) -> Opt
 }
 
 /// The load of `code`'s notifier, one at a time.
-fn loading(code: &abi::BlobId) -> Arc<Mutex<()>> {
-    type Gates = HashMap<abi::BlobId, std::sync::Weak<Mutex<()>>>;
+fn loading(code: &abi::BlobId) -> Arc<tokio::sync::Mutex<()>> {
+    type Gates = HashMap<abi::BlobId, std::sync::Weak<tokio::sync::Mutex<()>>>;
     static GATES: OnceLock<Mutex<Gates>> = OnceLock::new();
     let mut gates = lock(GATES.get_or_init(Mutex::default));
     if let Some(gate) = gates.get(code).and_then(std::sync::Weak::upgrade) {
         return gate;
     }
     gates.retain(|_, gate| gate.strong_count() > 0);
-    let gate = Arc::new(Mutex::new(()));
+    let gate = Arc::new(tokio::sync::Mutex::new(()));
     gates.insert(*code, Arc::downgrade(&gate));
     gate
 }
@@ -434,7 +429,7 @@ impl View {
 /// Turns `notifier` until its stop: on its first turn, each answer, each
 /// session move, each clock item due, and again soon while it says busy.
 /// A trap ends it, as one ends a view.
-fn drive(
+async fn drive(
     mut notifier: View,
     mut stopped: tokio::sync::watch::Receiver<bool>,
     mut session: tokio::sync::watch::Receiver<Option<Vec<u8>>>,
@@ -454,7 +449,7 @@ fn drive(
         let current = session.borrow_and_update().clone();
         if super::seat::rekeyed(seated.as_deref(), current.as_deref()) {
             let shown = format!("{} notifier", notifier.program);
-            match handle().block_on(notifier.restarted(&shown)) {
+            match notifier.restarted(&shown).await {
                 Ok(fresh) => {
                     notifier = fresh;
                     answered = notifier.replies.changes();
@@ -467,7 +462,7 @@ fn drive(
             }
         }
         seated.clone_from(&current);
-        let again = redrawn(&mut notifier, &current);
+        let again = redrawn(&mut notifier, &current).await;
         gauge.set(notifier.memory_bytes() as u64, notifier.memory_resident());
         for intent in std::mem::take(&mut notifier.intents) {
             match &notifier.recipient {
@@ -483,33 +478,32 @@ fn drive(
             return;
         }
         let busy = notifier.frame.busy;
-        let due = kernel::next_tick(&notifier.clocks).map(tokio::time::Instant::from_std);
-        handle().block_on(async {
-            if again {
-                if busy {
-                    tokio::time::sleep(BUSY_TURN).await;
-                }
-                return;
+        let due = kernel::next_tick(&notifier.clocks);
+        if again {
+            if busy {
+                rt::time::sleep(BUSY_TURN).await;
             }
-            tokio::select! {
-                _ = answered.changed() => {}
-                _ = session.changed() => {}
-                _ = stopped.changed() => {}
-                _ = sleep_until(due) => {}
-            }
-        });
+            continue;
+        }
+        tokio::select! {
+            _ = answered.changed() => {}
+            _ = session.changed() => {}
+            _ = stopped.changed() => {}
+            _ = sleep_until(due) => {}
+        }
     }
 }
 
 /// One redraw of `notifier`, its tick's answer awaited on this thread (it
 /// lands at once on wasmtime, later on JSC): whether it is due again at
 /// once.
-fn redrawn(notifier: &mut View, props: &Option<Vec<u8>>) -> bool {
+async fn redrawn(notifier: &mut View, props: &Option<Vec<u8>>) -> bool {
     match notifier.begin_redraw(props) {
         Redraw::Quiet => return false,
         Redraw::Ready => {}
         Redraw::Ticking => {
-            let landed = handle().block_on(view::next(&notifier.landing()));
+            let landing = notifier.landing();
+            let landed = view::next(&landing).await;
             notifier.redraw_landed(landed);
         }
     }
@@ -517,9 +511,9 @@ fn redrawn(notifier: &mut View, props: &Option<Vec<u8>>) -> bool {
 }
 
 /// Until `due`, or never.
-async fn sleep_until(due: Option<tokio::time::Instant>) {
+async fn sleep_until(due: Option<rt::time::Instant>) {
     match due {
-        Some(due) => tokio::time::sleep_until(due).await,
+        Some(due) => rt::time::sleep_until(due).await,
         None => std::future::pending().await,
     }
 }

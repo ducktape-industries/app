@@ -47,7 +47,7 @@ impl View {
     /// that got past the roster fills `timing`, which is logged as one
     /// `view_load` line once the load is installed. Each stage is also a
     /// sample under the seat's perf key.
-    pub fn load(
+    pub async fn load(
         program: &'static str,
         code: Option<(::abi::BlobId, bool)>,
         asked_of: &Connection,
@@ -108,13 +108,13 @@ impl View {
         if startable {
             return Self::start(program, code, mounted, timing);
         }
-        let runtime = handle();
         timing.started = Some(Instant::now());
         timing.path = "first";
         let key = crate::perf::Key::View { program, instance };
         let show = |stage: Slot| lock(mounted).show(generation, stage);
         let fetched = Instant::now();
-        let bytes = match crate::contract::os().bundled_view(&blob) {
+        let bundled = crate::contract::os().bundled_view(&blob);
+        let bytes = match bundled {
             // the app ships the view section this blob holds: no fetch
             Some(view_bytes) => Ok(Some((view_bytes.into(), "bundle"))),
             None => {
@@ -122,7 +122,7 @@ impl View {
                     received: 0,
                     total: None,
                 });
-                runtime.block_on(crate::backend::views::view_of(client, &blob, bare))
+                crate::backend::views::view_of(client, &blob, bare).await
             }
         };
         timing.fetch = fetched.elapsed();
@@ -655,7 +655,7 @@ impl View {
     /// to `View` is a compile error until it says whether a sibling
     /// carries it: what `load` set (the seat, the manifest, the deployment)
     /// is carried, and what the instance ran into starts fresh.
-    async fn sibling(&self, shown: &str) -> Result<Self, String> {
+    fn sibling<'s>(&self, shown: &'s str) -> impl Future<Output = Result<Self, String>> + use<'s> {
         let Self {
             program,
             instance,
@@ -733,29 +733,31 @@ impl View {
             showing: _,
             recipient,
         } = self;
-        let mut sibling = Self::seated(
-            program,
-            *instance,
-            runner,
-            running.code_hash(),
-            shown,
-            connection.clone(),
-        )
-        .await?;
-        sibling.name = name.clone();
-        sibling.icon = icon.clone();
-        sibling.tint = *tint;
-        sibling.description = description.clone();
-        sibling.capabilities = capabilities.clone();
-        sibling.hosts = hosts.clone();
-        sibling.min_width = *min_width;
-        sibling.width = *width;
-        sibling.wire = wire.clone();
-        sibling.code = code.clone();
-        sibling.hash = *hash;
-        sibling.notifier = *notifier;
-        sibling.recipient = recipient.clone();
-        Ok(sibling)
+        let (program, instance, runner) = (*program, *instance, runner.clone());
+        let (code_hash, connection) = (running.code_hash(), connection.clone());
+        let (name, icon, tint, description) =
+            (name.clone(), icon.clone(), *tint, description.clone());
+        let (capabilities, hosts) = (capabilities.clone(), hosts.clone());
+        let (min_width, width, wire) = (*min_width, *width, wire.clone());
+        let (code, hash, notifier, recipient) = (code.clone(), *hash, *notifier, recipient.clone());
+        async move {
+            let mut sibling =
+                Self::seated(program, instance, &runner, code_hash, shown, connection).await?;
+            sibling.name = name;
+            sibling.icon = icon;
+            sibling.tint = tint;
+            sibling.description = description;
+            sibling.capabilities = capabilities;
+            sibling.hosts = hosts;
+            sibling.min_width = min_width;
+            sibling.width = width;
+            sibling.wire = wire;
+            sibling.code = code;
+            sibling.hash = hash;
+            sibling.notifier = notifier;
+            sibling.recipient = recipient;
+            Ok(sibling)
+        }
     }
 
     /// `init`, timed into `timing` and the registry, as a load runs it, its
@@ -788,10 +790,16 @@ impl View {
         Some((code, shown))
     }
 
-    pub(in crate::runtime) async fn restarted(&self, shown: &str) -> Result<Self, String> {
-        let mut fresh = self.sibling(shown).await?;
-        fresh.inited(shown).await?;
-        Ok(fresh)
+    pub(in crate::runtime) fn restarted<'s>(
+        &self,
+        shown: &'s str,
+    ) -> impl Future<Output = Result<Self, String>> + use<'s> {
+        let sibling = self.sibling(shown);
+        async move {
+            let mut fresh = sibling.await?;
+            fresh.inited(shown).await?;
+            Ok(fresh)
+        }
     }
 
     #[cfg(test)]

@@ -16,6 +16,13 @@ pub async fn sleep(duration: Duration) {
     gloo_timers::future::sleep(duration).await;
 }
 
+pub async fn sleep_until(deadline: Instant) {
+    #[cfg(not(target_family = "wasm"))]
+    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    #[cfg(target_family = "wasm")]
+    sleep(deadline.saturating_duration_since(Instant::now())).await;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Elapsed;
 
@@ -46,5 +53,14 @@ mod tests {
         assert_eq!(timeout(Duration::from_secs(30), never).await, Err(Elapsed));
         let at_once = async { 7 };
         assert_eq!(timeout(Duration::from_secs(30), at_once).await, Ok(7));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sleep_until_a_deadline_ends_there_and_not_before() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let early = timeout(Duration::from_secs(29), sleep_until(deadline)).await;
+        assert_eq!(early, Err(Elapsed));
+        let late = timeout(Duration::from_secs(2), sleep_until(deadline)).await;
+        assert_eq!(late, Ok(()));
     }
 }
