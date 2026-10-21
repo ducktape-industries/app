@@ -156,10 +156,6 @@ impl Client {
         self.fetch(route::NETWORK).await
     }
 
-    /// The UDP port the node takes live sessions on (QUIC, ALPN
-    /// `ducktape-live`), at the host of its `/v1` address; `None` when it
-    /// bound no UDP, and a client takes the websocket at `/v1/live`. A node
-    /// that serves no live tracks answers 404.
     pub async fn live_port(&self) -> Result<Option<u16>> {
         self.fetch(route::LIVE_PORT).await
     }
@@ -178,8 +174,6 @@ impl Client {
         }
     }
 
-    /// A signed frame whose target answers a query; the reply is whatever
-    /// bytes the program `Respond`ed.
     pub async fn query(&self, layer: Layer, frame: Vec<u8>) -> Result<Vec<u8>> {
         self.post(route::QUERY, &Query { layer, frame }).await
     }
@@ -279,10 +273,6 @@ impl Client {
             .await
     }
 
-    /// The changes socket at `path`; the node's ping (for a block that wrote
-    /// nothing there, and for each epoch's last block) is answered as the
-    /// stream is read and skipped. A socket left unread for a whole epoch
-    /// answers none, and the node cuts it.
     async fn follow(&self, path: String) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
         let url = format!("{}{path}", self.base.replacen("http", "ws", 1));
         let socket = self.http.socket(&url).await?;

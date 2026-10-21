@@ -164,9 +164,6 @@ pub async fn query_frame(
         .encode())
 }
 
-/// What signs a query: the seated key, or the shell's reader
-/// (`OsServices::reader`) while none is seated — the key [`query_frame`]
-/// signs with.
 pub fn query_signer(network: &str) -> Arc<dyn noded_client::Signer> {
     key_of(network).unwrap_or_else(|| crate::contract::os().reader())
 }

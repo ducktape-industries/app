@@ -285,10 +285,6 @@ impl Items {
     }
 }
 
-/// A subscription whose items come from a host loop (`chain.heads` polls
-/// the node for them). The body owns whatever it holds open, so dropping
-/// the task releases it: a cancel drops the [`NodeTask`], and so do a
-/// view's teardown, swap and trap, which drop the whole `tasks` list.
 pub(super) fn spawn_subscription<Body, Fut>(view: &mut View, id: u64, follows: Follow, body: Body)
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,
@@ -455,8 +451,6 @@ enum Heard {
     Item(Answer),
 }
 
-/// Subscription `id`: `program.changes` of `program` on `node`, one
-/// follower of its [`Feed`] while it is [`Wanted`].
 fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
     let replies = view.replies.clone();
     let subscribed = (id, program.clone());
@@ -683,8 +677,6 @@ pub(crate) fn writes(client: &RpcClient, program: &str) -> Writes {
 
 type Feeds = HashMap<(String, String), std::sync::Weak<Feed>>;
 
-/// The feed of `program` on `node`, opened if none runs, and a follower's
-/// own slot in it (made before the socket can send anything).
 fn feed(client: &RpcClient, program: &str) -> (std::sync::Arc<Feed>, std::sync::Arc<Slot>) {
     static FEEDS: OnceLock<Mutex<Feeds>> = OnceLock::new();
     let mut feeds = FEEDS
@@ -716,13 +708,6 @@ fn feed(client: &RpcClient, program: &str) -> (std::sync::Arc<Feed>, std::sync::
     (feed, slot)
 }
 
-/// A feed's socket: each change the node publishes, to every follower.
-/// A socket that closes or does not open (the node restarting, a proxy's
-/// 502 while it is away) opens again once the node answers its status,
-/// read at half its block time as `chain.heads` reads it; each follower
-/// then re-reads what moved meanwhile. It keeps at it for as long as one
-/// follows ([`Feed`]'s drop ends it): only a node that refuses the socket,
-/// or that never gave its block time, ends the feed, with why.
 async fn socket(client: RpcClient, program: String, followers: Followers) {
     use futures::StreamExt as _;
     // to every follower still there; one that let go is dropped
@@ -821,12 +806,6 @@ async fn answering(client: &RpcClient, block_time_ms: Option<u64>) -> noded_clie
     }
 }
 
-/// `chain.heads`: one [`methods::Head`] per finalized block, oldest first. The
-/// node pushes no block stream, so this reads its status at half the block
-/// time and fills each advance from the archive, page after page as the
-/// node answers them; where the archive holds none, the tip alone. A read
-/// the node does not answer is read again at the same pace; a first read
-/// it does not answer ends the subscription with why.
 pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
     if !payload.is_empty() {
         view.refuse(
@@ -842,9 +821,6 @@ pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
     follow_heads(view, id, node);
 }
 
-/// Subscription `id`: `chain.heads` on `node`, read while it is
-/// [`Wanted`]: back, it goes on after the last head it handed the view,
-/// so the blocks in between are filled as any advance is.
 fn follow_heads(view: &mut View, id: u64, node: Node) {
     let mut wanted = Wanted::of(view);
     spawn_subscription(view, id, Follow::Heads, move |mut items| async move {
@@ -878,8 +854,6 @@ fn follow_heads(view: &mut View, id: u64, node: Node) {
     });
 }
 
-/// The heads past `last` (the tip alone at the first read), oldest first,
-/// and the node's block time.
 async fn next_heads(
     node: &Node,
     last: Option<u64>,
@@ -909,8 +883,6 @@ async fn next_heads(
     Ok((heads, status.block_time_ms))
 }
 
-/// The archive page that fills the advance past `last` to `tip` (the tip
-/// alone at the first read); `None` while `last` is the tip.
 fn advance(last: Option<u64>, tip: u64) -> Option<noded::Blocks> {
     if last.is_some_and(|last| last >= tip) {
         return None;

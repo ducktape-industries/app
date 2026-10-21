@@ -1,23 +1,6 @@
-//! The live client: one session with the connected node's relay, through
-//! which every view's tracks and subscriptions ride, off consensus. QUIC on
-//! the node's UDP socket (the port `/v1/live/port` names, ALPN
-//! `ducktape-live`, the node's key from `/v1/status` pinned as its
-//! certificate's), or the websocket `/v1/live` on its HTTP port: the one
-//! path where it names no port, else dialed with QUIC from the start, the
-//! first handshake done being the session, QUIC once its UDP answered
-//! unless its handshake then fails ([`dial`]). A node that answers the port's route 404 serves no live
-//! tracks: the request is refused `live_unavailable`, and nothing is
-//! dialed. A lost session ends what rode on it: each request's channels
-//! close, and the next request dials a new session.
-//!
-//! The wire is core's `live-wire`, borsh throughout: a length-prefixed
-//! `Control` on the first bidirectional stream (the handshake, then requests
-//! and their answers), one group per unidirectional stream (`GroupHeader`,
-//! then each object as a `u32` little-endian length and its bytes, until FIN
-//! or RESET) and one object per datagram (`DatagramHeader`, then the
-//! payload). Over the websocket each of them is one binary `WsFrame`.
-//!
-//! Nothing here knows a view: a track's namespace comes stamped.
+//! The live client: one session with the connected node's relay, QUIC on its UDP port or the
+//! `/v1/live` websocket, over core's `live-wire`, that every view's tracks and subscriptions
+//! ride, off consensus.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;

@@ -57,8 +57,6 @@ pub struct Tip {
     pub id: [u8; 32],
 }
 
-/// The anchor a query's frame carries: a query reads, so it is anchored to
-/// no block.
 pub const UNANCHORED: Tip = Tip {
     height: 0,
     id: [0; 32],
@@ -148,7 +146,6 @@ impl Frame {
         Ok(Frame { body, proof })
     }
 
-    /// A query's frame: [`UNANCHORED`], no salt.
     pub fn query(
         signer: &dyn Signer,
         network: &[u8],
@@ -409,11 +406,6 @@ mod tests {
         assert_eq!(decoded.body.salt, None);
     }
 
-    /// The id is the one a block lists the frame under: this body went to a
-    /// kit stage (core fdd0fa4c6) as an identity `Create`, and the node's
-    /// `/v1/tx` found it by exactly this hash, at block 162 (mobile-core
-    /// `node.rs`, whose `Sent::of` this is). Block 161 + 256 is the last
-    /// that may carry a frame anchored at 161 (`Tip::anchors`).
     #[test]
     fn a_frame_is_known_by_its_submission_id_until_its_window_closes() {
         let body = Body {

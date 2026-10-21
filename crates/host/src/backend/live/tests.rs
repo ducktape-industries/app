@@ -658,9 +658,6 @@ async fn a_quic_handshake_that_stalls_after_tls_is_waited_for_no_longer_than_qui
     );
 }
 
-/// A node that answers the port's route 404 serves no live tracks: the
-/// request is refused `live_unavailable`, not the node's failure, and
-/// nothing is dialed.
 #[tokio::test]
 async fn a_node_without_the_live_route_is_live_unavailable() {
     let _seat = seated().await;

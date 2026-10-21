@@ -769,18 +769,6 @@ fn a_node_that_refuses_the_socket_ends_the_feed_with_why() {
     assert_eq!(flaky.opened.load(SeqCst), 0);
 }
 
-/// A connect inside the network, under a view that kept its code: its
-/// `program.changes` subscription goes on, on the new node, so its follower
-/// hears `None` (re-read what moved meanwhile) and then the new node's
-/// blocks; its `chain.heads` goes on too, and ends with why when the new
-/// node answers no status (this one serves only changes); a request still
-/// running on the
-/// old connection is refused `stale_connection`. Before, the subscriptions
-/// were refused too, which ends a view's stream: the view went deaf to
-/// every block after the connect. The old node never answers the heads'
-/// status read, so the subscription is still running when the connect
-/// comes (one the old node ended first stays ended:
-/// `a_reconnect_leaves_an_ended_request_ended`).
 #[test]
 fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
     let mut view = view();
@@ -1652,9 +1640,6 @@ fn a_view_not_presented_holds_no_socket() {
     );
 }
 
-/// `chain.heads` back on screen goes on after the last head it handed,
-/// the blocks in between asked of the archive; the first read asks for the
-/// tip alone, and a caught-up read for nothing.
 #[test]
 fn heads_go_on_after_the_last_one_handed() {
     let page = |last, tip| advance(last, tip).map(|page| (page.before, page.limit));
