@@ -150,7 +150,8 @@ impl ViewTree {
             state.drawn = Some(lifted);
         }
         let fitted = detents.is_empty();
-        let content = self.node(child, window, cx);
+        let named = label.as_deref().is_some_and(|label| !label.is_empty());
+        let (content, own) = self.in_own_portal(named, |this| this.node(child, window, cx));
         let dismiss = leaving.is_none().then_some(*on_dismiss).flatten();
         let mut panel = div()
             .id(host_id("sheet-panel"))
@@ -316,7 +317,6 @@ impl ViewTree {
             .when(leaving.is_some(), |panel| {
                 panel.child(div().absolute().inset_0().occlude())
             });
-        let named = label.as_deref().is_some_and(|label| !label.is_empty());
         let nested = has_named_overlay(child);
         let faded = shown.map_or(1., |(progress, _)| progress);
         let scrim = div()
@@ -343,7 +343,8 @@ impl ViewTree {
             .flex()
             .flex_col()
             .child(scrim)
-            .child(panel);
+            .child(panel)
+            .children(own);
         layer = match compact {
             true => layer.justify_end(),
             false => layer.justify_center().items_center().p(px(16.)),

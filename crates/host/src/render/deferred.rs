@@ -1,6 +1,6 @@
-//! A view's layer and a desk window's. A view's deferred draws are drawn by
-//! its portal, the last child of its pane's clip, by priority: over the view,
-//! under the pane above it and under every host layer. Desk windows draw masked.
+//! A view's layer and a desk window's. A view's deferred draws are drawn by a
+//! portal by priority, its pane's or a dialog's own inside the dialog: over the
+//! view, under the pane above it and every host layer. Desk windows draw masked.
 use super::*;
 use gpui_kit::AvailableSpace;
 use std::cell::{Cell, RefCell};
@@ -48,6 +48,21 @@ impl ViewTree {
             return self.node(content, window, cx);
         };
         deferred(self.node(content, window, cx), *priority, &portal).into_any_element()
+    }
+
+    pub(super) fn in_own_portal(
+        &mut self,
+        own: bool,
+        lower: impl FnOnce(&mut Self) -> AnyElement,
+    ) -> (AnyElement, Option<Portaled>) {
+        if !own {
+            return (lower(self), None);
+        }
+        let portal = Portal::default();
+        let around = self.portal.replace(portal.clone());
+        let lowered = lower(self);
+        self.portal = around;
+        (lowered, Some(Portaled(portal, None)))
     }
 }
 

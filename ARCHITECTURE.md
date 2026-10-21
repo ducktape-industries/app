@@ -851,8 +851,11 @@ House words, and where one word means several things.
   its view from its wakes (`turn`).
 - **slot** — `seat::Slot`, what a seat holds (Loading … Ready … Failed).
   Also the **pane layer** in `render/`: the pane box a view's tree, its
-  tooltips and its deferred draws are clipped to (`deferred::Layer`, a gpui
-  `TooltipLayer` at `VIEW_CEILING`).
+  tooltips and its deferred draws are clipped to (`deferred::Layer`). Its
+  deferred draws, by priority up to `VIEW_CEILING`, and its tooltip are drawn
+  by the pane's portal (`deferred::Portaled`, the clip's last child); a named
+  dialog drawn in place draws its own deferred draws in a portal of its own,
+  its layer's last child, so they sit under its node and inside its focus trap.
 - **generation** — the seat's load counter; a finished load installs only
   if it is still current, and `Seat.generation` names the
   view instance it drew. Unrelated: the `generation` the identity program

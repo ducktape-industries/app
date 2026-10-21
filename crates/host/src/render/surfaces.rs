@@ -65,6 +65,9 @@ impl ViewTree {
                     }),
                 );
             }
+            let (drawn, own) = self.in_own_portal(named && portal.is_none(), |this| {
+                this.node(modal, window, cx)
+            });
             let content = div()
                 .bg(gpui_kit::component::Theme::global(cx)
                     .color_tokens()
@@ -75,7 +78,7 @@ impl ViewTree {
                         .surface_foreground,
                 )
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(self.node(modal, window, cx));
+                .child(drawn);
             if let Some((portal, _)) = &portal {
                 self.portal = Some(portal.clone());
             }
@@ -83,7 +86,7 @@ impl ViewTree {
                 path,
                 named,
                 nested,
-                layer.child(content),
+                layer.child(content).children(own),
                 *on_dismiss,
                 node,
                 window,
