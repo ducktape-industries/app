@@ -17,7 +17,7 @@ runners = [38]
 cpu = "16"
 memory = "11Gi"
 scratch = ["/var/tmp/target"]
-image = "localhost:5000/toolchain:aefa0afb424e@sha256:1fa047b9fc589d51f9a9c4b5ffac1eeca53770414dc16f0f4cef29abb0e5f675"
+image = "localhost:5000/toolchain:b240e4516c93@sha256:d80bfd948f37f381542c720e3f67a39c06606e88aec9f66f88aefb295468136b"
 steps = ["git config --global --add safe.directory '*'", "ops/release-linux.sh \"$OUT\""]
 
 [jobs.env]
