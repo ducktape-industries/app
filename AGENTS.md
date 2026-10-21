@@ -86,6 +86,8 @@ line breaks.
 - `comments`: No comments, except `// SAFETY:`, a short doc on a type and on each enum variant
   (what it is, one line), and a brief header of one to three lines at the top of a file saying
   what the file is for. No incident history, no job numbers, no "why we once did X" in code.
+  Where rustc's `missing_docs` is on (`#![deny(missing_docs)]`, or `[lints.rust]`), the doc it
+  asks for on a `pub` item or a trait's item is fine too, saying what the item is.
 - `conditions`: No `&&` or `||` chained in an `if` or `else if` condition (let chains included).
   Name each piece first, then branch on the names (`let is_ducktape_network = …;`, then
   `if is_ducktape_network`); `&&` inside a closure or a `let` binding is fine.
