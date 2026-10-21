@@ -176,6 +176,7 @@ objc2-user-notifications = { version = "0.2", default-features = false, features
 core-foundation = "0.10"
 security-framework-sys = { version = "2.17", features = ["OSX_10_15"] }
 mach2 = "0.6"
+gpui-pre-macos = { version = "=0.3.9", features = ["font-kit", "runtime_shaders"] }
 
 # Everywhere else the notifier is the freedesktop notifications service, one
 # `Notify` call on the session bus. zbus is already in this binary's graph
@@ -214,7 +215,7 @@ gpui-kit = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "eef
 # `InputState::text_input` carries a field's keyboard hints to the platform
 gpui-base = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
 gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
-gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
+gpui-pre-macos = { path = "vendor/gpui-macos" }
 # the X11 input-method client gpui-pre-linux uses, vendored in the fork: it decodes
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
 zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }

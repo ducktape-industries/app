@@ -37,7 +37,12 @@ pub(super) fn application() -> gpui_kit::Application {
     gpui_kit::Application::with_platform(ducktape_gpui_linux::current_platform(false))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub(super) fn application() -> gpui_kit::Application {
+    gpui_kit::Application::with_platform(std::rc::Rc::new(gpui_macos::MacPlatform::new(false)))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) fn application() -> gpui_kit::Application {
     gpui_kit::application()
 }
