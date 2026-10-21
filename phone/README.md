@@ -28,6 +28,11 @@ commands from the Mac at `TEST_RUNNER_DUCKTAPE_DRIVER`, tapping the first elemen
    key (`-allowProvisioningUpdates`) and uploads it, then tags the commit `testflight-<build>`. App Store Connect
    processes the build (minutes) and offers it to the internal testers.
 
+An upload waits on **contract** (GitHub's Ubuntu, after archive): `ops/contract-gate.py` on the commit, which stops
+the run unless duckpond's `/v1/status` answers the contract its `NODE_CONTRACT` speaks. An upload is the release to
+the testers, so no phone is offered an app on another contract. A build for the next contract is signed and exported
+before the roll with `upload` off, which skips the check, and is uploaded by a run after the roll.
+
 Version `0.1.0` (`ios/Info.plist`), bundle id `industries.ducktape.mobile`, team `8464KRUNQG`: the Expo app's App Store
 Connect record, so this build replaces it for testers.
 

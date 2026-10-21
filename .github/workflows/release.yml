@@ -280,6 +280,16 @@ jobs:
           retention-days: 7
           overwrite: true
 
+  contract:
+    needs: [plan, linux, macos-sign]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: contract gate
+        run: python3 ops/contract-gate.py https://duckpond.ducktape.industries
+
   # Sign the channel's manifest over both archives and upload: archives
   # first (immutable, named by their sha256), then the channel's one file,
   # so a client never reads a manifest whose archive is not there, nor a
@@ -288,7 +298,7 @@ jobs:
   # the build jobs build whatever commit they are given, and nothing they
   # leave behind reaches the job that holds the key.
   publish:
-    needs: [plan, linux, macos-sign]
+    needs: [plan, linux, macos-sign, contract]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release

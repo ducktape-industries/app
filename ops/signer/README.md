@@ -5,7 +5,11 @@ only its own pinned tools. These three sign, publish and mirror the app's releas
 workflows' `macos-sign`, `publish` and `mirror` jobs (`.forge/workflows/release-stable.toml`, a
 push to `main`, and `release-nightly.toml`, a `nightly` dispatch). Each is called as
 `<tool> <inputs> <out>`, with every needed job's outputs at `inputs/<job>/<path>` and `SIGNER_*`
-set; what it writes in `out` the signer records as the check's outputs.
+set; what it writes in `out` the signer records as the check's outputs. `publish` also waits on
+the workflows' `contract` job, which runs `ops/contract-gate.py` once `linux` and `macos-sign`
+are done: a release goes out only while duckpond's `/v1/status` answers the commit's
+`NODE_CONTRACT`, so a release built for the next contract before a roll is published by a run
+after it (`python3 ops/contract-gate-test.py` tests the gate).
 
 | Tool | Reads | Writes in `out` |
 |---|---|---|

@@ -115,10 +115,20 @@ jobs:
           retention-days: 7
           overwrite: true
 
+  contract:
+    needs: [plan, archive]
+    if: needs.plan.outputs.upload == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: contract gate
+        run: python3 ops/contract-gate.py https://duckpond.ducktape.industries
+
   # Sign (and upload): the one job with the key. It runs nothing of the built
   # commit, not even a checkout: the archive and Apple's tools.
   upload:
-    needs: [plan, archive]
+    needs: [plan, archive, contract]
+    if: ${{ !cancelled() && needs.archive.result == 'success' && (needs.plan.outputs.upload != 'true' || needs.contract.result == 'success') }}
     runs-on: [self-hosted, mac-byeongsu]
     timeout-minutes: 60
     environment: release
