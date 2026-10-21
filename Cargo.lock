@@ -2704,6 +2704,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ducktape-a11y-platform"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "gpui-pre",
+ "image",
+ "parking_lot",
+ "raw-window-handle",
+ "smallvec",
+ "uuid",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "ducktape-app"
 version = "0.1.0"
 dependencies = [

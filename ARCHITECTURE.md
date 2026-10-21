@@ -722,6 +722,16 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `with_presentation` (the `NativePresentation` copy across view
   instances) also live in this file for now; the struct itself is in
   `render.rs`.
+- **The platform wrapper** (`crates/a11y-platform`): `A11yPlatform` wraps any gpui
+  `Platform`. Each window it opens keeps the `A11yCallbacks` gpui gives it and the last
+  tree gpui sends, hands both on to the wrapped window, and answers `activate`, `tree`,
+  `act` and `deactivate` (`A11yPlatform::window(handle)`), the way an OS adapter reaches
+  gpui. Its `headless` module (feature `test-support`) runs it over a headless platform on
+  gpui's `TestDispatcher` (`Harness`), and its tests pin the host's accessibility rules
+  (aria-disabled, one tab stop per handle, the claim gate, uncached panes under AT, AT
+  Click, a dialog's node, keyed ids) on the tree it reads. Nothing in the app wraps its
+  platform with it yet: the door and the host's a11y tests still read gpui-pre's own
+  `Window::a11y_tree`.
 - **The door** (`crates/host/src/ax.rs`, `crates/host/src/ax/{http,tree,actions}.rs`). Built only
   with the `ax-door` cargo feature (the kit and qa builds); a default build
   has no door and no `ax` client. Off unless
