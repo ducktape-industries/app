@@ -44,11 +44,14 @@ fn entry(name: &str) -> Result<keyring::Entry, KeyRefusal> {
 }
 
 fn refused(error: keyring::Error) -> KeyRefusal {
-    let no_store = matches!(error, keyring::Error::PlatformFailure(_));
-    let sentence = super::device_key::refused(error);
+    refused_on(error, cfg!(target_os = "linux"))
+}
+
+fn refused_on(error: keyring::Error, secret_service: bool) -> KeyRefusal {
+    let no_store = secret_service && matches!(error, keyring::Error::PlatformFailure(_));
     match no_store {
-        true => KeyRefusal::NoStore(sentence),
-        false => KeyRefusal::Denied(sentence),
+        true => KeyRefusal::NoStore(super::device_key::refused(error)),
+        false => KeyRefusal::Denied(error.to_string()),
     }
 }
 
@@ -95,6 +98,26 @@ fn write(folder: &Path, name: &str, value: Option<&[u8]>) -> Result<(), KeyRefus
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_secret_service_that_is_not_there_reads_as_no_key_store() {
+        let failed = || keyring::Error::PlatformFailure("no answer".into());
+        let locked = || keyring::Error::NoStorageAccess("locked".into());
+        assert!(matches!(refused_on(failed(), true), KeyRefusal::NoStore(_)));
+        assert!(matches!(refused_on(failed(), false), KeyRefusal::Denied(_)));
+        assert!(matches!(refused_on(locked(), true), KeyRefusal::Denied(_)));
+        assert!(matches!(refused_on(locked(), false), KeyRefusal::Denied(_)));
+        let cancelled = refused_on(
+            keyring::Error::PlatformFailure("User canceled the operation.".into()),
+            false,
+        );
+        assert!(
+            cancelled
+                .sentence()
+                .contains("User canceled the operation."),
+            "{cancelled:?}"
+        );
+    }
 
     #[test]
     fn a_file_secret_is_kept_read_and_removed_where_only_this_user_reads_it() {
