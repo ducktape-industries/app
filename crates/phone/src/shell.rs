@@ -3344,16 +3344,17 @@ mod tests {
 
     #[gpui_kit::test]
     fn a_cancelled_touch_on_a_tile_opens_nothing_and_a_tap_opens_it(cx: &mut TestAppContext) {
+        const TAPPED: &str = "phone-tile-test";
         let _seat = ducktape_host::backend::seat_serial();
         let (root, stack, cx) = phone(cx);
         let shared = root.read_with(cx, |root, _| root.shared.clone());
-        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
-        shared.rail.update(cx, |rail, cx| {
-            rail.read_off(Roster::listing(&[PROGRAM]), cx)
-        });
+        ducktape_host::runtime::seat_for_test(TAPPED, 320);
+        shared
+            .rail
+            .update(cx, |rail, cx| rail.read_off(Roster::listing(&[TAPPED]), cx));
         run_out(cx);
 
-        const TILE: &str = "home/phone-root-test";
+        const TILE: &str = "home/phone-tile-test";
         let at = cx.debug_bounds(TILE).expect("the tile drawn").center();
         let touch = |id: u64, phase: gpui_kit::TouchPhase, cx: &mut VisualTestContext| {
             cx.simulate_event(gpui_kit::TouchEvent {
@@ -3379,7 +3380,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             top(&stack, cx),
-            Some(PROGRAM),
+            Some(TAPPED),
             "the tap did not open the program at lift"
         );
     }
