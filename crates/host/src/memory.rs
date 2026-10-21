@@ -175,26 +175,7 @@ pub(crate) fn tracked() -> Vec<(Owned, Option<[u8; 32]>)> {
         .collect()
 }
 
-pub fn resident(start: *const u8, len: usize) -> Option<u64> {
-    if len == 0 {
-        return Some(0);
-    }
-    let size = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
-        .ok()
-        .filter(|size| *size > 0)?;
-    let first = start as usize / size * size;
-    let end = (start as usize).checked_add(len)?.div_ceil(size) * size;
-    let mut pages = vec![0u8; (end - first) / size];
-    let answered = unsafe {
-        libc::mincore(
-            first as *mut libc::c_void,
-            end - first,
-            pages.as_mut_ptr().cast(),
-        )
-    };
-    (answered == 0)
-        .then(|| pages.iter().filter(|page| **page & 1 != 0).count() as u64 * size as u64)
-}
+pub use rt::process::resident;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -208,7 +189,7 @@ mod tests {
 
     #[test]
     fn touched_pages_read_resident_and_a_gauge_lives_with_its_holder() {
-        let size = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+        let size = rt::process::page_size().expect("a page size");
         let touched = vec![1u8; size * 4];
         let counted = resident(touched.as_ptr(), touched.len()).expect("mincore answers");
         assert!(counted >= (size * 4) as u64, "{counted}");

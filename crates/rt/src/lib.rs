@@ -1,6 +1,8 @@
-//! The process's runtime where targets differ: the futures and streams a client hands on, and time.
-//! Natively they are `Send` and tokio's; in a browser they live on the page's one thread.
+//! The process's runtime where targets differ: the futures and streams a client hands on, time, where a task runs,
+//! and what the process knows of itself. Natively `Send`, tokio's and libc's; in a browser the page's, on its one thread.
 
+pub mod process;
+pub mod task;
 pub mod time;
 
 #[cfg(not(target_family = "wasm"))]

@@ -136,7 +136,7 @@ Two findings the table depends on:
 Threads: the entities' methods and their timers, all rendering, view
 ticks and the door's answers run on the gpui foreground thread
 (`crates/host/src/session/`, `src/shell/entities/`; `ax::serve` in `crates/host/src/ax.rs`). I/O is
-driven by the `views-kernel` tokio thread (`kernel::handle`), but the
+driven by the `views-kernel` tokio thread (`rt::task::handle`), but the
 entities' `Task` futures are polled on the foreground under
 `runtime.enter()` (`spawn_on_runtime`), so response bodies are decoded
 there.

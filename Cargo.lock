@@ -2813,6 +2813,7 @@ dependencies = [
  "design",
  "ducklink",
  "ducktape-av",
+ "ducktape-rt",
  "ducktape-web",
  "files",
  "flate2",
@@ -2920,7 +2921,12 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "gloo-timers",
+ "js-sys",
+ "libc",
  "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
  "web-time",
 ]
 

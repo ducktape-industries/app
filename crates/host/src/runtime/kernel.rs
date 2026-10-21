@@ -197,32 +197,7 @@ pub(super) fn in_front() -> tokio::sync::watch::Receiver<bool> {
     front().subscribe()
 }
 
-/// The one current-thread tokio runtime every async I/O in the app runs
-/// on — node HTTP and websockets here, the shell's task stream, the loader
-/// threads' fetches (`runtime::handle` hands it out) — on its own thread, so
-/// the window thread never blocks on the node. CPU or OS-blocking work goes
-/// to `spawn_blocking`.
-pub(super) fn handle() -> tokio::runtime::Handle {
-    static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
-    HANDLE
-        .get_or_init(|| {
-            let (send, recv) = std::sync::mpsc::channel();
-            std::thread::Builder::new()
-                .name("views-kernel".into())
-                .spawn(move || {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("the views kernel runtime");
-                    send.send(runtime.handle().clone())
-                        .expect("the kernel handle is taken");
-                    runtime.block_on(std::future::pending::<()>());
-                })
-                .expect("the views kernel thread");
-            recv.recv().expect("the kernel runtime came up")
-        })
-        .clone()
-}
+pub(super) use rt::task::handle;
 
 /// Jobs under one name run one after another, in the order they were
 /// queued, each on the blocking pool (an OS call or a file): a view's
@@ -235,12 +210,11 @@ pub(super) fn in_order(name: &str, job: impl FnOnce() + Send + 'static) {
     let mut queues = queues();
     let queue = queues.entry(name.to_owned()).or_insert_with(|| {
         let (queue, mut jobs) = tokio::sync::mpsc::unbounded_channel::<Job>();
-        handle().spawn(async move {
+        drop(rt::task::spawn(async move {
             while let Some(job) = jobs.recv().await {
-                // a job that panicked is lost alone; the next goes on
-                let _ = tokio::task::spawn_blocking(job).await;
+                let _ = rt::task::blocking(job).await;
             }
-        });
+        }));
         queue
     });
     let _ = queue.send(Box::new(job));
@@ -676,19 +650,7 @@ fn openable(link: &str) -> bool {
     })
 }
 
-/// The UTC offset in seconds the OS keeps for the local time at unix
-/// second `wall`.
-pub fn local_offset(wall: i64) -> i64 {
-    let time = wall as libc::time_t;
-    // SAFETY: `localtime_r` writes only the `tm` it is handed.
-    unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        match libc::localtime_r(&time, &mut tm).is_null() {
-            true => 0,
-            false => tm.tm_gmtoff as i64,
-        }
-    }
-}
+pub use rt::process::local_offset;
 
 /// Unix second `seconds` as its UTC day: `27 Sep 2026`.
 pub fn day(seconds: u64) -> String {
