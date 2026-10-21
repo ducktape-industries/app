@@ -255,6 +255,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
      * and typed as the file at [path] is, and is copied where the person chose. Whether it was kept (a picture: shown);
      * false when they cancelled. Blocks until the viewer closes or the person answers. Rust removes the file once it
      * hears.
+     */
     fun keepFile(path: String): Boolean {
         synchronized(keeping) {
             if (isFinishing || isDestroyed) return false
