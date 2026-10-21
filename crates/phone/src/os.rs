@@ -698,9 +698,9 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
 /// system only).
 pub fn system_bars(dark: bool) {
     #[cfg(target_os = "ios")]
-    gpui_ios::ios::set_status_bar_style(match dark {
-        true => gpui_ios::StatusBarContentStyle::Light,
-        false => gpui_ios::StatusBarContentStyle::Dark,
+    ducktape_gpui_ios::ios::set_status_bar_style(match dark {
+        true => ducktape_gpui_ios::StatusBarContentStyle::Light,
+        false => ducktape_gpui_ios::StatusBarContentStyle::Dark,
     });
     #[cfg(target_os = "android")]
     android::jni::system_bars(dark);

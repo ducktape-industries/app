@@ -1,6 +1,6 @@
 # ducktape-phone — the phone shell: the blind host core (`crates/host`) in one
-# full-screen window on iOS (zed's `gpui_ios`, the fork's
-# `vendor/gpui-pre-ios`) and Android (longbridge gpui-mobile's host-driven
+# full-screen window on iOS (zed's `gpui_ios`, our
+# `vendor/gpui-ios`) and Android (longbridge gpui-mobile's host-driven
 # path, the fork's `vendor/gpui-pre-mobile`). It gives the host its
 # `OsServices` (`src/os.rs`, one arm per OS), keeps this device's key in the
 # OS key store (`src/key`), and draws the phone's own chrome: the stack, Home
@@ -71,7 +71,7 @@ ducktape-host = { path = "../host", default-features = false, features = ["av"] 
 # a call's voice I/O, whose life the launcher's CallKit call follows
 ducktape-av = { path = "../av" }
 ducktape-host-jsc = { path = "../host-jsc" }
-gpui-pre-ios.workspace = true
+ducktape-gpui-ios.workspace = true
 # the log on the simulator's console (Android's goes to logcat through gm's
 # `android_logger`, which tracing's `log` records reach)
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }

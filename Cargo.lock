@@ -2796,6 +2796,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ducktape-gpui-ios"
+version = "0.3.9"
+dependencies = [
+ "anyhow",
+ "block2 0.6.2",
+ "futures",
+ "gpui-pre",
+ "gpui-pre-apple",
+ "log",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "objc2-ui-kit",
+ "parking_lot",
+ "raw-window-handle",
+ "uuid",
+]
+
+[[package]]
 name = "ducktape-gpui-linux"
 version = "0.3.9"
 dependencies = [
@@ -2937,11 +2957,11 @@ dependencies = [
  "design",
  "ducklink",
  "ducktape-av",
+ "ducktape-gpui-ios",
  "ducktape-host",
  "ducktape-host-jsc",
  "futures",
  "gpui-kit",
- "gpui-pre-ios",
  "gpui-pre-mobile",
  "jni 0.22.4",
  "mach2",
@@ -4614,27 +4634,6 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "url",
-]
-
-[[package]]
-name = "gpui-pre-ios"
-version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=eef11e96c9fcf7e0389d31f125013370a1b02d92#eef11e96c9fcf7e0389d31f125013370a1b02d92"
-dependencies = [
- "anyhow",
- "block2 0.6.2",
- "futures",
- "gpui-pre",
- "gpui-pre-apple",
- "log",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-foundation 0.3.2",
- "objc2-quartz-core 0.3.2",
- "objc2-ui-kit",
- "parking_lot",
- "raw-window-handle",
- "uuid",
 ]
 
 [[package]]

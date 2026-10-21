@@ -228,7 +228,7 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
     };
     #[cfg(feature = "call")]
     ducktape_av::voice::on_life(call_voice);
-    let platform = gpui_ios::IosPlatform::new();
+    let platform = ducktape_gpui_ios::IosPlatform::new();
     platform.on_remote_notification_token(Box::new(|token| match token {
         Ok(token) => {
             let token: String = token.iter().map(|byte| format!("{byte:02x}")).collect();

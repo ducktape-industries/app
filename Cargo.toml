@@ -71,10 +71,10 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 # wasmtime — pinned exactly, matching the node's runtime: a program-owned view
 # executes in the same wasm semantics the kernel does.
 wasmtime = "=46.0.3"
-# --- the phone platforms, vendored in the gpui-pre fork at the [patch.crates-io]
-# rev below (not on crates.io): zed's gpui_ios, and longbridge gpui-mobile's
-# Android half with its one line changed (crates/phone) ---
-gpui-pre-ios = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
+# --- the phone platforms (crates/phone): zed's gpui_ios, ours in vendor/gpui-ios;
+# longbridge gpui-mobile's Android half with its one line changed, vendored in
+# the gpui-pre fork at the [patch.crates-io] rev below (not on crates.io) ---
+ducktape-gpui-ios = { path = "vendor/gpui-ios" }
 gpui-pre-mobile = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92", default-features = false }
 libc = "0.2"
 rpassword = "7"
