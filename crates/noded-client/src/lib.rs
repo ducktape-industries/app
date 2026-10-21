@@ -30,8 +30,8 @@ use futures::{Stream, StreamExt as _};
 use std::time::Duration;
 
 use wire::{
-    BlockAsk, Blocks, Change, Finalized, Layer, Located, Network, Page, Preconfirm, Query, Receipt,
-    Status, Submit, Submitted, TxAsk, route,
+    Ask, BlockAsk, Blocks, Change, Finalized, Frame, Head, Layer, Located, Network, Page,
+    Preconfirm, Query, Receipt, Status, Submit, Submitted, Tip, TxAsk, route,
 };
 
 /// What signs a frame or a consent: an ed25519 key, wherever it is kept.
@@ -122,11 +122,27 @@ impl std::fmt::Display for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Debug)]
+pub enum Asked {
+    Unsigned(SignError),
+    Node(Error),
+}
+
+impl std::fmt::Display for Asked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Asked::Unsigned(refused) => refused.fmt(f),
+            Asked::Node(error) => error.fmt(f),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: net::Net,
     reads: net::Net,
     base: String,
+    newest: std::sync::Arc<std::sync::Mutex<Option<Tip>>>,
 }
 
 impl Client {
@@ -136,6 +152,7 @@ impl Client {
             http: net::Net::new(None),
             reads: net::Net::new(Some((READ_CONNECT, READ_IDLE))),
             base,
+            newest: Default::default(),
         }
     }
 
@@ -148,7 +165,19 @@ impl Client {
     }
 
     pub async fn status(&self) -> Result<Status> {
-        self.fetch(route::STATUS).await
+        let status: Status = self.fetch(route::STATUS).await?;
+        self.heard(status.anchor());
+        Ok(status)
+    }
+
+    pub fn heard(&self, tip: Tip) {
+        let mut newest = self
+            .newest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if newest.is_none_or(|newest| newest.height < tip.height) {
+            *newest = Some(tip);
+        }
     }
 
     /// Every member's sync state as the node sees it.
@@ -174,8 +203,42 @@ impl Client {
         }
     }
 
-    pub async fn query(&self, layer: Layer, frame: Vec<u8>) -> Result<Vec<u8>> {
-        self.post(route::QUERY, &Query { layer, frame }).await
+    pub async fn query(
+        &self,
+        layer: Layer,
+        signer: &dyn Signer,
+        network: &[u8],
+        target: &str,
+        payload: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, Asked> {
+        let known = *self
+            .newest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let anchor = match known {
+            Some(anchor) => anchor,
+            None => self.status().await.map_err(Asked::Node)?.anchor(),
+        };
+        let sign = |anchor| {
+            Frame::query(signer, network, anchor, target, payload.clone()).map_err(Asked::Unsigned)
+        };
+        match self.signed_query(layer, sign(anchor)?).await {
+            Err(Error::Refused(refusal)) if refusal.reason == abi::reason::ANCHOR => {
+                let fresh = self.status().await.map_err(Asked::Node)?.anchor();
+                if fresh == anchor {
+                    return Err(Asked::Node(Error::Refused(refusal)));
+                }
+                self.signed_query(layer, sign(fresh)?)
+                    .await
+                    .map_err(Asked::Node)
+            }
+            answer => answer.map_err(Asked::Node),
+        }
+    }
+
+    async fn signed_query(&self, layer: Layer, frame: Frame) -> Result<Vec<u8>> {
+        let ask = Ask::Signed(frame.encode());
+        self.post(route::QUERY, &Query { layer, ask }).await
     }
 
     /// The framed bytes (`kind len\0body`) of a blob the node holds, read
@@ -260,7 +323,8 @@ impl Client {
         &self,
         program: &str,
     ) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
-        self.follow(format!("{}/{program}", route::CHANGES)).await
+        self.follow::<Change>(format!("{}/{program}", route::CHANGES))
+            .await
     }
 
     /// Each block's writes to `program`, the keys alone (`?keys`): every
@@ -269,11 +333,27 @@ impl Client {
         &self,
         program: &str,
     ) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
-        self.follow(format!("{}/{program}?keys", route::CHANGES))
+        self.follow::<Change>(format!("{}/{program}?keys", route::CHANGES))
             .await
     }
 
-    async fn follow(&self, path: String) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
+    pub async fn heads(&self) -> Result<impl Stream<Item = Result<Head>> + Unpin> {
+        let heard = self.clone();
+        let heads = self.follow::<Head>(route::HEADS.to_owned()).await?;
+        Ok(heads.inspect(move |head| {
+            if let Ok(head) = head {
+                heard.heard(Tip {
+                    height: head.height,
+                    id: head.id,
+                });
+            }
+        }))
+    }
+
+    async fn follow<T: BorshDeserialize>(
+        &self,
+        path: String,
+    ) -> Result<impl Stream<Item = Result<T>> + Unpin> {
         let url = format!("{}{path}", self.base.replacen("http", "ws", 1));
         let socket = self.http.socket(&url).await?;
         Ok(socket

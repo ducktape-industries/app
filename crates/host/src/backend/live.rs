@@ -1312,13 +1312,7 @@ fn undecoded(kind: &str, bytes: &[u8], error: impl std::fmt::Display) -> String 
 /// between dials: a node whose UDP comes back is on QUIC at the next one.
 async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> {
     let status = rpc.status().await.map_err(super::refused)?;
-    let port = match rpc.live_port().await {
-        Ok(port) => port,
-        Err(noded_client::Error::Failed { status: 404, .. }) => {
-            return Err(unavailable("this node serves no live tracks"));
-        }
-        Err(error) => return Err(super::refused(error)),
-    };
+    let port = rpc.live_port().await.map_err(super::refused)?;
     let key = super::seated_key(&status.network).await?;
     let endpoint = rpc.endpoint().to_owned();
     let hello = Hello {

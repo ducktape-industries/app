@@ -37,8 +37,8 @@ pub use prefs::{
 #[cfg(any(test, feature = "test-support"))]
 pub use session::seat_serial;
 pub use session::{
-    anchor, lock_signer, query_frame, query_signer, seat_key, seated, seated_frame, seated_key,
-    seated_sign, seated_signer, unseat,
+    anchor, lock_signer, query_signer, seat_key, seated, seated_frame, seated_key, seated_sign,
+    seated_signer, signed_query, unseat,
 };
 
 use std::path::Path;

@@ -374,13 +374,17 @@ its meaning; the host and the views name the const, never the string.
    missing, so a submit is never signed again. A node's own refusal is the
    answer too. The view decides whether to ask again. The client sets no
    deadline on the connect or the answer, and reads an answer whole.
-4. **Sign.** A read: `backend::query_frame` signs a `Frame` with the
-   seated key, or with the process's throwaway `reader_key` while nobody
-   is signed in. Its anchor is the zero `Tip` and it carries no salt: the
-   program hears who asks, and the node checks neither on a query. It
-   reads the confirmed layer (`Layer::Confirmed`): what blocks wrote, the
-   state `program.changes` reports, so a frame the preconfirmed layer ran
-   and a block then ran otherwise never shows.
+4. **Sign.** A read: `backend::signed_query` signs a `Frame` under
+   `QUERY_NAMESPACE` (`ducktape:query`) with the seated key, or with the
+   process's throwaway `reader_key` while nobody is signed in. It carries
+   no salt, and its anchor is the newest head the node's client heard
+   (`Client::heard`, from its `/v1/heads` follow and every `/v1/status`;
+   a status read first when it heard none). The node answers a query only
+   while its anchor is one of the last 256 blocks: on an `anchor` refusal
+   the client reads the status and asks once more on that tip. It reads
+   the confirmed layer (`Layer::Confirmed`): what blocks wrote, the state
+   `program.changes` reports, so a frame the preconfirmed layer ran and a
+   block then ran otherwise never shows.
    A write (`op.submit`): `backend::seated_frame` reads `/v1/status` and
    anchors the frame at the tip it reports (`backend::anchor`:
    `Tip{height, id: tip}`), then `Frame::sign` builds `Body{scheme: Ed25519,
@@ -404,9 +408,9 @@ its meaning; the host and the views name the const, never the string.
    `/v1/changes/<program>?keys` (the keys alone) per node and program, held while a follower's view
    is on screen (a desktop pane: presented, its window not hidden nor under a pane filling the
    desk), a notifier's always, and the app in front; a follower back
-   is told to re-read first), `chain.heads` (`heads`: polls
-   status at half the node's block time and reads the advance from
-   `/v1/blocks`, on the same terms), `live.publish`/`live.subscribe`/
+   is told to re-read first), `chain.heads` (`heads`: one WebSocket
+   `/v1/heads` per node, each follower holding the newest head, on the
+   same terms), `live.publish`/`live.subscribe`/
    `live.tracks` (`kernel/live.rs`: a request on the connection's live
    session, opened again on a lost session or a reconnect, its items the
    node's objects and announces), `clock.ticks`, `host.session`,
@@ -866,7 +870,7 @@ House words, and where one word means several things.
   (`Seat::turn`) is the seat's step, run on a wake and never by a draw.
 - **frame** — three meanings. (1) `wire::Frame`: what a tick returns.
   (2) the signed node **frame** (`noded::Frame`, `seated_frame`,
-  `query_frame`). (3) a GPUI frame.
+  `signed_query`). (3) a GPUI frame.
 - **snapshot** — three meanings. (1) the wasm `snapshot`/`restore` export
   pair a swap uses. (2) `ax::snapshot`: a read of a window's AccessKit
   tree. (3) `tray`'s rendered-menu snapshot.

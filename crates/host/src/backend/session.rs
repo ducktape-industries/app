@@ -152,16 +152,23 @@ pub async fn seated_sign(key: &[u8], namespace: &[u8], message: &[u8]) -> Result
 
 /// A query `signer` signs: [`query_signer`] for the network in hand, the
 /// reader for another (a followed set's, `runtime::notifier::follow`).
-pub async fn query_frame(
+pub async fn signed_query(
+    client: &RpcClient,
+    layer: noded_client::wire::Layer,
     signer: &dyn noded_client::Signer,
     network: &str,
     target: &str,
     payload: Vec<u8>,
 ) -> Result<Vec<u8>, Error> {
-    let frame = Frame::query(signer, network.as_bytes(), target, payload);
-    Ok(frame
-        .map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))?
-        .encode())
+    client
+        .query(layer, signer, network.as_bytes(), target, payload)
+        .await
+        .map_err(|asked| match asked {
+            noded_client::Asked::Unsigned(refusal) => {
+                Error::new(refusal::SESSION_LOCKED, refusal.0)
+            }
+            noded_client::Asked::Node(error) => refused(error),
+        })
 }
 
 pub fn query_signer(network: &str) -> Arc<dyn noded_client::Signer> {

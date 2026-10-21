@@ -96,18 +96,15 @@ fn on_network(chain: &ducklink::ChainId) -> Result<Node, Read> {
 }
 
 async fn ask(node: &Node, query: files::Query) -> Result<files::Reply, view_wire::Error> {
-    let frame = crate::backend::query_frame(
+    let answer = crate::backend::signed_query(
+        &node.client,
+        crate::backend::Layer::Confirmed,
         &*node.signer(),
         &node.network,
         files::PROGRAM,
         abi::encode(&query),
     )
     .await?;
-    let answer = node
-        .client
-        .query(crate::backend::Layer::Confirmed, frame)
-        .await
-        .map_err(crate::backend::refused)?;
     abi::decode(&answer).map_err(|refusal| {
         view_wire::Error::new(view_wire::code::UNEXPECTED_REPLY, refusal.sentence)
     })
@@ -200,7 +197,7 @@ pub fn follow(address: &str) -> Option<(Following, mpsc::UnboundedReceiver<()>)>
     let joined = node.clone();
     let join = move || {
         Box::pin(futures::stream::unfold(
-            feed(&joined.client, files::PROGRAM),
+            feed(&joined.client, &Fed::Changes(files::PROGRAM.to_owned())),
             |(feed, slot)| async move {
                 let _ = slot.take().await;
                 Some(((), (feed, slot)))
