@@ -12,6 +12,8 @@ nothing); every change after it is ours. Published sources and the Apache-2.0 li
 ## Changes
 
 - **Name.** Package `ducktape-gpui-linux`, library `ducktape_gpui_linux`, `publish = false`.
+- **XIM client.** `xim` is our `vendor/xim` (`ducktape-xim`: zed-xim 0.4.0-zed with Korean and
+  Chinese decoding and no panic on text it cannot read; its own README.ducktape.md).
 - **AccessKit.** `accesskit` 0.25.1 and `accesskit_unix` 0.24.0 (published: 0.24.0 and 0.22), the
   versions the app's gpui-pre core uses; they move with that core.
 - **A window opens where it is asked (X11).** It is created at `WindowParams::bounds`' origin

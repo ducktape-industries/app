@@ -2806,6 +2806,7 @@ dependencies = [
  "bytemuck",
  "calloop",
  "calloop-wayland-source",
+ "ducktape-xim",
  "filedescriptor",
  "futures",
  "gpui-pre",
@@ -2834,7 +2835,6 @@ dependencies = [
  "x11rb",
  "xkbcommon",
  "zed-scap",
- "zed-xim",
 ]
 
 [[package]]
@@ -2999,6 +2999,18 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
+]
+
+[[package]]
+name = "ducktape-xim"
+version = "0.4.0-zed"
+dependencies = [
+ "ahash",
+ "hashbrown 0.14.5",
+ "log",
+ "x11rb",
+ "xim-ctext",
+ "xim-parser",
 ]
 
 [[package]]

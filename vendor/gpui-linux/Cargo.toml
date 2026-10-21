@@ -253,13 +253,13 @@ features = [
 optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.xim]
-version = "0.4.0-zed"
+path = "../xim"
 features = [
     "x11rb-xcb",
     "x11rb-client",
 ]
 optional = true
-package = "zed-xim"
+package = "ducktape-xim"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.xkbcommon]
 version = "0.8"
