@@ -139,7 +139,7 @@ pub mod tests {
 
     /// A status source answering `answer(n)` to its `n`th ask, counting them.
     pub fn source(
-        answer: impl Fn(usize) -> Result<crate::backend::NodeStatus, String> + 'static,
+        answer: impl Fn(usize) -> Result<crate::backend::NodeStatus, noded_client::Error> + 'static,
     ) -> (StatusSource, std::rc::Rc<std::cell::Cell<usize>>) {
         use futures::FutureExt as _;
         let asked = std::rc::Rc::new(std::cell::Cell::new(0));

@@ -236,9 +236,15 @@ impl BorshDeserialize for Status {
         let identity = Vec::<u8>::deserialize_reader(reader)?;
         let contract = u32::deserialize_reader(reader)?;
         if contract != NODE_CONTRACT {
+            let next = match contract < NODE_CONTRACT {
+                true => "The network needs an update first.",
+                false => "Update this app.",
+            };
             return Err(borsh::io::Error::new(
                 borsh::io::ErrorKind::InvalidData,
-                format!("this node speaks contract {contract}; this app speaks {NODE_CONTRACT}"),
+                format!(
+                    "this node speaks contract {contract}; this app speaks {NODE_CONTRACT}. {next}"
+                ),
             ));
         }
         Ok(Status {
@@ -618,7 +624,9 @@ mod tests {
         let refusal = abi::decode::<Status>(&bytes).unwrap_err();
         assert_eq!(
             refusal.sentence,
-            format!("this node speaks contract 4; this app speaks {NODE_CONTRACT}")
+            format!(
+                "this node speaks contract 4; this app speaks {NODE_CONTRACT}. The network needs an update first."
+            )
         );
     }
 

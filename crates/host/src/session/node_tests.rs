@@ -58,7 +58,7 @@ fn poll(cx: &mut TestAppContext) {
 }
 
 fn connected(
-    answer: impl Fn(usize) -> Result<NodeStatus, String> + 'static,
+    answer: impl Fn(usize) -> Result<NodeStatus, noded_client::Error> + 'static,
     cx: &mut TestAppContext,
 ) -> (Entity<Session>, Rc<Cell<usize>>) {
     let session = cx.update(session);
@@ -82,7 +82,11 @@ fn connected(
 #[gpui_kit::test]
 fn a_node_not_reached_is_said_and_a_new_try_clears_it(cx: &mut TestAppContext) {
     let session = cx.update(session);
-    let (source, asked) = source(|_| Err("error sending request for url".into()));
+    let (source, asked) = source(|_| {
+        Err(noded_client::Error::Unreachable(
+            "error sending request for url".into(),
+        ))
+    });
     session.update(cx, |session, cx| {
         session.connect_through(ORIGIN.into(), source, cx)
     });
@@ -112,7 +116,11 @@ fn a_node_not_reached_is_said_and_a_new_try_clears_it(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_connect_out_reaches_for_the_address_it_was_started_with(cx: &mut TestAppContext) {
     let session = cx.update(session);
-    let (source, _) = source(|_| Err("error sending request for url".into()));
+    let (source, _) = source(|_| {
+        Err(noded_client::Error::Unreachable(
+            "error sending request for url".into(),
+        ))
+    });
     session.update(cx, |session, cx| {
         session.connect_through(ORIGIN.into(), source, cx)
     });
@@ -195,7 +203,7 @@ fn heard_moves_without_a_notify(cx: &mut TestAppContext) {
 fn a_missed_poll_reads_reconnecting_and_one_answer_recovers(cx: &mut TestAppContext) {
     let (session, _) = connected(
         |n| match n {
-            1 | 2 => Err("no".into()),
+            1 | 2 => Err(noded_client::Error::Unreachable("no".into())),
             _ => Ok(testnet(7)),
         },
         cx,
@@ -223,7 +231,11 @@ fn a_missed_poll_reads_reconnecting_and_one_answer_recovers(cx: &mut TestAppCont
 fn a_switch_that_does_not_land_keeps_the_network_in_hand(cx: &mut TestAppContext) {
     let (session, asked) = connected(|_| Ok(testnet(7)), cx);
     let (heard, _heard) = events(&session, cx);
-    let (other, _) = source(|_| Err("error sending request".into()));
+    let (other, _) = source(|_| {
+        Err(noded_client::Error::Unreachable(
+            "error sending request".into(),
+        ))
+    });
     session.update(cx, |session, cx| {
         session.connect_through(OTHER.into(), other, cx)
     });
@@ -368,7 +380,9 @@ fn a_saved_network_whose_node_does_not_answer_stays_on_the_desk(cx: &mut TestApp
     saved(SAVED, true, [0; 32]);
     let session = cx.update(session);
     let (source, _) = source(|n| match n {
-        0 => Err("error sending request for url".into()),
+        0 => Err(noded_client::Error::Unreachable(
+            "error sending request for url".into(),
+        )),
         _ => Ok(status(7)),
     });
     session.update(cx, |session, cx| {
@@ -391,6 +405,60 @@ fn a_saved_network_whose_node_does_not_answer_stays_on_the_desk(cx: &mut TestApp
         chain(&session, cx).read_with(cx, |chain, _| chain.height),
         7
     );
+}
+
+fn one_contract_behind() -> Result<NodeStatus, noded_client::Error> {
+    let behind = NodeStatus {
+        contract: noded_client::wire::NODE_CONTRACT - 1,
+        ..status(7)
+    };
+    abi::decode(&abi::encode(&behind)).map_err(noded_client::Error::Decode)
+}
+
+#[gpui_kit::test]
+fn a_saved_node_on_another_contract_is_left_saying_so(cx: &mut TestAppContext) {
+    let _seat = crate::backend::seat_serial();
+    cx.executor().allow_parking();
+    const SAVED: &str = "http://127.0.0.1:16";
+    saved(SAVED, true, [0; 32]);
+    let session = cx.update(session);
+    let (source, asked) = source(|_| one_contract_behind());
+    session.update(cx, |session, cx| {
+        session.connect_through(SAVED.into(), source, cx)
+    });
+    cx.run_until_parked();
+    let left = state(&session, cx);
+    assert!(!left.connected && !left.reconnecting, "{left:?}");
+    assert!(
+        left.error
+            .starts_with("testkit (127.0.0.1:16): this node speaks contract"),
+        "{}",
+        left.error
+    );
+    assert_eq!(screen(&session, cx), Screen::Connect);
+    poll(cx);
+    assert_eq!(asked.get(), 1, "a node on another contract was polled on");
+}
+
+#[gpui_kit::test]
+fn a_node_that_moves_to_another_contract_is_left_saying_so(cx: &mut TestAppContext) {
+    let (session, asked) = connected(
+        |n| match n {
+            0 => Ok(testnet(7)),
+            _ => one_contract_behind(),
+        },
+        cx,
+    );
+    poll(cx);
+    let left = state(&session, cx);
+    assert!(!left.connected && !left.reconnecting, "{left:?}");
+    assert!(
+        left.error.contains("this node speaks contract"),
+        "{}",
+        left.error
+    );
+    poll(cx);
+    assert_eq!(asked.get(), 2, "a node on another contract was polled on");
 }
 
 #[gpui_kit::test]

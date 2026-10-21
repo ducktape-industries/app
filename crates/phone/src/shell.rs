@@ -3543,8 +3543,11 @@ mod tests {
         );
         show_switch(&root, cx);
 
-        let (silent, _) =
-            source(|_| Err("error sending request for url (http://127.0.0.1:9/v1/status)".into()));
+        let (silent, _) = source(|_| {
+            Err(noded_client::Error::Unreachable(
+                "error sending request for url (http://127.0.0.1:9/v1/status)".into(),
+            ))
+        });
         shared.session.update(cx, |session, cx| {
             session.connect_through("http://127.0.0.1:9".into(), silent, cx)
         });

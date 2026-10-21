@@ -92,8 +92,10 @@ pub enum SessionEvent {
 }
 
 /// Where a status comes from: the node's `/v1/status`, or a test's answer.
+/// A `Decode` error is a node that answered in a shape this app does not
+/// read (another contract: its sentence names both), not a node away.
 pub type StatusSource =
-    Rc<dyn Fn() -> LocalBoxFuture<'static, Result<backend::NodeStatus, String>>>;
+    Rc<dyn Fn() -> LocalBoxFuture<'static, Result<backend::NodeStatus, noded_client::Error>>>;
 
 pub struct Session {
     state: SessionState,
@@ -212,7 +214,7 @@ impl Session {
         let client = backend::rpc_client(origin);
         Rc::new(move || {
             let client = client.clone();
-            async move { client.status().await.map_err(|error| error.to_string()) }.boxed_local()
+            async move { client.status().await }.boxed_local()
         })
     }
 
@@ -368,7 +370,7 @@ impl Session {
         &mut self,
         origin: String,
         source: StatusSource,
-        answer: Result<backend::NodeStatus, String>,
+        answer: Result<backend::NodeStatus, noded_client::Error>,
         cx: &mut Context<Self>,
     ) {
         let _timed = timed();
@@ -382,21 +384,15 @@ impl Session {
         );
         let status = match answer {
             Ok(status) => status,
-            Err(error) if self.confirming => return self.unconfirmed(source, error, cx),
-            Err(error) => return self.connect_failed(origin, error, cx),
+            Err(noded_client::Error::Decode(refusal)) if self.confirming => {
+                return self.unreadable(origin, refusal.sentence, cx);
+            }
+            Err(error) if self.confirming => {
+                return self.unconfirmed(source, error.to_string(), cx);
+            }
+            Err(error) => return self.connect_failed(origin, error.to_string(), cx),
         };
         crate::perf::mark("connected");
-        if status.contract != noded_client::wire::NODE_CONTRACT {
-            let error = format!(
-                "this node speaks contract {}; this app speaks {}",
-                status.contract,
-                noded_client::wire::NODE_CONTRACT
-            );
-            if self.confirming {
-                self.disconnect(cx);
-            }
-            return self.connect_failed(origin, error, cx);
-        }
         let presumed = std::mem::take(&mut self.confirming);
         if presumed
             && crate::runtime::chain_of(&status) == self.state.chain
@@ -453,21 +449,29 @@ impl Session {
         self.start_poll(STATUS_EVERY, cx);
     }
 
-    fn connect_failed(&mut self, origin: String, error: String, cx: &mut Context<Self>) {
+    fn unreadable(&mut self, origin: String, sentence: String, cx: &mut Context<Self>) {
+        self.disconnect(cx);
+        let who = self.who(&origin);
+        self.connect_failed(origin, format!("{who}: {sentence}"), cx);
+    }
+
+    fn who(&self, origin: &str) -> String {
         let host = origin
             .strip_prefix("https://")
             .or_else(|| origin.strip_prefix("http://"))
-            .unwrap_or(&origin);
-        let who = self
-            .state
+            .unwrap_or(origin);
+        self.state
             .recent_endpoints
             .iter()
             .find(|entry| entry.url == origin && !entry.network.is_empty())
             .map_or_else(
                 || host.to_owned(),
                 |entry| format!("{} ({host})", entry.network),
-            );
-        let error = backend::connect_error(&who, error);
+            )
+    }
+
+    fn connect_failed(&mut self, origin: String, error: String, cx: &mut Context<Self>) {
+        let error = backend::connect_error(&self.who(&origin), error);
         if self.state.connected {
             self.edit(|state| state.endpoint = state.connected_rpc.clone(), cx);
             cx.emit(SessionEvent::Toast(error));
@@ -479,7 +483,7 @@ impl Session {
     /// The poll's answer: a status, or none.
     pub fn status_answered(
         &mut self,
-        answer: Result<backend::NodeStatus, String>,
+        answer: Result<backend::NodeStatus, noded_client::Error>,
         cx: &mut Context<Self>,
     ) {
         let _timed = timed();
@@ -502,6 +506,10 @@ impl Session {
                     self.account
                         .update(cx, |account, cx| account.resolve_unanswered(cx));
                 }
+            }
+            Err(noded_client::Error::Decode(refusal)) => {
+                let origin = self.state.connected_rpc.clone();
+                self.unreadable(origin, refusal.sentence, cx);
             }
             Err(error) => {
                 tracing::debug!(target: "ducktape::app", %error, "status not answered");
@@ -544,7 +552,9 @@ impl Session {
                 let answer = on_runtime(async move {
                     match tokio::time::timeout(STATUS_EVERY, ask()).await {
                         Ok(answer) => answer,
-                        Err(_) => Err("the node did not answer in time".into()),
+                        Err(_) => Err(noded_client::Error::Transport(
+                            "the node did not answer in time".into(),
+                        )),
                     }
                 })
                 .await;
