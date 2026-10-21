@@ -260,29 +260,50 @@ pub(crate) fn os_notices() -> async_channel::Receiver<OsNotice> {
     os_notice_channel().1.clone()
 }
 
-static PUSH_TOKENS: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
+type Tokens = std::collections::BTreeMap<String, String>;
+type Moved = (async_channel::Sender<()>, async_channel::Receiver<()>);
 
-static PUSH_MOVED: OnceLock<(async_channel::Sender<()>, async_channel::Receiver<()>)> =
-    OnceLock::new();
+#[cfg(not(test))]
+static PUSH_TOKENS: std::sync::Mutex<Tokens> = std::sync::Mutex::new(Tokens::new());
 
-fn push_moved() -> &'static (async_channel::Sender<()>, async_channel::Receiver<()>) {
-    PUSH_MOVED.get_or_init(|| async_channel::bounded(1))
+#[cfg(not(test))]
+static PUSH_MOVED: OnceLock<Moved> = OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static PUSH_TOKENS: std::sync::Mutex<Tokens> = const { std::sync::Mutex::new(Tokens::new()) };
+    static PUSH_MOVED: Moved = async_channel::bounded(1);
+}
+
+fn tokens<R>(change: impl FnOnce(&mut Tokens) -> R) -> R {
+    let held = |tokens: &std::sync::Mutex<Tokens>| {
+        change(
+            &mut tokens
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    };
+    #[cfg(not(test))]
+    return held(&PUSH_TOKENS);
+    #[cfg(test)]
+    PUSH_TOKENS.with(held)
+}
+
+fn push_moved() -> Moved {
+    #[cfg(not(test))]
+    return PUSH_MOVED.get_or_init(|| async_channel::bounded(1)).clone();
+    #[cfg(test)]
+    PUSH_MOVED.with(Clone::clone)
 }
 
 /// Keeps `token` as this device's push token of `kind`; an empty one is
 /// withdrawn. The registrar is woken when the kept one moved.
 pub fn push_token(kind: &str, token: String) {
     tracing::debug!(target: "ducktape::phone", kind, "this device's push token");
-    let moved = {
-        let mut tokens = PUSH_TOKENS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match token.is_empty() {
-            true => tokens.remove(kind).is_some(),
-            false => tokens.insert(kind.to_owned(), token.clone()) != Some(token),
-        }
-    };
+    let moved = tokens(|tokens| match token.is_empty() {
+        true => tokens.remove(kind).is_some(),
+        false => tokens.insert(kind.to_owned(), token.clone()) != Some(token),
+    });
     if moved {
         push_moved().0.try_send(()).ok();
     }
@@ -290,7 +311,7 @@ pub fn push_token(kind: &str, token: String) {
 
 /// Wakes once per move of the tokens ([`push_token`]).
 pub fn push_tokens_moved() -> async_channel::Receiver<()> {
-    push_moved().1.clone()
+    push_moved().1
 }
 
 /// Which of Apple's servers this build's APNs tokens belong to
@@ -309,10 +330,7 @@ pub fn push_environment() -> &'static str {
 
 /// This device's push tokens by kind ([`push_token`]).
 pub fn push_tokens() -> std::collections::BTreeMap<String, String> {
-    PUSH_TOKENS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+    tokens(|tokens| tokens.clone())
 }
 
 pub(crate) fn links_to_open() -> async_channel::Receiver<String> {
