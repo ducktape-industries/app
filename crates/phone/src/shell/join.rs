@@ -20,6 +20,8 @@ use ducktape_host::a11y::Control as _;
 use ducktape_host::backend::join::JOIN_WAIT;
 use ducktape_host::contract::SoftKeyboard;
 use ducktape_host::session::{AccountStep, Screen, SessionState, Shared};
+use ducktape_host::text_input::TextInput;
+use gpui_kit::base::input::InputMode;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Sizable as _, spinner::Spinner};
 use gpui_kit::{
@@ -79,6 +81,8 @@ pub struct Join {
     pub(super) node: Entity<InputState>,
     pub(super) refused: Option<String>,
     name: Entity<InputState>,
+    node_keys: Entity<TextInput<InputMode>>,
+    name_keys: Entity<TextInput<InputMode>>,
     pub(super) scroll: ScrollHandle,
     code: Option<(String, SystemTime)>,
     tick: Option<Task<()>>,
@@ -99,13 +103,10 @@ impl Join {
             InputState::new(window, cx)
                 .placeholder("duckpond.ducktape.industries")
                 .default_value(last.clone().unwrap_or_default())
-                .text_input(url_keyboard())
         });
-        let name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Name the new account")
-                .text_input(name_keyboard())
-        });
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Name the new account"));
+        let node_keys = TextInput::new(&node, url_keyboard(), cx);
+        let name_keys = TextInput::new(&name, name_keyboard(), cx);
         let subscriptions = vec![
             cx.subscribe_in(
                 &node,
@@ -147,6 +148,8 @@ impl Join {
             node,
             refused: None,
             name,
+            node_keys,
+            name_keys,
             scroll: ScrollHandle::new(),
             code: None,
             tick: None,
@@ -376,6 +379,7 @@ impl Join {
                     problem.is_some(),
                     palette,
                 )
+                .child(TextInput::element(&self.node_keys))
                 .child(under(problem, palette)),
             );
         let label = match &reaching {
@@ -583,15 +587,18 @@ impl Join {
                      others see.",
                 ),
             )
-            .child(field(
-                &self.name,
-                "join/name",
-                "Account name",
-                false,
-                focused,
-                false,
-                palette,
-            ))
+            .child(
+                field(
+                    &self.name,
+                    "join/name",
+                    "Account name",
+                    false,
+                    focused,
+                    false,
+                    palette,
+                )
+                .child(TextInput::element(&self.name_keys)),
+            )
             .children(problem.map(|problem| notice("join/problem", problem, palette)))
             .child(create.w_full());
         let add = account::row(

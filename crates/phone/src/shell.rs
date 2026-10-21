@@ -53,9 +53,12 @@ use ducktape_host::runtime::{Back, Placed, consent};
 use ducktape_host::session::{
     AccountEvent, AccountState, Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared,
 };
+use ducktape_host::text_input::TextInput;
 use futures::StreamExt as _;
 use gpui_kit::BorrowAppContext as _;
+use gpui_kit::base::input::InputMode;
 use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext as _, AsyncApp, ClipboardItem, Context, Entity,
     Focusable as _, FontWeight, Global, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -626,11 +629,13 @@ pub struct Root {
     run: home::Run,
     /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
+    search_keys: Entity<TextInput<InputMode>>,
     filtering: bool,
     /// Add a device's code, as typed (`approve::field`), and what its sheet
     /// showed as it went: drawn so while it slides off (what it found is
     /// forgotten at once, and the sheet going keeps only which it was).
     code: Entity<InputState>,
+    code_keys: Entity<TextInput<InputMode>>,
     approve_left: AccountState,
     /// Each placed seat, observed: a tree, a standin or a fault that moved
     /// draws the window again.
@@ -674,6 +679,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter by name"));
+        let search_keys = TextInput::new(&search, Default::default(), cx);
         let focus = search.read(cx).focus_handle(cx);
         let mut subscriptions = vec![
             cx.observe(&shared.rail, |root, _, cx| root.rail_moved(cx)),
@@ -742,7 +748,7 @@ impl Root {
             }),
         ];
         subscriptions.extend(crate::os::follow(window, cx));
-        let (code, typed) = approve::field(window, cx);
+        let (code, code_keys, typed) = approve::field(window, cx);
         subscriptions.push(typed);
         let appearance = shared.prefs.read(cx).get().appearance;
         sync_appearance(appearance, window, cx);
@@ -766,8 +772,10 @@ impl Root {
             held: Default::default(),
             run: home::Run::default(),
             search,
+            search_keys,
             filtering: false,
             code,
+            code_keys,
             approve_left: AccountState::default(),
             watched: BTreeMap::new(),
             moving: None,
@@ -1753,7 +1761,8 @@ impl Root {
                 };
                 let focused = self.code.read(cx).focus_handle(cx).is_focused(window);
                 let code = &self.code;
-                let content = approve::content(&self.shared, &shown, code, focused, palette, cx);
+                let content = approve::content(&self.shared, &shown, code, focused, palette, cx)
+                    .child(TextInput::element(&self.code_keys));
                 ("Add a device", content.into_any_element())
             }
             // the address screen's own scroller shrinks under the room
@@ -2122,7 +2131,10 @@ impl Root {
                 palette,
                 window,
                 cx,
-            ),
+            )
+            .when(self.filtering, |home| {
+                home.child(TextInput::element(&self.search_keys))
+            }),
             Tab::Open => {
                 let opened = self.stack.read(cx).open().to_vec();
                 let debug = self.shared.prefs.read(cx).get().debug;

@@ -1453,3 +1453,41 @@ fn under_touch_a_press_on_the_field_that_holds_the_keys_asks_for_the_keyboard_ag
     }
     crate::contract::testing::touch_first_for_test(false);
 }
+
+#[gpui_kit::test]
+fn return_from_a_software_keyboard_submits_a_one_line_field_once(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let mut field = input("Message", false, false);
+    let wire::Node::Field { id, on_submit, .. } = &mut field else {
+        unreachable!()
+    };
+    *id = wire::ElementIdWire::Name("field".into());
+    *on_submit = Some(7);
+    let (tree, mut native) = mounted(container("form", [field]), cx);
+    focus(&tree, &mut native, &[named_id("form"), named_id("field")]);
+    let before = text(&tree, &mut native);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.simulate_input("\n");
+    native.run_until_parked();
+    let submits = events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(event, wire::Event::Message(7)))
+        .count();
+    assert_eq!(submits, 1, "Return is the field's submit, once");
+    assert_eq!(text(&tree, &mut native), before, "and it types nothing");
+    let on_the_field =
+        line(&tree, &native).read_with(&native, |state, _| state.input_bounds().center());
+    native.simulate_click(on_the_field, gpui_kit::Modifiers::none());
+    native.run_until_parked();
+    native.simulate_keystrokes("enter");
+    native.run_until_parked();
+    let submits = events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(event, wire::Event::Message(7)))
+        .count();
+    assert_eq!(submits, 2, "a hardware Enter is one more submit, never two");
+    assert_eq!(text(&tree, &mut native), before);
+}

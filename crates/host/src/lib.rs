@@ -67,4 +67,6 @@ pub mod session;
 #[cfg(feature = "ui")]
 pub mod start;
 #[cfg(feature = "ui")]
+pub mod text_input;
+#[cfg(feature = "ui")]
 pub mod theme;

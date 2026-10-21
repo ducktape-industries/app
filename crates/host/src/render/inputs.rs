@@ -10,6 +10,7 @@
 
 use super::*;
 use crate::render::native_id;
+use crate::text_input::TextInput;
 use gpui_kit::base::input::{InlineToken, InputContent, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{Edges, EntityInputHandler as _, Keystroke};
@@ -31,6 +32,28 @@ macro_rules! engine {
     };
 }
 
+#[derive(Clone)]
+pub(super) enum Contract {
+    Line(Entity<TextInput<gpui_kit::base::input::InputMode>>),
+    Area(Entity<TextInput<gpui_kit::base::input::TextareaMode>>),
+}
+
+impl Contract {
+    fn configure(&self, configuration: gpui_kit::TextInputConfiguration, cx: &mut App) {
+        match self {
+            Contract::Line(keys) => keys.update(cx, |keys, _| keys.configure(configuration)),
+            Contract::Area(keys) => keys.update(cx, |keys, _| keys.configure(configuration)),
+        }
+    }
+
+    fn element(&self) -> AnyElement {
+        match self {
+            Contract::Line(keys) => TextInput::element(keys).into_any_element(),
+            Contract::Area(keys) => TextInput::element(keys).into_any_element(),
+        }
+    }
+}
+
 enum Deferred {
     Replace(wire::WidgetCommand),
     Adopt(u64, String, Vec<wire::TextToken>, Range<usize>),
@@ -44,6 +67,7 @@ enum Made {
 
 pub(super) struct Field {
     pub(super) engine: Engine,
+    pub(super) contract: Contract,
     on_change: Option<u32>,
     on_key: Option<u32>,
     on_submit: Option<u32>,
@@ -120,7 +144,6 @@ impl ViewTree {
                     InputState::new(window, cx)
                         .placeholder(placeholder.clone())
                         .masked(*secure)
-                        .text_input(configuration)
                 })),
                 true => Engine::Area(cx.new(|cx| {
                     let mut state = TextareaState::new(window, cx)
@@ -128,11 +151,14 @@ impl ViewTree {
                         .auto_grow(1, usize::MAX)
                         .soft_wrap(true)
                         .searchable(false)
-                        .context_menu(false)
-                        .text_input(configuration);
+                        .context_menu(false);
                     state.set_editor_paddings(Edges::all(px(0.)));
                     state
                 })),
+            };
+            let contract = match &engine {
+                Engine::Line(state) => Contract::Line(TextInput::new(state, configuration, cx)),
+                Engine::Area(state) => Contract::Area(TextInput::new(state, configuration, cx)),
             };
             let observed = path.clone();
             let observation = engine!(&engine, |state| cx.observe_in(
@@ -159,6 +185,7 @@ impl ViewTree {
                 .then(|| keyboard::follow(&engine, path.clone(), window, cx));
             let mut field = Field {
                 engine,
+                contract,
                 on_change: *on_change,
                 on_key: *on_key,
                 on_submit: *on_submit,
@@ -228,9 +255,7 @@ impl ViewTree {
         if reconfigured {
             field.text_input = options.text_input;
             let configuration = field.configuration();
-            engine!(&field.engine, |state| state.update(cx, |state, cx| {
-                state.set_text_input(configuration, cx)
-            }));
+            field.contract.configure(configuration, cx);
         }
         if let Engine::Area(state) = field.engine.clone() {
             field.set_fills(style.size.height.is_some(), field_rows(&style), cx);
@@ -239,6 +264,7 @@ impl ViewTree {
             }
         }
         let engine = field.engine.clone();
+        let contract = field.contract.clone();
         let fills = field.fills;
         let accessible = Accessible {
             value: (!secure).then(|| field.text.clone()),
@@ -292,6 +318,7 @@ impl ViewTree {
                     set_value,
                     input.role(gpui_kit::component::RoleOverride::Presentational),
                 )
+                .child(contract.element())
                 .capture_any_mouse_down(touched)
                 .refine_style(&placed);
                 announce(field, accessible).into_any_element()
@@ -315,6 +342,7 @@ impl ViewTree {
                             set_value,
                             Textarea::new(state),
                         )
+                        .child(contract.element())
                         .when(fills, |field| field.h_full())
                         .capture_any_mouse_down(touched),
                         accessible,
@@ -479,7 +507,7 @@ impl Field {
             let cursor = wire::TextRange::from(state.selected_range());
             let preedit = state
                 .marked_text_range(window, cx)
-                .map(|range| utf16_bytes(&text, range));
+                .map(|range| wire::TextRange::from(crate::text_input::bytes(&text, range)));
             let tokens = state
                 .tokens()
                 .iter()
@@ -786,20 +814,6 @@ fn clamp(range: wire::TextRange, len: usize) -> Range<usize> {
     let start = (range.start as usize).min(len);
     let end = (range.end as usize).min(len);
     start.min(end)..start.max(end)
-}
-
-fn utf16_bytes(text: &str, range: Range<usize>) -> wire::TextRange {
-    let at = |units: usize| {
-        let mut counted = 0;
-        for (byte, character) in text.char_indices() {
-            if counted >= units {
-                return byte;
-            }
-            counted += character.len_utf16();
-        }
-        text.len()
-    };
-    wire::TextRange::from(at(range.start)..at(range.end))
 }
 
 const INDENT: &str = "  ";
