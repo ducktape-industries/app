@@ -180,7 +180,7 @@ struct Asking {
     kept: PathBuf,
     hosts: Vec<String>,
     pressed: bool,
-    waiting: &'static std::sync::Mutex<std::collections::VecDeque<consent::Ask>>,
+    waiting: &'static consent::Queue,
     program: &'static str,
     instance: u64,
 }

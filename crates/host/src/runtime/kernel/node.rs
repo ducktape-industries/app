@@ -133,7 +133,7 @@ pub(super) fn spawn_consented(
 /// is never queued or is withdrawn).
 struct Asking {
     /// the queue the request came in on (`consent::queue_in`)
-    waiting: &'static std::sync::Mutex<std::collections::VecDeque<consent::Ask>>,
+    waiting: &'static consent::Queue,
     program: &'static str,
     instance: u64,
     words: consent::Words,

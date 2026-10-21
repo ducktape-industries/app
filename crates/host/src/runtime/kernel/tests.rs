@@ -1414,29 +1414,20 @@ fn a_node_method_reaches_any_program() {
     }
 }
 
-/// The reply a task delivered, waited for; `None` after two seconds.
 fn awaited(view: &mut View) -> Option<wire::Event> {
-    for _ in 0..200 {
+    let mut changes = view.replies.changes();
+    loop {
         let mut events = Vec::new();
         view.replies.drain_into(&mut events);
         if let Some(event) = events.pop() {
             return Some(event);
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        handle().block_on(changes.changed()).ok()?;
     }
-    None
 }
 
-/// The front ask, waited for (the request's task queues it); `None` after
-/// two seconds.
-fn asked() -> Option<(u64, super::super::consent::Words)> {
-    (0..200).find_map(|_| {
-        let front = super::super::consent::front();
-        if front.is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        front
-    })
+fn asked() -> (u64, super::super::consent::Words) {
+    super::super::consent::queued_front()
 }
 
 /// An `op.submit` of an identity op that removes a key waits for the
@@ -1501,7 +1492,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     view.activation = Some(Instant::now());
     view.answer(request(2), &props);
     assert_eq!(refusal_code(&mut view), None, "the request waits");
-    let (first, words) = asked().expect("an ask waits");
+    let (first, words) = asked();
     assert!(
         words
             .said
@@ -1539,7 +1530,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     // with no account resolved the card does not call it the person's own
     view.activation = Some(Instant::now());
     view.answer(request(4), &None);
-    let (second, words) = asked().expect("an ask waits");
+    let (second, words) = asked();
     assert_ne!(first, second);
     assert!(
         words
@@ -1568,7 +1559,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     // task, aborted, lets go of the ask on the runtime's next turn)
     view.activation = Some(Instant::now());
     view.answer(request(7), &None);
-    assert!(asked().is_some(), "an ask waits");
+    asked();
     drop(view);
     let gone = (0..200).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1646,7 +1637,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         ),
     ] {
         submit(&mut view, id, target);
-        let (ask, words) = asked().expect("an ask waits");
+        let (ask, words) = asked();
         assert_eq!(words.title, title);
         assert_eq!(
             words.said,
@@ -1668,7 +1659,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
     }
     // Approve: the op goes on to be signed, its frame's anchor read first
     submit(&mut view, 3, "acl-valset");
-    let (ask, _) = asked().expect("an ask waits");
+    let (ask, _) = asked();
     assert!(!consent::answer(ask, true));
     match awaited(&mut view) {
         Some(wire::Event::Response {
