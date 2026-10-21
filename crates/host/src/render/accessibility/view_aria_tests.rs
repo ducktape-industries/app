@@ -691,7 +691,241 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
             .map(|(_, node)| (node.role(), node.label().map(str::to_owned)));
         assert_eq!(focused, Some((Role::Group, Some("Held window".into()))));
     });
+    let claimed = pane.read_with(&native, |pane, cx| pane.view.read(cx).claimed.clone());
+    assert_eq!(
+        claimed,
+        Vec::<AuthoredPath>::new(),
+        "no composite holds the keys"
+    );
     assert_eq!(kept, 2, "the sanitizer keeps a claim per composite");
+}
+
+fn two_composites(around: Option<&str>) -> wire::Node {
+    let composites = vec![
+        claiming_composite("tabs", Role::TabList, Role::Tab),
+        claiming_composite("files", Role::ListBox, Role::ListBoxOption),
+    ];
+    let interactivity = around.map(|name| {
+        Box::new(wire::Interactivity {
+            role: Some(Role::Group),
+            focusable: true,
+            tab_stop: Some(true),
+            aria: wire::Aria {
+                author_id: Some(name.into()),
+                label: Some(name.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    });
+    sanitized(wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("screen")),
+        style: crate::render::test_style(
+            div()
+                .flex()
+                .flex_col()
+                .w(px(280.))
+                .h(px(80.))
+                .style()
+                .clone(),
+        ),
+        interactivity,
+        children: composites,
+    }))
+}
+
+fn focus_on(
+    tree: &Entity<ViewTree>,
+    native: &mut gpui_kit::VisualTestContext,
+    target: Vec<wire::ElementIdWire>,
+) {
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(wire::WidgetCommand::Focus { target }, window, cx)
+                .unwrap();
+        });
+        crate::render::draw_frame(window, cx);
+    });
+}
+
+fn claimed(tree: &Entity<ViewTree>, native: &gpui_kit::VisualTestContext) -> Vec<AuthoredPath> {
+    tree.read_with(native, |tree, _| tree.claimed.clone())
+}
+
+fn row(composite: &str, n: usize) -> AuthoredPath {
+    vec![
+        key("screen"),
+        key(composite),
+        key(&format!("{composite}-{n}")),
+    ]
+}
+
+#[gpui_kit::test]
+fn a_claim_counts_only_while_its_own_composite_holds_the_keys(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(two_composites(None))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        crate::render::draw_frame(window, cx);
+    });
+    assert_eq!(
+        claimed(&tree, &native),
+        Vec::<AuthoredPath>::new(),
+        "with the keys nowhere, no row claims"
+    );
+    for composite in ["files", "tabs"] {
+        focus_on(&tree, &mut native, vec![key("screen"), key(composite)]);
+        assert_eq!(
+            claimed(&tree, &native),
+            vec![row(composite, 1)],
+            "{composite} holds the keys: its row alone claims"
+        );
+        let focused = native.update(|window, _| {
+            let update = window.a11y_tree().expect("an a11y tree once activated");
+            heard(update, &format!("{composite}-1")).is_some_and(|(id, _)| id == update.focus)
+        });
+        assert!(focused, "assistive technology hears {composite}-1 focused");
+    }
+}
+
+#[gpui_kit::test]
+fn a_composite_named_by_a_view_focus_handle_gates_its_rows(cx: &mut gpui_kit::TestAppContext) {
+    const FILES: u64 = 5;
+    cx.update(gpui_kit::init);
+    let mut root = two_composites(None);
+    let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut root else {
+        unreachable!()
+    };
+    let Some(wire::Node::Container(view_wire::ContainerNode {
+        interactivity: Some(files),
+        ..
+    })) = children.get_mut(1)
+    else {
+        unreachable!()
+    };
+    files.focusable = false;
+    files.focus_handle = Some(FILES);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(crate::render::draw_frame);
+    assert_eq!(
+        claimed(&tree, &native),
+        Vec::<AuthoredPath>::new(),
+        "with the keys nowhere, no row claims"
+    );
+    let files = tree.read_with(&native, |tree, _| tree.view_focus_targets[&FILES].clone());
+    native.update(|window, cx| {
+        window.focus(&files, cx);
+        crate::render::draw_frame(window, cx);
+    });
+    assert_eq!(claimed(&tree, &native), vec![row("files", 1)]);
+}
+
+#[gpui_kit::test]
+fn a_composite_focused_again_in_a_new_tree_claims_on_its_first_frame(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    struct Host(Entity<ViewTree>);
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, cx| {
+        Host(cx.new(|_| ViewTree::new(two_composites(None))))
+    });
+    let host = window.root(cx).unwrap();
+    let tree = host.read_with(cx, |host, _| host.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(crate::render::draw_frame);
+    focus_on(&tree, &mut native, vec![key("screen"), key("files")]);
+    let fresh = native.update(|window, cx| {
+        let saved = tree.read_with(cx, |tree, cx| tree.presentation(window, cx));
+        let fresh = cx.new(|_| ViewTree::new(two_composites(None)).with_presentation(saved));
+        host.update(cx, |host, cx| {
+            host.0 = fresh.clone();
+            cx.notify();
+        });
+        crate::render::draw_frame(window, cx);
+        fresh
+    });
+    assert_eq!(
+        claimed(&fresh, &native),
+        vec![row("files", 1)],
+        "the new tree's first frame gives files the keys back and lowers its claim"
+    );
+}
+
+#[gpui_kit::test]
+fn a_focused_box_around_two_composites_lets_neither_claim(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(two_composites(Some("Board")))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        crate::render::draw_frame(window, cx);
+    });
+    focus_on(&tree, &mut native, vec![key("screen")]);
+    assert_eq!(
+        claimed(&tree, &native),
+        Vec::<AuthoredPath>::new(),
+        "the box holds the keys, not a composite inside it"
+    );
+    focus_on(&tree, &mut native, vec![key("screen"), key("files")]);
+    assert_eq!(claimed(&tree, &native), vec![row("files", 1)]);
+}
+
+#[gpui_kit::test]
+fn a_cached_view_lowers_its_claim_again_as_the_keys_move_between_composites(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    struct Cached(Entity<ViewTree>);
+    impl Render for Cached {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                gpui_kit::AnyView::from(self.0.clone())
+                    .cached(gpui_kit::StyleRefinement::default().size_full()),
+            )
+        }
+    }
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, cx| {
+        Cached(cx.new(|_| ViewTree::new(two_composites(None))))
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |cached, _| cached.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(crate::render::draw_frame);
+    focus_on(&tree, &mut native, vec![key("screen"), key("files")]);
+    native.run_until_parked();
+    assert_eq!(claimed(&tree, &native), vec![row("files", 1)]);
+    let tabs = tree.read_with(&native, |tree, _| {
+        tree.focus_targets[&vec![key("screen"), key("tabs")]]
+            .1
+            .clone()
+    });
+    native.update(|window, cx| {
+        window.focus(&tabs, cx);
+        crate::render::draw_frame(window, cx);
+    });
+    native.run_until_parked();
+    native.update(crate::render::draw_frame);
+    assert_eq!(
+        claimed(&tree, &native),
+        vec![row("tabs", 1)],
+        "the keys moved to tabs with no write from the view: the claim moved with them"
+    );
 }
 
 mod phase_two {

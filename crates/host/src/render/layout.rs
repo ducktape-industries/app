@@ -60,6 +60,7 @@ impl ViewTree {
             host_id(format!("container-{index}"))
         });
         let mut element = element.id(native_id.clone());
+        self.composite(node, interactivity, cx);
         element = self.view_aria(element, node, interactivity, cx);
         // Only a container with an id of its own owns its path: an id-less
         // one sits on its nearest named ancestor's path.
@@ -77,6 +78,7 @@ impl ViewTree {
                     .focus_targets
                     .entry(path.clone())
                     .or_insert_with(|| (kind, cx.focus_handle()));
+                self.focused = Some(handle.clone());
                 handle.focus(window, cx);
             }
             if let Some((_, handle)) = self.focus_targets.get(&path) {

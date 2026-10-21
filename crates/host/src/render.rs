@@ -303,14 +303,12 @@ pub struct ViewTree {
     /// onto a node scrolls the plain scroller around it to it, once.
     claiming: std::collections::HashSet<AuthoredPath>,
     revealed: std::collections::HashSet<AuthoredPath>,
+    composites: Vec<(AuthoredPath, FocusHandle)>,
+    focused: Option<FocusHandle>,
     pressed_at: Option<accessibility::PressedAt>,
     uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
     variable_lists: HashMap<AuthoredPath, VariableList>,
 
-    // Focus: two systems. A container enters the native focus path only on
-    // an explicit Focus widget command (keyed by path, with the node kind
-    // it was granted as); a view `Interactivity::focus_handle` is a handle
-    // the view names by number.
     focus_targets: HashMap<AuthoredPath, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
     view_focus_targets: HashMap<u64, FocusHandle>,
     /// The overlays showing a dialog: where focus enters each, and what
@@ -354,6 +352,8 @@ pub struct ViewTree {
     tip: Option<tips::Tip>,
     #[cfg(test)]
     renders: u64,
+    #[cfg(test)]
+    claimed: Vec<AuthoredPath>,
 }
 
 impl EventEmitter<wire::Event> for ViewTree {}
@@ -401,6 +401,8 @@ impl ViewTree {
             sideways: Default::default(),
             claiming: Default::default(),
             revealed: Default::default(),
+            composites: Vec::new(),
+            focused: None,
             pressed_at: None,
             uniform_lists: HashMap::new(),
             variable_lists: HashMap::new(),
@@ -439,6 +441,8 @@ impl ViewTree {
             tip: None,
             #[cfg(test)]
             renders: 0,
+            #[cfg(test)]
+            claimed: Vec::new(),
         }
     }
 
@@ -647,6 +651,7 @@ impl Render for ViewTree {
         #[cfg(test)]
         {
             self.renders += 1;
+            self.claimed.clear();
         }
         let _timed = self.perf_key.and_then(|key| {
             crate::perf::count(key, "renders", 1);
@@ -656,6 +661,8 @@ impl Render for ViewTree {
         self.render_index = 0;
         self.text_scale = crate::session::text_scale(cx);
         self.sideways.clear();
+        self.composites.clear();
+        self.focused = window.focused(cx);
         if let Some(portal) = &self.portal {
             portal.borrow_mut().clear();
         }
