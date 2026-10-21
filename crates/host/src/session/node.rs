@@ -555,7 +555,7 @@ impl Session {
                 wait = STATUS_EVERY;
                 let ask = source.clone();
                 let answer = on_runtime(async move {
-                    match tokio::time::timeout(STATUS_EVERY, ask()).await {
+                    match rt::time::timeout(STATUS_EVERY, ask()).await {
                         Ok(answer) => answer,
                         Err(_) => Err(noded_client::Error::Transport(
                             "the node did not answer in time".into(),

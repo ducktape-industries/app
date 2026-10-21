@@ -23,7 +23,7 @@ pub async fn join_from_device(client: &RpcClient, network: &str, code: &str) -> 
     let label = crate::contract::os().facts().device_label;
     let relay = auth_page();
     let joining = join::join_from_device(client, &relay, network, code, &key, label);
-    tokio::time::timeout(JOIN_WAIT, joining)
+    rt::time::timeout(JOIN_WAIT, joining)
         .await
         .unwrap_or_else(|_| Err("This code ran out. Make a new one.".into()))
 }

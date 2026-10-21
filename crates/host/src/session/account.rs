@@ -274,7 +274,7 @@ impl Account {
         self.edit(|state| state.seating = true, cx);
         let (keyring, network) = (self.keyring.clone(), self.network.clone());
         let work = async move {
-            let opened = tokio::task::spawn_blocking(move || contract::os().device_key(&keyring))
+            let opened = rt::task::blocking(move || contract::os().device_key(&keyring))
                 .await
                 .unwrap_or_else(|_| {
                     Err(KeyRefusal::Broken(

@@ -339,7 +339,7 @@ async fn arrived(blobs: &mut noded_client::BlobsStream, code: &BlobId) -> Result
         let Some(file) = file.clone().filter(|_| unwritten.is_none()) else {
             continue;
         };
-        let written = tokio::task::spawn_blocking(move || (&*file).write_all(&piece)).await;
+        let written = rt::task::blocking(move || (&*file).write_all(&piece)).await;
         if let Err(error) = written
             .map_err(std::io::Error::other)
             .and_then(|wrote| wrote)
@@ -601,7 +601,7 @@ pub async fn unkept_bytes(client: &RpcClient, code: &BlobId) -> Result<Blob, Fet
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, Fetch> + Send + 'static,
 ) -> Result<T, Fetch> {
-    tokio::task::spawn_blocking(work)
+    rt::task::blocking(work)
         .await
         .map_err(|error| Fetch::Unreadable(error.to_string()))?
 }
@@ -664,7 +664,7 @@ async fn streamed(
         };
         hasher.update(&piece);
         let file = file.clone();
-        tokio::task::spawn_blocking(move || (&*file).write_all(&piece))
+        rt::task::blocking(move || (&*file).write_all(&piece))
             .await
             .map_err(std::io::Error::other)??;
     }

@@ -56,7 +56,7 @@ pub(super) async fn described(
     let Some((hash, module, file)) = module(node, code).await? else {
         return Ok(None);
     };
-    let described = tokio::task::spawn_blocking(move || {
+    let described = rt::task::blocking(move || {
         let module = crate::contract::Code {
             bytes: &module,
             file: file.as_ref().map(|(path, at)| (path.as_path(), *at)),
@@ -89,7 +89,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Module, wire::Error> {
                 }
                 Err(_) => return Err(None),
             };
-            Ok(tokio::task::spawn_blocking(move || {
+            Ok(rt::task::blocking(move || {
                 let section = blob.part(::describe::section)?;
                 let code = section.code();
                 let hash: [u8; 32] = sha2::Sha256::digest(code.bytes).into();

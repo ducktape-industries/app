@@ -242,7 +242,7 @@ fn run(
     claim: Claim,
     task: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
-    let task = handle().spawn(async move {
+    let task = rt::task::spawn(async move {
         let _slot = slot;
         task.await;
     });
@@ -315,7 +315,7 @@ pub(in crate::runtime) fn hold_for_test(
     view.tasks.push((
         id,
         NodeTask {
-            task: handle().spawn(task),
+            task: rt::task::spawn(task),
             follows: None,
             claim: Claim::default(),
         },
@@ -600,7 +600,7 @@ fn wanted(in_front: bool, on_screen: Option<bool>, presented: Option<bool>) -> b
 struct Feed<T, S> {
     followers: Followers<T>,
     shared: S,
-    socket: tokio::task::JoinHandle<()>,
+    socket: rt::task::Task,
 }
 
 type Followers<T> = std::sync::Arc<Mutex<Fanout<T>>>;
@@ -691,7 +691,7 @@ impl<T, S> Drop for Feed<T, S> {
 
 pub(crate) struct Writes {
     heard: tokio::sync::mpsc::Receiver<()>,
-    follower: tokio::task::JoinHandle<()>,
+    follower: rt::task::Task,
 }
 
 impl Writes {
@@ -709,7 +709,7 @@ impl Drop for Writes {
 pub(crate) fn writes(client: &RpcClient, program: &str) -> Writes {
     let (tell, heard) = tokio::sync::mpsc::channel(1);
     let (feed, slot) = changes_feed(client, program);
-    let follower = handle().spawn(async move {
+    let follower = rt::task::spawn(async move {
         let _feed = feed;
         loop {
             match slot.take().await.change {
@@ -748,7 +748,7 @@ fn changes_feed(client: &RpcClient, program: &str) -> Changes {
             followers,
             standings.clone(),
         );
-        (standings, handle().spawn(socket))
+        (standings, rt::task::spawn(socket))
     };
     joined(
         FEEDS.get_or_init(Mutex::default),
@@ -760,7 +760,7 @@ fn changes_feed(client: &RpcClient, program: &str) -> Changes {
 
 fn heads_feed(client: &RpcClient) -> Heads {
     static FEEDS: OnceLock<Mutex<Feeds<String, Answer, ()>>> = OnceLock::new();
-    let open = |followers| ((), handle().spawn(heads_socket(client.clone(), followers)));
+    let open = |followers| ((), rt::task::spawn(heads_socket(client.clone(), followers)));
     joined(
         FEEDS.get_or_init(Mutex::default),
         client.endpoint().to_owned(),
@@ -773,7 +773,7 @@ fn joined<K: std::hash::Hash + Eq, T: Clone, S>(
     feeds: &Mutex<Feeds<K, T, S>>,
     key: K,
     merge: Merge<T>,
-    open: impl FnOnce(Followers<T>) -> (S, tokio::task::JoinHandle<()>),
+    open: impl FnOnce(Followers<T>) -> (S, rt::task::Task),
 ) -> (std::sync::Arc<Feed<T, S>>, std::sync::Arc<Slot<T>>) {
     let mut feeds = feeds
         .lock()
@@ -839,7 +839,7 @@ async fn answering(client: &RpcClient, block_time_ms: Option<u64>) -> noded_clie
             return Err(error);
         };
         tracing::debug!(target: "ducktape::app", %error, "status not answered");
-        tokio::time::sleep(std::time::Duration::from_millis(block_time_ms / 2)).await;
+        rt::time::sleep(std::time::Duration::from_millis(block_time_ms / 2)).await;
     }
 }
 
@@ -927,7 +927,7 @@ async fn heads_socket(client: RpcClient, followers: Followers<Answer>) {
 /// A running request or subscription; dropping it aborts the task, which is
 /// how a cancel, a swap or a teardown stops a socket waiting on the node.
 pub(in crate::runtime) struct NodeTask {
-    task: tokio::task::JoinHandle<()>,
+    task: rt::task::Task,
     /// What a node subscription follows, which [`reconnected`] opens again
     /// on a new connection; `None` for a request answered once.
     follows: Option<Follow>,
@@ -1095,13 +1095,16 @@ impl Blob {
             Body::Picked { file, offset, len } => {
                 let (file, offset, len) = (file.clone(), *offset, *len);
                 let (parts, taken) = tokio::sync::mpsc::channel(1);
-                tokio::task::spawn_blocking(move || {
-                    let read = picker::read(&file, offset, len, |part| {
-                        parts.blocking_send(Ok(part.to_vec())).is_ok()
-                    });
-                    if let Err(refusal) = read {
-                        let _ = parts.blocking_send(Err(refusal));
-                    }
+                rt::task::spawn(async move {
+                    let _ = rt::task::blocking(move || {
+                        let read = picker::read(&file, offset, len, |part| {
+                            parts.blocking_send(Ok(part.to_vec())).is_ok()
+                        });
+                        if let Err(refusal) = read {
+                            let _ = parts.blocking_send(Err(refusal));
+                        }
+                    })
+                    .await;
                 });
                 let body = futures::stream::unfold(taken, |mut taken| async move {
                     taken.recv().await.map(|part| (part, taken))
@@ -1226,7 +1229,7 @@ async fn kept(
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
     let made = folder.clone();
-    tokio::task::spawn_blocking(move || std::fs::create_dir_all(made))
+    rt::task::blocking(move || std::fs::create_dir_all(made))
         .await
         .map_err(host_fault)?
         .map_err(host_fault)?;
@@ -1261,7 +1264,7 @@ async fn saved(
         .filter(|folder| !folder.as_os_str().is_empty())
         .unwrap_or(std::path::Path::new("."))
         .to_path_buf();
-    let mut file = tokio::task::spawn_blocking(move || beside(&folder))
+    let mut file = rt::task::blocking(move || beside(&folder))
         .await
         .map_err(host_fault)?
         .map_err(named.clone())?;
@@ -1279,7 +1282,7 @@ async fn saved(
         let body = noded_client::wire::unframe(&framed)
             .ok_or_else(|| host_fault("blob has no header"))?
             .to_vec();
-        file = tokio::task::spawn_blocking(move || {
+        file = rt::task::blocking(move || {
             use std::io::Write as _;
             file.write_all(&body).map(|()| file)
         })
@@ -1287,7 +1290,7 @@ async fn saved(
         .map_err(host_fault)?
         .map_err(named.clone())?;
     }
-    tokio::task::spawn_blocking(move || file.persist(path))
+    rt::task::blocking(move || file.persist(path))
         .await
         .map_err(host_fault)?
         .map_err(|persisting| named(persisting.error))?;
@@ -1319,7 +1322,7 @@ pub(in crate::runtime) fn spawn_event(
 ) {
     let slot = view.replies.admit();
     let replies = view.replies.clone();
-    handle().spawn(async move {
+    rt::task::spawn(async move {
         let _slot = slot;
         if let Some(event) = event.await {
             replies.event(event);

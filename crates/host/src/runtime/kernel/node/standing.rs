@@ -441,7 +441,7 @@ impl Pushing<'_> {
 
 pub(in crate::runtime) struct Joint {
     joined: Arc<Joined>,
-    task: tokio::task::JoinHandle<()>,
+    task: rt::task::Task,
 }
 
 impl Drop for Joint {
@@ -557,7 +557,7 @@ impl Joint {
         };
         Joint {
             joined,
-            task: handle().spawn(running.run(feed)),
+            task: rt::task::spawn(running.run(feed)),
         }
     }
 }

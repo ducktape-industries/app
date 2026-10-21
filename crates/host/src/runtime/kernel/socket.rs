@@ -196,7 +196,7 @@ impl Asking {
             instance,
         } = self;
         let read = kept.clone();
-        let allowed = tokio::task::spawn_blocking(move || approved(&read))
+        let allowed = rt::task::blocking(move || approved(&read))
             .await
             .unwrap_or_default();
         if !asks(&allowed, &hosts) {
@@ -219,7 +219,7 @@ impl Asking {
         if told.answer().await != Some(true) {
             return Err(refused("the person did not allow the connection"));
         }
-        tokio::task::spawn_blocking(move || approve(&kept, &hosts))
+        rt::task::blocking(move || approve(&kept, &hosts))
             .await
             .map_err(host_fault)?
             .map_err(host_fault)

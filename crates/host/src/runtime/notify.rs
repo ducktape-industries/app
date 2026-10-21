@@ -247,8 +247,8 @@ pub(super) fn withdraw_at(
     program: &'static str,
     (chain, tag): (String, String),
     until: u64,
-) -> tokio::task::JoinHandle<()> {
-    super::kernel::handle().spawn(async move {
+) -> rt::task::Task {
+    rt::task::spawn(async move {
         // an `until` past any time the clock can name: no timer (adding it
         // would panic, and a phone's panic aborts the app)
         let Some(at) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(until))
@@ -256,7 +256,7 @@ pub(super) fn withdraw_at(
             return;
         };
         if let Ok(left) = at.duration_since(std::time::SystemTime::now()) {
-            tokio::time::sleep(left).await;
+            rt::time::sleep(left).await;
         }
         // none holds the chain's log (parked as it left hand): no notifier
         // of it runs, so nothing newer stands under the tag

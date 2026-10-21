@@ -138,7 +138,7 @@ struct Set {
     url: String,
     key: String,
     account: Mutex<Option<u64>>,
-    poll: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    poll: Mutex<Option<rt::task::Task>>,
 }
 
 impl Set {
@@ -268,7 +268,7 @@ impl Drop for Followed {
 /// It never blocks: its files are read on the blocking pool.
 pub async fn follow(url: String) -> Option<Followed> {
     let client = crate::backend::rpc_client(url.clone());
-    let status = tokio::time::timeout(STATUS_EVERY, client.status())
+    let status = rt::time::timeout(STATUS_EVERY, client.status())
         .await
         .ok()?
         .ok()?;
@@ -282,7 +282,7 @@ pub async fn follow(url: String) -> Option<Followed> {
     let remotes = crate::contract::os().dirs().remotes.clone();
     let (network, founded) = (status.network.clone(), status.time);
     let (of, file) = (chain.clone(), notify::log_file(&chain));
-    let (key, read) = tokio::task::spawn_blocking(move || {
+    let (key, read) = rt::task::blocking(move || {
         let key = noded_client::keyring::bind(&remotes, &network, founded)
             .ok()
             .and_then(|keyring| crate::backend::device_key_of(&keyring.dir));
@@ -306,7 +306,7 @@ pub async fn follow(url: String) -> Option<Followed> {
         height: status.height,
         lost: false,
     };
-    *lock(&set.poll) = Some(handle().spawn(poll(Arc::downgrade(&set), heard)));
+    *lock(&set.poll) = Some(rt::task::spawn(poll(Arc::downgrade(&set), heard)));
     Some(followed)
 }
 
@@ -411,14 +411,14 @@ async fn account_of(client: &crate::backend::RpcClient, network: &str, key: &str
 
 async fn poll(set: std::sync::Weak<Set>, mut heard: Heard) {
     loop {
-        tokio::time::sleep(STATUS_EVERY).await;
+        rt::time::sleep(STATUS_EVERY).await;
         let Some(set) = set.upgrade() else {
             return;
         };
         let Some(client) = lock(&set.network.connection).client.clone() else {
             return;
         };
-        let answer = tokio::time::timeout(STATUS_EVERY, client.status()).await;
+        let answer = rt::time::timeout(STATUS_EVERY, client.status()).await;
         let height = answer.ok().and_then(Result::ok).map(|status| status.height);
         if set.polled(&mut heard, height) {
             set.read().await;

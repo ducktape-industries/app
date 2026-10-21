@@ -129,7 +129,7 @@ pub async fn chime(output: Option<String>) -> Result<Vec<u8>, wire::Error> {
 async fn blocking(
     answer: impl FnOnce() -> Result<Vec<u8>, wire::Error> + Send + 'static,
 ) -> Result<Vec<u8>, wire::Error> {
-    tokio::task::spawn_blocking(answer)
+    rt::task::blocking(answer)
         .await
         .unwrap_or_else(|error| Err(wire::Error::new(refusal::HOST_FAULT, error.to_string())))
 }

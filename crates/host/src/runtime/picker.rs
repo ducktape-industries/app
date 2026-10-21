@@ -175,7 +175,7 @@ fn read_file(view: &mut View, id: u64, payload: &[u8]) {
         return view.refuse(id, refusal::MALFORMED_REQUEST, past);
     }
     kernel::spawn_reply(view, id, async move {
-        let read = tokio::task::spawn_blocking(move || read_whole(&picked, ask.offset, ask.len));
+        let read = rt::task::blocking(move || read_whole(&picked, ask.offset, ask.len));
         let bytes = read
             .await
             .unwrap_or_else(|error| Err(fault(error.to_string())))?;
@@ -222,7 +222,7 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
             let held = view.picker.held.clone();
             kernel::spawn_reply(view, id, async move {
                 let paths = picked.await?;
-                let files = tokio::task::spawn_blocking(move || open_copies(paths))
+                let files = rt::task::blocking(move || open_copies(paths))
                     .await
                     .unwrap_or_else(|error| Err(fault(error.to_string())))?;
                 Ok(methods::encode(&held.hold(files)))
@@ -242,7 +242,7 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
                 Ok(Err(error)) => return Err(fault(error.to_string())),
                 Ok(Ok(paths)) => paths.unwrap_or_default(),
             };
-            let files = tokio::task::spawn_blocking(move || open_paths(paths))
+            let files = rt::task::blocking(move || open_paths(paths))
                 .await
                 .unwrap_or_else(|error| Err(fault(error.to_string())))?;
             Ok(methods::encode(&held.hold(files)))
@@ -278,7 +278,7 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
 pub(super) fn dropped(view: &View, handler: u32, paths: Vec<PathBuf>) {
     let held = view.picker.held.clone();
     kernel::spawn_event(view, async move {
-        let opened = tokio::task::spawn_blocking(move || open_paths(paths))
+        let opened = rt::task::blocking(move || open_paths(paths))
             .await
             .unwrap_or_else(|error| Err(fault(error.to_string())));
         match opened {

@@ -10,7 +10,7 @@ pub struct Read {
     pub body: Vec<u8>,
 }
 
-pub struct Following(tokio::task::JoinHandle<()>);
+pub struct Following(rt::task::Task);
 
 impl Drop for Following {
     fn drop(&mut self) {
@@ -169,7 +169,7 @@ pub async fn read(address: String) -> Read {
 }
 
 pub fn spawn_read(address: String, answer: impl FnOnce(Read) + Send + 'static) {
-    crate::runtime::handle().spawn(async move { answer(read(address).await) });
+    rt::task::spawn(async move { answer(read(address).await) });
 }
 
 async fn file_at(node: &Node, path: &str) -> Option<abi::BlobId> {
@@ -208,8 +208,7 @@ pub fn follow(address: &str) -> Option<(Following, mpsc::UnboundedReceiver<()>)>
         let (node, path) = (node.clone(), path.clone());
         async move { file_at(&node, &path).await }
     };
-    let task =
-        crate::runtime::handle().spawn(watched(super::super::in_front(), join, stat, changed));
+    let task = rt::task::spawn(watched(super::super::in_front(), join, stat, changed));
     Some((Following(task), heard))
 }
 
