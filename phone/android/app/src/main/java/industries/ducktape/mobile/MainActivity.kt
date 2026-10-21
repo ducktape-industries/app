@@ -256,7 +256,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
      * false when they cancelled. Blocks until the viewer closes or the person answers. Rust removes the file once it
      * hears.
      */
-    fun keepFile(path: String): Boolean {
+    fun keepFile(path: String, ticket: Long): Boolean {
         synchronized(keeping) {
             if (isFinishing || isDestroyed) return false
             val file = File(path)
@@ -264,6 +264,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             kept = answer
             keptFile = file
             runOnUiThread {
+                if (!Native.keepShows(ticket)) {
+                    answer.offer(false)
+                    return@runOnUiThread
+                }
                 val type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase())
                     ?: "application/octet-stream"
                 if (type.startsWith("image/")) {

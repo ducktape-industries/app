@@ -11,6 +11,8 @@
 
 #[cfg(target_os = "android")]
 pub mod android;
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+mod keeps;
 /// iOS: the launcher's C entry ([`ios::ffi`]); gpui_ios answers the rest.
 #[cfg(target_os = "ios")]
 pub mod ios {
@@ -389,20 +391,44 @@ impl ducktape_host::contract::Files for PhoneFiles {
         }
     }
 
-    fn keep(&self, path: &Path, done: ducktape_host::contract::KeepDone) {
-        #[cfg(target_os = "ios")]
-        ios::ffi::keep(path, done);
-        #[cfg(target_os = "android")]
-        {
-            let path = path.to_path_buf();
-            std::thread::spawn(move || done(android::jni::keep_file(&path)));
-        }
-        #[cfg(not(any(target_os = "ios", target_os = "android")))]
-        {
-            let _ = path;
-            done(Err(NO_DIALOGS.into()));
-        }
+    fn keep(
+        &self,
+        path: &Path,
+        done: ducktape_host::contract::KeepDone,
+    ) -> ducktape_host::contract::Unkeep {
+        keep_with_the_os(path, done)
     }
+}
+
+#[cfg(target_os = "ios")]
+fn keep_with_the_os(
+    path: &Path,
+    done: ducktape_host::contract::KeepDone,
+) -> ducktape_host::contract::Unkeep {
+    ios::ffi::keep(path, done)
+}
+
+#[cfg(target_os = "android")]
+fn keep_with_the_os(
+    path: &Path,
+    done: ducktape_host::contract::KeepDone,
+) -> ducktape_host::contract::Unkeep {
+    let path = path.to_path_buf();
+    let ticket = keeps::KEEPS.hand(done);
+    std::thread::spawn(move || {
+        keeps::KEEPS.answer(ticket, android::jni::keep_file(&path, ticket));
+    });
+    Box::new(move || keeps::KEEPS.unkeep(ticket))
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn keep_with_the_os(
+    path: &Path,
+    done: ducktape_host::contract::KeepDone,
+) -> ducktape_host::contract::Unkeep {
+    let _ = path;
+    done(Err(NO_DIALOGS.into()));
+    Box::new(|| {})
 }
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]

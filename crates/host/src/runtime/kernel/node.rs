@@ -1254,13 +1254,12 @@ async fn kept(
         .await
         .map_err(host_fault)?
         .map_err(host_fault)?;
+    let folder = crate::runtime::picker::KeptFolder(folder);
     let written = path.clone();
-    let answer = match saved(node, save, async move { Ok(Some(written)) }).await {
-        Ok(_) => crate::runtime::picker::keep(files, &path).await,
+    match saved(node, save, async move { Ok(Some(written)) }).await {
+        Ok(_) => crate::runtime::picker::keep(files, &path, folder).await,
         Err(refusal) => Err(refusal),
-    };
-    let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(folder)).await;
-    answer
+    }
 }
 
 /// `file.save`'s task: the file the person chose (none: cancelled, `false`),

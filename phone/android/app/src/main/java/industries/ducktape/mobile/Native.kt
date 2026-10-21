@@ -72,4 +72,6 @@ object Native {
     @JvmStatic external fun swipeLetGo()
 
     @JvmStatic external fun swipeCancel()
+
+    @JvmStatic external fun keepShows(ticket: Long): Boolean
 }

@@ -125,6 +125,10 @@ pub type PickDone = Box<dyn FnOnce(Result<Option<Vec<PathBuf>>, String>) + Send>
 /// from any thread.
 pub type KeepDone = Box<dyn FnOnce(Result<bool, String>) + Send>;
 
+/// What a keep hands back ([`Files::keep`]): called once the host no longer wants the file shown;
+/// a keep the OS shows nothing of yet then never shows, and answers `false`.
+pub type Unkeep = Box<dyn FnOnce() + Send>;
+
 /// A shell's own file dialogs ([`OsServices::files`]). Each is called on
 /// the window thread or the kernel's and only hands on: the dialog opens on
 /// the OS's own thread, and `done` answers when the person is through.
@@ -140,7 +144,7 @@ pub trait Files: Send + Sync {
     /// share sheet; Android: a picture in the system's viewer, any other
     /// file through the create-document dialog). The host
     /// removes the folder once `done` answers.
-    fn keep(&self, path: &std::path::Path, done: KeepDone);
+    fn keep(&self, path: &std::path::Path, done: KeepDone) -> Unkeep;
 }
 
 /// Where the host keeps files. `cache` the OS may purge; `config` and

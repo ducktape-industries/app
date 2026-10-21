@@ -374,18 +374,44 @@ fn keeping_path(cache: &std::path::Path, name: &str) -> PathBuf {
     cache.join("kept").join(folder).join(name)
 }
 
+/// A folder of the host's own under the cache holding a file to keep, removed when dropped.
+#[cfg(any(feature = "ui", test))]
+pub(in crate::runtime) struct KeptFolder(pub(in crate::runtime) PathBuf);
+
+#[cfg(any(feature = "ui", test))]
+impl Drop for KeptFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(any(feature = "ui", test))]
+struct UnkeptOnDrop(Option<crate::contract::Unkeep>);
+
+#[cfg(any(feature = "ui", test))]
+impl Drop for UnkeptOnDrop {
+    fn drop(&mut self) {
+        if let Some(unkeep) = self.0.take() {
+            unkeep();
+        }
+    }
+}
+
 #[cfg(any(feature = "ui", test))]
 pub(in crate::runtime) async fn keep(
     files: &dyn Files,
     path: &std::path::Path,
+    folder: KeptFolder,
 ) -> Result<Vec<u8>, wire::Error> {
     let (kept, answer) = tokio::sync::oneshot::channel();
-    files.keep(
+    let unkeep = files.keep(
         path,
         Box::new(move |done| {
+            drop(folder);
             let _ = kept.send(done);
         }),
     );
+    let _unkept_on_drop = UnkeptOnDrop(Some(unkeep));
     match answer.await {
         Err(_) => Ok(methods::encode(&false)),
         Ok(Ok(done)) => Ok(methods::encode(&done)),
@@ -486,9 +512,40 @@ mod tests {
                 done(picked);
             }
         }
-        fn keep(&self, path: &std::path::Path, done: crate::contract::KeepDone) {
-            done(Ok(std::fs::read(path).is_ok_and(|bytes| bytes == self.kept)))
+        fn keep(
+            &self,
+            path: &std::path::Path,
+            done: crate::contract::KeepDone,
+        ) -> crate::contract::Unkeep {
+            done(Ok(std::fs::read(path).is_ok_and(|bytes| bytes == self.kept)));
+            Box::new(|| {})
         }
+    }
+
+    struct ShowsLater {
+        done: Mutex<Option<crate::contract::KeepDone>>,
+        unkept: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Files for ShowsLater {
+        fn pick(&self, _: bool, _: crate::contract::PickDone) {}
+        fn keep(
+            &self,
+            _: &std::path::Path,
+            done: crate::contract::KeepDone,
+        ) -> crate::contract::Unkeep {
+            *self.done.lock().unwrap() = Some(done);
+            let unkept = self.unkept.clone();
+            Box::new(move || unkept.store(true, std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+
+    fn kept_folder(root: &std::path::Path, name: &str, bytes: &[u8]) -> (PathBuf, PathBuf) {
+        let folder = root.join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("tape.txt");
+        std::fs::write(&path, bytes).unwrap();
+        (folder, path)
     }
 
     fn run<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -543,15 +600,57 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_file_answers_the_shells_word() {
+    fn a_kept_file_answers_the_shells_word_and_its_folder_goes() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tape.txt");
-        std::fs::write(&path, b"kept").unwrap();
         let shell = |kept| Shell { picked: None, kept };
-        let kept = run(keep(&shell(b"kept"), &path)).unwrap();
+        let (folder, path) = kept_folder(dir.path(), "kept-1", b"kept");
+        let kept = run(keep(&shell(b"kept"), &path, KeptFolder(folder.clone()))).unwrap();
         assert_eq!(kept, methods::encode(&true));
-        let cancelled = run(keep(&shell(b"other"), &path)).unwrap();
+        assert!(!folder.exists(), "the folder goes once the shell answers");
+        let (folder, path) = kept_folder(dir.path(), "kept-2", b"kept");
+        let cancelled = run(keep(&shell(b"other"), &path, KeptFolder(folder))).unwrap();
         assert_eq!(cancelled, methods::encode(&false));
+    }
+
+    #[test]
+    fn a_keep_let_go_after_the_hand_off_is_unkept_and_its_folder_goes_once_the_shell_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (folder, path) = kept_folder(dir.path(), "kept-1", b"tape");
+        let shell = ShowsLater {
+            done: Mutex::new(None),
+            unkept: Default::default(),
+        };
+        let mut keeping = Box::pin(keep(&shell, &path, KeptFolder(folder.clone())));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            keeping.as_mut().poll(&mut cx).is_pending(),
+            "handed to the shell"
+        );
+        drop(keeping);
+        assert!(
+            shell.unkept.load(std::sync::atomic::Ordering::SeqCst),
+            "the shell hears the host let go"
+        );
+        assert!(
+            path.exists(),
+            "a viewer the shell already shows still reads it"
+        );
+        let done = shell
+            .done
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the shell holds the keep");
+        done(Ok(false));
+        assert!(!folder.exists(), "the folder goes once the shell answers");
+    }
+
+    #[test]
+    fn a_keep_let_go_before_the_hand_off_takes_its_folder_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (folder, _) = kept_folder(dir.path(), "kept-1", b"tape");
+        drop(KeptFolder(folder.clone()));
+        assert!(!folder.exists());
     }
 
     #[test]

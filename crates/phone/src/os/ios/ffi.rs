@@ -54,7 +54,8 @@
 //! (gpui_ios's ObjC entries have no unwind guard, `README.ducktape.md`).
 #![allow(unsafe_code, reason = "the C ABI entry the Swift launcher calls")]
 
-use ducktape_host::contract::{KeepDone, PickDone};
+use crate::os::keeps::KEEPS;
+use ducktape_host::contract::{KeepDone, PickDone, Unkeep};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char};
 use std::path::{Path, PathBuf};
@@ -72,7 +73,6 @@ unsafe extern "C" {
 }
 
 static PICKS: Mutex<BTreeMap<u64, PickDone>> = Mutex::new(BTreeMap::new());
-static KEEPS: Mutex<BTreeMap<u64, KeepDone>> = Mutex::new(BTreeMap::new());
 static TICKETS: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn pick(multiple: bool, done: PickDone) {
@@ -86,18 +86,16 @@ pub(crate) fn pick(multiple: bool, done: PickDone) {
     unsafe { ducktape_phone_pick(u8::from(multiple), ticket) }
 }
 
-pub(crate) fn keep(path: &Path, done: KeepDone) {
+pub(crate) fn keep(path: &Path, done: KeepDone) -> Unkeep {
     let Some(path) = path.to_str().and_then(|path| CString::new(path).ok()) else {
-        return done(Err("the file's path is not text".into()));
+        done(Err("the file's path is not text".into()));
+        return Box::new(|| {});
     };
-    let ticket = TICKETS.fetch_add(1, Ordering::Relaxed);
-    KEEPS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(ticket, done);
+    let ticket = KEEPS.hand(done);
     // SAFETY: a Swift `@_cdecl` entry taking a C string alive for the call
     // (it copies it) and a number, any thread.
     unsafe { ducktape_phone_keep(path.as_ptr(), ticket) }
+    Box::new(move || KEEPS.unkeep(ticket))
 }
 
 /// The launcher's answer to the pick `ticket`: `paths` a JSON array of the
@@ -144,19 +142,19 @@ pub unsafe extern "C" fn ducktape_phone_picked(
 /// `error` is null or a NUL-terminated string alive for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ducktape_phone_kept(ticket: u64, kept: u8, error: *const c_char) {
-    let Some(done) = KEEPS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .remove(&ticket)
-    else {
-        return;
-    };
     // SAFETY: the caller's contract above.
     let error = unsafe { text_from_optional_nul_terminated_pointer(error) };
-    done(match error {
+    let answer = match error {
         Some(error) => Err(error),
         None => Ok(kept != 0),
-    });
+    };
+    KEEPS.answer(ticket, answer);
+}
+
+/// Whether the keep `ticket` is still wanted, marked shown when it is. Main thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn ducktape_phone_keep_shows(ticket: u64) -> u8 {
+    u8::from(KEEPS.shows(ticket))
 }
 
 unsafe extern "C" {

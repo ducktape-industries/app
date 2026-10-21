@@ -36,3 +36,5 @@ void ducktape_phone_picked(uint64_t ticket, const char *paths, const char *error
 // The answer to Rust's keep `ticket`: `kept` 1 when the person kept the file, 0 when they cancelled; `error` what went
 // wrong, else NULL. Main thread.
 void ducktape_phone_kept(uint64_t ticket, uint8_t kept, const char *error);
+
+uint8_t ducktape_phone_keep_shows(uint64_t ticket);

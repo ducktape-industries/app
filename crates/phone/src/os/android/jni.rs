@@ -328,6 +328,16 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_memoryWarning(
     crate::os::send(ducktape_host::contract::Signal::MemoryWarning);
 }
 
+/// `Native.keepShows`: whether the keep `ticket` is still wanted, marked shown when it is.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_keepShows(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    ticket: jlong,
+) -> jboolean {
+    crate::os::keeps::KEEPS.shows(ticket as u64)
+}
+
 /// `Native.link`: a link the OS handed the app (an intent's data).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_industries_ducktape_mobile_Native_link<'caller>(
@@ -525,7 +535,7 @@ pub fn pick_files(multiple: bool) -> Result<Option<Vec<PathBuf>>, String> {
 /// (`MainActivity.keepFile`), which copies it where the person chose:
 /// whether they did, `false` when they cancelled. Blocks the calling
 /// thread (never the UI one) until the person answers.
-pub fn keep_file(path: &std::path::Path) -> Result<bool, String> {
+pub fn keep_file(path: &std::path::Path, ticket: u64) -> Result<bool, String> {
     gpui_mobile::android::jni::with_env(|env| {
         let activity = gpui_mobile::android::jni::activity(env)?;
         let text = path.to_string_lossy();
@@ -535,8 +545,8 @@ pub fn keep_file(path: &std::path::Path) -> Result<bool, String> {
         env.call_method(
             &activity,
             jni::jni_str!("keepFile"),
-            jni::jni_sig!("(Ljava/lang/String;)Z"),
-            &[JValue::Object(&path)],
+            jni::jni_sig!("(Ljava/lang/String;J)Z"),
+            &[JValue::Object(&path), JValue::Long(ticket as jlong)],
         )
         .and_then(|kept| kept.z())
         .map_err(|error| {
