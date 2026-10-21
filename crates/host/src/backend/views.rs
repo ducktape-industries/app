@@ -66,14 +66,6 @@ impl std::fmt::Display for Fetch {
     }
 }
 
-/// The roster as the programs role answers it at the node's height
-/// (sorted by name, programs first): asked of that program through the
-/// same query path every view's request takes. Only an id in its one
-/// spelling (`program::is_name`) is taken: the chain accepts more (a
-/// capital, a space, a newline), and such an id could read as another's
-/// wherever the app names it (the rail, a pane, the consent card's
-/// "Program <id>", which a newline would end before a "System asks" of its
-/// own). One left off is said in app.log, once while the same ids are.
 pub async fn programs(
     client: &RpcClient,
     network: &str,
@@ -100,7 +92,7 @@ pub async fn programs(
     });
     let (roster, misspelled): (Vec<Program>, Vec<Program>) = programs
         .chain(views)
-        .partition(|program| program::is_name(&program.name));
+        .partition(|program| program::is_id(&program.name));
     misspelled_said(
         network,
         misspelled.into_iter().map(|program| program.name).collect(),
@@ -119,7 +111,7 @@ fn misspelled_said(network: &str, ids: Vec<String>) {
                 target: "ducktape::app",
                 reason = "program_id_misspelled",
                 ids = ?ids,
-                "the node lists program ids outside 1..=64 of [a-z0-9_-]; they are left off the roster"
+                "the node lists program ids that are neither a name nor owner/name of 1..=64 of [a-z0-9_-] each; they are left off the roster"
             );
         }
         *last = ids;

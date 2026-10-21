@@ -976,10 +976,6 @@ fn a_roles_answer_refused_or_unreadable_lists_no_program_and_is_asked_again() {
     }
 }
 
-/// Claim: the roster takes a chain id only in its one spelling
-/// (`program::is_name`): a newline, a space or a capital in a program's or
-/// a view-only entry's id leaves it off the roster, the rail and the seats;
-/// a well-spelled one beside them is kept.
 #[test]
 fn a_misspelled_id_is_left_off_the_roster() {
     let node = FakeNode::new(
@@ -988,6 +984,10 @@ fn a_misspelled_id_is_left_off_the_roster() {
             listed("a b", "misspelled-space"),
             listed("System", "misspelled-capital"),
             listed("spelled-ok", "spelled-ok"),
+            listed("owner/spelled-ok", "owner-spelled-ok"),
+            listed("a/b/c", "misspelled-two-owners"),
+            listed("/name", "misspelled-empty-owner"),
+            listed("Owner/name", "misspelled-capital-owner"),
         ],
         vec![::programs::View {
             name: "Misspelled View".into(),
@@ -998,13 +998,14 @@ fn a_misspelled_id_is_left_off_the_roster() {
     let (roster, registry) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &registry);
     let names: Vec<String> = roster.lock().iter().map(|p| p.name.clone()).collect();
-    assert_eq!(names, ["spelled-ok"]);
-    assert_eq!(roster.rail().len(), 1, "the rail lists what was kept");
-    let seats: Vec<&str> = lock(&registry)
+    assert_eq!(names, ["spelled-ok", "owner/spelled-ok"]);
+    assert_eq!(roster.rail().len(), 2, "the rail lists what was kept");
+    let mut seats: Vec<&str> = lock(&registry)
         .keys()
         .map(|(program, _)| *program)
         .collect();
-    assert_eq!(seats, ["spelled-ok"]);
+    seats.sort_unstable();
+    assert_eq!(seats, ["owner/spelled-ok", "spelled-ok"]);
 }
 
 /// Claim: the consent card names the program whose view asks by the seat

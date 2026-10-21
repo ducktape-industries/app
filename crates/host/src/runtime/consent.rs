@@ -438,6 +438,8 @@ pub fn needed(
                 ),
             )),
             identity::Op::RegisterProgram { .. }
+            | identity::Op::RenameProgram { .. }
+            | identity::Op::Migrate { .. }
             | identity::Op::Create { .. }
             | identity::Op::CreateAgent { .. }
             | identity::Op::AddKey { .. }
