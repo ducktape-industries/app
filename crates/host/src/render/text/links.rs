@@ -11,7 +11,9 @@
 //! meet.
 use super::*;
 use gpui_kit::accesskit::{Action, Node, NodeId, Role};
-use gpui_kit::{A11ySubtreeBuilder, AccessibleAction, WeakEntity};
+use gpui_kit::{
+    A11ySubtreeBuilder, AccessibleAction, CursorStyle, DispatchPhase, Hitbox, WeakEntity,
+};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -20,15 +22,20 @@ use std::rc::Rc;
 pub struct Links {
     pub focus: FocusHandle,
     pub picked: Rc<Cell<usize>>,
+    pub down: Down,
     /// Set by the render that draws it; a render that does not drops it.
     pub drawn: bool,
 }
 
 pub(super) type Press = Rc<dyn Fn(usize, &mut App)>;
 
+pub type Down = Rc<Cell<Option<(usize, Point<Pixels>)>>>;
+
 pub(super) struct Linking {
     handler: u32,
-    pub(super) press: Press,
+    press: Press,
+    ranges: Vec<std::ops::Range<usize>>,
+    down: Down,
     ids: Rc<RefCell<Vec<(u32, NodeId)>>>,
     pub(super) picked: Option<usize>,
 }
@@ -71,9 +78,11 @@ impl ViewTree {
         let links = self.links.entry(key).or_insert_with(|| Links {
             focus: cx.focus_handle().tab_stop(true),
             picked: Rc::default(),
+            down: Rc::default(),
             drawn: true,
         });
         links.drawn = true;
+        let down = links.down.clone();
         let last = words.len() - 1;
         let focused = links.focus.is_focused(window);
         links.picked.set(match focused {
@@ -153,6 +162,8 @@ impl ViewTree {
             Linking {
                 handler,
                 press,
+                ranges: ranges.to_vec(),
+                down,
                 ids,
                 picked: focused.then_some(picked),
             },
@@ -162,20 +173,79 @@ impl ViewTree {
 
 pub(super) struct Linked {
     text: InteractiveText,
+    layout: TextLayout,
+    ranges: Vec<std::ops::Range<usize>>,
+    down: Down,
+    press: Press,
     handler: u32,
     view: WeakEntity<ViewTree>,
     links: Rc<RefCell<Vec<(u32, NodeId)>>>,
 }
 
 impl Linked {
-    pub(super) fn new(text: InteractiveText, linking: Linking, view: WeakEntity<ViewTree>) -> Self {
+    pub(super) fn new(
+        text: InteractiveText,
+        layout: TextLayout,
+        linking: Linking,
+        view: WeakEntity<ViewTree>,
+    ) -> Self {
         Self {
             text,
+            layout,
+            ranges: linking.ranges,
+            down: linking.down,
+            press: linking.press,
             handler: linking.handler,
             view,
             links: linking.ids,
         }
     }
+
+    fn listen(&self, hitbox: &Hitbox, window: &mut Window) {
+        if range_at(&self.layout, &self.ranges, window.mouse_position()).is_some() {
+            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+        }
+        let (layout, ranges, down) = (self.layout.clone(), self.ranges.clone(), self.down.clone());
+        let held = hitbox.clone();
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
+            if (phase, event.button) != (DispatchPhase::Bubble, MouseButton::Left) {
+                return;
+            }
+            if held.is_hovered(window) {
+                let at = range_at(&layout, &ranges, event.position);
+                down.set(at.map(|index| (index, event.position)));
+            }
+        });
+        let (layout, ranges, down) = (self.layout.clone(), self.ranges.clone(), self.down.clone());
+        let (held, press) = (hitbox.clone(), self.press.clone());
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+            if (phase, event.button) != (DispatchPhase::Bubble, MouseButton::Left) {
+                return;
+            }
+            let Some((index, from)) = down.take() else {
+                return;
+            };
+            let released = held
+                .is_hovered(window)
+                .then(|| range_at(&layout, &ranges, event.position))
+                .flatten();
+            if released != Some(index) {
+                return;
+            }
+            if !super::dragged_over_words(from, event.position, window, cx) {
+                press(index, cx);
+            }
+        });
+    }
+}
+
+fn range_at(
+    layout: &TextLayout,
+    ranges: &[std::ops::Range<usize>],
+    position: Point<Pixels>,
+) -> Option<usize> {
+    let index = layout.index_for_position(position).ok()?;
+    ranges.iter().position(|range| range.contains(&index))
 }
 
 impl IntoElement for Linked {
@@ -236,6 +306,7 @@ impl Element for Linked {
     ) {
         self.text
             .paint(id, inspector_id, bounds, state, prepaint, window, cx);
+        self.listen(prepaint, window);
         for (index, node) in self.links.borrow_mut().drain(..) {
             let (view, handler) = (self.view.clone(), self.handler);
             window.on_a11y_action(node, Action::Click, move |_, _, cx| {

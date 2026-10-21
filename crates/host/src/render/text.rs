@@ -9,7 +9,6 @@ pub(super) mod links;
 
 thread_local! {
     static DRAG_CLIP: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
-    static PRESS: std::cell::Cell<Option<Point<Pixels>>> = const { std::cell::Cell::new(None) };
     static SETTLING: std::cell::Cell<Option<gpui_kit::WindowId>> = const { std::cell::Cell::new(None) };
 }
 
@@ -179,7 +178,6 @@ impl Element for RichParagraph {
             }
             if hitbox.is_hovered(window) {
                 DRAG_CLIP.set(Some(clip));
-                PRESS.set(Some(event.position));
             }
         });
         window.on_mouse_event(|event: &MouseUpEvent, phase, window, _| {
@@ -418,18 +416,7 @@ impl ViewTree {
         let mut interactive = InteractiveText::new(rich_id, styled);
         let linked = match on_click {
             Some(handler) if !clickable_ranges.is_empty() => {
-                let (element, linking) =
-                    self.linked_box(&native_id, text, clickable_ranges, *handler, window, cx);
-                let press = linking.press.clone();
-                interactive =
-                    interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
-                        let up = window.mouse_position();
-                        let down = PRESS.get().unwrap_or(up);
-                        if !dragged_over_words(down, up, window, cx) {
-                            press(index, cx)
-                        }
-                    });
-                Some((element, linking))
+                Some(self.linked_box(&native_id, text, clickable_ranges, *handler, window, cx))
             }
             _ => None,
         };
@@ -466,7 +453,12 @@ impl ViewTree {
         let content = match linked {
             Some((mut boxed, linking)) => {
                 *boxed.style() = Arc::unwrap_or_clone(self.style(*style));
-                let interactive = links::Linked::new(interactive, linking, cx.entity().downgrade());
+                let interactive = links::Linked::new(
+                    interactive,
+                    layout.clone(),
+                    linking,
+                    cx.entity().downgrade(),
+                );
                 boxed.child(selection).child(interactive).into_any_element()
             }
             None => {
