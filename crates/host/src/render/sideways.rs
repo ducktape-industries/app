@@ -48,6 +48,12 @@ impl ViewTree {
         wheel: bool,
     ) -> Stateful<Div> {
         let sideways = identified && style.overflow.x == Some(Overflow::Scroll);
+        let upright = identified && style.overflow.y == Some(Overflow::Scroll);
+        let scrolls = sideways || upright;
+        let locked = scrolls && crate::contract::os().facts().touch_first;
+        if locked {
+            element = element.restrict_scroll_to_axis();
+        }
         if !(sideways || wheel) || !crate::contract::os().facts().touch_first {
             return element;
         }
