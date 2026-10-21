@@ -32,8 +32,18 @@ pub(crate) fn run_live(live: super::Live, os: Arc<dyn OsServices>, start: Start)
     started(Boot::Live(live), os, start)
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn application() -> gpui_kit::Application {
+    gpui_kit::Application::with_platform(ducktape_gpui_linux::current_platform(false))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn application() -> gpui_kit::Application {
+    gpui_kit::application()
+}
+
 fn started(boot: Boot, os: Arc<dyn OsServices>, start: Start) {
-    let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    let application = application().with_assets(gpui_kit::assets::AllAssets);
     let (url_sender, urls) = futures::channel::mpsc::unbounded::<Vec<String>>();
     application.on_open_urls(move |urls| {
         let _ = url_sender.unbounded_send(urls);

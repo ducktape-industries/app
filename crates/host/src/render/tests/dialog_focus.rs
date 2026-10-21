@@ -452,7 +452,7 @@ fn listed(key: &str, row: wire::Node) -> wire::Node {
     }
 }
 
-fn picking(open: bool) -> wire::Node {
+fn picking(open: bool, beside: bool) -> wire::Node {
     let mut children = vec![handled("open", "Pick", 1)];
     if open {
         children.push(container("card", [handled("name", "Name", 2), people()]));
@@ -464,8 +464,11 @@ fn picking(open: bool) -> wire::Node {
         children,
         style: crate::render::plain_style(),
     };
-    let beside = listed("beside", handled("bob", "Bob", 4));
-    let page = container("page", [overlay, beside]);
+    let mut page = vec![overlay];
+    if beside {
+        page.push(listed("beside", handled("bob", "Bob", 4)));
+    }
+    let page = container("page", page);
     sized("root", page, Some(fill()), Some(fill()))
 }
 
@@ -473,7 +476,7 @@ fn picking(open: bool) -> wire::Node {
 fn a_dialogs_own_deferred_draw_sits_under_its_node(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
-        ViewTree::new(picking(true))
+        ViewTree::new(picking(true, true))
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let held = held_by_the_dialog(&mut native);
@@ -508,7 +511,7 @@ fn tab_reaches_a_dialogs_own_deferred_draw_and_stays_in_the_dialog(
     use gpui_kit::AppContext as _;
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(200.)), |window, cx| {
-        let tree = cx.new(|_| ViewTree::new(picking(false)).with_keys_grant(true));
+        let tree = cx.new(|_| ViewTree::new(picking(false, false)).with_keys_grant(true));
         gpui_kit::component::Root::new(tree, window, cx)
     });
     let tree = window
@@ -522,9 +525,14 @@ fn tab_reaches_a_dialogs_own_deferred_draw_and_stays_in_the_dialog(
         gpui_kit::point(px(10.), px(10.)),
         gpui_kit::Modifiers::none(),
     );
-    let pressed = native.update(|window, cx| window.focused(cx));
-    assert!(pressed.is_some(), "a press gave the opener the keys");
-    tree.update(&mut native, |tree, cx| tree.replace(picking(true), &[], cx));
+    assert_eq!(
+        holder(&tree, &mut native),
+        Some(1),
+        "the press gave the opener the keys"
+    );
+    tree.update(&mut native, |tree, cx| {
+        tree.replace(picking(true, true), &[], cx)
+    });
     native.update(crate::render::draw_frame);
     native.run_until_parked();
     assert_eq!(

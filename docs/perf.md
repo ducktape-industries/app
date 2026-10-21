@@ -654,7 +654,9 @@ gate driven through `/tree`, `/act` or `/wait`. Its price, measured on the
 desktop runner for two panes (`root_tests::a11y_frame_cost`, a release
 build): a drawn frame costs p50 1.25 ms for 120 rich-text rows on screen
 against 0.23 ms cached, and 3.9 ms for 480 rows against 0.47 ms; idle still
-draws nothing. What a read costs is one render of every layer, which the
+draws nothing. While something animates (the pulse, the Spin figure: 30
+frames a second on the host's clock), each of its frames redraws every layer,
+about 12% of a core for 480 rows (30 × 3.9 ms). What a read costs is one render of every layer, which the
 idle window and the switch budget must not count; there is no app-callable way to turn a11y
 back off (`gpui:src/window.rs` has `activate_a11y`, and deactivation
 belongs to the platform adapter), so those two keep a door-free window:

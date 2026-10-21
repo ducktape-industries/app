@@ -63,10 +63,9 @@ accesskit = { version = "0.25", features = ["serde"], optional = true }
 cef = { version = "=154.5.0", default-features = false, features = ["sandbox"], optional = true }
 
 # Linux: gpui's X11 and Wayland clipboard reads turn glib while they wait
-# (`glib.rs`); the workspace's `[patch.crates-io]` gives the fork that has
-# the hook
+# (`glib.rs`), through our platform crate's hook
 [target.'cfg(target_os = "linux")'.dependencies]
-gpui_linux = { package = "gpui-pre-linux", version = "=0.3.9", default-features = false, optional = true }
+gpui_linux = { package = "ducktape-gpui-linux", path = "../../vendor/gpui-linux", default-features = false, optional = true }
 
 # macOS: CEF is a framework loaded at run time, not linked; `build.rs` reads
 # where cef-dll-sys unpacked it (only a direct dependent sees that)
