@@ -42,7 +42,12 @@ impl Render for Root {
             self.drawn.borrow_mut().push((view.ticks, view.frame_rev));
         }
         let body = match (seat.standin(), seat.tree()) {
-            (Some(standin), _) => standin.element(seat.program(), seat.instance(), seat.ax_mark()),
+            (Some(standin), _) => standin.element(
+                seat.network(),
+                seat.program(),
+                seat.instance(),
+                seat.ax_mark(),
+            ),
             (None, Some(tree)) => gpui_kit::AnyView::from(tree)
                 .cached(gpui_kit::StyleRefinement::default().size_full())
                 .into_any_element(),

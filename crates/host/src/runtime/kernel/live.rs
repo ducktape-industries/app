@@ -127,15 +127,17 @@ impl Tracks {
 }
 
 pub(in crate::runtime) fn quit() -> impl Future<Output = ()> {
-    let held = super::super::connection()
-        .lock()
-        .expect("views rpc")
-        .live
-        .take();
+    close(&super::super::networks())
+}
+
+fn close(networks: &[Arc<crate::runtime::Network>]) -> impl Future<Output = ()> + use<> {
+    let held: Vec<_> = networks
+        .iter()
+        .filter(|network| !network.followed)
+        .filter_map(|network| network.connection.lock().expect("views rpc").live.take())
+        .collect();
     let closed = super::handle().spawn(async move {
-        if let Some(session) = held {
-            session.quit().await;
-        }
+        futures::future::join_all(held.iter().map(|session| session.quit())).await;
     });
     async move {
         let _ = closed.await;
@@ -549,8 +551,8 @@ const CONSUMED_BACKLOG: usize = 64;
 /// The live session a piece the host runs for a view reaches
 /// (`render/call.rs`: a publishing camera or microphone piece, a remote
 /// piece), stamped `<chain>/<program>/<room>` and granted by the room's
-/// program exactly as the view's own `live.*` requests are, on the app's
-/// connection as it is now: a reconnect moves the connection, and each
+/// program exactly as the view's own `live.*` requests are, on its seat's
+/// network's connection as it is now: a reconnect moves the connection, and each
 /// track opens again on the new session as a view's request does
 /// (`reopen`). Nothing of it reaches [`Replies`]: a piece hears its
 /// track through its own channel and reads its objects on its own
@@ -558,6 +560,7 @@ const CONSUMED_BACKLOG: usize = 64;
 #[derive(Clone)]
 pub struct HostLive {
     program: &'static str,
+    on: super::super::roster::On,
     fixed: Option<(Arc<dyn Session>, String)>,
 }
 
@@ -628,10 +631,11 @@ impl Drop for HostSubscription {
 }
 
 impl HostLive {
-    /// The tracks of `program`'s pieces, on the app's connection.
-    pub fn new(program: &'static str) -> Self {
+    /// The tracks of `program`'s pieces, on `network`'s connection.
+    pub fn new(program: &'static str, network: &Arc<crate::runtime::Network>) -> Self {
         Self {
             program,
+            on: super::super::roster::On::of(network),
             fixed: None,
         }
     }
@@ -640,6 +644,7 @@ impl HostLive {
     pub(crate) fn on(session: Arc<dyn Session>, chain: &str, program: &'static str) -> Self {
         Self {
             program,
+            on: Default::default(),
             fixed: Some((session, chain.to_owned())),
         }
     }
@@ -648,7 +653,8 @@ impl HostLive {
         if let Some(fixed) = &self.fixed {
             return Some(fixed.clone());
         }
-        let connection = super::super::connection().lock().expect("views rpc");
+        let network = self.on.get()?;
+        let connection = network.connection.lock().expect("views rpc");
         let session = connection.live.clone()?;
         Some((session, connection.chain.clone()))
     }

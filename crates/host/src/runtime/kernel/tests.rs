@@ -579,7 +579,12 @@ fn link_open_needs_an_activation_and_takes_it() {
     assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
     // a route the OS handed the view (`Windows::open_seat`) activates nothing
     view.route_subscriptions.push(2);
-    crate::runtime::route_to("request-test", view.instance, "tx/1".into());
+    crate::runtime::route_to(
+        crate::runtime::in_hand(),
+        "request-test",
+        view.instance,
+        "tx/1".into(),
+    );
     view.sync_route();
     view.answer(link_request(3, "duck://request-test/tx/1"), &None);
     assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));

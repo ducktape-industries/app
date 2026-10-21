@@ -1719,3 +1719,41 @@ fn a_pane_mounted_before_the_roster_is_read_waits_for_the_read() {
         "a program the read roster leaves out is never said to be"
     );
 }
+
+#[test]
+fn a_view_started_on_another_networks_seat_is_on_that_network() {
+    let other = Network::new(false);
+    let client = crate::backend::rpc_client("http://127.0.0.1:9");
+    let asked_of = other.take(&client, "other", "other#1");
+    let frame = wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    };
+    let mut code = ViewCode::for_test("Other", "", 320);
+    code.hash = crate::runtime::frames_code(&frame, 1, &frame);
+    let seat = Mounted::seat();
+    {
+        let mut locked = lock(&seat);
+        locked.instance = 7;
+        let generation = locked.start();
+        locked.to_start = Some(Box::new(Parked {
+            code,
+            shown: "other".into(),
+            generation,
+            asked_of,
+            timing: LoadTiming::default(),
+        }));
+    }
+    futures::executor::block_on(start_in(seat.clone(), "other-network-view"));
+    let locked = lock(&seat);
+    let view = match &locked.slot {
+        Slot::Ready(view) => view,
+        Slot::Failed(failure) => panic!("the view did not start: {failure}"),
+        _ => panic!("the view did not start"),
+    };
+    assert_eq!(
+        view.connection.chain, "other#1",
+        "it is on the network in hand"
+    );
+    assert!(!view.connection.stale());
+}

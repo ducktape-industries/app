@@ -1100,3 +1100,35 @@ fn a_piece_from_a_view_without_its_capability_ends_the_view() {
         );
     }
 }
+
+#[test]
+fn a_swap_keeps_the_network_of_the_view_it_replaces() {
+    let frame = wire::encode(&wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    });
+    let ok = |len: usize| format!("i64.const {}", wire::abi::pack(0, len as u32));
+    let network = crate::runtime::Network::new(false);
+    let client = crate::backend::rpc_client("http://127.0.0.1:9");
+    let mut old = wat_view(&ok(1), &ok(1), Some(&frame));
+    old.connection = network.take(&client, "other", "other#1");
+    let (swapped, _) = swap(old, wat_code(&ok(1), &ok(1), Some(&frame)));
+    let fresh = swapped.expect("the view is replaced");
+    assert_eq!(
+        fresh.connection.chain, "other#1",
+        "the replacement is on the network in hand"
+    );
+}
+
+#[test]
+fn a_restarted_view_keeps_its_network() {
+    let network = crate::runtime::Network::new(false);
+    let client = crate::backend::rpc_client("http://127.0.0.1:9");
+    let mut view = crate::runtime::kernel::tests::view();
+    view.connection = network.take(&client, "other", "other#1");
+    let fresh = futures::executor::block_on(view.restarted("restarted")).expect("it starts again");
+    assert_eq!(
+        fresh.connection.chain, "other#1",
+        "the restart is on the network in hand"
+    );
+}

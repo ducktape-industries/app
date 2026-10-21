@@ -290,12 +290,20 @@ impl View {
         instance: u64,
         view: &ViewCode,
         shown: &str,
+        connection: &Connection,
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
         let instantiated = Instant::now();
-        let mut fresh = Self::seated(program, instance, &view.runner, view.hash, shown)
-            .await
-            .map_err(Failure::Refused)?;
+        let mut fresh = Self::seated(
+            program,
+            instance,
+            &view.runner,
+            view.hash,
+            shown,
+            connection.clone(),
+        )
+        .await
+        .map_err(Failure::Refused)?;
         timing.instantiate = instantiated.elapsed();
         let key = fresh.perf_key();
         crate::perf::record(key, "instantiate", timing.instantiate.as_micros() as u64);
@@ -331,10 +339,11 @@ impl View {
         shown: &str,
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
-        let (asked, ambient) = {
+        let (asked, ambient, connection) = {
             let mut locked = lock(mounted);
             let old = drawn(&mut locked, alive)?;
-            (old.handover(&code.hash)?, old.ambient())
+            let connection = old.connection.current();
+            (old.handover(&code.hash)?, old.ambient(), connection)
         };
         let state = match asked {
             None => None,
@@ -356,7 +365,7 @@ impl View {
                 old.handed_over(landed, instance, &code.hash, taken, timing)?
             }
         };
-        let fresh = Self::seated_from(program, instance, code, shown, timing).await?;
+        let fresh = Self::seated_from(program, instance, code, shown, &connection, timing).await?;
         Self::prepared(fresh, (state, ambient), shown, timing).await
     }
 
@@ -661,7 +670,7 @@ impl View {
             wire,
             code,
             hash,
-            connection: _,
+            connection,
             activation: _,
             undeclared_logged: _,
             unknown_logged: _,
@@ -720,8 +729,15 @@ impl View {
             showing: _,
             recipient,
         } = self;
-        let mut sibling =
-            Self::seated(program, *instance, runner, running.code_hash(), shown).await?;
+        let mut sibling = Self::seated(
+            program,
+            *instance,
+            runner,
+            running.code_hash(),
+            shown,
+            connection.clone(),
+        )
+        .await?;
         sibling.name = name.clone();
         sibling.icon = icon.clone();
         sibling.tint = *tint;
@@ -770,7 +786,6 @@ impl View {
 
     pub(in crate::runtime) async fn restarted(&self, shown: &str) -> Result<Self, String> {
         let mut fresh = self.sibling(shown).await?;
-        fresh.connection = self.connection.clone();
         fresh.inited(shown).await?;
         Ok(fresh)
     }
@@ -962,7 +977,8 @@ impl View {
         code: [u8; 32],
         shown: &str,
     ) -> Result<Self, String> {
-        now(Self::seated(program, 0, runner, code, shown))
+        let connection = connection().lock().expect("views rpc").clone();
+        now(Self::seated(program, 0, runner, code, shown, connection))
     }
 
     /// An instance of the prepared `code` seated by `runner`, its exports
@@ -974,6 +990,7 @@ impl View {
         runner: &Arc<dyn ViewRunner>,
         code: [u8; 32],
         shown: &str,
+        connection: Connection,
     ) -> Result<Self, String> {
         let (land, landing) = Landing::channel();
         runner.instantiate(code, SeatId(program, instance), land);
@@ -987,7 +1004,7 @@ impl View {
             }
         };
         Ok(Self {
-            connection: connection().lock().expect("views rpc").clone(),
+            connection,
             activation: None,
             program,
             instance,
@@ -1123,7 +1140,10 @@ impl View {
         let Some(&id) = self.route_subscriptions.first() else {
             return;
         };
-        if let Some(route) = crate::runtime::take_route(self.program, self.instance) {
+        let Some(network) = self.connection.on.get() else {
+            return;
+        };
+        if let Some(route) = crate::runtime::take_route(&network, self.program, self.instance) {
             tracing::info!(target: "ducktape::app", program = self.program, instance = self.instance, %route, "a seat's view is handed its route");
             self.stream_item(id, wire::methods::encode(&route));
         }

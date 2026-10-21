@@ -70,24 +70,29 @@ fn mime(path: &str) -> &'static str {
 }
 
 fn on_network(chain: &ducklink::ChainId) -> Result<Node, Read> {
-    let connection = crate::runtime::connection()
-        .lock()
-        .expect("views rpc")
-        .clone();
-    let Some(client) = connection.client else {
-        return Err(said(502, "the app is on no network".into()));
-    };
-    if chain.to_string() != connection.chain {
-        return Err(said(
-            404,
-            format!("the app is on {}, not {chain}", connection.chain),
-        ));
+    let chain = chain.to_string();
+    let mut on = Vec::new();
+    for network in crate::runtime::networks() {
+        let connection = network.connection.lock().expect("views rpc").clone();
+        let Some(client) = connection.client.filter(|_| !network.followed) else {
+            continue;
+        };
+        if connection.chain == chain {
+            return Ok(Node {
+                client,
+                network: connection.network,
+                on: connection.on,
+            });
+        }
+        on.push(connection.chain);
     }
-    Ok(Node {
-        client,
-        network: connection.network,
-        on: Default::default(),
-    })
+    match on.is_empty() {
+        true => Err(said(502, "the app is on no network".into())),
+        false => Err(said(
+            404,
+            format!("the app is on {}, not {chain}", on.join(", ")),
+        )),
+    }
 }
 
 async fn ask(node: &Node, query: files::Query) -> Result<files::Reply, view_wire::Error> {
@@ -298,5 +303,22 @@ mod tests {
         );
         assert_eq!(heard.next().await, None);
         watching.await.expect("the follower ends");
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    #[test]
+    fn an_address_is_read_on_the_network_its_chain_names() {
+        let chain = ducklink::ChainId::of("artifact-tests", &[3; 32]).expect("a chain id");
+        let network = crate::runtime::Network::new(false);
+        let client = crate::backend::rpc_client("http://127.0.0.1:9");
+        network.take(&client, "artifact-tests", &chain.to_string());
+        let Ok(node) = on_network(&chain) else {
+            panic!("an address on a network the app holds was refused");
+        };
+        assert_eq!(node.network, "artifact-tests");
     }
 }

@@ -1347,7 +1347,7 @@ impl Windows {
             }
         };
         if let Some(route) = route {
-            crate::runtime::route_to(program, instance, route);
+            crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
         }
     }
 
@@ -1364,7 +1364,7 @@ impl Windows {
     ) {
         if let Some((_, instance)) = from.filter(|(from, _)| *from == program) {
             if let Some(route) = route {
-                crate::runtime::route_to(program, instance, route);
+                crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
             }
             return;
         }
@@ -1376,7 +1376,7 @@ impl Windows {
             .console
             .and_then(|console| self.open_program(console, program, cx));
         if let Some((route, instance)) = route.zip(seat) {
-            crate::runtime::route_to(program, instance, route);
+            crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
         }
     }
 
@@ -1707,7 +1707,7 @@ impl Windows {
             if let Some(desk) = desk {
                 desk.update(cx, |desk, cx| desk.take_up(layout, cx));
                 for (program, instance, route) in routes {
-                    crate::runtime::route_to(program, instance, route);
+                    crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
                 }
             }
         }

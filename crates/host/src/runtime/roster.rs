@@ -62,6 +62,7 @@ impl On {
 }
 
 pub struct Network {
+    pub(super) id: u64,
     pub(super) connection: Mutex<Connection>,
     pub(super) roster: Roster,
     pub(super) seats: Registry,
@@ -72,7 +73,9 @@ pub struct Network {
 
 impl Network {
     pub(super) fn new(followed: bool) -> Arc<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let network = Arc::new(Self {
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             connection: Mutex::new(Connection {
                 client: None,
                 network: String::new(),
@@ -88,10 +91,19 @@ impl Network {
             reading: Default::default(),
         });
         lock(&network.connection).on = On::of(&network);
+        let mut every = lock(every());
+        every.retain(|held| held.strong_count() > 0);
+        every.push(Arc::downgrade(&network));
+        drop(every);
         network
     }
 
-    fn take(&self, client: &crate::backend::RpcClient, network: &str, chain: &str) -> Connection {
+    pub(super) fn take(
+        &self,
+        client: &crate::backend::RpcClient,
+        network: &str,
+        chain: &str,
+    ) -> Connection {
         let mut connection = lock(&self.connection);
         connection.rev += 1;
         connection.client = Some(client.clone());
@@ -153,6 +165,17 @@ impl Connection {
             .get()
             .map_or_else(|| self.clone(), |network| lock(&network.connection).clone())
     }
+}
+
+fn every() -> &'static Mutex<Vec<std::sync::Weak<Network>>> {
+    static EVERY: OnceLock<Mutex<Vec<std::sync::Weak<Network>>>> = OnceLock::new();
+    EVERY.get_or_init(Mutex::default)
+}
+
+pub(super) fn networks() -> Vec<Arc<Network>> {
+    let mut every = lock(every());
+    every.retain(|held| held.strong_count() > 0);
+    every.iter().filter_map(std::sync::Weak::upgrade).collect()
 }
 
 pub fn in_hand() -> &'static Arc<Network> {
@@ -1096,5 +1119,45 @@ mod network_tests {
         drop(seat);
         crate::runtime::seat::let_go(&network, program, 7);
         assert!(lock(&network.seats).is_empty());
+    }
+
+    #[test]
+    fn a_route_reaches_only_its_own_networks_seat() {
+        let program = "network-tests-route";
+        let (a, b) = (Network::new(false), Network::new(false));
+        let on_a = crate::runtime::seat::mounted(&a, program, 8);
+        let on_b = crate::runtime::seat::mounted(&b, program, 8);
+        let woken_a = lock(&on_a).wake.subscribe();
+        let woken_b = lock(&on_b).wake.subscribe();
+        crate::runtime::route_to(&b, program, 8, "room/1".into());
+        assert!(woken_b.has_changed().unwrap(), "the route woke no seat");
+        assert!(
+            !woken_a.has_changed().unwrap(),
+            "the route woke the other network's seat"
+        );
+        assert_eq!(crate::runtime::take_route(&a, program, 8), None);
+        let routed = crate::runtime::take_route(&b, program, 8);
+        assert_eq!(routed.as_deref(), Some("room/1"));
+        crate::runtime::seat::let_go(&a, program, 8);
+        crate::runtime::seat::let_go(&b, program, 8);
+    }
+
+    #[test]
+    fn a_retry_reloads_only_its_own_networks_seat() {
+        let program = "network-tests-retry";
+        let (a, b) = (Network::new(false), Network::new(false));
+        let on_a = crate::runtime::seat::mounted(&a, program, 9);
+        let on_b = crate::runtime::seat::mounted(&b, program, 9);
+        let generation = |seat: &Arc<Mutex<Mounted>>| lock(seat).generation;
+        let (was_a, was_b) = (generation(&on_a), generation(&on_b));
+        crate::runtime::seat::retry(&b, program, 9);
+        assert!(generation(&on_b) > was_b, "the retry reloaded nothing");
+        assert_eq!(
+            generation(&on_a),
+            was_a,
+            "the retry reloaded the other network's seat"
+        );
+        crate::runtime::seat::let_go(&a, program, 9);
+        crate::runtime::seat::let_go(&b, program, 9);
     }
 }

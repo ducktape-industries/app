@@ -438,13 +438,13 @@ fn asks_now(connected: bool, listed_here: bool, roster_read: bool) -> bool {
 /// again now, under a new generation, past any hold-off a block's retries
 /// left. A failure goes back to loading, and a stopped view gives up its
 /// seat, so what lands is a fresh instance rather than a swap against it.
-pub fn retry(program: &'static str, instance: u64) {
-    let code = roster().code(program);
-    let registry = lock(registry());
+pub fn retry(network: &Network, program: &'static str, instance: u64) {
+    let code = network.roster.code(program);
+    let registry = lock(&network.seats);
     let Some(seat) = registry.get(&(program, instance)).cloned() else {
         return;
     };
-    let snapshot = connection().lock().expect("views rpc").clone();
+    let snapshot = lock(&network.connection).clone();
     let mut locked = lock(&seat);
     let stopped = matches!(&locked.slot, Slot::Ready(view) if view.fault.is_some());
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
@@ -1068,7 +1068,9 @@ pub(super) async fn start_in(mounted: Arc<Mutex<Mounted>>, program: &'static str
         mut timing,
     } = *pending;
     let started = async {
-        let mut fresh = View::seated_from(program, instance, &code, &shown, &mut timing).await?;
+        let on = asked_of.current();
+        let mut fresh =
+            View::seated_from(program, instance, &code, &shown, &on, &mut timing).await?;
         fresh.timed_inited(&shown, &mut timing).await?;
         Ok::<View, Failure>(fresh)
     }

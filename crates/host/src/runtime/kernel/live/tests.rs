@@ -840,3 +840,30 @@ fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
     assert!(matches!(again, Ask::Subscribe { .. }));
     drop(subscription);
 }
+
+#[tokio::test]
+async fn a_pieces_tracks_go_on_its_seats_network() {
+    let network = crate::runtime::Network::new(false);
+    let client = crate::backend::rpc_client("http://127.0.0.1:9");
+    network.take(&client, "other", "other#1");
+    let live = HostLive::new("piece", &network);
+    let (_, chain) = live.current().expect("its network's live session");
+    assert_eq!(chain, "other#1", "on the network in hand");
+}
+
+#[test]
+fn a_close_ends_every_networks_live_session() {
+    let networks = [
+        crate::runtime::Network::new(false),
+        crate::runtime::Network::new(false),
+    ];
+    let client = crate::backend::rpc_client("http://127.0.0.1:9");
+    for (nth, network) in networks.iter().enumerate() {
+        network.take(&client, "other", &format!("other#{nth}"));
+    }
+    drop(close(&networks));
+    for network in &networks {
+        let live = network.connection.lock().unwrap().live.is_some();
+        assert!(!live, "a network's live session outlived the close");
+    }
+}

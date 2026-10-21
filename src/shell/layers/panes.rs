@@ -440,9 +440,12 @@ impl PaneView {
                     1,
                 );
                 match (seat.standin(), seat.tree()) {
-                    (Some(standin), _) => {
-                        standin.element(seat.program(), seat.instance(), seat.ax_mark())
-                    }
+                    (Some(standin), _) => standin.element(
+                        seat.network(),
+                        seat.program(),
+                        seat.instance(),
+                        seat.ax_mark(),
+                    ),
                     (None, Some(tree)) => {
                         let view =
                             AnyView::from(tree).cached(StyleRefinement::default().size_full());

@@ -1475,7 +1475,12 @@ impl Root {
             } => {
                 let instance = self.open(program, cx);
                 if let Some(route) = route {
-                    ducktape_host::runtime::route_to(program, instance, route);
+                    ducktape_host::runtime::route_to(
+                        ducktape_host::runtime::in_hand(),
+                        program,
+                        instance,
+                        route,
+                    );
                 }
                 if let Some(said) = notice {
                     self.notice(said, cx);
@@ -3588,7 +3593,8 @@ mod tests {
             panic!("the link opened nothing");
         };
         assert_eq!(
-            ducktape_host::runtime::take_route(LINKED, instance).as_deref(),
+            ducktape_host::runtime::take_route(ducktape_host::runtime::in_hand(), LINKED, instance)
+                .as_deref(),
             Some("room/7")
         );
     }

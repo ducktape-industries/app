@@ -66,6 +66,7 @@ impl Standin {
     /// turns the seat.
     pub fn element(
         &self,
+        network: std::sync::Arc<crate::runtime::Network>,
         program: &'static str,
         instance: u64,
         mark: gpui_kit::ElementId,
@@ -114,7 +115,7 @@ impl Standin {
                     .outline()
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        retry(program, instance);
+                        retry(&network, program, instance);
                     })
             }));
         #[cfg(test)]

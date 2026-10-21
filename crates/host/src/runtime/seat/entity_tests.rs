@@ -52,7 +52,12 @@ impl Render for Root {
             }
         }
         let body = match (seat.standin(), seat.tree()) {
-            (Some(standin), _) => standin.element(seat.program(), seat.instance(), seat.ax_mark()),
+            (Some(standin), _) => standin.element(
+                seat.network(),
+                seat.program(),
+                seat.instance(),
+                seat.ax_mark(),
+            ),
             // the cached path, no a11y reader
             (None, Some(tree)) => gpui_kit::AnyView::from(tree)
                 .cached(gpui_kit::StyleRefinement::default().size_full())
@@ -487,7 +492,7 @@ fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     // Retry: the load it starts fails at once (no node), so its signal and
     // the install's coalesce into the one turn the retry is
     let instance = seat.read_with(&native, |seat, _| seat.instance());
-    retry(PROGRAM, instance);
+    retry(crate::runtime::in_hand(), PROGRAM, instance);
     wait_for_seat(&mounted, |seat| matches!(seat.slot, Slot::Failed(_)));
     native.run_until_parked();
     assert_eq!(
@@ -980,7 +985,12 @@ fn a_route_reaches_an_open_view(cx: &mut TestAppContext) {
         view.route_subscriptions.push(99);
     }
     let instance = seat.read_with(&native, |seat, _| seat.instance());
-    crate::runtime::route_to(PROGRAM, instance, "somewhere".into());
+    crate::runtime::route_to(
+        crate::runtime::in_hand(),
+        PROGRAM,
+        instance,
+        "somewhere".into(),
+    );
     native.run_until_parked();
     assert_eq!(
         ticks_of(&seat, &native),
@@ -1057,7 +1067,12 @@ fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
         seat.update(cx, |seat, cx| seat.set_props(b"moved".to_vec(), cx));
         let instance = routed.read(cx).instance();
         cx.defer(move |cx| {
-            crate::runtime::route_to(PROGRAM, instance, "somewhere".into());
+            crate::runtime::route_to(
+                crate::runtime::in_hand(),
+                PROGRAM,
+                instance,
+                "somewhere".into(),
+            );
             routed.update(cx, |seat, cx| seat.turn(cx));
         });
     });
@@ -1240,7 +1255,7 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
     // a retry (Loading again) and the load it starts (no node: a failure
     // installed) each tell the rail
     let mounted = registry().lock().unwrap()[&key].clone();
-    retry(key.0, key.1);
+    retry(crate::runtime::in_hand(), key.0, key.1);
     wait_for_seat(&mounted, |seat| matches!(seat.slot, Slot::Failed(_)));
     assert!(
         woken() >= 2,

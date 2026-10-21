@@ -94,7 +94,9 @@ fn routed(app: &Entities, key: WindowKey, cx: &TestAppContext) -> Vec<Option<Str
     desk_of(app, key, cx).read_with(cx, |desk, _| {
         let panes = desk.get().panes.iter();
         panes
-            .map(|pane| crate::runtime::take_route(pane.program, pane.instance))
+            .map(|pane| {
+                crate::runtime::take_route(crate::runtime::in_hand(), pane.program, pane.instance)
+            })
             .collect()
     })
 }

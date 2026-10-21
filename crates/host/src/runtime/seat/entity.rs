@@ -286,6 +286,10 @@ impl Seat {
         self.program
     }
 
+    pub fn network(&self) -> Arc<crate::runtime::Network> {
+        self.network.clone()
+    }
+
     /// Its pane's layout instance (its perf key).
     pub fn instance(&self) -> u64 {
         self.instance
@@ -1014,7 +1018,7 @@ impl Seat {
             crate::render::ViewTree::new(root)
                 .with_presentation(presentation)
                 .with_perf_key(key)
-                .with_live(crate::runtime::HostLive::new(self.program))
+                .with_live(crate::runtime::HostLive::new(self.program, &self.network))
                 .with_keys_grant(self.keys_free)
         });
         tree.update(cx, |tree, _| tree.set_pictures(pictures));
@@ -1150,7 +1154,7 @@ impl Drop for Seat {
         // back as the program's preloaded seat, its code kept (`let_go`)
         let_go(&self.network, self.program, self.instance);
         // a route its view never read goes with it: no seat takes its key again
-        _ = take_route(self.program, self.instance);
+        _ = take_route(&self.network, self.program, self.instance);
         // the program's row is read off the seat put back, or another
         rail_moved();
     }

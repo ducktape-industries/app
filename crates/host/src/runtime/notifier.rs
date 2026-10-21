@@ -417,11 +417,11 @@ impl View {
         // held until the instance holds the code itself
         let (code, _held) =
             Self::prepare(&**runner, code, &shown).map_err(|failure| failure.to_string())?;
-        let mut notifier = Self::seated(program, INSTANCE, runner, code, &shown).await?;
+        let mut notifier =
+            Self::seated(program, INSTANCE, runner, code, &shown, connection.clone()).await?;
         notifier.notifier = true;
         // nothing snapshots a notifier: no replay is kept for it
         notifier.kept = None;
-        notifier.connection = connection.clone();
         notifier.name = listing.name;
         notifier.capabilities = listing.capabilities;
         notifier.hosts = listing.hosts;

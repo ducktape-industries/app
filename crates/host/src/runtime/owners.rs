@@ -7,9 +7,14 @@ use crate::memory::{Group, Owned};
 pub(crate) fn owners() -> Vec<Owned> {
     let mut owners = Vec::new();
     let mut named: HashMap<[u8; 32], String> = HashMap::new();
-    let seats: Vec<_> = lock(registry())
+    let seats: Vec<_> = networks()
         .iter()
-        .map(|(key, seat)| (*key, seat.clone()))
+        .flat_map(|network| {
+            lock(&network.seats)
+                .iter()
+                .map(|(key, seat)| (*key, seat.clone()))
+                .collect::<Vec<_>>()
+        })
         .collect();
     for ((program, instance), seat) in seats {
         let seat = lock(&seat);
@@ -63,4 +68,25 @@ pub(crate) fn owners() -> Vec<Owned> {
         });
     }
     owners
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_networks_views_are_owners() {
+        let network = Network::new(false);
+        let seat = Mounted::seat();
+        lock(&seat).slot = Slot::Ready(Box::new(crate::runtime::kernel::tests::view()));
+        lock(&network.seats).insert(("owners-tests-view", 7), seat);
+        let listed = owners()
+            .iter()
+            .any(|owned| owned.group == Group::View && owned.name == "owners-tests-view/7");
+        lock(&network.seats).clear();
+        assert!(
+            listed,
+            "a view on another network than the one in hand is no owner"
+        );
+    }
 }

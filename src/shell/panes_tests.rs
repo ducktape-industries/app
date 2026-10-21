@@ -1389,7 +1389,7 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
     };
     assert_eq!(active(&app, &native), Some(LINKED));
     assert_eq!(
-        crate::runtime::take_route(LINKED, opened.instance).as_deref(),
+        crate::runtime::take_route(crate::runtime::in_hand(), LINKED, opened.instance).as_deref(),
         Some("room/7"),
         "the view was not handed its route"
     );
