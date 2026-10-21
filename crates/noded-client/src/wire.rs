@@ -40,6 +40,7 @@ pub mod route {
     /// The UDP port the node takes live sessions on (`live_wire::PORT_ROUTE`).
     pub const LIVE_PORT: &str = "/v1/live/port";
     pub const BLOBS: &str = "/v1/blobs";
+    pub const WATCH: &str = "/v1/watch";
 }
 
 /// The kernel's table of recent blocks (`host::RECENT`): every block
@@ -340,6 +341,34 @@ pub struct Change {
     pub height: u64,
     pub root: Root,
     pub writes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Watch {
+    Ask { id: u32, frame: Vec<u8> },
+    Drop { id: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Pushed {
+    Answer {
+        id: u32,
+        height: u64,
+        outcome: Outcome,
+    },
+    Block {
+        height: u64,
+        root: Root,
+        writes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+        answers: Vec<(u32, Outcome)>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Outcome {
+    Answered(Vec<u8>),
+    Refused(abi::Refusal),
+    Moved,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -723,6 +752,42 @@ mod tests {
         };
         assert_eq!(abi::decode::<Network>(&bytes).unwrap(), network);
         assert_eq!(abi::encode(&network), bytes);
+    }
+
+    #[test]
+    fn the_watch_wire_keeps_the_nodes_tags() {
+        let ask = Watch::Ask {
+            id: 1,
+            frame: vec![9],
+        };
+        assert_eq!(abi::encode(&ask), [0, 1, 0, 0, 0, 1, 0, 0, 0, 9]);
+        assert_eq!(abi::encode(&Watch::Drop { id: 2 }), [1, 2, 0, 0, 0]);
+        assert_eq!(abi::encode(&Outcome::Answered(vec![7])), [0, 1, 0, 0, 0, 7]);
+        let refused = Outcome::Refused(abi::Refusal::new("r", "s"));
+        assert_eq!(abi::encode(&refused)[0], 1);
+        assert_eq!(abi::encode(&Outcome::Moved), [2]);
+        let answer = Pushed::Answer {
+            id: 3,
+            height: 4,
+            outcome: Outcome::Moved,
+        };
+        assert_eq!(
+            abi::encode(&answer),
+            [0, 3, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 2]
+        );
+        let block = Pushed::Block {
+            height: 5,
+            root: Root([0; 32]),
+            writes: vec![(vec![8], None)],
+            answers: vec![(6, Outcome::Moved)],
+        };
+        let mut bytes = vec![1];
+        bytes.extend(5u64.to_le_bytes());
+        bytes.extend([0; 32]);
+        bytes.extend([1, 0, 0, 0, 1, 0, 0, 0, 8, 0]);
+        bytes.extend([1, 0, 0, 0, 6, 0, 0, 0, 2]);
+        assert_eq!(abi::encode(&block), bytes);
+        assert_eq!(abi::decode::<Pushed>(&bytes).unwrap(), block);
     }
 
     #[test]

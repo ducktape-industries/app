@@ -404,11 +404,20 @@ its meaning; the host and the views name the const, never the string.
    and turns; `View::redraw` drains the queue into
    `view.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
-6. **Subscriptions.** `program.changes <program>` (`follow_changes`: one WebSocket
-   `/v1/changes/<program>?keys` (the keys alone) per node and program, held while a follower's view
-   is on screen (a desktop pane: presented, its window not hidden nor under a pane filling the
-   desk), a notifier's always, and the app in front; a follower back
-   is told to re-read first), `chain.heads` (`heads`: one WebSocket
+6. **Subscriptions.** `program.changes <program>` and `program.watch` (`kernel/node/standing.rs`:
+   one WebSocket `/v1/watch/<program>?keys` (the keys alone) per node and program, held while a
+   follower's view is on screen (a desktop pane: presented, its window not hidden nor under a pane
+   filling the desk), a notifier's always, and the app in front; a follower back is told to
+   re-read first; a node with no such route answers 404, and the feed opens
+   `/v1/changes/<program>?keys` instead and ends every `program.watch` `unsupported`, deciding
+   again at each reopen). A `program.watch` is a standing query (`Call{target, body}`): one per
+   node, target, body and signing key, asked (`Watch::Ask`, a signed query frame) by its first
+   follower, answered at once to a later one from the last answer, asked again on every reopened
+   socket (that answer is the item, never a re-read), and dropped (`Watch::Drop`) with its last
+   follower. Its items are `Some(answer)`, `None` (ask it yourself: the node could not run it)
+   and a refused re-run as a refusal with `done: false`; a refused ask ends it. A view hears
+   every request it has on one feed through one joint, so one block's change and answers land in
+   one redraw. `chain.heads` (`heads`: one WebSocket
    `/v1/heads` per node, each follower holding the newest head, on the
    same terms), `live.publish`/`live.subscribe`/
    `live.tracks` (`kernel/live.rs`: a request on the connection's live

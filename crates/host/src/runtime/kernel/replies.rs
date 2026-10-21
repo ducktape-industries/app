@@ -65,6 +65,29 @@ impl Replies {
         true
     }
 
+    pub(super) fn items<'a>(
+        &self,
+        items: impl IntoIterator<Item = (&'a Claim, u64, Answer, bool)>,
+    ) -> Vec<bool> {
+        let mut events = self.events.lock().expect("kernel replies");
+        let told: Vec<bool> = items
+            .into_iter()
+            .map(|(claim, id, result, done)| {
+                let mut hold = claim.0.lock().expect("a request's claim");
+                if hold.taken {
+                    return false;
+                }
+                hold.taken = done;
+                events.push(wire::Event::Response { id, result, done });
+                true
+            })
+            .collect();
+        if told.contains(&true) {
+            self.changed.send_replace(());
+        }
+        told
+    }
+
     pub(super) fn take(&self, claim: &Claim) -> Option<Option<Answer>> {
         let _events = self.events.lock().expect("kernel replies");
         let mut hold = claim.0.lock().expect("a request's claim");

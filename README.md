@@ -89,7 +89,8 @@ mkdir -p /tmp/ducktape && tar xzf /tmp/ducktape.tar.gz -C /tmp/ducktape
   its tab. A program without the section is left off the rail.
 - **Relay.** A view asks through the kernel contract (`crates/host/src/runtime/kernel.rs`),
   every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
-  `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
+  `program.query`/`op.submit`/`program.watch` `Call{target, body}` (`program.watch`: a standing
+  query the node answers again with each block that moves it), `program.changes <program>`,
   `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
   `blob.get`, `blob.manifest`, `link.open`, `link.window`, `host.widget` (the one MessagePack method: a tree
   command), `live.*` (`publish`/`send`/`subscribe`/`tracks`: a view's live

@@ -12,12 +12,15 @@ use noded_client::wire as noded;
 use view_wire::methods::Method as _;
 
 pub mod artifact;
+mod standing;
 
 pub type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
 /// One node-backed method: the node to ask and the request's payload in,
 /// the answer out. Not a [`methods::Call`], which is `program.query`'s and
 /// `op.submit`'s envelope.
 type NodeMethod = fn(Node, Vec<u8>) -> Answered;
+
+pub(in crate::runtime) type Joints = HashMap<(String, String), std::sync::Weak<standing::Joint>>;
 
 /// The node a view's request goes to, and the network its frames name.
 #[derive(Clone)]
@@ -387,6 +390,7 @@ fn node_on(connection: &super::super::Connection) -> Option<Node> {
 pub(in crate::runtime) fn reconnected(view: &mut View, connection: &super::super::Connection) {
     // counted again as each opens
     view.live_subscriptions.clear();
+    view.joints.clear();
     for (id, mut task) in std::mem::take(&mut view.tasks) {
         // the app's own feed has no socket on the old connection
         if matches!(task.follows, Some(Follow::Host)) {
@@ -410,6 +414,7 @@ pub(in crate::runtime) fn reconnected(view: &mut View, connection: &super::super
                 follow_changes(view, id, node, program);
             }
             (Some(Follow::Heads), Some(node), _) => follow_heads(view, id, node),
+            (Some(Follow::Watch(call)), Some(node), _) => follow_watch(view, id, node, call),
             (Some(Follow::Live(follows)), Some(_), _) => super::live::reopen(view, id, follows),
             // a submit whose frame went out: the old node may hold it
             (None, _, Some(standing)) => view.reply(id, standing),
@@ -439,10 +444,7 @@ pub(super) fn changes(view: &mut View, id: u64, payload: &[u8]) {
     follow_changes(view, id, node, program);
 }
 
-/// What a `program.changes` follower heard last: what its loop turns on.
 enum Heard {
-    /// It is [`Wanted`] again: it joins the feed, and the view is told
-    /// first to re-read (`None`), as after a reopened socket.
     Back,
     /// It is no longer wanted: it lets go of the feed, and the last
     /// follower gone, the socket closes.
@@ -452,22 +454,32 @@ enum Heard {
 }
 
 fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
-    follow(view, id, node, Fed::Changes(program.clone()));
+    standing::join(view, id, node, program.clone(), None);
     view.live_subscriptions.push((id, program));
 }
 
-fn follow(view: &mut View, id: u64, node: Node, fed: Fed) {
-    let replies = view.replies.clone();
-    let follows = match &fed {
-        Fed::Changes(program) => Follow::Changes(program.clone()),
-        Fed::Heads => Follow::Heads,
+pub(super) fn watch(view: &mut View, id: u64, payload: &[u8]) {
+    let Some(call) = enveloped(view, id, payload) else {
+        return;
     };
+    let Some(node) = connected(view, id) else {
+        return;
+    };
+    follow_watch(view, id, node, call);
+}
+
+fn follow_watch(view: &mut View, id: u64, node: Node, call: methods::Call) {
+    standing::join(view, id, node, call.target.clone(), Some(call));
+}
+
+fn follow(view: &mut View, id: u64, node: Node) {
+    let replies = view.replies.clone();
     let mut wanted = Wanted::of(view);
     // joined before the socket can send anything, where it may join now
-    let mut joined = wanted.now().then(|| feed(&node.client, &fed));
+    let mut joined = wanted.now().then(|| heads_feed(&node.client));
     let claim = Claim::default();
     let held = claim.clone();
-    start(view, id, Some(follows), claim, async move {
+    start(view, id, Some(Follow::Heads), claim, async move {
         let mut drained = replies.drains();
         loop {
             let heard = match &joined {
@@ -486,11 +498,8 @@ fn follow(view: &mut View, id: u64, node: Node, fed: Fed) {
                     continue;
                 }
                 Heard::Back => {
-                    joined = Some(feed(&node.client, &fed));
-                    match &fed {
-                        Fed::Changes(_) => Ok(reread()),
-                        Fed::Heads => continue,
-                    }
+                    joined = Some(heads_feed(&node.client));
+                    continue;
                 }
                 // a node that did not take the socket ends the subscription with why
                 Heard::Item(Err(refused)) => {
@@ -588,27 +597,22 @@ fn wanted(in_front: bool, on_screen: Option<bool>, presented: Option<bool>) -> b
     in_front && on_screen.unwrap_or(true) && presented.unwrap_or(true)
 }
 
-/// ONE socket per node and [`Fed`], however many
-/// subscriptions follow it (a program's panes and its notifier; on a host
-/// with no screen, one notifier per account): each item goes to every
-/// follower's [`Slot`]. Opened by the first follower, closed with the
-/// last.
-struct Feed {
-    followers: Followers,
+struct Feed<T, S> {
+    followers: Followers<T>,
+    shared: S,
     socket: tokio::task::JoinHandle<()>,
 }
 
-/// A feed's followers, each the slot of one subscription; one whose
-/// subscription let go is gone.
-type Followers = std::sync::Arc<Mutex<Fanout>>;
+type Followers<T> = std::sync::Arc<Mutex<Fanout<T>>>;
 
-struct Fanout {
-    slots: Vec<std::sync::Weak<Slot>>,
-    newest: Option<Answer>,
+struct Fanout<T> {
+    slots: Vec<std::sync::Weak<Slot<T>>>,
+    newest: Option<T>,
+    ended: bool,
 }
 
-impl Fanout {
-    fn send(&mut self, item: Answer) {
+impl<T: Clone> Fanout<T> {
+    fn send(&mut self, item: T) {
         self.slots.retain(|follower| match follower.upgrade() {
             Some(slot) => {
                 slot.offer(item.clone());
@@ -619,39 +623,24 @@ impl Fanout {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-enum Fed {
-    Changes(String),
-    Heads,
-}
+type Merge<T> = fn(Option<T>, T) -> T;
 
-type Merge = fn(Option<Answer>, Answer) -> Answer;
-
-/// One follower's place in its feed: the item its view has not taken yet.
-/// It holds one ([`coalesced`]), so a view that stops taking items (a
-/// window not drawn) costs nothing more for each block after.
-struct Slot {
-    pending: Mutex<Option<Answer>>,
+struct Slot<T> {
+    pending: Mutex<Option<T>>,
     filled: tokio::sync::Notify,
-    merge: Merge,
+    merge: Merge<T>,
 }
 
-impl Default for Slot {
-    fn default() -> Self {
-        Slot::merging(coalesced)
-    }
-}
-
-impl Slot {
-    fn merging(merge: Merge) -> Self {
+impl<T> Slot<T> {
+    fn merging(merge: Merge<T>) -> Self {
         Slot {
-            pending: Mutex::default(),
+            pending: Mutex::new(None),
             filled: tokio::sync::Notify::new(),
             merge,
         }
     }
 
-    fn offer(&self, item: Answer) {
+    fn offer(&self, item: T) {
         let mut pending = self
             .pending
             .lock()
@@ -660,8 +649,7 @@ impl Slot {
         self.filled.notify_one();
     }
 
-    /// The item, once there is one; the slot is empty again after.
-    async fn take(&self) -> Answer {
+    async fn take(&self) -> T {
         loop {
             let pending = self
                 .pending
@@ -695,7 +683,7 @@ fn newest(pending: Option<Answer>, item: Answer) -> Answer {
     }
 }
 
-impl Drop for Feed {
+impl<T, S> Drop for Feed<T, S> {
     fn drop(&mut self) {
         self.socket.abort();
     }
@@ -720,122 +708,110 @@ impl Drop for Writes {
 
 pub(crate) fn writes(client: &RpcClient, program: &str) -> Writes {
     let (tell, heard) = tokio::sync::mpsc::channel(1);
-    let (feed, slot) = feed(client, &Fed::Changes(program.to_owned()));
+    let (feed, slot) = changes_feed(client, program);
     let follower = handle().spawn(async move {
         let _feed = feed;
-        while slot.take().await.is_ok() {
-            let _ = tell.try_send(());
+        loop {
+            match slot.take().await.change {
+                Some(Ok(_)) => {
+                    let _ = tell.try_send(());
+                }
+                Some(Err(_)) => return,
+                None => {}
+            }
         }
     });
     Writes { heard, follower }
 }
 
-type Feeds = HashMap<(String, Fed), std::sync::Weak<Feed>>;
+type Feeds<K, T, S> = HashMap<K, std::sync::Weak<Feed<T, S>>>;
 
-fn feed(client: &RpcClient, fed: &Fed) -> (std::sync::Arc<Feed>, std::sync::Arc<Slot>) {
-    static FEEDS: OnceLock<Mutex<Feeds>> = OnceLock::new();
-    let mut feeds = FEEDS
-        .get_or_init(Mutex::default)
+type Changes = (
+    std::sync::Arc<Feed<standing::Delivery, std::sync::Arc<standing::Standings>>>,
+    std::sync::Arc<Slot<standing::Delivery>>,
+);
+
+type Heads = (
+    std::sync::Arc<Feed<Answer, ()>>,
+    std::sync::Arc<Slot<Answer>>,
+);
+
+fn changes_feed(client: &RpcClient, program: &str) -> Changes {
+    type Kept = Feeds<(String, String), standing::Delivery, std::sync::Arc<standing::Standings>>;
+    static FEEDS: OnceLock<Mutex<Kept>> = OnceLock::new();
+    let key = (client.endpoint().to_owned(), program.to_owned());
+    let open = |followers| {
+        let standings = std::sync::Arc::new(standing::Standings::default());
+        let socket = standing::socket(
+            client.clone(),
+            program.to_owned(),
+            followers,
+            standings.clone(),
+        );
+        (standings, handle().spawn(socket))
+    };
+    joined(
+        FEEDS.get_or_init(Mutex::default),
+        key,
+        standing::delivered,
+        open,
+    )
+}
+
+fn heads_feed(client: &RpcClient) -> Heads {
+    static FEEDS: OnceLock<Mutex<Feeds<String, Answer, ()>>> = OnceLock::new();
+    let open = |followers| ((), handle().spawn(heads_socket(client.clone(), followers)));
+    joined(
+        FEEDS.get_or_init(Mutex::default),
+        client.endpoint().to_owned(),
+        newest,
+        open,
+    )
+}
+
+fn joined<K: std::hash::Hash + Eq, T: Clone, S>(
+    feeds: &Mutex<Feeds<K, T, S>>,
+    key: K,
+    merge: Merge<T>,
+    open: impl FnOnce(Followers<T>) -> (S, tokio::task::JoinHandle<()>),
+) -> (std::sync::Arc<Feed<T, S>>, std::sync::Arc<Slot<T>>) {
+    let mut feeds = feeds
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let key = (client.endpoint().to_owned(), fed.clone());
-    let slot = std::sync::Arc::new(match fed {
-        Fed::Changes(_) => Slot::default(),
-        Fed::Heads => Slot::merging(newest),
-    });
+    let slot = std::sync::Arc::new(Slot::merging(merge));
     let follower = std::sync::Arc::downgrade(&slot);
-    // a feed whose node refused the socket has ended: the next follower opens another
-    if let Some(feed) = feeds.get(&key).and_then(std::sync::Weak::upgrade)
-        && !feed.socket.is_finished()
-    {
+    let running = feeds
+        .get(&key)
+        .and_then(std::sync::Weak::upgrade)
+        .filter(|feed| !feed.socket.is_finished());
+    if let Some(feed) = running {
         let mut fanout = feed
             .followers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(item) = fanout.newest.clone() {
-            slot.offer(item);
+        if !fanout.ended {
+            if let Some(item) = fanout.newest.clone() {
+                slot.offer(item);
+            }
+            fanout.slots.push(follower);
+            drop(fanout);
+            return (feed, slot);
         }
-        fanout.slots.push(follower);
-        drop(fanout);
-        return (feed, slot);
     }
     feeds.retain(|_, feed| feed.strong_count() > 0);
-    let followers: Followers = std::sync::Arc::new(Mutex::new(Fanout {
+    let followers: Followers<T> = std::sync::Arc::new(Mutex::new(Fanout {
         slots: vec![follower],
         newest: None,
+        ended: false,
     }));
-    let socket = match fed {
-        Fed::Changes(program) => {
-            handle().spawn(socket(client.clone(), program.clone(), followers.clone()))
-        }
-        Fed::Heads => handle().spawn(heads_socket(client.clone(), followers.clone())),
-    };
-    let feed = std::sync::Arc::new(Feed { followers, socket });
+    let (shared, socket) = open(followers.clone());
+    let feed = std::sync::Arc::new(Feed {
+        followers,
+        shared,
+        socket,
+    });
     feeds.insert(key, std::sync::Arc::downgrade(&feed));
     (feed, slot)
-}
-
-async fn socket(client: RpcClient, program: String, followers: Followers) {
-    use futures::StreamExt as _;
-    // to every follower still there; one that let go is dropped
-    let send = |item: Answer| {
-        followers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .send(item);
-    };
-    // the pace the node is read again at while it is away, once it said it
-    let mut block_time_ms = None;
-    // the socket is closed, and its followers have not re-read since
-    let mut away = false;
-    loop {
-        let lost = match client.changed_keys(&program).await {
-            Ok(mut changes) => {
-                if std::mem::take(&mut away) {
-                    tracing::info!(target: "ducktape::app", program, "changes stream open again");
-                    send(Ok(reread()));
-                }
-                if block_time_ms.is_none() {
-                    block_time_ms = client
-                        .status()
-                        .await
-                        .ok()
-                        .map(|status| status.block_time_ms);
-                }
-                while let Some(change) = changes.next().await {
-                    // what the node publishes, as it publishes it: the height and
-                    // the keys the block wrote (the values stay on the node)
-                    let item = match change {
-                        Ok(change) => methods::encode(&Some(methods::Change {
-                            height: change.height,
-                            keys: change.writes.into_iter().map(|(key, _)| key).collect(),
-                        })),
-                        Err(_) => break,
-                    };
-                    send(Ok(item));
-                }
-                "the socket closed".to_owned()
-            }
-            Err(error) if node_refuses(&error) => {
-                tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
-                send(Err(refused(error)));
-                return;
-            }
-            Err(error) => error.to_string(),
-        };
-        // once an outage, however many reads it takes
-        if !std::mem::replace(&mut away, true) {
-            tracing::warn!(target: "ducktape::app", program, reason = lost,
-                "changes stream lost: it opens again once the node answers");
-        }
-        match answering(&client, block_time_ms).await {
-            Ok(answered) => block_time_ms = Some(answered),
-            Err(error) => {
-                send(Err(refused(error)));
-                return;
-            }
-        }
-    }
 }
 
 /// Whether the node itself turned the changes socket down (its refusal, or
@@ -883,17 +859,18 @@ pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
 }
 
 fn follow_heads(view: &mut View, id: u64, node: Node) {
-    follow(view, id, node, Fed::Heads);
+    follow(view, id, node);
 }
 
-fn tell(followers: &Followers, item: Answer) {
-    followers
+fn end<T: Clone>(followers: &Followers<T>, item: T) {
+    let mut fanout = followers
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .send(item);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    fanout.ended = true;
+    fanout.send(item);
 }
 
-fn tell_newest(followers: &Followers, head: noded::Head) {
+fn tell_newest(followers: &Followers<Answer>, head: noded::Head) {
     let item = Ok(methods::encode(&methods::Head {
         height: head.height,
         time: head.time,
@@ -906,7 +883,7 @@ fn tell_newest(followers: &Followers, head: noded::Head) {
     fanout.send(item);
 }
 
-async fn heads_socket(client: RpcClient, followers: Followers) {
+async fn heads_socket(client: RpcClient, followers: Followers<Answer>) {
     use futures::StreamExt as _;
     let mut block_time_ms = None;
     let mut away = false;
@@ -928,7 +905,7 @@ async fn heads_socket(client: RpcClient, followers: Followers) {
             }
             Err(error) if node_refuses(&error) => {
                 tracing::debug!(target: "ducktape::app", %error, "heads stream not opened");
-                tell(&followers, Err(refused(error)));
+                end(&followers, Err(refused(error)));
                 return;
             }
             Err(error) => error.to_string(),
@@ -940,7 +917,7 @@ async fn heads_socket(client: RpcClient, followers: Followers) {
         match answering(&client, block_time_ms).await {
             Ok(answered) => block_time_ms = Some(answered),
             Err(error) => {
-                tell(&followers, Err(refused(error)));
+                end(&followers, Err(refused(error)));
                 return;
             }
         }
@@ -962,6 +939,7 @@ pub(in crate::runtime) struct NodeTask {
 pub(super) enum Follow {
     /// `program.changes` of this program.
     Changes(String),
+    Watch(methods::Call),
     /// `chain.heads`.
     Heads,
     /// A `live.*` request (`live.rs`).

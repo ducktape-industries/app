@@ -115,6 +115,23 @@ async fn an_upload_is_one_request_the_frame_by_its_length_then_each_blob_in_orde
 }
 
 #[wasm_bindgen_test]
+async fn a_duplex_the_node_has_no_route_for_is_its_404_and_any_other_failure_the_transport() {
+    let net = Net::new(None);
+    let ws = NODE.replacen("http", "ws", 1);
+    let item = hex_encode(b"one");
+    let (_sender, mut socket) = net.duplex(&format!("{ws}/socket/{item}")).await.unwrap();
+    assert_eq!(socket.next().await.unwrap().unwrap(), b"one");
+    assert!(socket.next().await.is_none());
+    let none = net.duplex(&format!("{ws}/nosocket")).await.err();
+    assert!(
+        matches!(none, Some(Error::Failed { status: 404, .. })),
+        "{none:?}"
+    );
+    let busy = net.duplex(&format!("{ws}/busy")).await.err();
+    assert!(matches!(busy, Some(Error::Transport(_))), "{busy:?}");
+}
+
+#[wasm_bindgen_test]
 async fn a_socket_hands_on_each_message_and_ends_when_the_node_closes_it() {
     let net = Net::new(None);
     let ws = NODE.replacen("http", "ws", 1);

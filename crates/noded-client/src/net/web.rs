@@ -1,7 +1,7 @@
 //! The node's transport in a browser: the page's fetch with redirects answered, never followed, each
 //! answer's body read as it streams in, and a WebSocket for the changes socket.
 
-use crate::{Error, Result};
+use crate::{Error, Result, refusal};
 use bytes::Bytes;
 use futures::channel::{mpsc, oneshot};
 use futures::{Stream, StreamExt as _};
@@ -63,6 +63,43 @@ impl Net {
         &self,
         url: &str,
     ) -> Result<rt::BoxStream<'static, Result<Vec<u8>>>> {
+        Ok(Box::pin(Self::open(url).await?))
+    }
+
+    pub(crate) async fn duplex(&self, url: &str) -> Result<super::Duplex> {
+        let socket = match Self::open(url).await {
+            Ok(socket) => socket,
+            Err(error) => return Err(self.unopened(url, error).await),
+        };
+        let (sender, sending) = mpsc::unbounded::<Vec<u8>>();
+        let carrier = socket.socket.clone();
+        let failed = sending.filter_map(move |bytes| {
+            let failed = carrier.send_with_u8_array(&bytes).err().map(unsent);
+            futures::future::ready(failed.map(|error| Some(Err(error))))
+        });
+        let heard = socket
+            .map(Some)
+            .chain(futures::stream::once(futures::future::ready(None)));
+        let socket =
+            futures::stream::select(heard, failed).scan((), |_, item| futures::future::ready(item));
+        Ok((sender, Box::pin(socket)))
+    }
+
+    async fn unopened(&self, url: &str, error: Error) -> Error {
+        let Ok(answer) = self.get(&url.replacen("ws", "http", 1)).await else {
+            return error;
+        };
+        if answer.status() != 404 {
+            return error;
+        }
+        let plain = answer.plain();
+        match answer.bytes().await {
+            Ok(body) => refusal(404, plain, &body),
+            Err(_) => error,
+        }
+    }
+
+    async fn open(url: &str) -> Result<Socket> {
         let socket = web_sys::WebSocket::new(url).map_err(unsent)?;
         socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
         let (heard, items) = mpsc::unbounded();
@@ -109,7 +146,7 @@ impl Net {
             _handlers: [on_message, on_open, on_close],
         };
         match opened.await {
-            Ok(true) => Ok(Box::pin(socket)),
+            Ok(true) => Ok(socket),
             _ => Err(Error::Transport(
                 "the node did not take the changes socket".into(),
             )),

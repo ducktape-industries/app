@@ -10,3 +10,8 @@ pub(crate) use native::{Answer, Net};
 mod web;
 #[cfg(target_family = "wasm")]
 pub(crate) use web::{Answer, Net};
+
+pub(crate) type Duplex = (
+    futures::channel::mpsc::UnboundedSender<Vec<u8>>,
+    rt::BoxStream<'static, crate::Result<Vec<u8>>>,
+);

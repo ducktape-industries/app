@@ -472,8 +472,6 @@ async fn two_identical_submits_in_flight_are_two_frames() {
     assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
-/// A node whose `/v1/changes/<program>` socket sends one change at each of
-/// `heights`, then stays open for as long as the client holds it.
 fn changes_node(heights: &'static [u64]) -> Node {
     counted_changes_node(heights, None).node
 }
@@ -519,10 +517,11 @@ fn counted_changes_node(
                         paced.acquire().await.unwrap().forget();
                     }
                     // each block wrote one row, as a program's block does
-                    let change = noded::Change {
+                    let change = noded::Pushed::Block {
                         height,
                         root: abi::Root([0; 32]),
                         writes: vec![(format!("row/{height}").into_bytes(), None)],
+                        answers: Vec::new(),
                     };
                     let sent =
                         tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change));
@@ -626,7 +625,8 @@ fn flaky_changes_node() -> Flaky {
                 read_away.clone(),
             );
             tokio::spawn(async move {
-                let status = request_line(&stream).await.contains(noded::route::STATUS);
+                let line = request_line(&stream).await;
+                let status = line.contains(noded::route::STATUS);
                 if !is_up.load(SeqCst) {
                     if status {
                         let _ = read_away.send(());
@@ -640,7 +640,8 @@ fn flaky_changes_node() -> Flaky {
                     };
                     return answer(&mut stream, "200 OK", &abi::encode(&status)).await;
                 }
-                if refusing.load(SeqCst) {
+                let refused = refusing.load(SeqCst) || line.contains(noded::route::WATCH);
+                if refused {
                     return answer(&mut stream, "404 Not Found", b"").await;
                 }
                 let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
@@ -1720,7 +1721,7 @@ fn two_blocks_before_a_take_are_one_reread() {
         };
         Ok(methods::encode(&Some(change)))
     };
-    let slot = Slot::default();
+    let slot = Slot::merging(coalesced);
     slot.offer(block(5));
     slot.offer(block(6));
     assert_eq!(handle().block_on(slot.take()), Ok(reread()));
@@ -1876,4 +1877,463 @@ fn a_programs_writes_are_heard_and_end_when_the_node_refuses() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let mut refused = writes(&flaky.node.client, "programs");
     assert_eq!(handle().block_on(refused.next()), None);
+}
+
+#[derive(Debug, PartialEq)]
+enum Seen {
+    Opened,
+    Ask(u32, Box<noded::Frame>),
+    Drop(u32),
+}
+
+struct WatchNode {
+    node: Node,
+    seen: std::sync::mpsc::Receiver<Seen>,
+    push: tokio::sync::mpsc::UnboundedSender<noded::Pushed>,
+    cut: std::sync::Arc<tokio::sync::Notify>,
+    asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    _network: std::sync::Arc<super::super::super::roster::Network>,
+}
+
+fn seen(fake: &WatchNode) -> Seen {
+    fake.seen.recv().expect("the fake node is gone")
+}
+
+fn first(body: &[u8], id: u32) -> Vec<u8> {
+    [body, &id.to_le_bytes()].concat()
+}
+
+fn at_ask(body: &[u8], id: u32) -> noded::Outcome {
+    match body {
+        b"refused" => noded::Outcome::Refused(abi::Refusal::new(
+            abi::reason::UNSUPPORTED,
+            "this node caps no query's fuel",
+        )),
+        b"denied" => noded::Outcome::Refused(abi::Refusal::new("not_member", "not in this room")),
+        b"moved" => noded::Outcome::Moved,
+        body => noded::Outcome::Answered(first(body, id)),
+    }
+}
+
+fn watch_node(routed: bool) -> WatchNode {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let network = super::super::super::roster::Network::new(false);
+    let node = Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "watch-network".into(),
+        on: super::super::super::roster::On::of(&network),
+    };
+    let (saw, seen) = std::sync::mpsc::channel();
+    let (push, pushes) = tokio::sync::mpsc::unbounded_channel::<noded::Pushed>();
+    let pushes = Arc::new(tokio::sync::Mutex::new(pushes));
+    let cut = Arc::new(tokio::sync::Notify::new());
+    let asked = Arc::new(AtomicUsize::new(0));
+    let (cutting, counted) = (cut.clone(), asked.clone());
+    handle().spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let (saw, pushes, cutting, counted) = (
+                saw.clone(),
+                pushes.clone(),
+                cutting.clone(),
+                counted.clone(),
+            );
+            tokio::spawn(async move {
+                let line = request_line(&stream).await;
+                if line.contains(noded::route::STATUS) {
+                    return answer(&mut stream, "200 OK", &abi::encode(&status_at(TIP))).await;
+                }
+                let watching = line.contains(noded::route::WATCH);
+                let served = line.contains(noded::route::CHANGES) || (watching && routed);
+                if !served {
+                    if !watching {
+                        counted.fetch_add(1, SeqCst);
+                    }
+                    return answer(&mut stream, "404 Not Found", b"").await;
+                }
+                let Ok(socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                let _ = saw.send(Seen::Opened);
+                let mut pushes = pushes.lock().await;
+                serve_watch(socket, watching, &saw, &mut pushes, &cutting).await;
+            });
+        }
+    });
+    WatchNode {
+        node,
+        seen,
+        push,
+        cut,
+        asked,
+        _network: network,
+    }
+}
+
+async fn serve_watch(
+    socket: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    watching: bool,
+    saw: &std::sync::mpsc::Sender<Seen>,
+    pushes: &mut tokio::sync::mpsc::UnboundedReceiver<noded::Pushed>,
+    cut: &tokio::sync::Notify,
+) {
+    use futures::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::Message;
+    let (mut sink, mut heard) = socket.split();
+    loop {
+        let sent = tokio::select! {
+            message = heard.next() => {
+                let Some(Ok(message)) = message else {
+                    return;
+                };
+                let Message::Binary(bytes) = message else {
+                    continue;
+                };
+                match abi::decode::<noded::Watch>(&bytes).unwrap() {
+                    noded::Watch::Ask { id, frame } => {
+                        let frame: noded::Frame = abi::decode(&frame).unwrap();
+                        let outcome = at_ask(&frame.body.payload, id);
+                        let _ = saw.send(Seen::Ask(id, Box::new(frame)));
+                        let height = TIP.height;
+                        abi::encode(&noded::Pushed::Answer { id, height, outcome })
+                    }
+                    noded::Watch::Drop { id } => {
+                        let _ = saw.send(Seen::Drop(id));
+                        continue;
+                    }
+                }
+            }
+            Some(pushed) = pushes.recv() => match (watching, pushed) {
+                (true, pushed) => abi::encode(&pushed),
+                (false, noded::Pushed::Block { height, root, writes, .. }) => {
+                    abi::encode(&noded::Change { height, root, writes })
+                }
+                (false, noded::Pushed::Answer { .. }) => continue,
+            },
+            () = cut.notified() => return,
+        };
+        if sink.send(Message::Binary(sent)).await.is_err() {
+            return;
+        }
+    }
+}
+
+fn on(view: &mut View, fake: &WatchNode) {
+    view.connection = crate::runtime::Connection {
+        client: Some(fake.node.client.clone()),
+        network: fake.node.network.clone(),
+        chain: String::new(),
+        rev: 0,
+        live: None,
+        on: fake.node.on.clone(),
+    };
+}
+
+fn requested(view: &mut View, id: u64, kind: &str, payload: Vec<u8>) {
+    let request = wire::Request {
+        id,
+        kind: kind.into(),
+        payload,
+    };
+    view.answer(request, &None);
+    assert_eq!(view.pending, [], "{kind} is a subscription the node feeds");
+}
+
+fn watched(view: &mut View, id: u64, body: &[u8]) {
+    let call = methods::Call {
+        target: "probe".into(),
+        body: body.to_vec(),
+    };
+    requested(view, id, "program.watch", methods::encode(&call));
+}
+
+fn changes_of_probe(view: &mut View, id: u64) {
+    requested(
+        view,
+        id,
+        "program.changes",
+        methods::encode(&"probe".to_owned()),
+    );
+}
+
+fn asked_of(fake: &WatchNode) -> (u32, noded::Frame) {
+    match seen(fake) {
+        Seen::Ask(id, frame) => (id, *frame),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn one_drain(view: &View) -> Vec<wire::Event> {
+    let mut changed = view.replies.changes();
+    futures::executor::block_on(async {
+        loop {
+            let mut items = Vec::new();
+            view.replies.drain_into(&mut items);
+            if !items.is_empty() {
+                return items;
+            }
+            changed.changed().await.unwrap();
+        }
+    })
+}
+
+fn watch_item<A: AsRef<[u8]>>(id: u64, answer: Option<A>) -> wire::Event {
+    let result = match answer {
+        Some(bytes) => [&[1][..], bytes.as_ref()].concat(),
+        None => vec![0],
+    };
+    wire::Event::Response {
+        id,
+        result: Ok(result),
+        done: false,
+    }
+}
+
+fn refusal_item(id: u64, code: &str, message: &str, done: bool) -> wire::Event {
+    wire::Event::Response {
+        id,
+        result: Err(wire::Error::new(code, message)),
+        done,
+    }
+}
+
+fn change_at(id: u64, height: u64, key: &[u8]) -> wire::Event {
+    let change = methods::Change {
+        height,
+        keys: vec![key.to_vec()],
+    };
+    wire::Event::Response {
+        id,
+        result: Ok(methods::encode(&Some(change))),
+        done: false,
+    }
+}
+
+fn pushed_block(
+    height: u64,
+    writes: &[&[u8]],
+    answers: Vec<(u32, noded::Outcome)>,
+) -> noded::Pushed {
+    noded::Pushed::Block {
+        height,
+        root: abi::Root([0; 32]),
+        writes: writes.iter().map(|key| (key.to_vec(), None)).collect(),
+        answers,
+    }
+}
+
+#[test]
+fn a_standing_query_is_answered_at_once_then_only_with_a_block_that_names_it() {
+    let fake = watch_node(true);
+    let mut view = view();
+    on(&mut view, &fake);
+    changes_of_probe(&mut view, 1);
+    watched(&mut view, 2, b"x");
+    assert_eq!(seen(&fake), Seen::Opened);
+    let (id, frame) = asked_of(&fake);
+    assert_eq!(frame.body.target, "probe");
+    assert_eq!(frame.body.payload, b"x");
+    assert_eq!(frame.body.network, b"watch-network");
+    assert_eq!(frame.body.anchor, TIP);
+    let reader = crate::contract::os().reader();
+    let key = noded_client::Signer::public_key(&*reader);
+    assert_eq!(frame.body.signer, key);
+    let preimage = frame.body.preimage();
+    let signed = noded_client::Signer::sign(&*reader, noded::QUERY_NAMESPACE, &preimage).unwrap();
+    assert_eq!(frame.proof, signed, "a query frame its reader signed");
+    assert_eq!(one_drain(&view), [watch_item(2, Some(&first(b"x", id)))]);
+    fake.push
+        .send(pushed_block(8, &[b"b"], Vec::new()))
+        .unwrap();
+    assert_eq!(one_drain(&view), [change_at(1, 8, b"b")], "no answer moved");
+    let moved = noded::Outcome::Answered(b"a1".to_vec());
+    fake.push
+        .send(pushed_block(9, &[b"a"], vec![(id, moved)]))
+        .unwrap();
+    assert_eq!(
+        one_drain(&view),
+        [change_at(1, 9, b"a"), watch_item(2, Some(b"a1"))],
+        "one block, one drain"
+    );
+    assert_eq!(
+        fake.asked.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing but the socket asked the node"
+    );
+    assert!(fake.seen.try_recv().is_err(), "one ask");
+}
+
+#[test]
+fn views_watching_one_query_cost_one_ask_and_the_last_gone_drops_it() {
+    let fake = watch_node(true);
+    let mut keeper = view();
+    on(&mut keeper, &fake);
+    changes_of_probe(&mut keeper, 1);
+    let mut views: Vec<View> = (0..3)
+        .map(|_| {
+            let mut view = view();
+            on(&mut view, &fake);
+            view
+        })
+        .collect();
+    watched(&mut views[0], 1, b"x");
+    assert_eq!(seen(&fake), Seen::Opened);
+    let (id, _) = asked_of(&fake);
+    let held = first(b"x", id);
+    assert_eq!(one_drain(&views[0]), [watch_item(1, Some(&held))]);
+    watched(&mut views[1], 1, b"x");
+    assert_eq!(
+        one_drain(&views[1]),
+        [watch_item(1, Some(&held))],
+        "the answer held, at once"
+    );
+    views[0].tasks.clear();
+    watched(&mut views[2], 1, b"x");
+    assert_eq!(
+        one_drain(&views[2]),
+        [watch_item(1, Some(&held))],
+        "the first view gone, the query still stands"
+    );
+    views[1].tasks.clear();
+    views[2].tasks.clear();
+    assert_eq!(seen(&fake), Seen::Drop(id));
+    watched(&mut views[0], 2, b"y");
+    let (other, frame) = asked_of(&fake);
+    assert_ne!(other, id);
+    assert_eq!(frame.body.payload, b"y", "nothing was asked between");
+}
+
+#[test]
+fn a_refused_ask_ends_its_watch_and_the_socket_goes_on() {
+    let fake = watch_node(true);
+    let mut view = view();
+    on(&mut view, &fake);
+    changes_of_probe(&mut view, 1);
+    watched(&mut view, 2, b"refused");
+    assert_eq!(seen(&fake), Seen::Opened);
+    asked_of(&fake);
+    let unsupported = "this node caps no query's fuel";
+    assert_eq!(
+        one_drain(&view),
+        [refusal_item(2, abi::reason::UNSUPPORTED, unsupported, true)]
+    );
+    fake.push
+        .send(pushed_block(8, &[b"b"], Vec::new()))
+        .unwrap();
+    assert_eq!(one_drain(&view), [change_at(1, 8, b"b")]);
+    watched(&mut view, 3, b"denied");
+    asked_of(&fake);
+    assert_eq!(
+        one_drain(&view),
+        [refusal_item(3, "not_member", "not in this room", true)]
+    );
+}
+
+#[test]
+fn a_node_without_the_watch_route_feeds_changes_and_ends_each_watch_unsupported() {
+    let fake = watch_node(false);
+    let mut view = view();
+    on(&mut view, &fake);
+    changes_of_probe(&mut view, 1);
+    watched(&mut view, 2, b"x");
+    assert_eq!(seen(&fake), Seen::Opened, "the changes socket");
+    let ended = one_drain(&view);
+    assert!(
+        matches!(&ended[..], [wire::Event::Response { id: 2, result: Err(refusal), done: true }] if refusal.code == abi::reason::UNSUPPORTED),
+        "{ended:?}"
+    );
+    fake.push
+        .send(pushed_block(5, &[b"a"], Vec::new()))
+        .unwrap();
+    assert_eq!(one_drain(&view), [change_at(1, 5, b"a")]);
+    assert_eq!(fake.asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_moved_answer_is_none_and_a_refused_rerun_leaves_the_watch_standing() {
+    let fake = watch_node(true);
+    let mut view = view();
+    on(&mut view, &fake);
+    watched(&mut view, 1, b"moved");
+    assert_eq!(seen(&fake), Seen::Opened);
+    let (id, _) = asked_of(&fake);
+    assert_eq!(
+        one_drain(&view),
+        [watch_item(1, None::<&[u8]>)],
+        "ask it yourself"
+    );
+    let gone = noded::Outcome::Refused(abi::Refusal::new("not_member", "left the room"));
+    fake.push
+        .send(pushed_block(8, &[], vec![(id, gone)]))
+        .unwrap();
+    assert_eq!(
+        one_drain(&view),
+        [refusal_item(1, "not_member", "left the room", false)]
+    );
+    let back = noded::Outcome::Answered(b"back".to_vec());
+    fake.push
+        .send(pushed_block(9, &[], vec![(id, back)]))
+        .unwrap();
+    assert_eq!(one_drain(&view), [watch_item(1, Some(b"back"))]);
+}
+
+#[test]
+fn a_reopened_socket_asks_again_and_its_answer_is_the_item() {
+    let fake = watch_node(true);
+    let mut view = view();
+    on(&mut view, &fake);
+    watched(&mut view, 1, b"x");
+    assert_eq!(seen(&fake), Seen::Opened);
+    let (id, _) = asked_of(&fake);
+    assert_eq!(one_drain(&view), [watch_item(1, Some(&first(b"x", id)))]);
+    fake.cut.notify_one();
+    assert_eq!(seen(&fake), Seen::Opened, "opened again");
+    let (again, frame) = asked_of(&fake);
+    assert_eq!((again, &frame.body.payload[..]), (id, &b"x"[..]));
+    assert_eq!(
+        one_drain(&view),
+        [watch_item(1, Some(&first(b"x", id)))],
+        "the fresh answer, never a re-read"
+    );
+}
+
+#[test]
+fn a_view_that_takes_nothing_while_two_blocks_come_gets_one_reread_and_the_newest_answer() {
+    let fake = watch_node(true);
+    let (mut slow, mut quick) = (view(), view());
+    on(&mut slow, &fake);
+    on(&mut quick, &fake);
+    changes_of_probe(&mut slow, 1);
+    watched(&mut slow, 2, b"x");
+    assert_eq!(seen(&fake), Seen::Opened);
+    let (id, _) = asked_of(&fake);
+    watched(&mut quick, 1, b"x");
+    let held = first(b"x", id);
+    assert_eq!(one_drain(&quick), [watch_item(1, Some(&held))]);
+    let answered = |bytes: &[u8]| vec![(id, noded::Outcome::Answered(bytes.to_vec()))];
+    fake.push
+        .send(pushed_block(8, &[b"a"], answered(b"a1")))
+        .unwrap();
+    fake.push
+        .send(pushed_block(9, &[b"b"], answered(b"a2")))
+        .unwrap();
+    let mut heard = one_drain(&quick);
+    if heard == [watch_item(1, Some(b"a1"))] {
+        heard = one_drain(&quick);
+    }
+    assert_eq!(heard, [watch_item(1, Some(b"a2"))]);
+    assert_eq!(one_drain(&slow), [watch_item(2, Some(&held))]);
+    let reread = wire::Event::Response {
+        id: 1,
+        result: Ok(methods::encode(&None::<methods::Change>)),
+        done: false,
+    };
+    assert_eq!(
+        one_drain(&slow),
+        [reread, watch_item(2, Some(b"a2"))],
+        "one re-read and the newest answer"
+    );
 }

@@ -3,6 +3,7 @@
 
 use crate::{Error, Result, refusal};
 use bytes::Bytes;
+use futures::channel::mpsc;
 use futures::{Stream, StreamExt as _};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
@@ -48,21 +49,31 @@ impl Net {
         &self,
         url: &str,
     ) -> Result<rt::BoxStream<'static, Result<Vec<u8>>>> {
-        let unbounded = WebSocketConfig {
-            max_message_size: None,
-            max_frame_size: None,
-            ..WebSocketConfig::default()
-        };
-        let (socket, _) = tokio_tungstenite::connect_async_with_config(url, Some(unbounded), false)
-            .await
-            .map_err(not_opened)?;
-        Ok(Box::pin(socket.filter_map(|message| {
-            futures::future::ready(match message {
-                Ok(Message::Binary(bytes)) => Some(Ok(bytes)),
-                Ok(_) => None,
-                Err(error) => Some(Err(Error::Transport(error.to_string()))),
-            })
-        })))
+        let (socket, _) =
+            tokio_tungstenite::connect_async_with_config(url, Some(unbounded()), false)
+                .await
+                .map_err(not_opened)?;
+        Ok(Box::pin(binary(socket)))
+    }
+
+    pub(crate) async fn duplex(&self, url: &str) -> Result<super::Duplex> {
+        let (socket, _) =
+            tokio_tungstenite::connect_async_with_config(url, Some(unbounded()), false)
+                .await
+                .map_err(not_opened)?;
+        let (sink, read) = socket.split();
+        let (sender, sending) = mpsc::unbounded::<Vec<u8>>();
+        let sent = sending.map(Message::Binary).map(Ok).forward(sink);
+        let failed = futures::stream::once(sent).filter_map(|sent| {
+            let failed = sent.err().map(|error| Error::Transport(error.to_string()));
+            futures::future::ready(failed.map(|error| Some(Err(error))))
+        });
+        let heard = binary(read)
+            .map(Some)
+            .chain(futures::stream::once(futures::future::ready(None)));
+        let socket =
+            futures::stream::select(heard, failed).scan((), |_, item| futures::future::ready(item));
+        Ok((sender, Box::pin(socket)))
     }
 }
 
@@ -126,6 +137,26 @@ fn with_causes(error: &reqwest::Error) -> String {
         cause = inner.source();
     }
     sentence
+}
+
+fn unbounded() -> WebSocketConfig {
+    WebSocketConfig {
+        max_message_size: None,
+        max_frame_size: None,
+        ..WebSocketConfig::default()
+    }
+}
+
+fn binary(
+    socket: impl Stream<Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>>,
+) -> impl Stream<Item = Result<Vec<u8>>> {
+    socket.filter_map(|message| {
+        futures::future::ready(match message {
+            Ok(Message::Binary(bytes)) => Some(Ok(bytes)),
+            Ok(_) => None,
+            Err(error) => Some(Err(Error::Transport(error.to_string()))),
+        })
+    })
 }
 
 fn not_opened(error: tokio_tungstenite::tungstenite::Error) -> Error {

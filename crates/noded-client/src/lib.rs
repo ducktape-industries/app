@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use wire::{
     Ask, BlockAsk, Blocks, Change, Finalized, Frame, Head, Layer, Located, Network, Page,
-    Preconfirm, Query, Receipt, Status, Submit, Submitted, Tip, TxAsk, route,
+    Preconfirm, Pushed, Query, Receipt, Status, Submit, Submitted, Tip, TxAsk, Watch, route,
 };
 
 /// What signs a frame or a consent: an ed25519 key, wherever it is kept.
@@ -211,14 +211,7 @@ impl Client {
         target: &str,
         payload: Vec<u8>,
     ) -> std::result::Result<Vec<u8>, Asked> {
-        let known = *self
-            .newest
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let anchor = match known {
-            Some(anchor) => anchor,
-            None => self.status().await.map_err(Asked::Node)?.anchor(),
-        };
+        let anchor = self.anchor().await.map_err(Asked::Node)?;
         let sign = |anchor| {
             Frame::query(signer, network, anchor, target, payload.clone()).map_err(Asked::Unsigned)
         };
@@ -233,6 +226,30 @@ impl Client {
                     .map_err(Asked::Node)
             }
             answer => answer.map_err(Asked::Node),
+        }
+    }
+
+    pub async fn ask_frame(
+        &self,
+        signer: &dyn Signer,
+        network: &[u8],
+        target: &str,
+        payload: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, Asked> {
+        let anchor = self.anchor().await.map_err(Asked::Node)?;
+        Frame::query(signer, network, anchor, target, payload)
+            .map(|frame| frame.encode())
+            .map_err(Asked::Unsigned)
+    }
+
+    async fn anchor(&self) -> Result<Tip> {
+        let known = *self
+            .newest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match known {
+            Some(anchor) => Ok(anchor),
+            None => Ok(self.status().await?.anchor()),
         }
     }
 
@@ -337,6 +354,18 @@ impl Client {
             .await
     }
 
+    pub async fn watch(
+        &self,
+        program: &str,
+    ) -> Result<(Watching, impl Stream<Item = Result<Pushed>> + Unpin)> {
+        let base = self.base.replacen("http", "ws", 1);
+        let url = format!("{base}{}/{program}?keys", route::WATCH);
+        let (sending, socket) = self.http.duplex(&url).await?;
+        let pushed = socket
+            .map(|message| message.and_then(|bytes| abi::decode(&bytes).map_err(Error::Decode)));
+        Ok((Watching(sending), pushed))
+    }
+
     pub async fn heads(&self) -> Result<impl Stream<Item = Result<Head>> + Unpin> {
         let heard = self.clone();
         let heads = self.follow::<Head>(route::HEADS.to_owned()).await?;
@@ -378,6 +407,14 @@ impl Client {
 
     async fn post_raw<T: BorshDeserialize>(&self, route: &str, body: Vec<u8>) -> Result<T> {
         answered(self.http.post(&self.url(route), body)).await
+    }
+}
+
+pub struct Watching(futures::channel::mpsc::UnboundedSender<Vec<u8>>);
+
+impl Watching {
+    pub fn send(&self, watch: &Watch) -> bool {
+        self.0.unbounded_send(abi::encode(watch)).is_ok()
     }
 }
 
@@ -781,6 +818,75 @@ mod tests {
             longer.next_blob().await.unwrap();
         }
         assert!(matches!(longer.next_blob().await, Err(Error::Decode(_))));
+    }
+
+    #[tokio::test]
+    async fn a_watch_carries_asks_out_and_pushes_in_and_a_node_without_it_answers_404() {
+        tokio::time::timeout(LIBTEST_SLOW_MARK, a_watch_carries_both_ways())
+            .await
+            .expect("the watch test was still waiting at libtest's slow-test mark");
+    }
+
+    const LIBTEST_SLOW_MARK: Duration = Duration::from_secs(60);
+
+    async fn a_watch_carries_both_ways() {
+        use futures::SinkExt as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Client::new(format!("http://{}", listener.local_addr().unwrap()));
+        let pushed = Pushed::Answer {
+            id: 1,
+            height: 4,
+            outcome: wire::Outcome::Answered(vec![7]),
+        };
+        let sent = pushed.clone();
+        let served = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut peeked = [0; 512];
+            let line = loop {
+                let read = stream.peek(&mut peeked).await.unwrap();
+                let head = String::from_utf8_lossy(&peeked[..read]).into_owned();
+                if let Some((line, _)) = head.split_once("\r\n") {
+                    break line.to_owned();
+                }
+            };
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let asked = socket.next().await.unwrap().unwrap().into_data();
+            socket
+                .send(Message::Binary(abi::encode(&sent)))
+                .await
+                .unwrap();
+            socket.close(None).await.unwrap();
+            while socket.next().await.is_some() {}
+            drop(socket);
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).await.unwrap();
+                head.push(byte[0]);
+            }
+            let refused = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+            stream.write_all(refused).await.unwrap();
+            (line, asked)
+        });
+        let (watching, mut heard) = client.watch("chat").await.unwrap();
+        let ask = Watch::Ask {
+            id: 1,
+            frame: vec![9],
+        };
+        assert!(watching.send(&ask));
+        assert_eq!(heard.next().await.unwrap().unwrap(), pushed);
+        assert!(heard.next().await.is_none(), "the node's close ends it");
+        let refused = client.watch("chat").await.err();
+        assert!(
+            matches!(refused, Some(Error::Failed { status: 404, .. })),
+            "{refused:?}"
+        );
+        let (path, asked) = served.await.unwrap();
+        assert_eq!(path, "GET /v1/watch/chat?keys HTTP/1.1");
+        assert_eq!(asked, abi::encode(&ask));
     }
 
     #[tokio::test]

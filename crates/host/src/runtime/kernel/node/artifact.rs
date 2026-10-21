@@ -197,7 +197,7 @@ pub fn follow(address: &str) -> Option<(Following, mpsc::UnboundedReceiver<()>)>
     let joined = node.clone();
     let join = move || {
         Box::pin(futures::stream::unfold(
-            feed(&joined.client, &Fed::Changes(files::PROGRAM.to_owned())),
+            changes_feed(&joined.client, files::PROGRAM),
             |(feed, slot)| async move {
                 let _ = slot.take().await;
                 Some(((), (feed, slot)))

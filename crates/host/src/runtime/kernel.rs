@@ -47,10 +47,10 @@ pub(super) mod screen;
 
 #[cfg(test)]
 pub(super) use node::hold_for_test;
-pub(super) use node::{NodeTask, reconnected, spawn_host_subscription, spawn_reply};
+pub(super) use node::{Joints, NodeTask, reconnected, spawn_host_subscription, spawn_reply};
 use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
-    spawn_put, spawn_submit, status, tx,
+    spawn_put, spawn_submit, status, tx, watch,
 };
 #[cfg(feature = "ui")]
 pub(super) use node::{reaches_node, spawn_event, spawn_keep, spawn_save};
@@ -335,6 +335,7 @@ pub(super) fn answer(
             "host_call.program.describe",
         ),
         (Capability::Program, "changes") => changes(view, id, payload),
+        (Capability::Program, "watch") => watch(view, id, payload),
         (Capability::Chain, "heads") => heads(view, id, payload),
         (Capability::Link, "open") => {
             open_link(view, id, payload, methods::LinkOpen::KIND, Intent::OpenLink)

@@ -229,6 +229,7 @@ pub(super) struct View {
     /// The view's `program.changes` subscriptions and the program each one
     /// watches: told on every block that wrote to that program.
     pub live_subscriptions: Vec<(u64, String)>,
+    pub(in crate::runtime) joints: kernel::Joints,
     /// The tracks this view publishes, where its `live.send`s go.
     pub tracks: kernel::live::Tracks,
     pub sockets: kernel::socket::Sockets,
