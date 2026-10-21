@@ -18,6 +18,20 @@ Guidance for assistant sessions in this repository; `CLAUDE.md` links here.
 - A design that seems to need a new restriction is a question for the user
   before it is built.
 
+## Files come from the network, never from the device
+
+orthory's ruling (mobile QA 376): "do not assume that the file is available
+locally anywhere on the app. any 'uploaded' file is to be only shown if the
+blob is successfully held. no local."
+
+- Nothing in the host or a view draws a file from a local path or local bytes:
+  no chip, post, preview or thumbnail. A picked, pasted or dropped file's
+  bytes are read only to put its blobs.
+- An uploaded file shows only once the network holds it, and is drawn from
+  there: by the files address its post records, the same read for the
+  sender's own post as for anyone else's. Until then its chip shows progress
+  with no picture.
+
 ## Delivery
 
 - This repository lives on duckpond's forge as `app`, and forge's `dev`
