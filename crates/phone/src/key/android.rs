@@ -103,6 +103,51 @@ pub(super) fn storage(alias: &str) -> KeyResult<(bool, String)> {
     })
 }
 
+pub(super) fn secret_get(name: &str) -> KeyResult<Option<Vec<u8>>> {
+    ask(|env, class| {
+        let name = env.new_string(name)?;
+        let answer = env
+            .call_static_method(
+                class,
+                jni_str!("secretGet"),
+                jni_sig!("(Ljava/lang/String;)[B"),
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        match answer.is_null() {
+            true => Ok(None),
+            false => bytes_of(env, answer).map(Some),
+        }
+    })
+}
+
+pub(super) fn secret_set(name: &str, value: &[u8]) -> KeyResult<()> {
+    ask(|env, class| {
+        let name = env.new_string(name)?;
+        let value = env.byte_array_from_slice(value)?;
+        env.call_static_method(
+            class,
+            jni_str!("secretSet"),
+            jni_sig!("(Ljava/lang/String;[B)V"),
+            &[JValue::Object(&name), JValue::Object(&value)],
+        )?;
+        Ok(())
+    })
+}
+
+pub(super) fn secret_remove(name: &str) -> KeyResult<()> {
+    ask(|env, class| {
+        let name = env.new_string(name)?;
+        env.call_static_method(
+            class,
+            jni_str!("secretRemove"),
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&name)],
+        )?;
+        Ok(())
+    })
+}
+
 fn field<'local>(
     env: &mut Env<'local>,
     map: &JObject<'_>,
@@ -133,7 +178,9 @@ fn ask<T>(
         .vm
         .attach_current_thread(|env| call(env, &store.class))
         .map_err(|error| match error {
-            jni::errors::Error::CaughtJavaException { msg, .. } => msg,
+            jni::errors::Error::CaughtJavaException { name, msg, .. } => {
+                super::java_refusal(&name, &msg)
+            }
             other => other.to_string(),
         })
 }

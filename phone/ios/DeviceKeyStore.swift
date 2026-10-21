@@ -18,6 +18,7 @@ enum DeviceKeyStore {
   /// A sealed seed's Keychain service, and a bare seed's (no Secure Enclave).
   private static let sealedService = "industries.ducktape.mobile.device-key.sealed"
   private static let seedService = "industries.ducktape.mobile.device-key.seed"
+  private static let secretService = "industries.ducktape.mobile.view-secret"
   private static let ecies = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
   /// One ask at a time: a first ask makes the key, and a second must not make another.
   private static let lock = NSLock()
@@ -70,6 +71,47 @@ enum DeviceKeyStore {
     }
   }
 
+  static func secret(_ name: String) throws -> Data? {
+    try lock.withLock {
+      try claim()
+      let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: secretService,
+        kSecAttrAccount as String: name,
+        kSecReturnData as String: true,
+      ]
+      var found: CFTypeRef?
+      let status = SecItemCopyMatching(query as CFDictionary, &found)
+      if status == errSecItemNotFound { return nil }
+      guard status == errSecSuccess, let bytes = found as? Data else { throw KeyError(status, "read this secret") }
+      return bytes
+    }
+  }
+
+  static func keepSecret(_ name: String, _ value: Data?) throws {
+    try lock.withLock {
+      try claim()
+      let item: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: secretService,
+        kSecAttrAccount as String: name,
+      ]
+      guard let value else {
+        let status = SecItemDelete(item as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw KeyError(status, "remove this secret") }
+        return
+      }
+      let updated = SecItemUpdate(item as CFDictionary, [kSecValueData as String: value] as CFDictionary)
+      if updated == errSecSuccess { return }
+      guard updated == errSecItemNotFound else { throw KeyError(updated, "keep this secret") }
+      var added = item
+      added[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+      added[kSecValueData as String] = value
+      let status = SecItemAdd(added as CFDictionary, nil)
+      guard status == errSecSuccess else { throw KeyError(status, "keep this secret") }
+    }
+  }
+
   /// The Keychain service of this device's keys: sealed ones where there is an Enclave, bare seeds where not.
   private static var service: String { enclave ? sealedService : seedService }
 
@@ -81,7 +123,7 @@ enum DeviceKeyStore {
   private static func claim() throws {
     if claimed { return }
     if !UserDefaults.standard.bool(forKey: containerMark) {
-      for name in [sealedService, seedService] {
+      for name in [sealedService, seedService, secretService] {
         try delete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: name])
       }
       try delete([
@@ -261,6 +303,29 @@ public func ducktapeDeviceKeySign(
     let signature = try DeviceKeyStore.sign(String(cString: alias), Data(bytes: message, count: length))
     guard signature.count == 64 else { throw KeyError("The key store answered a \(signature.count)-byte signature.") }
     signature.copyBytes(to: out, count: 64)
+  }
+}
+
+@_cdecl("ducktape_view_secret_get")
+public func ducktapeViewSecretGet(
+  _ name: UnsafePointer<CChar>, _ value: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>, _ length: UnsafeMutablePointer<Int>
+) -> UnsafeMutablePointer<CChar>? {
+  answered {
+    value.pointee = nil
+    length.pointee = 0
+    guard let kept = try DeviceKeyStore.secret(String(cString: name)) else { return }
+    guard let raw = malloc(max(kept.count, 1)) else { throw KeyError("Could not copy the secret out.") }
+    let copy = raw.assumingMemoryBound(to: UInt8.self)
+    kept.copyBytes(to: copy, count: kept.count)
+    value.pointee = copy
+    length.pointee = kept.count
+  }
+}
+
+@_cdecl("ducktape_view_secret_set")
+public func ducktapeViewSecretSet(_ name: UnsafePointer<CChar>, _ value: UnsafePointer<UInt8>?, _ length: Int) -> UnsafeMutablePointer<CChar>? {
+  answered {
+    try DeviceKeyStore.keepSecret(String(cString: name), value.map { Data(bytes: $0, count: length) })
   }
 }
 

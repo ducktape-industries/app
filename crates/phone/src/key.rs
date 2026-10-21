@@ -78,6 +78,20 @@ pub fn storage(keyring: &str) -> KeyResult<KeyStorage> {
     })
 }
 
+/// What a Java exception from the key store says to a person: its message,
+/// or, where it carries none (AndroidKeyStore's `AEADBadTagException`), its
+/// class.
+pub fn java_refusal(class: &str, message: &str) -> String {
+    let unsaid = message.is_empty() || message == "<NULL>";
+    match unsaid {
+        true => {
+            let short = class.rsplit(['.', '/']).next().unwrap_or(class);
+            format!("The key store refused ({short}).")
+        }
+        false => message.to_owned(),
+    }
+}
+
 /// A store's level word as the host names it. The Swift store answers
 /// `secure-enclave` or `keychain`; the Kotlin one `strongbox`, `tee`,
 /// `secure` (secure hardware, which one not said), `software` or `unknown`.
@@ -93,6 +107,31 @@ pub fn level_of(word: &str) -> KeyResult<KeyLevel> {
         other => Err(format!(
             "The key store names where this key is kept as `{other}`, which this app does not read yet."
         )),
+    }
+}
+
+/// A view's secrets (`contract::Secrets`) in the store that keeps this
+/// device's key: the Keychain on iOS, a file sealed by a Keystore key on
+/// Android.
+#[cfg(any(target_os = "ios", target_os = "android"))]
+pub struct PhoneSecrets;
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
+impl ducktape_host::contract::Secrets for PhoneSecrets {
+    fn get(&self, name: &str) -> Result<Option<Vec<u8>>, ducktape_host::contract::KeyRefusal> {
+        store::secret_get(name).map_err(ducktape_host::contract::KeyRefusal::Denied)
+    }
+
+    fn set(
+        &self,
+        name: &str,
+        value: Option<&[u8]>,
+    ) -> Result<(), ducktape_host::contract::KeyRefusal> {
+        let done = match value {
+            Some(value) => store::secret_set(name, value),
+            None => store::secret_remove(name),
+        };
+        done.map_err(ducktape_host::contract::KeyRefusal::Denied)
     }
 }
 
@@ -160,6 +199,25 @@ mod tests {
             assert_eq!(level_of(word), Ok(level));
         }
         assert!(level_of("secure").unwrap_err().contains("`secure`"));
+    }
+
+    #[test]
+    fn a_java_refusal_with_no_message_names_its_class() {
+        assert_eq!(
+            java_refusal("javax.crypto.AEADBadTagException", "<NULL>"),
+            "The key store refused (AEADBadTagException)."
+        );
+        assert_eq!(
+            java_refusal("javax/crypto/AEADBadTagException", ""),
+            "The key store refused (AEADBadTagException)."
+        );
+        assert_eq!(
+            java_refusal(
+                "java.lang.IllegalStateException",
+                "could not open the secret (AEADBadTagException)"
+            ),
+            "could not open the secret (AEADBadTagException)"
+        );
     }
 
     #[test]

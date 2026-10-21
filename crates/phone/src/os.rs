@@ -540,7 +540,14 @@ impl OsServices for PhoneOs {
     }
 
     fn secrets(&self) -> Option<&dyn Secrets> {
-        None
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        {
+            Some(&crate::key::PhoneSecrets)
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
+            None
+        }
     }
 
     fn reader(&self) -> Arc<dyn noded_client::Signer> {

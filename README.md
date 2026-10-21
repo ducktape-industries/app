@@ -104,8 +104,10 @@ mkdir -p /tmp/ducktape && tar xzf /tmp/ducktape.tar.gz -C /tmp/ducktape
   store, one item each under its network, key, program and name, never in
   its store file: `src/runtime/secret.rs` over each shell's
   `contract::Secrets`; the desktop's Secret Service or keychain item, or a
-  file only this user reads with `DUCKTAPE_DEVICE_KEY_STORE=file`; none yet
-  on the phones and pushd, which refuse `no_secret_store`). A view
+  file only this user reads with `DUCKTAPE_DEVICE_KEY_STORE=file`; the
+  iPhone's Keychain item, this device only; on Android a file sealed by the
+  Keystore key that seals the device key; none in pushd, which refuses
+  `no_secret_store`). A view
   reaches only the capabilities its manifest declares. A view instance
   belongs to the key it was seated with: when the seated key moves to
   another, or the session locks, every view and notifier on that network

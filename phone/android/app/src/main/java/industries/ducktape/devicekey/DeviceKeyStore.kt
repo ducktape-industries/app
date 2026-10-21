@@ -13,6 +13,7 @@ import java.security.GeneralSecurityException
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.ProviderException
 import java.security.SecureRandom
@@ -94,6 +95,50 @@ object DeviceKeyStore {
     return mapOf("sealed" to sealed, "level" to level(info))
   }
 
+  @JvmStatic
+  @Synchronized
+  fun secretGet(name: String): ByteArray? {
+    val file = secretFile(name)
+    if (!file.exists()) return null
+    val bytes = file.readBytes()
+    try {
+      val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+      cipher.init(Cipher.DECRYPT_MODE, sealKey(), GCMParameterSpec(128, bytes, 0, 12))
+      cipher.updateAAD(name.toByteArray(Charsets.UTF_8))
+      return cipher.doFinal(bytes, 12, bytes.size - 12)
+    } catch (refused: GeneralSecurityException) {
+      throw IllegalStateException("could not open the secret (${refused.javaClass.simpleName})", refused)
+    }
+  }
+
+  @JvmStatic
+  @Synchronized
+  fun secretSet(name: String, value: ByteArray) {
+    val sealed = try {
+      val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+        init(Cipher.ENCRYPT_MODE, sealKey())
+        updateAAD(name.toByteArray(Charsets.UTF_8))
+      }
+      cipher.iv + cipher.doFinal(value)
+    } catch (refused: GeneralSecurityException) {
+      throw IllegalStateException("could not seal the secret (${refused.javaClass.simpleName})", refused)
+    }
+    keep(secretFile(name), sealed, "the secret")
+  }
+
+  @JvmStatic
+  @Synchronized
+  fun secretRemove(name: String) {
+    val file = secretFile(name)
+    check(!file.exists() || file.delete()) { "could not remove the secret" }
+  }
+
+  private fun secretFile(name: String): File {
+    val dir = checkNotNull(sealedDir) { "the device key store has no folder yet" }
+    val digest = MessageDigest.getInstance("SHA-256").digest(name.toByteArray(Charsets.UTF_8))
+    return File(File(dir, "view-secrets"), digest.joinToString("") { "%02x".format(it) })
+  }
+
   private fun level(info: KeyInfo): String {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
       @Suppress("DEPRECATION")
@@ -131,7 +176,7 @@ object DeviceKeyStore {
         init(Cipher.ENCRYPT_MODE, sealKey())
         updateAAD(alias.toByteArray(Charsets.UTF_8))
       }
-      keep(sealed(alias), cipher.iv + cipher.doFinal(seed))
+      keep(sealed(alias), cipher.iv + cipher.doFinal(seed), "the device key")
       Ed25519Sign.KeyPair.newKeyPairFromSeed(seed).publicKey
     }
   }
@@ -140,14 +185,14 @@ object DeviceKeyStore {
    * Writes [bytes] as [file] whole or not at all: a temp file, synced, renamed over it, and the
    * folder synced, so a power cut never leaves a short file that [unseal] would refuse for good.
    */
-  private fun keep(file: File, bytes: ByteArray) {
+  private fun keep(file: File, bytes: ByteArray, what: String) {
     val dir = file.parentFile!!.apply { mkdirs() }
     val temp = File(dir, file.name + ".tmp")
     FileOutputStream(temp).use { out ->
       out.write(bytes)
       out.fd.sync()
     }
-    check(temp.renameTo(file)) { "could not keep the device key" }
+    check(temp.renameTo(file)) { "could not keep $what" }
     val folder = Os.open(dir.path, OsConstants.O_RDONLY, 0)
     try {
       Os.fsync(folder)
