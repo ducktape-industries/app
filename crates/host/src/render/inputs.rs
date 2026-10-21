@@ -12,6 +12,7 @@ use super::*;
 use crate::render::native_id;
 use crate::text_input::TextInput;
 use gpui_kit::base::input::{InlineToken, InputContent, Textarea, TextareaState};
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{Edges, EntityInputHandler as _, Keystroke};
 use std::ops::Range;
@@ -85,6 +86,7 @@ pub(super) struct Field {
     text_input: wire::TextInput,
     fills: bool,
     cap: Option<usize>,
+    menu_wanted: std::rc::Rc<std::cell::Cell<bool>>,
     _observation: Subscription,
     _events: Subscription,
     _keyboard: Option<[Subscription; 2]>,
@@ -203,6 +205,7 @@ impl ViewTree {
                 text_input: options.text_input,
                 fills: true,
                 cap: None,
+                menu_wanted: Default::default(),
                 _observation: observation,
                 _events: events,
                 _keyboard: keyboard,
@@ -266,6 +269,13 @@ impl ViewTree {
         }
         if let Engine::Area(state) = field.engine.clone() {
             field.set_fills(style.size.height.is_some(), field_rows(&style), cx);
+            let selection = cx.theme().selection;
+            state.update(cx, |state, _| {
+                state.set_editor_style(gpui_base::input::InputEditorStyle {
+                    selection,
+                    ..Default::default()
+                })
+            });
             if state.read(cx).is_editable() != editable {
                 state.update(cx, |state, cx| state.set_readonly(!editable, cx));
             }
@@ -273,6 +283,10 @@ impl ViewTree {
         let engine = field.engine.clone();
         let contract = field.contract.clone();
         let fills = field.fills;
+        let menu_layer = crate::contract::os()
+            .facts()
+            .touch_first
+            .then(|| edit_menu::layer(&engine, &field.menu_wanted));
         let accessible = Accessible {
             value: (!secure).then(|| field.text.clone()),
             ..accessible(node)
@@ -326,6 +340,7 @@ impl ViewTree {
                     input.role(gpui_kit::component::RoleOverride::Presentational),
                 )
                 .child(contract.element())
+                .children(menu_layer)
                 .capture_any_mouse_down(touched)
                 .refine_style(&placed);
                 announce(field, accessible).into_any_element()
@@ -350,6 +365,7 @@ impl ViewTree {
                             Textarea::new(state),
                         )
                         .child(contract.element())
+                        .children(menu_layer)
                         .when(fills, |field| field.h_full())
                         .capture_any_mouse_down(touched),
                         accessible,
@@ -372,6 +388,9 @@ impl ViewTree {
         let Some(field) = self.fields.get_mut(path) else {
             return;
         };
+        if crate::contract::os().facts().touch_first {
+            edit_menu::take_over(&field.engine, &field.menu_wanted, cx);
+        }
         let Some((event, typed)) = field.settle(Made::Observed, window, cx) else {
             return;
         };
@@ -474,6 +493,10 @@ impl Field {
             kind: self.text_input.virtual_keyboard,
             secure: self.secure,
         }
+    }
+
+    pub(super) fn left(&self, cx: &mut App) {
+        edit_menu::left(engine!(&self.engine, |state| state.entity_id()), cx);
     }
 
     pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {
@@ -952,6 +975,8 @@ fn placed(
     }
     (placed, drawn)
 }
+
+pub(super) mod edit_menu;
 
 mod keyboard {
     use super::*;

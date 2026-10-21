@@ -301,6 +301,7 @@ pub(super) fn routed(pane: impl IntoElement) -> Div {
 mod accessibility;
 mod axis_lock;
 mod dialog_focus;
+mod edit_menu;
 mod element_cost;
 #[cfg(target_os = "linux")]
 mod faces;

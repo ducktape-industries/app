@@ -104,6 +104,9 @@ fn drain(
                 Signal::BannerClick(click, activation) => {
                     crate::runtime::notify::clicked(click, activation)
                 }
+                Signal::Edit(action) => {
+                    cx.update(|cx| crate::render::edit(action, cx));
+                }
                 other => {
                     let _ = to_shell.try_send(other);
                 }
@@ -162,6 +165,7 @@ mod tests {
         };
         inbound.send(Signal::BannerClick(row, None));
         inbound.send(Signal::Lifecycle(gpui_kit::AppLifecyclePhase::Background));
+        inbound.send(Signal::Edit(crate::contract::EditAction::Copy));
         inbound.send(Signal::MemoryWarning);
         cx.run_until_parked();
         assert_eq!(*OPENED.lock().unwrap(), vec!["updates", "row"]);

@@ -36,7 +36,7 @@ use crate::runtime::Answered;
 use crate::runtime::notify::Opened;
 use crate::runtime::notify::{Click, Notice};
 #[cfg(feature = "ui")]
-use gpui_kit::{AppLifecyclePhase, Window, WindowInsets};
+use gpui_kit::{AppLifecyclePhase, Bounds, Pixels, Window, WindowInsets};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -83,6 +83,11 @@ pub trait OsServices: Send + Sync + 'static {
     /// Desktop: nothing.
     #[cfg(feature = "ui")]
     fn soft_keyboard(&self, _window: &Window, _want: SoftKeyboard) {}
+    /// Show the OS's own edit menu over a text field's touch selection, or
+    /// hide it. A pick closes it and comes back as [`Signal::Edit`].
+    /// Desktop: nothing.
+    #[cfg(feature = "ui")]
+    fn edit_menu(&self, _window: &Window, _menu: EditMenu) {}
     /// Facts that are constants per OS, read once.
     fn facts(&self) -> OsFacts;
     /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -275,6 +280,33 @@ pub struct Keyboard {
     pub secure: bool,
 }
 
+/// The edit menu a text field's touch selection wants: the OS's own, as its
+/// text views show it (iOS `UIEditMenuInteraction`, Android's floating
+/// `ActionMode`).
+#[cfg(feature = "ui")]
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditMenu {
+    /// Up beside the selection's box (window coordinates), offering these in order.
+    Show(Bounds<Pixels>, Vec<EditAction>),
+    /// Down.
+    Hide,
+}
+
+/// One item of the edit menu, and the pick a shell hands back as
+/// [`Signal::Edit`].
+#[cfg(feature = "ui")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditAction {
+    /// Cut the selection to the clipboard.
+    Cut,
+    /// Copy the selection to the clipboard.
+    Copy,
+    /// Paste the clipboard over the selection.
+    Paste,
+    /// Select the field's whole text.
+    SelectAll,
+}
+
 /// Constants per OS.
 #[derive(Clone, Copy, Debug)]
 pub struct OsFacts {
@@ -423,6 +455,9 @@ pub enum Signal {
     /// A banner the host raised was clicked: the centre opens what it
     /// names, through [`Boot::open`].
     BannerClick(Click, Option<String>),
+    /// The person picked an item of the edit menu the host showed
+    /// ([`OsServices::edit_menu`]): the host applies it to that field.
+    Edit(EditAction),
 }
 
 /// What a shell hands [`start`](crate::start::start).
@@ -1073,6 +1108,16 @@ pub mod testing {
         SOFT_KEYBOARD.take()
     }
 
+    #[cfg(feature = "ui")]
+    thread_local! {
+        static EDIT_MENU: std::cell::RefCell<Vec<EditMenu>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[cfg(all(test, feature = "ui"))]
+    pub(crate) fn edit_menu_told_for_test() -> Vec<EditMenu> {
+        EDIT_MENU.take()
+    }
+
     impl OsServices for TestOs {
         fn dirs(&self) -> &Dirs {
             thread_local! {
@@ -1154,6 +1199,11 @@ pub mod testing {
         #[cfg(feature = "ui")]
         fn soft_keyboard(&self, _: &Window, want: SoftKeyboard) {
             SOFT_KEYBOARD.with_borrow_mut(|asked| asked.push(want));
+        }
+
+        #[cfg(feature = "ui")]
+        fn edit_menu(&self, _: &Window, menu: EditMenu) {
+            EDIT_MENU.with_borrow_mut(|told| told.push(menu));
         }
 
         fn facts(&self) -> OsFacts {

@@ -176,7 +176,13 @@ impl ViewTree {
             .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
         self.view_focus_targets
             .retain(|id, _| view_focus_ids.contains(id));
-        self.fields.retain(|key, _| fields.contains_key(key));
+        self.fields.retain(|key, field| {
+            let kept = fields.contains_key(key);
+            if !kept {
+                field.left(cx);
+            }
+            kept
+        });
         for (key, field) in self.fields.iter_mut() {
             let queued = asked
                 .iter()

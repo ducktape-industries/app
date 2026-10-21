@@ -81,6 +81,8 @@ use variable_list::VariableList;
 // the runtime's: a widget command names its target by it (`View::answer`)
 pub use crate::runtime::{AuthoredPath, enter_scope};
 
+pub(crate) use inputs::edit_menu::picked as edit;
+
 /// The gpui id for a sanitized wire id. Sanitize refuses every id that
 /// cannot lower, so a frame that reached the renderer holds none.
 pub fn native_id(id: &wire::ElementIdWire) -> ElementId {

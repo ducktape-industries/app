@@ -438,7 +438,7 @@ fn handed_on(signal: Signal, cx: &mut App) {
             }
         }
         // the host consumes these
-        Signal::Lifecycle(_) | Signal::BannerClick(..) => {}
+        Signal::Lifecycle(_) | Signal::BannerClick(..) | Signal::Edit(_) => {}
     }
 }
 
