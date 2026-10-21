@@ -43,7 +43,8 @@ trap 'rm -rf "$work"' EXIT
 sign=(--force --sign "$identity")
 if [[ "$identity" != - ]]; then sign+=(--timestamp --options runtime); fi
 if [[ -n "${DUCKTAPE_CODESIGN_KEYCHAIN:-}" ]]; then sign+=(--keychain "$DUCKTAPE_CODESIGN_KEYCHAIN"); fi
-entitlements="$repo/packaging/entitlements.plist"
+entitlements=${DUCKTAPE_ENTITLEMENTS:-$repo/packaging/entitlements.plist}
+helper_entitlements=${DUCKTAPE_HELPER_ENTITLEMENTS:-$repo/packaging/helper-entitlements.plist}
 bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$contents/Info.plist")
 if [[ -n "$profile" ]]; then
   cp "$profile" "$contents/embedded.provisionprofile"
@@ -69,7 +70,7 @@ if [[ -d "$frameworks" ]]; then
   for helper in "$frameworks"/*Helper*.app; do
     helper_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$helper/Contents/Info.plist")
     codesign "${sign[@]}" --identifier "$helper_id" \
-      --entitlements "$repo/packaging/helper-entitlements.plist" "$helper"
+      --entitlements "$helper_entitlements" "$helper"
   done
 fi
 codesign "${sign[@]}" --identifier "$bundle_id" --entitlements "$entitlements" "$contents/MacOS/ducktape-app"

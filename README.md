@@ -196,3 +196,13 @@ Each commit on `main` and `dev` also has a built app: the prerelease
 Developer ID signed, notarized `ducktape-app-aarch64-apple-darwin.dmg`
 (`.github/workflows/release.yml`); the same build is what the stable (`main`)
 or nightly (`dev`) channel publishes (see [Install](#install)).
+
+On forge the same releases are built by `.forge/workflows/release-stable.toml`
+(each push to `main`) and `release-nightly.toml` (a `nightly` dispatch, once a
+day at `dev`'s head): Linux in a pods check (`ops/release-linux.sh`), macOS on
+the mac relay (`ops/release-macos.sh`, keyless), then the signer's
+`developer-id`, `release-manifest` and `r2-mirror` tools (`ops/signer/`, its
+README) sign the Mac app, sign the channel file, publish the release record as
+the forge tag `release/<channel>/<sequence>` with the archives under
+`/shared/releases/app/<sha256>/` in files, and only then mirror to R2. Nothing
+is signed there until the signer serves the `sign:dev.ducktape.app` label.

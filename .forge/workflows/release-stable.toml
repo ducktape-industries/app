@@ -1,0 +1,54 @@
+# The stable release: each push to main builds Linux in a pod and macOS on the mac relay, the signer Developer ID signs the Mac app and publishes the release record as tag release/stable/<sequence>, then mirrors it to R2.
+# A newer push supersedes a run no runner has taken yet, and a taken run goes on to its end; ops/signer/README.md has the signer's half.
+name = "release-stable"
+
+[on]
+push = ["main"]
+trigger = false
+supersede = "unstarted"
+
+[notify]
+channel = "ci"
+
+[[jobs]]
+id = "linux"
+runs-on = ["pods"]
+runners = [38]
+cpu = "16"
+memory = "11Gi"
+scratch = ["/var/tmp/target"]
+image = "localhost:5000/toolchain:84d65df8fd8e@sha256:bccee3618264f44b0a07ba437de70329accfe07be71803efe9af28016ee726be"
+steps = ["git config --global --add safe.directory '*'", "ops/release-linux.sh \"$OUT\""]
+
+[jobs.env]
+CARGO_TARGET_DIR = "/var/tmp/target"
+
+[[jobs]]
+id = "macos"
+runs-on = ["mac"]
+runners = [44]
+steps = ["ops/release-macos.sh \"$OUT\""]
+
+[[jobs]]
+id = "macos-sign"
+runs-on = ["sign:dev.ducktape.app"]
+needs = ["macos"]
+steps = ["developer-id"]
+
+[[jobs]]
+id = "publish"
+runs-on = ["sign:dev.ducktape.app"]
+needs = ["linux", "macos-sign"]
+steps = ["release-manifest"]
+
+[jobs.env]
+CHANNEL = "stable"
+
+[[jobs]]
+id = "mirror"
+runs-on = ["sign:dev.ducktape.app"]
+needs = ["linux", "macos-sign", "publish"]
+steps = ["r2-mirror"]
+
+[jobs.env]
+CHANNEL = "stable"
