@@ -328,6 +328,7 @@ pub struct ViewTree {
     // that names a hash alone draws from, and the rasters decoded from them.
     pictures: Arc<PictureBytes>,
     images: SharedRasters,
+    reader: Option<crate::runtime::pictures::PictureReader>,
     /// What the view built for the tree's tooltip routes, by route
     /// (`wire::TooltipResponse`): beside the tree, never written into it,
     /// kept while the tree holds the route (`tooltip_responses`).
@@ -428,6 +429,7 @@ impl ViewTree {
             live: None,
             pictures: Default::default(),
             images: Default::default(),
+            reader: None,
             tooltips: HashMap::new(),
             presentation: NativePresentation::default(),
             render_index: 0,
@@ -466,6 +468,11 @@ impl ViewTree {
     /// tracks on (`call.rs`).
     pub fn with_live(mut self, live: crate::runtime::HostLive) -> Self {
         self.live = Some(live);
+        self
+    }
+
+    pub fn with_reader(mut self, reader: crate::runtime::pictures::PictureReader) -> Self {
+        self.reader = Some(reader);
         self
     }
 

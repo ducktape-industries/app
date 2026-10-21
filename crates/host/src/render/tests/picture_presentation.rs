@@ -245,6 +245,89 @@ fn drew(native: &mut gpui_kit::VisualTestContext, name: &'static str) -> bool {
     native.update(|window, _| window.try_find(name).is_some())
 }
 
+fn blob_named() -> String {
+    format!("sha256:{}", "5a".repeat(32))
+}
+
+fn blob_picture(hash: u64) -> wire::Node {
+    let mut node = image_with_states(hash);
+    if let wire::Node::Image { data, .. } = &mut node {
+        *data = Some(wire::ImageData::Blobs(vec![blob_named()]));
+    }
+    node
+}
+
+fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    image::RgbaImage::from_pixel(width, height, image::Rgba(RED))
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("a PNG");
+    bytes
+}
+
+type Asked = Arc<std::sync::Mutex<Vec<Vec<abi::BlobId>>>>;
+
+fn reading(answer: Result<Vec<u8>, String>) -> (crate::runtime::pictures::PictureReader, Asked) {
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let heard = asked.clone();
+    let reader = crate::runtime::pictures::PictureReader::of(move |ids| {
+        heard.lock().unwrap().push(ids);
+        Box::pin(futures::future::ready(answer.clone()))
+    });
+    (reader, asked)
+}
+
+#[gpui_kit::test]
+fn a_picture_named_by_its_blobs_is_read_once_and_drawn_no_larger_than_the_window(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let (reader, asked) = reading(Ok(png(400, 200)));
+    let tree = ViewTree::new(blob_picture(5)).with_reader(reader);
+    let (host, mut native) = drawn(tree, cx);
+    native.update(crate::render::draw_frame);
+    let id = crate::runtime::pictures::blob_id(&blob_named()).expect("a blob id");
+    assert_eq!(*asked.lock().unwrap(), [vec![id]], "one read, of its blob");
+    let tree = host.read_with(&native, |host, _| host.tree.clone());
+    let image = tree
+        .read_with(&native, |tree, _| tree.image_for_test(5))
+        .expect("the read picture is held");
+    let (most_w, most_h) = native.update(|window, _| {
+        let viewport = window.viewport_size();
+        let scale = window.scale_factor();
+        (
+            (f32::from(viewport.width) * scale) as i32,
+            (f32::from(viewport.height) * scale) as i32,
+        )
+    });
+    let drawn_at = image.size(0);
+    assert!(
+        (1..=most_w).contains(&drawn_at.width.0) && (1..=most_h).contains(&drawn_at.height.0),
+        "a 400x200 picture held at {drawn_at:?} in a {most_w}x{most_h} window"
+    );
+    assert!(!drew(&mut native, "loading") && !drew(&mut native, "fallback"));
+}
+
+#[gpui_kit::test]
+fn a_picture_whose_blobs_do_not_read_draws_its_fallback_and_is_not_asked_again(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let (reader, asked) = reading(Err("the node holds no such blob".into()));
+    let tree = ViewTree::new(blob_picture(6)).with_reader(reader);
+    let (_, mut native) = drawn(tree, cx);
+    native.update(crate::render::draw_frame);
+    assert_eq!(asked.lock().unwrap().len(), 1, "one read");
+    assert!(
+        drew(&mut native, "fallback"),
+        "the failed read drew the fallback"
+    );
+    assert!(!drew(&mut native, "loading"));
+}
+
 #[gpui_kit::test]
 fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

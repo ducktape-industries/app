@@ -61,7 +61,7 @@ identity.workspace = true
 blob.workspace = true
 # a notifier's answers and turn (`view_wire::notifier`); the tests' borsh too
 borsh.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "1a5cbe420383fed04ef1f75cc1d06b36cbaa0d02", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -106,7 +106,7 @@ tempfile.workspace = true
 noded-client = { path = "../noded-client" }
 rt = { package = "ducktape-rt", path = "../rt" }
 # an artifact's file read and followed (`runtime/kernel/node/artifact.rs`): the files program's own query and reply
-files = { git = "https://github.com/ducktape-industries/programs", rev = "1a5cbe420383fed04ef1f75cc1d06b36cbaa0d02", package = "files" }
+files = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "files" }
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "../web", optional = true }
 # feature `av` only: V4L2, AVFoundation, cpal and everything that names them
@@ -124,7 +124,7 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "rin
 # the live tests' node: its key's verifier, as the handshake pins it
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "58b5d91e97d2f0b0e22a5374b6e2a70037b98f14", package = "keyscheme", features = ["testkit"] }
 # the consent card's words for a validators' vote
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "1a5cbe420383fed04ef1f75cc1d06b36cbaa0d02", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "valset" }
 # the tests' keys: commonware's ed25519, through noded-client's impl
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -136,7 +136,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "1a5cbe420383fed04ef1f75cc1d06b36cbaa0d02", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

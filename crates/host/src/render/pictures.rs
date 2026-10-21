@@ -2,7 +2,7 @@
 //! later frames name it by the view's content hash, and the tree draws
 //! that hash from the seat's [`PictureBytes`]. Rasters decoded from them
 //! are cached in [`Rasters`].
-use super::picture_resources::{cache_fits, decode_image};
+use super::picture_resources::{cache_fits, decode_fitted, decode_image};
 use super::*;
 use crate::render::native_id;
 use std::{cell::RefCell, rc::Rc};
@@ -26,10 +26,31 @@ pub struct Rasters {
     frame: u64,
     /// The first refusal is logged; later ones are the same story.
     refused: bool,
+    reading: HashMap<u64, Reading>,
 }
 
 /// [`Rasters`] as the seat's trees share it.
 pub type SharedRasters = Rc<RefCell<Rasters>>;
+
+enum Reading {
+    Going { _task: gpui_kit::Task<()> },
+    Failed,
+}
+
+enum Shown {
+    Drawn(Arc<RenderImage>),
+    Reading,
+    Failed,
+}
+
+fn with_raster(mut element: Div, image: Arc<RenderImage>, style: &wire::ImageStyle) -> Div {
+    let mut picture = img(image)
+        .size_full()
+        .grayscale(style.grayscale)
+        .object_fit(primitive_object_fit(style.object_fit));
+    picture.style().corner_radii = element.style().corner_radii.clone();
+    element.child(picture)
+}
 
 fn raster_len(image: &RenderImage) -> usize {
     image.as_bytes(0).map_or(0, <[u8]>::len)
@@ -57,7 +78,7 @@ impl Rasters {
     ) -> bool {
         if matches!(
             data,
-            wire::ImageData::Resource(_) | wire::ImageData::Refusal(_)
+            wire::ImageData::Resource(_) | wire::ImageData::Refusal(_) | wire::ImageData::Blobs(_)
         ) {
             return true;
         }
@@ -122,10 +143,28 @@ impl Rasters {
         self.held.get(&hash).map(|(image, _)| image.clone())
     }
 
+    fn drawn(&mut self, hash: u64) -> Option<Arc<RenderImage>> {
+        let (image, drawn) = self.held.get_mut(&hash)?;
+        *drawn = self.frame;
+        Some(image.clone())
+    }
+
+    fn landed(&mut self, hash: u64, image: RenderImage, cx: &mut App) {
+        let len = raster_len(&image);
+        if !self.make_room(len, None, cx) {
+            self.reading.insert(hash, Reading::Failed);
+            return self.log_refusal();
+        }
+        self.reading.remove(&hash);
+        self.bytes += len;
+        self.held.insert(hash, (Arc::new(image), self.frame));
+    }
+
     /// Drops every raster and its atlas tiles in every window. Called
     /// outside any window's update, so `drop_image` reaches them all.
     fn release(&mut self, cx: &mut App) {
         self.bytes = 0;
+        self.reading.clear();
         for (_, (image, _)) in self.held.drain() {
             cx.drop_image(image, None);
         }
@@ -306,6 +345,19 @@ impl ViewTree {
             Some(wire::ImageData::Resource(_)) => {
                 element = element.child("Host image resource unavailable")
             }
+            Some(wire::ImageData::Blobs(ids)) => {
+                let state = match self.read_picture(*hash, ids, window, cx) {
+                    Shown::Drawn(image) => {
+                        element = with_raster(element, image, image_style);
+                        None
+                    }
+                    Shown::Reading => Self::image_state(*loading, *fallback, state_children, false),
+                    Shown::Failed => Self::image_state(*loading, *fallback, state_children, true),
+                };
+                if let Some(child) = state {
+                    element = element.child(self.node(child, window, cx));
+                }
+            }
             _ => {
                 if full {
                     // a picture the cache has no room for draws the
@@ -317,12 +369,7 @@ impl ViewTree {
                         element = element.child(self.node(child, window, cx));
                     }
                 } else if let Some(image) = self.image_frame(*hash, data) {
-                    let mut picture = img(image)
-                        .size_full()
-                        .grayscale(image_style.grayscale)
-                        .object_fit(primitive_object_fit(image_style.object_fit));
-                    picture.style().corner_radii = element.style().corner_radii.clone();
-                    element = element.child(picture);
+                    element = with_raster(element, image, image_style);
                 } else if let Some(child) =
                     Self::image_state(*loading, *fallback, state_children, false)
                 {
@@ -333,6 +380,76 @@ impl ViewTree {
             }
         }
         self.primitive_interactivity(element, node, cx)
+    }
+
+    fn read_picture(
+        &mut self,
+        hash: u64,
+        ids: &[String],
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Shown {
+        let mut images = self.images.borrow_mut();
+        if let Some(image) = images.drawn(hash) {
+            return Shown::Drawn(image);
+        }
+        match images.reading.get(&hash) {
+            Some(Reading::Going { .. }) => return Shown::Reading,
+            Some(Reading::Failed) => return Shown::Failed,
+            None => {}
+        }
+        let named: Option<Vec<abi::BlobId>> = ids
+            .iter()
+            .map(String::as_str)
+            .map(crate::runtime::pictures::blob_id)
+            .collect();
+        let (Some(reader), Some(named)) = (self.reader.clone(), named) else {
+            images.reading.insert(hash, Reading::Failed);
+            return Shown::Failed;
+        };
+        let viewport = window.viewport_size();
+        let scale = window.scale_factor();
+        let most = (
+            (f32::from(viewport.width) * scale) as u32,
+            (f32::from(viewport.height) * scale) as u32,
+        );
+        let read = reader.read(named);
+        let decoded = cx.background_executor().spawn(async move {
+            let bytes = read.await?;
+            decode_fitted(&bytes, most).ok_or_else(|| {
+                "the picture does not decode within the device's picture memory setting".to_owned()
+            })
+        });
+        let task = cx.spawn(async move |tree, cx| {
+            let landed = decoded.await;
+            let _ = tree.update(cx, |tree, cx| tree.picture_landed(hash, landed, cx));
+        });
+        images.reading.insert(hash, Reading::Going { _task: task });
+        Shown::Reading
+    }
+
+    fn picture_landed(
+        &mut self,
+        hash: u64,
+        landed: Result<RenderImage, String>,
+        cx: &mut Context<Self>,
+    ) {
+        match landed {
+            Ok(image) => self.images.borrow_mut().landed(hash, image, cx),
+            Err(reason) => {
+                self.images
+                    .borrow_mut()
+                    .reading
+                    .insert(hash, Reading::Failed);
+                tracing::warn!(
+                    target: "ducktape::app",
+                    reason = "program_view_picture_unread",
+                    error = reason,
+                    "a picture the view named by its blobs did not read; drawing its fallback"
+                );
+            }
+        }
+        cx.notify();
     }
 
     /// An Image's or Svg's box as the view styled and wired it; its role

@@ -1019,6 +1019,7 @@ impl Seat {
                 .with_presentation(presentation)
                 .with_perf_key(key)
                 .with_live(crate::runtime::HostLive::new(self.program, &self.network))
+                .with_reader(crate::runtime::pictures::PictureReader::on(&self.network))
                 .with_keys_grant(self.keys_free)
         });
         tree.update(cx, |tree, _| tree.set_pictures(pictures));
