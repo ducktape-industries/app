@@ -103,7 +103,7 @@ else
 fi
 
 # Row 5: one fork rev in every [patch.crates-io] entry.
-revs=$(grep -E 'github.com/ducktape-industries/gpui-pre' Cargo.toml | grep -oE 'rev = "[0-9a-f]+"' | sort -u | wc -l)
+revs=$(grep -E '(github\.com/ducktape-industries|duck://duckpond-725bcad1/forge)/gpui-pre"' Cargo.toml | grep -oE 'rev = "[0-9a-f]+"' | sort -u | wc -l)
 if [ "$revs" -eq 1 ]; then
     pass "one gpui-pre fork rev in Cargo.toml"
 else
@@ -111,7 +111,7 @@ else
 fi
 
 # Row 6: one programs rev in every programs entry (and the views lock).
-revs=$(grep -E 'github.com/ducktape-industries/programs' Cargo.toml crates/*/Cargo.toml | grep -oE 'rev = "[0-9a-f]+"' | sort -u)
+revs=$(grep -E '(github\.com/ducktape-industries|duck://duckpond-725bcad1/forge)/programs"' Cargo.toml crates/*/Cargo.toml | grep -oE 'rev = "[0-9a-f]+"' | sort -u)
 count=$(printf '%s\n' "$revs" | grep -c .)
 if [ "$count" -eq 1 ]; then
     pass "one programs rev across every manifest ($(printf '%s' "$revs" | grep -oE '[0-9a-f]{8}' | head -1))"

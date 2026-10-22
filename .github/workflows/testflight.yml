@@ -40,6 +40,13 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  GIT_CONFIG_COUNT: "3"
+  GIT_CONFIG_KEY_0: url.https://github.com/ducktape-industries/ducktape.insteadOf
+  GIT_CONFIG_VALUE_0: duck://duckpond-725bcad1/forge/core
+  GIT_CONFIG_KEY_1: url.https://github.com/ducktape-industries/programs.insteadOf
+  GIT_CONFIG_VALUE_1: duck://duckpond-725bcad1/forge/programs
+  GIT_CONFIG_KEY_2: url.https://github.com/ducktape-industries/gpui-pre.insteadOf
+  GIT_CONFIG_VALUE_2: duck://duckpond-725bcad1/forge/gpui-pre
 
 jobs:
   # The build number, and whether TestFlight already has it.

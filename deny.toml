@@ -1,7 +1,7 @@
 # cargo-deny: what the app may depend on (`cargo deny check bans licenses`; tools/dep-gate.sh row 7).
 # Licenses: the permissive set the dependency graph carries, and MPL-2.0. No GPL or LGPL: a crate offered under
 # one of those passes only through another license it is also offered under (cargo-deny takes the OR alternatives).
-# Our own crates (this workspace, and programs' and ducktape's from their git repos) carry no license: private.
+# Our own crates (this workspace, and programs' and core's from forge) carry no license: private.
 
 [graph]
 all-features = true
@@ -31,8 +31,8 @@ confidence-threshold = 0.93
 [licenses.private]
 ignore = true
 ignore-sources = [
-    "https://github.com/ducktape-industries/programs",
-    "https://github.com/ducktape-industries/ducktape",
+    "duck://duckpond-725bcad1/forge/programs",
+    "duck://duckpond-725bcad1/forge/core",
 ]
 
 [bans]

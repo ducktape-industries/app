@@ -213,9 +213,12 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (rev `f45348abf11f5c53c8b8313ca97fcd352ac756ba`): `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, `files`.
-`ducktape-industries/ducktape` (rev `f836730c6a3adeb1657bbe61f6c04524149bfcc3`, the rev that programs rev pins): `abi`, `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
-`ducktape-industries/gpui-pre` (rev `eef11e96c9fcf7e0389d31f125013370a1b02d92`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
+`duck://duckpond-725bcad1/forge/programs` (rev `9d0f734233c7988f190f3436ffdc7c6927405aa3`): `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, `files`.
+`duck://duckpond-725bcad1/forge/core` (rev `58b5d91e97d2f0b0e22a5374b6e2a70037b98f14`, the rev that programs rev pins): `abi`, `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
+`duck://duckpond-725bcad1/forge/gpui-pre` (rev `eef11e96c9fcf7e0389d31f125013370a1b02d92`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
+
+The pins are forge's, so a build fetches them with git-remote-duck on `PATH`. programs at that rev still names core and gpui-pre by their GitHub URLs, and `Cargo.toml`'s two `[patch."https://github.com/…"]` tables point those at the same forge revs, so each crate has one source.
+A machine without git-remote-duck (GitHub's runners) fetches the same commits from GitHub's mirrors with three `url.<github>.insteadOf <duck>` rewrites, which `.github/workflows/` set as `GIT_CONFIG_*` env; Cargo.lock keeps its duck:// sources there. That holds only for a commit GitHub has: forge-mirror pushes forge's `dev` and `main` of programs and core, and gpui-pre's forge copy mirrors GitHub's.
 
 ## Building
 

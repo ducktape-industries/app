@@ -91,6 +91,12 @@ blob is successfully held. no local."
   `DUCKTAPE_HOME=/mnt/data/code/qa/.local/duckpond/operator DUCKTAPE_DEVICE_KEY_STORE=file`
   (`forge-change.sh` sets both itself), the workspace holding account 22's
   "operator git" key.
+- The git dependencies (programs, core, gpui-pre) are pinned by their forge
+  URLs, `duck://duckpond-725bcad1/forge/<repo>`, so a build needs
+  git-remote-duck on `PATH` too. GitHub's runners have none: the workflows
+  rewrite those URLs to GitHub's mirrors with `GIT_CONFIG_*` `insteadOf`
+  env, so a pin must be a commit forge-mirror has pushed (forge's `dev` or
+  `main`). README.md "Dependency line" has the revs.
 
 ## Code says it, not comments
 

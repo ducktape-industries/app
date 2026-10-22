@@ -1,6 +1,4 @@
-# fetch git dependencies (programs, ducktape, ducktape-sdk, the gpui-pre fork)
-# with the git CLI instead of libgit2: a `url.insteadOf` rewrite to ssh
-# breaks cargo's built-in fetcher, while the real git binary picks up the
-# usual ssh agent/keys.
+# fetch git dependencies with the git CLI, not libgit2: only the CLI runs git-remote-duck for their
+# duck:// URLs, and the url.insteadOf rewrites a GitHub runner sets.
 [net]
 git-fetch-with-cli = true
