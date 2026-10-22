@@ -1,6 +1,7 @@
 use super::*;
 use commonware_codec::Encode as _;
 use commonware_cryptography::{Signer as _, ed25519};
+use futures::FutureExt as _;
 use keyscheme::KeyScheme as Verifier;
 use live_wire::{Challenge, Welcome};
 use noded_client::wire::{NODE_CONTRACT, Status};
@@ -91,6 +92,7 @@ async fn node_serving(
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(crypto).unwrap();
     let server = quinn::ServerConfig::with_crypto(Arc::new(crypto));
     let (ended, ends) = mpsc::unbounded_channel();
+    let (tls, tls_done) = watch::channel(false);
     let port = if paths == Paths::Ws {
         let silent = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = silent.local_addr().unwrap().port();
@@ -106,6 +108,7 @@ async fn node_serving(
         tokio::spawn(async move {
             while let Some(incoming) = endpoint.accept().await {
                 let connection = incoming.await.unwrap();
+                tls.send_replace(true);
                 let (closing, ended) = (connection.clone(), ended.clone());
                 tokio::spawn(async move {
                     let _ = ended.send(closing.closed().await);
@@ -135,6 +138,7 @@ async fn node_serving(
         while let Ok((mut stream, _)) = http.accept().await {
             let status = abi::encode(&status);
             let node_key = node_key.clone();
+            let mut tls_done = tls_done.clone();
             tokio::spawn(async move {
                 let mut asked = vec![0; 4096];
                 let read = stream.peek(&mut asked).await.unwrap();
@@ -142,6 +146,9 @@ async fn node_serving(
                 if paths != Paths::Quic && asked[..read].starts_with(upgrade.as_bytes()) {
                     // a client that drops the socket mid-upgrade (QUIC was
                     // the session) ends it
+                    if matches!(answer, Answer::Mute) {
+                        let _ = tls_done.wait_for(|done| *done).await;
+                    }
                     let Ok(socket) = tokio_tungstenite::accept_async(stream).await else {
                         return;
                     };
@@ -592,23 +599,20 @@ async fn a_certificate_of_another_key_is_not_the_node() {
     assert_eq!(refused.code, refusal::LIVE_UNAVAILABLE);
 }
 
-/// A node whose UDP never answers, as behind a tunnel that carries only
-/// TCP: the websocket starts with QUIC, not after it gives up, so the
-/// session opens well inside [`QUIC_ANSWER`].
 #[tokio::test]
-async fn a_node_whose_udp_is_silent_opens_over_the_websocket_at_once() {
+async fn a_node_whose_udp_is_silent_opens_over_the_websocket_while_quic_still_waits() {
     let _seat = seated().await;
     let node_key = ed25519::PrivateKey::from_seed(41);
     let identity = node_key.public_key().as_ref().to_vec();
     let (rpc, _) = node_serving(&node_key, identity, Answer::Welcome, Paths::Ws).await;
-    let started = Instant::now();
-    let conn = dial(&rpc, Weak::new()).await.unwrap();
-    let took = started.elapsed();
+    let never = std::future::pending::<()>;
+    let conn = dial_with_deadlines(&rpc, Weak::new(), never, never)
+        .await
+        .unwrap();
     assert!(
         matches!(conn.path, Path::Ws(_)),
         "the websocket is the session"
     );
-    assert!(took < QUIC_ANSWER / 4, "the session took {took:?}");
 }
 
 /// A node serving both paths: QUIC and the websocket start together. On
@@ -637,22 +641,42 @@ async fn a_quic_refusal_after_the_websocket_welcome_keeps_the_websocket() {
     assert!(matches!(conn.path, Path::Ws(_)), "the welcome stands");
 }
 
-/// A node whose UDP answers and whose QUIC then never speaks: the welcomed
-/// websocket waits for QUIC's handshake [`QUIC_ANSWER`] at most, not the
-/// handshake's own [`HANDSHAKE_WAIT`].
 #[tokio::test]
-async fn a_quic_handshake_that_stalls_after_tls_is_waited_for_no_longer_than_quic_answer() {
+async fn a_quic_handshake_that_stalls_after_tls_is_waited_for_until_quic_is_late() {
     let _seat = seated().await;
     let node_key = ed25519::PrivateKey::from_seed(44);
     let identity = node_key.public_key().as_ref().to_vec();
     let (rpc, _) = node_serving(&node_key, identity, Answer::Mute, Paths::Both).await;
-    let started = Instant::now();
-    let conn = dial(&rpc, Weak::new()).await.unwrap();
-    let took = started.elapsed();
-    assert!(matches!(conn.path, Path::Ws(_)), "the welcome stands");
+    let (waits, waiting) = oneshot::channel();
+    let (late, quic_is_late) = oneshot::channel::<()>();
+    let quic_waited_on = move || {
+        let _ = waits.send(());
+        async move {
+            let _ = quic_is_late.await;
+        }
+    };
+    let never = std::future::pending::<()>;
+    let mut dialing = std::pin::pin!(dial_with_deadlines(
+        &rpc,
+        Weak::new(),
+        never,
+        quic_waited_on
+    ));
+    tokio::select! {
+        _ = &mut dialing => panic!("the welcomed websocket did not wait on QUIC"),
+        _ = waiting => {}
+    }
     assert!(
-        took < QUIC_ANSWER + QUIC_ANSWER / 2,
-        "the session took {took:?}"
+        dialing.as_mut().now_or_never().is_none(),
+        "the welcomed websocket waits on QUIC until QUIC is late"
+    );
+    let _ = late.send(());
+    let Some(conn) = dialing.as_mut().now_or_never() else {
+        panic!("the dial still waits once QUIC is late")
+    };
+    assert!(
+        matches!(conn.unwrap().path, Path::Ws(_)),
+        "the welcome stands"
     );
 }
 

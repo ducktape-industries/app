@@ -1311,6 +1311,20 @@ fn undecoded(kind: &str, bytes: &[u8], error: impl std::fmt::Display) -> String 
 /// QUIC, and QUIC silent waits on the websocket. Nothing is remembered
 /// between dials: a node whose UDP comes back is on QUIC at the next one.
 async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> {
+    let quic_answer = || tokio::time::sleep(QUIC_ANSWER);
+    dial_with_deadlines(rpc, client, quic_answer, quic_answer).await
+}
+
+async fn dial_with_deadlines<Silent, Late>(
+    rpc: &RpcClient,
+    client: Weak<Inner>,
+    udp_is_silent: impl FnOnce() -> Silent,
+    quic_is_late: impl FnOnce() -> Late,
+) -> Result<Arc<Conn>, Error>
+where
+    Silent: Future<Output = ()>,
+    Late: Future<Output = ()>,
+{
     let status = rpc.status().await.map_err(super::refused)?;
     let port = rpc.live_port().await.map_err(super::refused)?;
     let key = super::seated_key(&status.network).await?;
@@ -1326,7 +1340,15 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
         return over_ws().await.map(opened);
     };
     let answered = AtomicBool::new(false);
-    let mut quic = std::pin::pin!(over_quic(&endpoint, port, &hello, node, &client, &answered));
+    let mut quic = std::pin::pin!(over_quic(
+        &endpoint,
+        port,
+        &hello,
+        node,
+        &client,
+        &answered,
+        udp_is_silent
+    ));
     let mut ws = std::pin::pin!(over_ws());
     tokio::select! {
         // both done in one poll: QUIC, the path that carries datagrams
@@ -1343,9 +1365,13 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
             // UDP answered: QUIC is its live handshake from done; failing or
             // late, the node's welcome on the websocket stands
             Ok(session) if answered.load(Ordering::Relaxed) => {
-                match tokio::time::timeout(QUIC_ANSWER, quic).await {
-                    Ok(Quic::Session(quic)) => Ok(opened(quic)),
-                    Ok(Quic::Refused(_) | Quic::Silent(_)) | Err(_) => Ok(opened(session)),
+                tokio::select! {
+                    biased;
+                    quic = quic => match quic {
+                        Quic::Session(quic) => Ok(opened(quic)),
+                        Quic::Refused(_) | Quic::Silent(_) => Ok(opened(session)),
+                    },
+                    () = quic_is_late() => Ok(opened(session)),
                 }
             }
             Ok(session) => Ok(opened(session)),
@@ -1398,15 +1424,16 @@ enum Quic {
 
 /// The handshake over QUIC; `answered` is set once the node's UDP answered
 /// with its own certificate.
-async fn over_quic(
+async fn over_quic<Silent: Future<Output = ()>>(
     endpoint: &str,
     port: u16,
     hello: &Hello,
     node: &[u8],
     client: &Weak<Inner>,
     answered: &AtomicBool,
+    udp_is_silent: impl FnOnce() -> Silent,
 ) -> Quic {
-    let (udp, connection) = match quic(endpoint, port, node).await {
+    let (udp, connection) = match quic(endpoint, port, node, udp_is_silent).await {
         Ok(dialed) => dialed,
         Err(error) => return Quic::Silent(error),
     };
@@ -2010,10 +2037,11 @@ async fn write(conn: Arc<Conn>, alias: oneshot::Receiver<Alias>, objects: Arc<Ou
 
 /// QUIC to the node's live port at the host of its `/v1` address, its key
 /// pinned, within [`QUIC_ANSWER`].
-async fn quic(
+async fn quic<Silent: Future<Output = ()>>(
     endpoint: &str,
     port: u16,
     identity: &[u8],
+    udp_is_silent: impl FnOnce() -> Silent,
 ) -> Result<(quinn::Endpoint, quinn::Connection), String> {
     let url = url::Url::parse(endpoint).map_err(|error| error.to_string())?;
     let host = url.host_str().ok_or("the node's address names no host")?;
@@ -2034,10 +2062,11 @@ async fn quic(
     let connecting = udp
         .connect_with(client_config(key)?, at, SERVER_NAME)
         .map_err(|error| error.to_string())?;
-    let connection = tokio::time::timeout(QUIC_ANSWER, connecting)
-        .await
-        .map_err(|_| "no QUIC answer".to_owned())?
-        .map_err(|error| error.to_string())?;
+    let connection = tokio::select! {
+        biased;
+        connection = connecting => connection.map_err(|error| error.to_string())?,
+        () = udp_is_silent() => return Err("no QUIC answer".to_owned()),
+    };
     Ok((udp, connection))
 }
 
