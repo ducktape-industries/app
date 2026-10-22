@@ -78,7 +78,10 @@ blob is successfully held. no local."
   changes, and the changes brought over from his GitHub pull requests are his
   to land; chief merges one of them only if eddy agrees.
 - `main` moves only on an explicit, user-requested release of `dev`: a forge
-  change from `dev` into `main`.
+  change from `dev` into `main`. Its `Release note:` line is the whole
+  stable entry watch posts in chat `release` (merges and dev's own changes
+  are left out there), so it sums up in one sentence what people get since
+  the last stable.
 - A checkout reaches forge through a remote `forge`, with git-remote-duck
   (ducktape release `git-remote-duck-7acf453`) on `PATH`:
   `git remote add forge duck://duckpond-725bcad1/forge/app` and
