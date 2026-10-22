@@ -1132,3 +1132,43 @@ fn another_chains_row_click_asks_the_shell() {
     });
     assert!(gone.is_none(), "a row the centre in hand does not hold");
 }
+
+#[test]
+fn a_renamed_program_takes_its_old_ids_word_unless_it_has_one() {
+    let mut prefs = serde_json::json!({
+        "notify_views": {"chat": "Block", "forge": "Silent", "owner/forge": "Allow"}
+    });
+    let renames = [
+        ("chat".to_owned(), "owner/chat".to_owned()),
+        ("forge".to_owned(), "owner/forge".to_owned()),
+        ("files".to_owned(), "owner/files".to_owned()),
+    ];
+    assert!(super::settings::carried(&mut prefs, &renames));
+    assert_eq!(
+        prefs["notify_views"],
+        serde_json::json!({
+            "chat": "Block",
+            "owner/chat": "Block",
+            "forge": "Silent",
+            "owner/forge": "Allow",
+        })
+    );
+    assert!(!super::settings::carried(&mut prefs, &renames), "once");
+    assert!(!super::settings::carried(
+        &mut serde_json::json!({}),
+        &renames
+    ));
+}
+
+#[test]
+fn a_program_renamed_twice_takes_its_newest_old_ids_word() {
+    let mut prefs = serde_json::json!({
+        "notify_views": {"first": "Allow", "owner/second": "Block"}
+    });
+    let renames = [
+        ("first".to_owned(), "owner/third".to_owned()),
+        ("owner/second".to_owned(), "owner/third".to_owned()),
+    ];
+    assert!(super::settings::carried(&mut prefs, &renames));
+    assert_eq!(prefs["notify_views"]["owner/third"], "Block");
+}

@@ -707,6 +707,10 @@ pub(super) async fn read_roster(
             bound.roles = Some(roles);
         }
         if let Some(renames) = renames {
+            let moved = bound.renames != renames;
+            if moved {
+                super::notify::carry_permissions(&renames);
+            }
             bound.renames = renames;
         }
         bound.due = due;

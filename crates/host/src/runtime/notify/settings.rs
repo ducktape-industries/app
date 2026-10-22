@@ -143,6 +143,31 @@ pub fn set_permission(center: &mut Center, program: &str, permission: Permission
     crate::runtime::notifier::permission_moved(program, permission);
 }
 
+pub fn carry_permissions(renames: &[(String, String)]) {
+    let due = carried(&mut read_prefs().unwrap_or_default(), renames);
+    if due {
+        edit(|prefs| {
+            carried(prefs, renames);
+        });
+    }
+}
+
+pub(super) fn carried(prefs: &mut serde_json::Value, renames: &[(String, String)]) -> bool {
+    let Some(views) = prefs[VIEWS_PREF].as_object_mut() else {
+        return false;
+    };
+    let mut moved = false;
+    for (from, to) in renames.iter().rev() {
+        let word = views.get(from).cloned();
+        let unsaid = !views.contains_key(to);
+        if let Some(word) = word.filter(|_| unsaid) {
+            views.insert(to.clone(), word);
+            moved = true;
+        }
+    }
+    moved
+}
+
 /// "Not now": the bar goes for this run; the view's notices stay logged
 /// silently and its calls still ring, and the bar asks again next launch.
 pub fn not_now(center: &mut Center, program: &str) {

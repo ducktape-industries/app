@@ -62,7 +62,8 @@ mod tests;
 pub use center::{CenterHandle, Entry, HOST, Notice, NoticeKind, center, wall};
 pub(crate) use center::{Log, log_path as log_file};
 pub use settings::{
-    BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
+    BURSTS, Permission, Settings, carry_permissions, not_now, save_banners, save_burst,
+    save_in_front, set_permission,
 };
 
 /// A notice with words, and links that are `duck://` links or nothing.
