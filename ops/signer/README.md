@@ -9,7 +9,10 @@ set; what it writes in `out` the signer records as the check's outputs. `publish
 the workflows' `contract` job, which runs `ops/contract-gate.py` once `linux` and `macos-sign`
 are done: a release goes out only while duckpond's `/v1/status` answers the commit's
 `NODE_CONTRACT`, so a release built for the next contract before a roll is published by a run
-after it (`python3 ops/contract-gate-test.py` tests the gate).
+after it (`python3 ops/contract-gate-test.py` tests the gate). The gate's line is that job's
+output, `contract.txt`: the signer takes a need only with the outputs its builder recorded, so a
+job that kept nothing would refuse `publish`. The three signing jobs name `signer-eddy`
+(account 63) as their only runner, so no other account can claim or report them.
 
 | Tool | Reads | Writes in `out` |
 |---|---|---|

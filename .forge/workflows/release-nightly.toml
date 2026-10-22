@@ -17,7 +17,7 @@ runs-on = ["pods"]
 needs = ["linux", "macos-sign"]
 runners = [38]
 image = "localhost:5000/toolchain:b240e4516c93@sha256:d80bfd948f37f381542c720e3f67a39c06606e88aec9f66f88aefb295468136b"
-steps = ["git config --global --add safe.directory '*'", "python3 ops/contract-gate.py \"$NODE\""]
+steps = ["git config --global --add safe.directory '*'", "python3 ops/contract-gate.py \"$NODE\" > \"$OUT/contract.txt\"", "cat \"$OUT/contract.txt\""]
 
 [jobs.env]
 NODE = "https://duckpond.ducktape.industries"
@@ -44,12 +44,14 @@ steps = ["ops/release-macos.sh \"$OUT\""]
 [[jobs]]
 id = "macos-sign"
 runs-on = ["sign:dev.ducktape.app"]
+runners = [63]
 needs = ["macos"]
 steps = ["developer-id"]
 
 [[jobs]]
 id = "publish"
 runs-on = ["sign:dev.ducktape.app"]
+runners = [63]
 needs = ["contract", "linux", "macos-sign"]
 steps = ["release-manifest"]
 
@@ -59,6 +61,7 @@ CHANNEL = "nightly"
 [[jobs]]
 id = "mirror"
 runs-on = ["sign:dev.ducktape.app"]
+runners = [63]
 needs = ["linux", "macos-sign", "publish"]
 steps = ["r2-mirror"]
 
