@@ -5,6 +5,8 @@ set -euo pipefail
 out=${1:?the folder the check keeps}
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$repo"
+tools=$("$repo/ops/cef-tools-macos.sh" "$repo/target/cef-tools")
+export PATH="${tools//$'\n'/:}:$PATH"
 DUCKTAPE_CARGO_PROFILE=dist "$repo/ops/bundle-app-macos.sh"
 mkdir -p "$out"
 COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$out/ducktape-app-unsigned.app.tar.gz" \

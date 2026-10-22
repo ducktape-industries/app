@@ -154,19 +154,7 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
       - name: CEF's build tools
-        run: |
-          tools="$RUNNER_TEMP/cef-tools"
-          mkdir -p "$tools/ninja"
-          curl -fsSL -o "$tools/cmake.tar.gz" https://cmake.org/files/v3.31/cmake-3.31.6-macos-universal.tar.gz
-          echo "330b9514f5112e5ed4fb08b8b05803b776fd9b539a6ae12927d14dcc0ee2ba8d  $tools/cmake.tar.gz" | shasum -a 256 -c -
-          tar xzf "$tools/cmake.tar.gz" -C "$tools"
-          curl -fsSL -o "$tools/ninja-mac.zip" https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-mac.zip
-          echo "89a287444b5b3e98f88a945afa50ce937b8ffd1dcc59c555ad9b1baf855298c9  $tools/ninja-mac.zip" | shasum -a 256 -c -
-          unzip -o "$tools/ninja-mac.zip" -d "$tools/ninja"
-          {
-            echo "$tools/cmake-3.31.6-macos-universal/CMake.app/Contents/bin"
-            echo "$tools/ninja"
-          } >> "$GITHUB_PATH"
+        run: ops/cef-tools-macos.sh "$RUNNER_TEMP/cef-tools" >> "$GITHUB_PATH"
       # ad-hoc signed here: macos-sign signs it for real
       - run: ops/bundle-app-macos.sh
         env:
