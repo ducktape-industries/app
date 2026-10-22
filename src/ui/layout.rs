@@ -83,13 +83,15 @@ impl Pane {
     pub(crate) fn min_width(&self) -> f32 {
         let view = self
             .is_view()
-            .then(|| crate::runtime::min_width(self.program));
+            .then(|| crate::runtime::min_width(self.program, Some(self.instance)));
         view.flatten()
             .map_or(MIN_WIDTH, |min_width| MIN_WIDTH.max(min_width + 2.))
     }
 
     pub(crate) fn width(&self) -> Option<f32> {
-        let view = self.is_view().then(|| crate::runtime::width(self.program));
+        let view = self
+            .is_view()
+            .then(|| crate::runtime::width(self.program, Some(self.instance)));
         view.flatten().map(|width| width + 2.)
     }
 }

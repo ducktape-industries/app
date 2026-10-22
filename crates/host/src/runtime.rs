@@ -359,8 +359,9 @@ pub fn allows(capability: Capability) -> &'static str {
 
 /// The narrowest `program`'s view is laid out, in px, once one of its seats
 /// holds it drawn or compiled; `None` while it loads, failed, or has none.
-pub fn min_width(program: &str) -> Option<f32> {
-    let registry = lock(registry());
+pub fn min_width(program: &str, instance: Option<u64>) -> Option<f32> {
+    let network = seating(program, instance);
+    let registry = lock(&network.seats);
     registry
         .iter()
         .filter(|((name, _), _)| *name == program)
@@ -374,8 +375,9 @@ pub fn min_width(program: &str) -> Option<f32> {
 /// The width, in px, a desk window holding `program`'s view opens at, once
 /// one of its seats holds it drawn or compiled; `None` while it loads,
 /// failed, has none, or its manifest leaves it to the app's share.
-pub fn width(program: &str) -> Option<f32> {
-    let registry = lock(registry());
+pub fn width(program: &str, instance: Option<u64>) -> Option<f32> {
+    let network = seating(program, instance);
+    let registry = lock(&network.seats);
     registry
         .iter()
         .filter(|((name, _), _)| *name == program)
@@ -385,6 +387,17 @@ pub fn width(program: &str) -> Option<f32> {
             _ => None,
         })
         .map(|width| width as f32)
+}
+
+fn seating(program: &str, instance: Option<u64>) -> Arc<Network> {
+    let holds = |network: &Arc<Network>| {
+        let seats = lock(&network.seats);
+        seats
+            .keys()
+            .any(|(name, at)| *name == program && Some(*at) == instance)
+    };
+    let held = roster::networks().into_iter().find(holds);
+    held.unwrap_or_else(roster::notified_network)
 }
 
 /// The process's runtime (the node in hand, the app's roster, every seat)

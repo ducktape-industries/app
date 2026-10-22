@@ -450,15 +450,19 @@ fn a_view_says_its_min_width_once_it_is_drawn() {
         .lock()
         .unwrap()
         .insert(("min-width-seat", 7), seat.clone());
-    assert_eq!(min_width("min-width-seat"), None, "loading");
+    assert_eq!(min_width("min-width-seat", None), None, "loading");
     seat.lock().unwrap().slot = Slot::Compiled(ViewCode::for_test("", "", 640));
-    assert_eq!(min_width("min-width-seat"), Some(640.), "its manifest's");
+    assert_eq!(
+        min_width("min-width-seat", None),
+        Some(640.),
+        "its manifest's"
+    );
     let mut view = wat_view("unreachable", "unreachable", None);
     view.min_width = 680;
     seat.lock().unwrap().slot = Slot::Ready(Box::new(view));
-    assert_eq!(min_width("min-width-seat"), Some(680.));
+    assert_eq!(min_width("min-width-seat", None), Some(680.));
     registry().lock().unwrap().remove(&("min-width-seat", 7));
-    assert_eq!(min_width("min-width-seat"), None, "gone");
+    assert_eq!(min_width("min-width-seat", None), None, "gone");
 }
 
 /// A view built against another wire than this app's runs. Where the two

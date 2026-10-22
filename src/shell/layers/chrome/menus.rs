@@ -321,7 +321,7 @@ impl Chrome {
                     name,
                     Box::new({
                         let url = entry.url.clone();
-                        self.on_session(move |session, cx| session.switch(url.clone(), cx))
+                        self.on_windows(move |windows, cx| windows.switch(url.clone(), cx))
                     }),
                 )
                 .aria_toggled(current.into())
@@ -363,7 +363,7 @@ impl Chrome {
             "network-menu/add".into(),
             Role::MenuItem,
             "Add a network".into(),
-            Box::new(self.on_session(Session::disconnect)),
+            Box::new(self.on_windows(|windows, cx| windows.leave(cx))),
         )
         .child(
             sans(500, 14.)

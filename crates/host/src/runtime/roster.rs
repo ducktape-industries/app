@@ -69,6 +69,7 @@ pub struct Network {
     pub(super) followed: bool,
     pub(super) left: std::sync::atomic::AtomicBool,
     reading: std::sync::atomic::AtomicBool,
+    checked: std::sync::atomic::AtomicU64,
 }
 
 impl Network {
@@ -89,6 +90,7 @@ impl Network {
             followed,
             left: Default::default(),
             reading: Default::default(),
+            checked: Default::default(),
         });
         lock(&network.connection).on = On::of(&network);
         let mut every = lock(every());
@@ -119,7 +121,9 @@ impl Network {
         network: &str,
         chain: &str,
     ) {
-        super::notifier::stop_every();
+        if self.notified() {
+            super::notifier::stop_every();
+        }
         let snapshot = self.take(client, network, chain);
         spawn_roster_read(self.clone(), snapshot, || {});
     }
@@ -137,6 +141,7 @@ impl Network {
 
     pub fn deployments_checked(self: &Arc<Self>) {
         use std::sync::atomic::Ordering;
+        self.checked.fetch_add(1, Ordering::SeqCst);
         if self.reading.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -156,7 +161,42 @@ impl Network {
         self.roster.due(height)
     }
 
+    pub fn notified(&self) -> bool {
+        std::ptr::eq(self, Arc::as_ptr(&notified_network()))
+    }
+
+    pub fn hand_notifiers(self: &Arc<Self>) {
+        *lock(notified()) = Arc::downgrade(self);
+        super::notifier::stop_every();
+        let asked_of = lock(&self.connection).clone();
+        if asked_of.client.is_some() {
+            let programs = self.roster.lock().clone();
+            super::notifier::reconcile_all(&asked_of, &programs);
+        }
+    }
+
+    pub fn rail(&self, roster: &Roster) -> Vec<RailRow> {
+        roster.rail_among(&self.seats)
+    }
+
+    pub fn parse_link(&self, roster: &Roster, link: &str) -> Link {
+        parse_link_among(link, &self.rail(roster))
+    }
+
     #[cfg(any(test, feature = "test-support"))]
+    pub fn compiled_for_test(&self, program: &str, min_width: u32) {
+        for ((name, _), seat) in lock(&self.seats).iter() {
+            if *name == program {
+                lock(seat).slot = Slot::Compiled(ViewCode::for_test(program, "", min_width));
+            }
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn checked(&self) -> u64 {
+        self.checked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn apart() -> Arc<Self> {
         Self::new(false)
     }
@@ -208,6 +248,16 @@ pub(super) fn networks() -> Vec<Arc<Network>> {
 pub fn in_hand() -> &'static Arc<Network> {
     static IN_HAND: OnceLock<Arc<Network>> = OnceLock::new();
     IN_HAND.get_or_init(|| Network::new(false))
+}
+
+fn notified() -> &'static Mutex<std::sync::Weak<Network>> {
+    static NOTIFIED: OnceLock<Mutex<std::sync::Weak<Network>>> = OnceLock::new();
+    NOTIFIED.get_or_init(|| Mutex::new(Arc::downgrade(in_hand())))
+}
+
+pub(super) fn notified_network() -> Arc<Network> {
+    let held = lock(notified()).upgrade();
+    held.unwrap_or_else(|| in_hand().clone())
 }
 
 pub(super) fn connection() -> &'static Mutex<Connection> {
@@ -475,6 +525,10 @@ fn readiness(slot: &Slot) -> u8 {
 
 impl Roster {
     pub fn rail(&self) -> Vec<RailRow> {
+        self.rail_among(&in_hand().seats)
+    }
+
+    fn rail_among(&self, seats: &Registry) -> Vec<RailRow> {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "rail");
         crate::perf::count(crate::perf::Key::Shell, "rail.calls", 1);
         let programs: Vec<&'static str> = self
@@ -482,7 +536,7 @@ impl Roster {
             .iter()
             .map(|program| intern(&program.name))
             .collect();
-        let registry = lock(registry());
+        let registry = lock(seats);
         programs
             .into_iter()
             .map(|program| {
@@ -581,9 +635,8 @@ fn spawn_roster_read(
     let spawned = rt::task::worker("roster", async move {
         use futures::FutureExt as _;
         let read = std::panic::AssertUnwindSafe(async {
-            if let Some(programs) =
-                read_roster(asked_of.clone(), &network.roster, &network.seats).await
-            {
+            let read = read_roster(asked_of.clone(), &network.roster, &network.seats).await;
+            if let Some(programs) = read.filter(|_| network.notified()) {
                 super::notifier::reconcile_all(&asked_of, &programs);
             }
         });

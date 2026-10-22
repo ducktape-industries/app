@@ -65,8 +65,8 @@ pub struct Seats {
     notifications: Entity<Notifications>,
     network: Arc<Network>,
     props: Vec<u8>,
+    hands_notifiers: bool,
     _observing: Vec<Subscription>,
-    _notifiers: gpui_kit::Task<()>,
 }
 
 impl EventEmitter<SeatsEvent> for Seats {}
@@ -78,24 +78,13 @@ impl Seats {
         rail: &Entity<Rail>,
         notifications: &Entity<Notifications>,
         network: Arc<Network>,
+        in_hand: bool,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut heard = crate::runtime::notifier::intents();
-        let _notifiers = cx.spawn(async move |this, cx| {
-            use futures::StreamExt as _;
-            while let Some((program, intent)) = heard.next().await {
-                let routed = this.update(cx, |this, cx| {
-                    this.route(program, crate::runtime::notifier::INSTANCE, intent, cx)
-                });
-                if routed.is_err() {
-                    break;
-                }
-            }
-        });
         let mut this = Self {
-            _notifiers,
             map: BTreeMap::new(),
             props: Vec::new(),
+            hands_notifiers: in_hand,
             _observing: vec![
                 cx.observe(session, |this, _, cx| this.props_moved(cx)),
                 cx.observe(account, |this, _, cx| this.props_moved(cx)),
@@ -107,8 +96,26 @@ impl Seats {
             network,
         };
         this.props = this.encode(cx);
-        crate::runtime::notifier::set_props(this.props.clone());
+        if this.hands_notifiers {
+            crate::runtime::notifier::set_props(this.props.clone());
+        }
         this
+    }
+
+    pub fn hand_notifiers(&mut self, on: bool) {
+        self.hands_notifiers = on;
+        if on {
+            crate::runtime::notifier::set_props(self.props.clone());
+        }
+    }
+
+    pub fn notifier_said(&mut self, program: &'static str, intent: Intent, cx: &mut Context<Self>) {
+        self.route(program, crate::runtime::notifier::INSTANCE, intent, cx);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn props(&self) -> &[u8] {
+        &self.props
     }
 
     fn encode(&self, cx: &App) -> Vec<u8> {
@@ -129,7 +136,9 @@ impl Seats {
             return;
         }
         self.props = props;
-        crate::runtime::notifier::set_props(self.props.clone());
+        if self.hands_notifiers {
+            crate::runtime::notifier::set_props(self.props.clone());
+        }
         for routed in self.map.values() {
             let props = self.props.clone();
             routed.seat.update(cx, |seat, cx| seat.set_props(props, cx));

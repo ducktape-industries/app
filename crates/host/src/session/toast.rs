@@ -3,40 +3,49 @@
 //! the count. It hears the session's and the account's notices
 //! (`SessionEvent::Toast`, `AccountEvent::Toast`) itself.
 use super::{Account, AccountEvent, Session, SessionEvent};
-use gpui_kit::{Context, Entity, Subscription, Task};
+use gpui_kit::{Context, Entity, Subscription, Task, WeakEntity};
 use std::time::Duration;
 
 /// How long a notice stays up.
 pub const SHOWN_FOR: Duration = Duration::from_millis(3600);
 
+#[derive(Default)]
 pub struct Toast {
     text: String,
     dismiss: Option<Task<()>>,
-    _subscriptions: [Subscription; 2],
+    followed: Vec<(WeakEntity<Session>, [Subscription; 2])>,
 }
 
 impl Toast {
-    pub fn new(
-        session: &Entity<Session>,
-        account: &Entity<Account>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new() -> Self {
         Self {
             text: String::new(),
             dismiss: None,
-            _subscriptions: [
-                cx.subscribe(session, |this, _, event: &SessionEvent, cx| {
-                    if let SessionEvent::Toast(said) = event {
-                        this.show(said.clone(), cx);
-                    }
-                }),
-                cx.subscribe(account, |this, _, event: &AccountEvent, cx| {
-                    if let AccountEvent::Toast(said) = event {
-                        this.show(said.clone(), cx);
-                    }
-                }),
-            ],
+            followed: Vec::new(),
         }
+    }
+
+    pub fn follow(
+        &mut self,
+        session: &Entity<Session>,
+        account: &Entity<Account>,
+        cx: &mut Context<Self>,
+    ) {
+        self.followed
+            .retain(|(session, _)| session.upgrade().is_some());
+        let heard = [
+            cx.subscribe(session, |this, _, event: &SessionEvent, cx| {
+                if let SessionEvent::Toast(said) = event {
+                    this.show(said.clone(), cx);
+                }
+            }),
+            cx.subscribe(account, |this, _, event: &AccountEvent, cx| {
+                if let AccountEvent::Toast(said) = event {
+                    this.show(said.clone(), cx);
+                }
+            }),
+        ];
+        self.followed.push((session.downgrade(), heard));
     }
 
     /// The notice up; empty when none.

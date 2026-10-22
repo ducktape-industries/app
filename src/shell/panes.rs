@@ -49,7 +49,7 @@ impl WindowRoot {
                         pane.and_then(|pane| pane.frame),
                         window.display(cx).map(|display| display.bounds()),
                         pane.map_or(super::windows::POPOUT_MIN, |pane| {
-                            super::windows::popout_min(pane.program)
+                            super::windows::popout_min(pane.program, Some(pane.instance))
                         }),
                     ))
                 });

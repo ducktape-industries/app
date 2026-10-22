@@ -139,6 +139,16 @@ impl WindowRoot {
         }
     }
 
+    pub(in crate::shell) fn over(
+        &mut self,
+        app: Entities,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        *self = Self::new(app, self.key, self.kind, window, cx);
+        cx.notify();
+    }
+
     /// A switch asked for: timed from here to the frame after the one that
     /// shows it. One under way already keeps its start.
     pub(in crate::shell) fn start_switch(&mut self) {

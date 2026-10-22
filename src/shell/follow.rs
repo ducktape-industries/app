@@ -64,6 +64,22 @@ impl Follower {
         this
     }
 
+    pub(crate) fn follow_console(
+        &mut self,
+        session: &Entity<Session>,
+        account: &Entity<Account>,
+        cx: &mut Context<Self>,
+    ) {
+        self.session = session.clone();
+        self.account = account.clone();
+        self._observing = [
+            cx.observe(session, |this, _, cx| this.sync(cx)),
+            cx.observe(account, |this, _, cx| this.lock(cx)),
+        ];
+        self.lock(cx);
+        self.sync(cx);
+    }
+
     pub(crate) fn asking(&self, cx: &App) -> bool {
         let state = self.session.read(cx).get();
         wanted(&state.recent_endpoints, &state.connected_rpc)

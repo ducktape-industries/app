@@ -5,16 +5,18 @@
 //! (the session empties the roster then); the badges come from each view's
 //! `Intent::Badge` (`Seats`), and go when the network is left.
 use super::{Session, SessionEvent};
-use crate::runtime::{Link, RailRow, Roster};
+use crate::runtime::{Link, Network, RailRow, Roster};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui_kit::{Context, Entity, Subscription, Task};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub struct Rail {
     rows: Vec<RailRow>,
     badges: BTreeMap<&'static str, i64>,
     roster: Roster,
+    network: Arc<Network>,
     _drain: Task<()>,
     _session: Subscription,
 }
@@ -25,6 +27,7 @@ impl Rail {
     /// again (none) as the network in hand is left, so no link waits on the
     /// channel's next turn to stop naming that network's programs.
     pub fn new(
+        network: Arc<Network>,
         roster: Roster,
         mut changes: UnboundedReceiver<()>,
         session: &Entity<Session>,
@@ -45,9 +48,10 @@ impl Rail {
             }
         });
         Self {
-            rows: roster.rail(),
+            rows: network.rail(&roster),
             badges: BTreeMap::new(),
             roster,
+            network,
             _drain: drain,
             _session: leaving,
         }
@@ -55,7 +59,7 @@ impl Rail {
 
     /// A link read against the programs the node lists (`Roster::parse_link`).
     pub fn parse_link(&self, link: &str) -> Link {
-        self.roster.parse_link(link)
+        self.network.parse_link(&self.roster, link)
     }
 
     /// Where `link` goes, read against the programs the node lists and
@@ -86,7 +90,7 @@ impl Rail {
 
     /// The rows read off the roster again; notifies only when they moved.
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
-        let rows = self.roster.rail();
+        let rows = self.network.rail(&self.roster);
         if rows == self.rows {
             return false;
         }
@@ -241,7 +245,15 @@ mod tests {
         let roster = Roster::listing(&[PROGRAM]);
         let (send, changes) = futures::channel::mpsc::unbounded();
         let session = cx.update(crate::session::tests::session);
-        let rail = cx.new(|cx| Rail::new(roster.clone(), changes, &session, cx));
+        let rail = cx.new(|cx| {
+            Rail::new(
+                crate::runtime::in_hand().clone(),
+                roster.clone(),
+                changes,
+                &session,
+                cx,
+            )
+        });
         let (seen, _observing) = crate::session::tests::notifies(&rail, cx);
         let note = |cx: &mut TestAppContext| rail.read_with(cx, |rail, _| rail.rows()[0].note);
         assert_eq!(note(cx), Some("Loading"));

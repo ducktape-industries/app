@@ -20,14 +20,19 @@ pub(in crate::shell) const POPOUT_MIN: f32 = 480.;
 
 /// The narrowest a pop-out holding `program`'s view goes: the view's own
 /// minimum once it is drawn, never under [`POPOUT_MIN`].
-pub(in crate::shell) fn popout_min(program: &str) -> f32 {
-    crate::runtime::min_width(program).map_or(POPOUT_MIN, |min_width| min_width.max(POPOUT_MIN))
+pub(in crate::shell) fn popout_min(program: &str, instance: Option<u64>) -> f32 {
+    crate::runtime::min_width(program, instance)
+        .map_or(POPOUT_MIN, |min_width| min_width.max(POPOUT_MIN))
+}
+
+pub(in crate::shell) fn popout_size(program: &str, instance: u64) -> Size<Pixels> {
+    size(px(popout_min(program, Some(instance))), px(POPOUT_MIN))
 }
 
 pub(in crate::shell) fn min_size(kind: super::WindowKind) -> Size<Pixels> {
     match kind {
         super::WindowKind::Console => size(px(720.), px(480.)),
-        super::WindowKind::View { program } => size(px(popout_min(program)), px(POPOUT_MIN)),
+        super::WindowKind::View { program } => size(px(popout_min(program, None)), px(POPOUT_MIN)),
     }
 }
 
@@ -862,14 +867,14 @@ mod tests {
     #[test]
     fn a_popout_is_never_narrower_than_its_view_nor_480() {
         assert_eq!(
-            popout_min("popout-unseated-view"),
+            popout_min("popout-unseated-view", None),
             POPOUT_MIN,
             "not drawn yet"
         );
         crate::runtime::seat_for_test("popout-wide-view", 640);
-        assert_eq!(popout_min("popout-wide-view"), 640.);
+        assert_eq!(popout_min("popout-wide-view", None), 640.);
         crate::runtime::seat_for_test("popout-narrow-view", 320);
-        assert_eq!(popout_min("popout-narrow-view"), POPOUT_MIN);
+        assert_eq!(popout_min("popout-narrow-view", None), POPOUT_MIN);
     }
 
     /// A pop-out steps 32 px off its source window, unless that would

@@ -10,6 +10,7 @@
 
 mod account;
 mod chain;
+mod hand;
 mod node;
 mod notifications;
 mod prefs;
@@ -21,6 +22,7 @@ mod toast;
 
 pub use account::{Account, AccountEvent, AccountState, Secret};
 pub use chain::Chain;
+pub use hand::Hand;
 #[cfg(any(test, feature = "test-support"))]
 pub use node::{HeadsSource, StatusSource};
 pub use node::{Session, SessionEvent, SessionState};
@@ -42,8 +44,120 @@ use futures::channel::mpsc;
 use gpui_kit::{App, AppContext as _, Entity};
 use std::sync::Arc;
 
-/// Every app-wide entity: what a shell's windows are made over, and what
-/// every window's root reads.
+/// What every window draws from, whichever network it shows: the toast,
+/// the prefs, and the network in hand (`Hand`).
+#[derive(Clone)]
+pub struct Common {
+    pub toast: Entity<Toast>,
+    pub prefs: Entity<Slice<Prefs>>,
+    pub hand: Entity<Hand>,
+    center: CenterHandle,
+}
+
+impl Common {
+    pub fn new(center: CenterHandle, changes: mpsc::UnboundedReceiver<()>, cx: &mut App) -> Self {
+        let prefs = cx.new(|_| Slice::new(Prefs::load()));
+        let text_size = prefs.read(cx).get().text_size;
+        cx.set_global(text_size);
+        let toast = cx.new(|_| Toast::new());
+        let hand = cx.new(|cx| Hand::new(changes, cx));
+        Self {
+            toast,
+            prefs,
+            hand,
+            center,
+        }
+    }
+}
+
+/// One network's entities: its runtime `Network`, the node in hand on it
+/// (`Session`), its chain, account, screen, rail, notifications and seats.
+#[derive(Clone)]
+pub struct Net {
+    pub network: Arc<Network>,
+    pub session: Entity<Session>,
+    pub chain: Entity<Chain>,
+    pub account: Entity<Account>,
+    pub screen: Entity<Slice<Screen>>,
+    pub rail: Entity<Rail>,
+    pub notifications: Entity<Notifications>,
+    pub seats: Entity<Seats>,
+}
+
+impl PartialEq for Net {
+    fn eq(&self, other: &Self) -> bool {
+        self.session == other.session
+    }
+}
+
+impl Net {
+    pub fn new(common: &Common, network: Arc<Network>, in_hand: bool, cx: &mut App) -> Self {
+        let roster = network.roster().clone();
+        Self::over(common, network, roster, in_hand, cx)
+    }
+
+    fn over(
+        common: &Common,
+        network: Arc<Network>,
+        roster: Roster,
+        in_hand: bool,
+        cx: &mut App,
+    ) -> Self {
+        let chain = cx.new(|_| Chain::default());
+        let screen = cx.new(|_| Slice::new(Screen::Connect));
+        let account = cx.new(|_| Account::new(screen.clone(), common.prefs.clone()));
+        let session = {
+            let (chain, account, screen) = (chain.clone(), account.clone(), screen.clone());
+            let (center, network, roster) =
+                (common.center.clone(), network.clone(), roster.clone());
+            cx.new(|_| {
+                let mut session = Session::new(chain, account, screen, center, network, roster);
+                session.hand_notifiers(in_hand);
+                session
+            })
+        };
+        let wake = common.hand.update(cx, |hand, _| hand.wake());
+        let rail = cx.new(|cx| Rail::new(network.clone(), roster, wake, &session, cx));
+        let notifications = cx.new(|_| Notifications::new(common.center.clone()));
+        notifications.update(cx, |notifications, cx| notifications.follow(&session, cx));
+        common
+            .toast
+            .update(cx, |toast, cx| toast.follow(&session, &account, cx));
+        let seats = {
+            let network = network.clone();
+            cx.new(|cx| {
+                Seats::new(
+                    &session,
+                    &account,
+                    &rail,
+                    &notifications,
+                    network,
+                    in_hand,
+                    cx,
+                )
+            })
+        };
+        if in_hand {
+            common
+                .hand
+                .update(cx, |hand, cx| hand.take(&session, &seats, cx));
+        }
+        Self {
+            network,
+            session,
+            chain,
+            account,
+            screen,
+            rail,
+            notifications,
+            seats,
+        }
+    }
+}
+
+/// What one window draws from: the app-wide entities (`Common`) and its
+/// network's (`Net`), each under the name it had while the app held one
+/// network.
 #[derive(Clone)]
 pub struct Shared {
     pub session: Entity<Session>,
@@ -55,81 +169,45 @@ pub struct Shared {
     pub toast: Entity<Toast>,
     pub prefs: Entity<Slice<Prefs>>,
     pub seats: Entity<Seats>,
+    pub common: Common,
+    pub net: Net,
 }
 
 impl Shared {
-    /// Every app-wide entity, off a roster, a notification centre and this
-    /// device's prefs; the rail's rows read now and again on every message
-    /// `changes` brings.
+    pub fn of(common: &Common, net: &Net) -> Self {
+        Self {
+            session: net.session.clone(),
+            chain: net.chain.clone(),
+            account: net.account.clone(),
+            screen: net.screen.clone(),
+            rail: net.rail.clone(),
+            notifications: net.notifications.clone(),
+            toast: common.toast.clone(),
+            prefs: common.prefs.clone(),
+            seats: net.seats.clone(),
+            common: common.clone(),
+            net: net.clone(),
+        }
+    }
+
     pub fn new(
         network: Arc<Network>,
         center: CenterHandle,
         changes: mpsc::UnboundedReceiver<()>,
         cx: &mut App,
     ) -> Self {
-        let roster = network.roster().clone();
-        Self::over(network, roster, center, changes, cx)
+        let common = Common::new(center, changes, cx);
+        let net = Net::new(&common, network, true, cx);
+        Self::of(&common, &net)
     }
 
-    fn over(
-        network: Arc<Network>,
-        roster: Roster,
-        center: CenterHandle,
-        changes: mpsc::UnboundedReceiver<()>,
-        cx: &mut App,
-    ) -> Self {
-        let chain = cx.new(|_| Chain::default());
-        let screen = cx.new(|_| Slice::new(Screen::Connect));
-        let prefs = cx.new(|_| Slice::new(Prefs::load()));
-        let text_size = prefs.read(cx).get().text_size;
-        cx.set_global(text_size);
-        let account = cx.new(|_| Account::new(screen.clone(), prefs.clone()));
-        let session = {
-            let (chain, account, screen) = (chain.clone(), account.clone(), screen.clone());
-            let roster = roster.clone();
-            cx.new(|_| {
-                Session::new(
-                    chain,
-                    account,
-                    screen,
-                    center.clone(),
-                    network.clone(),
-                    roster,
-                )
-            })
-        };
-        let rail = cx.new(|cx| Rail::new(roster, changes, &session, cx));
-        let notifications = cx.new(|_| Notifications::new(center));
-        notifications.update(cx, |notifications, cx| notifications.follow(&session, cx));
-        let toast = cx.new(|cx| Toast::new(&session, &account, cx));
-        let seats = cx.new(|cx| Seats::new(&session, &account, &rail, &notifications, network, cx));
-        Self {
-            session,
-            chain,
-            account,
-            screen,
-            rail,
-            notifications,
-            toast,
-            prefs,
-            seats,
-        }
-    }
-
-    /// As `new`, with a rail no loader thread wakes: a test refreshes it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(roster: Roster, center: CenterHandle, cx: &mut App) -> Self {
-        let shared = Self::over(
-            crate::runtime::in_hand().clone(),
-            roster,
-            center,
-            mpsc::unbounded().1,
-            cx,
-        );
-        shared
-            .session
+        let common = Common::new(center, mpsc::unbounded().1, cx);
+        let net = Net::over(&common, crate::runtime::in_hand().clone(), roster, true, cx);
+        net.session
             .update(cx, |session, _| session.heads_through(tests::quiet()));
-        shared
+        Self::of(&common, &net)
     }
 }
 

@@ -231,25 +231,33 @@ fn booted(
         })
         .detach();
         let door_windows = windows.downgrade();
-        let door_seats = entities.seats.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
+            let (views_windows, settle_windows) = (door_windows.clone(), door_windows.clone());
             let windows = move |cx: &gpui_kit::App| {
                 door_windows
                     .upgrade()
                     .map(|windows| windows.read(cx).served())
                     .unwrap_or_default()
             };
-            let views_seats = door_seats.clone();
             let views = move |cx: &gpui_kit::App| {
-                views_seats
-                    .upgrade()
-                    .map(|seats| seats.read(cx).seated(cx))
-                    .unwrap_or_default()
+                let Some(windows) = views_windows.upgrade() else {
+                    return Vec::new();
+                };
+                let nets = windows.read(cx).nets();
+                nets.iter()
+                    .flat_map(|net| net.seats.read(cx).seated(cx))
+                    .collect()
             };
             let settle = move |cx: &mut gpui_kit::App| {
-                door_seats
-                    .update(cx, |seats, cx| seats.settle(cx))
-                    .unwrap_or(true)
+                let nets = settle_windows
+                    .upgrade()
+                    .map(|windows| windows.read(cx).nets())
+                    .unwrap_or_default();
+                let landed: Vec<bool> = nets
+                    .iter()
+                    .map(|net| net.seats.update(cx, |seats, cx| seats.settle(cx)))
+                    .collect();
+                landed.into_iter().all(|landed| landed)
             };
             let keep = super::kept_restore;
             let door = crate::ax::Door {

@@ -26,8 +26,8 @@
 //! (`switching`).
 use super::arrangement::{self, Arrangement};
 use super::{
-    AccountEvent, Desk, DeskSeats, Entities, Front, Listed, Overlay, Overlays, Popped, Screen,
-    SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
+    AccountEvent, Common, Desk, DeskSeats, Entities, Front, Listed, Net, Overlay, Overlays, Popped,
+    Screen, Session, SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
 };
 use crate::runtime::WindowKey;
 use crate::runtime::notify::{CenterHandle, Entry};
@@ -40,8 +40,8 @@ use ducktape_host::session::Opening;
 use futures::StreamExt as _;
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, AsyncApp, Bounds, Context, Entity, Pixels, Size,
-    Subscription, WeakEntity, Window, WindowBounds, WindowId, px, size,
+    AnyWindowHandle, App, AppContext as _, AsyncApp, Bounds, Context, Entity, EntityId, Pixels,
+    Size, Subscription, WeakEntity, Window, WindowBounds, WindowId, px, size,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
@@ -52,7 +52,10 @@ fn timed() -> Option<crate::perf::Timer> {
 }
 
 pub(crate) struct Windows {
-    shared: Shared,
+    common: Common,
+    home: Net,
+    nets: Vec<(Net, Vec<Subscription>)>,
+    candidate: Option<Net>,
     center: CenterHandle,
     handles: BTreeMap<WindowKey, AnyWindowHandle>,
     /// Each OS window's root view (not a program's view).
@@ -133,67 +136,12 @@ enum Opens {
 }
 
 impl Windows {
-    /// No windows yet. `shared` is every app-wide entity but this one.
-    pub(crate) fn new(shared: Shared, cx: &mut Context<Self>) -> Self {
-        let center = shared.notifications.read(cx).center().clone();
-        let launcher = *shared.screen.read(cx).get() != Screen::Desk;
-        let appearance = shared.prefs.read(cx).get().appearance;
+    pub(crate) fn new(common: Common, home: Net, cx: &mut Context<Self>) -> Self {
+        let center = home.notifications.read(cx).center().clone();
+        let launcher = *home.screen.read(cx).get() != Screen::Desk;
+        let appearance = common.prefs.read(cx).get().appearance;
         let subscriptions = vec![
-            cx.subscribe(
-                &shared.session,
-                |this, _, event: &SessionEvent, cx| match event {
-                    SessionEvent::LeftNetwork => this.left_network(cx),
-                    // the console comes forward, or opens, as the tray's Open
-                    SessionEvent::Connected => {
-                        if !this.launcher {
-                            this.take_up(cx);
-                        }
-                        this.raise_console(cx);
-                        this.open_switched(cx);
-                        this.open_held(cx);
-                    }
-                    // a switch a banner asked for did not land
-                    SessionEvent::Toast(_) => this.switching = None,
-                },
-            ),
-            cx.subscribe(
-                &shared.account,
-                |this, _, event: &AccountEvent, cx| match event {
-                    // a new account starts on Help, greeted
-                    AccountEvent::Welcome => this.open_help(cx),
-                    // its dialog closes (`Account` is the app's, the dialog
-                    // the console's)
-                    AccountEvent::Approved => {
-                        if let Some(own) = this.console.and_then(|key| this.by_window.get(&key)) {
-                            own.overlays
-                                .update(cx, |overlays, cx| overlays.close(Overlay::Approve, cx));
-                        }
-                    }
-                    AccountEvent::Toast(_) => {}
-                },
-            ),
-            // the launcher and the desk are one window: crossing from one to
-            // the other takes the other's size
-            cx.observe(&shared.screen, |this, screen, cx| {
-                let now = *screen.read(cx).get() != Screen::Desk;
-                if now == this.launcher {
-                    return;
-                }
-                this.launcher = now;
-                if !now {
-                    crate::perf::mark("desk");
-                    this.take_up(cx);
-                }
-                this.swap_console(cx);
-                this.open_switched(cx);
-                this.open_held(cx);
-            }),
-            // the network listed its programs: a banner's row may open
-            cx.observe(&shared.rail, |this, _, cx| {
-                this.open_switched(cx);
-                this.open_held(cx);
-            }),
-            cx.observe(&shared.prefs, |this, prefs, cx| {
+            cx.observe(&common.prefs, |this, prefs, cx| {
                 let appearance = prefs.read(cx).get().appearance;
                 if appearance != this.appearance {
                     this.appearance = appearance;
@@ -205,8 +153,11 @@ impl Windows {
                 async {}
             }),
         ];
-        Self {
-            shared,
+        let mut this = Self {
+            common,
+            home: home.clone(),
+            nets: Vec::new(),
+            candidate: None,
             center,
             handles: BTreeMap::new(),
             views: BTreeMap::new(),
@@ -237,7 +188,112 @@ impl Windows {
             hidden: BTreeSet::new(),
             asked: None,
             compositor_sizes: windows::compositor_sizes(cx),
+        };
+        this.hear(&home, cx);
+        this
+    }
+
+    fn hear(&mut self, net: &Net, cx: &mut Context<Self>) {
+        let id = net.session.entity_id();
+        let heard = vec![
+            cx.subscribe(&net.session, move |this, _, event: &SessionEvent, cx| {
+                this.session_said(id, event, cx)
+            }),
+            cx.observe(&net.session, move |this, session, cx| {
+                this.candidate_moved(id, &session, cx)
+            }),
+            cx.subscribe(&net.account, move |this, _, event: &AccountEvent, cx| {
+                if this.home.session.entity_id() == id {
+                    this.account_said(event, cx)
+                }
+            }),
+            cx.observe(&net.screen, move |this, screen, cx| {
+                if this.home.session.entity_id() == id {
+                    this.screen_moved(&screen, cx)
+                }
+            }),
+            cx.observe(&net.rail, move |this, _, cx| {
+                if this.home.session.entity_id() == id {
+                    this.open_switched(cx);
+                    this.open_held(cx);
+                }
+            }),
+        ];
+        self.nets.push((net.clone(), heard));
+    }
+
+    fn session_said(&mut self, id: EntityId, event: &SessionEvent, cx: &mut Context<Self>) {
+        let candidate = self
+            .candidate
+            .as_ref()
+            .is_some_and(|net| net.session.entity_id() == id);
+        if candidate {
+            if let SessionEvent::Connected = event {
+                self.console_answered(cx);
+            }
+            return;
         }
+        let home = self.home.session.entity_id() == id;
+        match event {
+            SessionEvent::LeftNetwork => self.left_network(id, cx),
+            SessionEvent::Connected if home => {
+                if !self.launcher {
+                    self.take_up(cx);
+                }
+                self.raise_console(cx);
+                self.open_switched(cx);
+                self.open_held(cx);
+            }
+            SessionEvent::Toast(_) if home => self.switching = None,
+            SessionEvent::Connected | SessionEvent::Toast(_) => {}
+        }
+    }
+
+    fn account_said(&mut self, event: &AccountEvent, cx: &mut Context<Self>) {
+        match event {
+            AccountEvent::Welcome => self.open_help(cx),
+            AccountEvent::Approved => {
+                if let Some(own) = self.console_own() {
+                    own.overlays
+                        .update(cx, |overlays, cx| overlays.close(Overlay::Approve, cx));
+                }
+            }
+            AccountEvent::Toast(_) => {}
+        }
+    }
+
+    fn screen_moved(&mut self, screen: &Entity<Slice<Screen>>, cx: &mut Context<Self>) {
+        let now = *screen.read(cx).get() != Screen::Desk;
+        if now == self.launcher {
+            return;
+        }
+        self.launcher = now;
+        if !now {
+            crate::perf::mark("desk");
+            self.take_up(cx);
+        }
+        self.swap_console(cx);
+        self.open_switched(cx);
+        self.open_held(cx);
+    }
+
+    fn candidate_moved(&mut self, id: EntityId, session: &Entity<Session>, cx: &mut Context<Self>) {
+        let candidate = self
+            .candidate
+            .as_ref()
+            .is_some_and(|net| net.session.entity_id() == id);
+        let state = session.read(cx).get();
+        let failed = candidate && !state.connecting && !state.connected;
+        if !failed {
+            return;
+        }
+        let error = state.error.clone();
+        self.candidate = None;
+        self.switching = None;
+        self.drop_unshown(cx);
+        self.common
+            .toast
+            .update(cx, |toast, cx| toast.show(error, cx));
     }
 
     #[cfg(test)]
@@ -257,12 +313,19 @@ impl Windows {
         self.follower = Some(follower);
     }
 
-    /// Every entity, this one included: what a window's root is made over.
-    pub(crate) fn entities(&self, cx: &Context<Self>) -> Entities {
+    pub(crate) fn entities(&self, net: &Net, cx: &Context<Self>) -> Entities {
         Entities {
-            shared: self.shared.clone(),
+            shared: Shared::of(&self.common, net),
             windows: cx.entity(),
         }
+    }
+
+    pub(crate) fn home(&self) -> &Net {
+        &self.home
+    }
+
+    pub(crate) fn nets(&self) -> Vec<Net> {
+        self.nets.iter().map(|(net, _)| net.clone()).collect()
     }
 
     /// The seats follow this window list from now on (`DeskSeats` lives
@@ -343,11 +406,13 @@ impl Windows {
         min: Option<Size<Pixels>>,
         cx: &mut Context<Self>,
     ) -> WindowKey {
-        self.open_at(kind, at.map(WindowBounds::Windowed), min, cx)
+        let home = self.home.clone();
+        self.open_at(&home, kind, at.map(WindowBounds::Windowed), min, cx)
     }
 
     fn open_at(
         &mut self,
+        net: &Net,
         kind: WindowKind,
         at: Option<WindowBounds>,
         min: Option<Size<Pixels>>,
@@ -355,7 +420,7 @@ impl Windows {
     ) -> WindowKey {
         let _timed = timed();
         let key = WindowKey::unique();
-        self.make_own(key, kind, cx);
+        self.make_own(key, kind, net, cx);
         if kind == WindowKind::Console {
             self.console = Some(key);
         }
@@ -380,11 +445,12 @@ impl Windows {
     /// program in front and the notification centre follow its desk;
     /// anything opening over the desk lets go of the keyboard's hold, and
     /// "Add a device…" closing, however it did, forgets what it found.
-    fn make_own(&mut self, key: WindowKey, kind: WindowKind, cx: &mut Context<Self>) {
+    fn make_own(&mut self, key: WindowKey, kind: WindowKind, net: &Net, cx: &mut Context<Self>) {
         let desk = cx.new(|_| Desk::new(Layout::default()));
-        let session = self.shared.session.clone();
+        let session = net.session.clone();
         let own = WindowEntities {
             kind,
+            net: net.clone(),
             front: Front::of_desk(&desk, cx),
             overlays: cx.new(|cx| Overlays::new(&session, cx)),
             spotlight: cx.new(|_| Spotlight::default()),
@@ -407,7 +473,7 @@ impl Windows {
                 }
                 this.keep(cx);
             }));
-        let (desk, account) = (own.desk.clone(), self.shared.account.clone());
+        let (desk, account) = (own.desk.clone(), net.account.clone());
         let mut was = None;
         self.subscriptions
             .push(cx.observe(&own.overlays, move |_, overlays, cx| {
@@ -450,10 +516,14 @@ impl Windows {
         cx: &mut Context<Self>,
     ) {
         use gpui_kit::{TitlebarOptions, WindowOptions};
+        let net = self
+            .by_window
+            .get(&key)
+            .map_or_else(|| self.home.clone(), |own| own.net.clone());
         let title = match kind {
             WindowKind::Console => "Ducktape".to_owned(),
             WindowKind::View { program } => {
-                crate::shell::panes::label(self.shared.rail.read(cx).rows(), program)
+                crate::shell::panes::label(net.rail.read(cx).rows(), program)
             }
         };
         // the launcher is a small window of a fixed size; the desk grows
@@ -499,7 +569,7 @@ impl Windows {
                 .as_ref()
                 .map(|at| at.get_bounds().size);
         }
-        let entities = self.entities(cx);
+        let entities = self.entities(&net, cx);
         let this = cx.entity();
         cx.defer(move |cx| {
             let mut opened_view = None;
@@ -514,9 +584,13 @@ impl Windows {
                     this.watch_bounds(key, window, cx);
                 });
                 window.on_window_should_close(cx, move |window, cx| {
-                    let _ = closing.update(cx, |this, cx| this.floated_closes(key, window, cx));
-                    release_window_input(window, cx);
-                    true
+                    let closes = closing
+                        .update(cx, |this, cx| this.floated_closes(key, window, cx))
+                        .unwrap_or(true);
+                    if closes {
+                        release_window_input(window, cx);
+                    }
+                    closes
                 });
                 // the self-update's healthy signal: the window drew, and the
                 // platform's frame loop came round for it
@@ -847,6 +921,7 @@ impl Windows {
         if self.front == Some(key) {
             self.front = None;
         }
+        self.drop_unshown(cx);
         self.popped_moved(cx);
         self.sync_menu(cx);
         self.keep(cx);
@@ -903,11 +978,13 @@ impl Windows {
         {
             return None;
         }
+        let net = own.net.clone();
         let pane = own.desk.update(cx, |desk, cx| desk.close(index, cx))?;
+        let min = min.or_else(|| Some(windows::popout_size(pane.program, pane.instance)));
         let kind = WindowKind::View {
             program: pane.program,
         };
-        let key = self.open(kind, at, min, cx);
+        let key = self.open_at(&net, kind, at.map(WindowBounds::Windowed), min, cx);
         self.by_window[&key]
             .desk
             .update(cx, |desk, cx| desk.popin(pane, cx));
@@ -1005,10 +1082,13 @@ impl Windows {
     /// its float's pane back on the desk (`pop_in`). Nothing while it does
     /// not float.
     pub(crate) fn unfloat(&mut self, instance: u64, cx: &mut Context<Self>) {
-        if let Some((key, _, _)) = self.pane_of(instance, cx)
-            && self.floats.contains_key(&key)
-        {
-            self.pop_in(key, cx);
+        let Some((key, _, _)) = self.pane_of(instance, cx) else {
+            return;
+        };
+        match (self.floats.contains_key(&key), self.across(key)) {
+            (true, true) => self.stays_out(key, cx),
+            (true, false) => self.pop_in(key, cx),
+            (false, _) => {}
         }
     }
 
@@ -1016,12 +1096,52 @@ impl Windows {
     /// first (a call does not end at a small window's close button; its
     /// view's own Leave ends it), and its place is kept for the next. Any
     /// other window closes with its pane.
-    fn floated_closes(&mut self, key: WindowKey, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn floated_closes(
+        &mut self,
+        key: WindowKey,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(program) = self.floats.get(&key).map(|floated| floated.program) else {
-            return;
+            return true;
         };
         self.left.insert(program, window.bounds());
+        if self.across(key) {
+            self.stays_out(key, cx);
+            return false;
+        }
         self.send_home(key, cx);
+        true
+    }
+
+    fn across(&self, key: WindowKey) -> bool {
+        let console = self
+            .console
+            .and_then(|console| self.by_window.get(&console));
+        let own = self.by_window.get(&key);
+        console
+            .zip(own)
+            .is_some_and(|(console, own)| console.net != own.net)
+    }
+
+    fn stays_out(&mut self, key: WindowKey, cx: &mut Context<Self>) {
+        self.floats.remove(&key);
+        if self.on_top.contains(&key) {
+            self.set_on_top(key, false, cx);
+        }
+        if let Some(handle) = self.handles.get(&key).copied() {
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, cx| {
+                    let extent = size(px(windows::WINDOW_SIZE.0), px(windows::WINDOW_SIZE.1));
+                    let to = Bounds::new(window.bounds().origin, extent);
+                    if let Err(error) = windows::set_bounds(window, to, cx) {
+                        tracing::warn!(target: "ducktape::app", reason = "set_bounds_failed", %error, "a float stayed at its size as it became a pop-out");
+                    }
+                });
+            });
+        }
+        self.keep(cx);
+        cx.notify();
     }
 
     /// Float `key`'s place, kept as it moves for the program's next float
@@ -1059,7 +1179,10 @@ impl Windows {
         cx: &mut Context<Self>,
     ) -> Option<u64> {
         let _timed = timed();
-        let desk = self.by_window.get(&key).map(|own| own.desk.clone())?;
+        let (desk, net) = self
+            .by_window
+            .get(&key)
+            .map(|own| (own.desk.clone(), own.net.clone()))?;
         let pane_of = |layout: &Layout| {
             let pane = layout.panes.iter().find(|pane| pane.program == program);
             pane.map(|pane| pane.instance)
@@ -1073,7 +1196,9 @@ impl Windows {
         let away = self
             .by_window
             .iter()
-            .filter(|(other, _)| self.console != Some(**other) && **other != key)
+            .filter(|(other, own)| {
+                self.console != Some(**other) && **other != key && own.net == net
+            })
             .find_map(|(other, own)| Some((*other, pane_of(own.desk.read(cx).get())?)));
         match away.filter(|_| !here) {
             Some((away, instance)) => {
@@ -1093,6 +1218,16 @@ impl Windows {
     /// Pop-out `key`'s pane back onto the console's desk; its window goes.
     pub(crate) fn pop_in(&mut self, key: WindowKey, cx: &mut Context<Self>) {
         let _timed = timed();
+        if self.across(key) {
+            let network = self
+                .by_window
+                .get(&key)
+                .map(|own| own.net.session.read(cx).get().network.clone())
+                .unwrap_or_default();
+            let said =
+                format!("This window is on {network}, not the console's network, so it stays out.");
+            return self.notice(said, cx);
+        }
         if self.send_home(key, cx) {
             self.remove(key, cx);
         }
@@ -1108,6 +1243,9 @@ impl Windows {
         else {
             return false;
         };
+        if own.net != console.net {
+            return false;
+        }
         if let Some(pane) = own.desk.update(cx, |desk, cx| desk.close(0, cx)) {
             console.desk.update(cx, |desk, cx| desk.popin(pane, cx));
         }
@@ -1145,7 +1283,7 @@ impl Windows {
     /// Help asked for (⌘/, a menu): it greets a new account only until
     /// then (`Account.welcome`).
     pub(crate) fn help_asked(&mut self, cx: &mut Context<Self>) {
-        self.shared
+        self.home
             .account
             .update(cx, |account, cx| account.help_asked(cx));
         self.open_help(cx);
@@ -1172,7 +1310,7 @@ impl Windows {
         from: Option<(&'static str, u64)>,
         cx: &mut Context<Self>,
     ) {
-        let web = matches!(self.shared.rail.read(cx).parse_link(link), Link::Web(_));
+        let web = matches!(self.home.rail.read(cx).parse_link(link), Link::Web(_));
         let opens = match web {
             true => Opens::Desk(from),
             false => Opens::Window,
@@ -1211,11 +1349,11 @@ impl Windows {
         if self.held.is_empty() {
             return;
         }
-        let session = self.shared.session.read(cx).get();
+        let session = self.home.session.read(cx).get();
         let ready = session.connected
             && !session.connecting
-            && !self.shared.rail.read(cx).rows().is_empty()
-            && *self.shared.screen.read(cx).get() == Screen::Desk;
+            && !self.home.rail.read(cx).rows().is_empty()
+            && *self.home.screen.read(cx).get() == Screen::Desk;
         if !ready {
             return;
         }
@@ -1248,8 +1386,8 @@ impl Windows {
 
     fn open_link_into(&mut self, link: &str, opens: Opens, cx: &mut Context<Self>) {
         let _timed = timed();
-        let chain = self.shared.session.read(cx).get().chain.clone();
-        match self.shared.rail.read(cx).opening(link, &chain) {
+        let chain = self.home.session.read(cx).get().chain.clone();
+        match self.home.rail.read(cx).opening(link, &chain) {
             Opening::Seat {
                 program,
                 route,
@@ -1282,7 +1420,7 @@ impl Windows {
             self.open_settings(Some(SettingsPage::Updates), cx);
         } else if !entry.link.is_empty() {
             self.open_link(&entry.link, None, cx);
-        } else if self.shared.rail.read(cx).lists(&entry.program) {
+        } else if self.home.rail.read(cx).lists(&entry.program) {
             self.open_seat(crate::runtime::intern(&entry.program), None, None, cx);
         }
     }
@@ -1347,7 +1485,7 @@ impl Windows {
             }
         };
         if let Some(route) = route {
-            crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
+            crate::runtime::route_to(&self.home.network, program, instance, route);
         }
     }
 
@@ -1364,7 +1502,8 @@ impl Windows {
     ) {
         if let Some((_, instance)) = from.filter(|(from, _)| *from == program) {
             if let Some(route) = route {
-                crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
+                let net = self.net_holding(instance, cx);
+                crate::runtime::route_to(&net.network, program, instance, route);
             }
             return;
         }
@@ -1376,34 +1515,36 @@ impl Windows {
             .console
             .and_then(|console| self.open_program(console, program, cx));
         if let Some((route, instance)) = route.zip(seat) {
-            crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
+            crate::runtime::route_to(&self.home.network, program, instance, route);
         }
     }
 
     /// A link's notice up; the same one again while it is up says nothing
     /// new, so it is not restarted either.
     fn notice(&self, said: String, cx: &mut App) {
-        if self.shared.toast.read(cx).get() == &said {
+        if self.common.toast.read(cx).get() == &said {
             return;
         }
-        self.shared
+        self.common
             .toast
             .update(cx, |toast, cx| toast.show(said, cx));
     }
 
-    /// The network in hand was left: every window's panes go, each desk
-    /// keeping its measure; what is open over each closes; the active
-    /// program goes with them.
-    fn left_network(&mut self, cx: &mut Context<Self>) {
+    fn left_network(&mut self, id: EntityId, cx: &mut Context<Self>) {
         let _timed = timed();
-        self.keeping = None;
-        // left for another chain than the banner's: its switch is over
-        let here = &self.shared.session.read(cx).get().chain;
-        self.switching.take_if(|(chain, _, _)| chain != here);
-        if self.active.take().is_some() {
-            cx.notify();
+        if self.home.session.entity_id() == id {
+            self.keeping = None;
+            let here = &self.home.session.read(cx).get().chain;
+            self.switching.take_if(|(chain, _, _)| chain != here);
+            if self.active.take().is_some() {
+                cx.notify();
+            }
         }
-        for own in self.by_window.values() {
+        let left = self
+            .by_window
+            .values()
+            .filter(|own| own.net.session.entity_id() == id);
+        for own in left {
             own.desk.update(cx, |desk, cx| desk.clear(cx));
             own.overlays.update(cx, |overlays, cx| {
                 if let Some(open) = *overlays.get() {
@@ -1427,7 +1568,7 @@ impl Windows {
                     }
                     Opened::Link(url) => {
                         // the banner's row was read as it was clicked
-                        self.shared
+                        self.home
                             .notifications
                             .update(cx, |notifications, cx| _ = notifications.refresh(cx));
                         self.open_link(&url, None, cx);
@@ -1438,7 +1579,7 @@ impl Windows {
             Posted::Url(url) => cx.open_url(&url),
             Posted::UpdatesMoved => {
                 // its notices' rows too: the bell's count and list
-                self.shared
+                self.home
                     .notifications
                     .update(cx, |notifications, cx| notifications.refresh(cx));
                 cx.refresh_windows()
@@ -1457,7 +1598,7 @@ impl Windows {
         let Some((chain, row, asked)) = self.switching.clone() else {
             return;
         };
-        let session = self.shared.session.read(cx).get();
+        let session = self.home.session.read(cx).get();
         if session.connecting {
             return;
         }
@@ -1469,9 +1610,7 @@ impl Windows {
             match crate::runtime::followed_url(&chain) {
                 Some(node) if !asked => {
                     self.switching = Some((chain, row, true));
-                    self.shared
-                        .session
-                        .update(cx, |session, cx| session.switch(node, cx));
+                    self.switch(node, cx);
                 }
                 None if following && !asked => {}
                 _ => {
@@ -1485,18 +1624,184 @@ impl Windows {
             return;
         }
         let ready = session.connected
-            && !self.shared.rail.read(cx).rows().is_empty()
-            && *self.shared.screen.read(cx).get() == Screen::Desk;
+            && !self.home.rail.read(cx).rows().is_empty()
+            && *self.home.screen.read(cx).get() == Screen::Desk;
         if !ready {
             return;
         }
         self.switching = None;
         let opened = self
-            .shared
+            .home
             .notifications
             .update(cx, |notifications, cx| notifications.open(row, cx));
         if let Some(entry) = opened {
             self.open_notice(&entry, cx);
+        }
+    }
+
+    pub(crate) fn switch(&mut self, node: String, cx: &mut Context<Self>) {
+        self.switch_by(node, |session, node, cx| session.connect(node, cx), cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn switch_through(
+        &mut self,
+        node: String,
+        source: ducktape_host::session::StatusSource,
+        cx: &mut Context<Self>,
+    ) {
+        let connect = move |session: &mut Session, node, cx: &mut Context<Session>| {
+            session.connect_through(node, source, cx)
+        };
+        self.switch_by(node, connect, cx);
+    }
+
+    fn switch_by(
+        &mut self,
+        node: String,
+        connect: impl FnOnce(&mut Session, String, &mut Context<Session>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let here = {
+            let state = self.home.session.read(cx).get();
+            node == state.connected_rpc && !state.connecting
+        };
+        if here {
+            return;
+        }
+        self.candidate = None;
+        let net = match self.shows(&self.home) {
+            false => self.home.clone(),
+            true => {
+                let net = Net::new(&self.common, crate::runtime::Network::apart(), false, cx);
+                self.hear(&net, cx);
+                self.candidate = Some(net.clone());
+                net
+            }
+        };
+        self.drop_unshown(cx);
+        net.session
+            .update(cx, |session, cx| connect(session, node, cx));
+    }
+
+    pub(crate) fn leave(&mut self, cx: &mut Context<Self>) {
+        if !self.shows(&self.home) {
+            return self
+                .home
+                .session
+                .update(cx, |session, cx| session.disconnect(cx));
+        }
+        let net = Net::new(&self.common, crate::runtime::Network::apart(), false, cx);
+        self.hear(&net, cx);
+        self.move_console(net, cx);
+    }
+
+    fn console_answered(&mut self, cx: &mut Context<Self>) {
+        let Some(candidate) = self.candidate.take() else {
+            return;
+        };
+        let (chain, node) = {
+            let state = candidate.session.read(cx).get();
+            (state.chain.clone(), state.connected_rpc.clone())
+        };
+        let here = self.home.session.read(cx).get().chain == chain;
+        let shown = self
+            .nets
+            .iter()
+            .map(|(net, _)| net)
+            .filter(|net| **net != candidate && **net != self.home && self.shows(net))
+            .find(|net| net.session.read(cx).get().chain == chain)
+            .cloned();
+        match (here, shown) {
+            (true, _) => self
+                .home
+                .session
+                .update(cx, |session, cx| session.switch(node, cx)),
+            (false, Some(net)) => self.move_console(net, cx),
+            (false, None) => self.move_console(candidate, cx),
+        }
+        self.drop_unshown(cx);
+    }
+
+    fn move_console(&mut self, net: Net, cx: &mut Context<Self>) {
+        let _timed = timed();
+        self.keep(cx);
+        self.keeping = None;
+        self.active = None;
+        self.home = net.clone();
+        self.common
+            .hand
+            .update(cx, |hand, cx| hand.take(&net.session, &net.seats, cx));
+        if let Some(follower) = self.follower.clone() {
+            follower.update(cx, |follower, cx| {
+                follower.follow_console(&net.session, &net.account, cx)
+            });
+        }
+        if let Some(console) = self.console {
+            let kind = self
+                .by_window
+                .get(&console)
+                .map_or(WindowKind::Console, |own| own.kind);
+            self.make_own(console, kind, &net, cx);
+            let entities = self.entities(&net, cx);
+            let handle = self.handles.get(&console).copied();
+            let view = self.views.get(&console).cloned();
+            if let (Some(handle), Some(view)) = (handle, view) {
+                cx.defer(move |cx| {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        view.update(cx, |root, cx| root.over(entities, window, cx))
+                    });
+                });
+            }
+        }
+        let launcher = *net.screen.read(cx).get() != Screen::Desk;
+        if launcher != self.launcher {
+            self.launcher = launcher;
+            self.swap_console(cx);
+        }
+        if !self.launcher {
+            self.take_up(cx);
+        }
+        self.drop_unshown(cx);
+        self.open_switched(cx);
+        self.open_held(cx);
+        cx.notify();
+    }
+
+    fn shows(&self, net: &Net) -> bool {
+        self.by_window
+            .iter()
+            .any(|(key, own)| self.console != Some(*key) && own.net == *net)
+    }
+
+    fn shows_program(&self, program: &'static str, cx: &App) -> bool {
+        self.by_window.iter().any(|(key, own)| {
+            self.console != Some(*key) && own.net == self.home && own.desk.read(cx).holds(program)
+        })
+    }
+
+    fn net_holding(&self, instance: u64, cx: &App) -> Net {
+        self.pane_of(instance, cx)
+            .and_then(|(key, _, _)| self.by_window.get(&key))
+            .map_or_else(|| self.home.clone(), |own| own.net.clone())
+    }
+
+    fn live(&self, net: &Net) -> bool {
+        *net == self.home
+            || self.candidate.as_ref() == Some(net)
+            || self.by_window.values().any(|own| own.net == *net)
+    }
+
+    fn drop_unshown(&mut self, cx: &mut Context<Self>) {
+        let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.nets)
+            .into_iter()
+            .partition(|(net, _)| self.live(net));
+        self.nets = kept;
+        for (net, heard) in gone {
+            drop(heard);
+            net.seats
+                .update(cx, |seats, cx| seats.place(BTreeMap::new(), cx));
+            net.session.update(cx, |session, cx| session.disconnect(cx));
         }
     }
 
@@ -1507,13 +1812,13 @@ impl Windows {
     pub(crate) fn sync_appearance(&mut self, cx: &mut Context<Self>) {
         use gpui_kit::component::{Theme, ThemeMode};
         let _timed = timed();
-        match self.shared.prefs.read(cx).get().appearance {
+        match self.common.prefs.read(cx).get().appearance {
             crate::backend::Appearance::Light => Theme::change(ThemeMode::Light, None, cx),
             crate::backend::Appearance::Dark => Theme::change(ThemeMode::Dark, None, cx),
             crate::backend::Appearance::System => Theme::sync_system_appearance(None, cx),
         }
         let dark = Theme::global(cx).is_dark();
-        self.shared
+        self.common
             .prefs
             .update(cx, |prefs, cx| prefs.set_system_dark(dark, cx));
         theme::configure_native_theme(cx);
@@ -1645,7 +1950,7 @@ impl Windows {
     }
 
     fn take_up(&mut self, cx: &mut Context<Self>) {
-        let chain = self.shared.session.read(cx).get().chain.clone();
+        let chain = self.home.session.read(cx).get().chain.clone();
         if chain.is_empty() || self.keeping.as_ref() == Some(&chain) {
             return;
         }
@@ -1694,10 +1999,14 @@ impl Windows {
                     let Some(program) = layout.shown().filter(|_| layout.panes.len() == 1) else {
                         continue;
                     };
+                    if self.shows_program(program, cx) {
+                        continue;
+                    }
                     let kind = WindowKind::View { program };
                     let bounds =
                         bounds.map(|at| arrangement::at_least(at, windows::min_size(kind)));
-                    let key = self.open_at(kind, bounds, None, cx);
+                    let home = self.home.clone();
+                    let key = self.open_at(&home, kind, bounds, None, cx);
                     if on_top {
                         self.set_on_top(key, true, cx);
                     }
@@ -1707,7 +2016,7 @@ impl Windows {
             if let Some(desk) = desk {
                 desk.update(cx, |desk, cx| desk.take_up(layout, cx));
                 for (program, instance, route) in routes {
-                    crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
+                    crate::runtime::route_to(&self.home.network, program, instance, route);
                 }
             }
         }
@@ -1717,7 +2026,11 @@ impl Windows {
         let Some(chain) = self.keeping.clone().filter(|_| !self.launcher) else {
             return;
         };
-        let open = self.by_window.iter().filter_map(|(key, own)| {
+        let on_home = self
+            .by_window
+            .iter()
+            .filter(|(_, own)| own.net == self.home);
+        let open = on_home.filter_map(|(key, own)| {
             Some(arrangement::Open {
                 console: self.console == Some(*key),
                 floated: self.floats.contains_key(key),

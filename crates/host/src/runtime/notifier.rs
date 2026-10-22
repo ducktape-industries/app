@@ -259,9 +259,10 @@ pub(crate) fn permission_moved(program: &str, permission: Permission) {
     if permission == Permission::Block {
         notifiers().stop(program);
     } else {
-        let asked_of = connection().lock().expect("views rpc").clone();
+        let network = roster::notified_network();
+        let asked_of = lock(&network.connection).clone();
         if asked_of.client.is_some() {
-            let programs = roster().lock().clone();
+            let programs = network.roster.lock().clone();
             notifiers().reconcile(&asked_of, &programs);
         }
     }

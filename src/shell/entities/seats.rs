@@ -15,30 +15,21 @@ use gpui_kit::{App, Context, Entity, Subscription, WeakEntity, px, size};
 use std::collections::BTreeMap;
 
 pub(crate) struct DeskSeats {
-    seats: Entity<Seats>,
     windows: WeakEntity<Windows>,
     desks: BTreeMap<WindowKey, Subscription>,
-    _observing: Vec<Subscription>,
+    heard: Vec<(Entity<Seats>, Subscription)>,
+    _observing: Subscription,
 }
 
 impl DeskSeats {
-    pub(crate) fn new(
-        seats: &Entity<Seats>,
-        windows: &Entity<Windows>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(crate) fn new(windows: &Entity<Windows>, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
-            seats: seats.clone(),
             windows: windows.downgrade(),
             desks: BTreeMap::new(),
-            _observing: vec![
-                cx.observe(windows, |this, windows, cx| {
-                    this.windows_moved(&windows, cx)
-                }),
-                cx.subscribe(seats, |this, _, event: &SeatsEvent, cx| {
-                    this.answer(event, cx)
-                }),
-            ],
+            heard: Vec::new(),
+            _observing: cx.observe(windows, |this, windows, cx| {
+                this.windows_moved(&windows, cx)
+            }),
         };
         this.windows_moved(windows, cx);
         this
@@ -58,6 +49,22 @@ impl DeskSeats {
                 .entry(key)
                 .or_insert_with(|| cx.observe(&desk, |this, _, cx| this.reconcile(cx)));
         }
+        let seats: Vec<Entity<Seats>> = windows
+            .read(cx)
+            .nets()
+            .into_iter()
+            .map(|net| net.seats)
+            .collect();
+        self.heard.retain(|(heard, _)| seats.contains(heard));
+        for seats in seats {
+            let heard = self.heard.iter().any(|(heard, _)| *heard == seats);
+            if !heard {
+                let answering = cx.subscribe(&seats, |this, _, event: &SeatsEvent, cx| {
+                    this.answer(event, cx)
+                });
+                self.heard.push((seats, answering));
+            }
+        }
         self.reconcile(cx);
     }
 
@@ -66,9 +73,9 @@ impl DeskSeats {
             return;
         };
         let keeps_above = crate::shell::windows::can_keep_above(cx);
-        let (layouts, handles, front) = {
+        let (layouts, handles, front, nets) = {
             let windows = windows.read(cx);
-            let layouts: BTreeMap<WindowKey, (Layout, bool, Placed)> = windows
+            let layouts: BTreeMap<WindowKey, (Layout, bool, Placed, Entity<Seats>)> = windows
                 .by_window()
                 .iter()
                 .map(|(key, own)| {
@@ -79,35 +86,43 @@ impl DeskSeats {
                         keeps_above,
                         hidden: !windows.presented(*key),
                     };
-                    (*key, (own.desk.read(cx).get().clone(), on_desk, placed))
+                    let layout = own.desk.read(cx).get().clone();
+                    (*key, (layout, on_desk, placed, own.net.seats.clone()))
                 })
                 .collect();
-            (layouts, windows.handles().clone(), windows.front())
+            let nets: Vec<Entity<Seats>> =
+                windows.nets().into_iter().map(|net| net.seats).collect();
+            (layouts, windows.handles().clone(), windows.front(), nets)
         };
-        let wanted: BTreeMap<u64, Place> = layouts
-            .iter()
-            .flat_map(|(key, (layout, on_desk, placed))| {
-                let window = handles.get(key).copied();
-                let (on_desk, placed) = (*on_desk, *placed);
-                let in_front = front == Some(*key);
-                layout
-                    .panes
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, pane)| pane.is_view())
-                    .map(move |(index, pane)| {
-                        let body = view_body(on_desk, layout, index);
-                        let window = window.map(|window| (window, body, in_front));
-                        let covered = layout.filled && index != layout.focused;
-                        let placed = Placed {
-                            hidden: placed.hidden || covered,
-                            ..placed
-                        };
-                        (pane.instance, (pane.program, window, placed))
-                    })
-            })
+        let mut wanted: Vec<(Entity<Seats>, BTreeMap<u64, Place>)> = nets
+            .into_iter()
+            .map(|seats| (seats, BTreeMap::new()))
             .collect();
-        self.seats.update(cx, |seats, cx| seats.place(wanted, cx));
+        for (key, (layout, on_desk, placed, seats)) in &layouts {
+            let Some((_, places)) = wanted.iter_mut().find(|(held, _)| held == seats) else {
+                continue;
+            };
+            let window = handles.get(key).copied();
+            let in_front = front == Some(*key);
+            let views = layout
+                .panes
+                .iter()
+                .enumerate()
+                .filter(|(_, pane)| pane.is_view());
+            for (index, pane) in views {
+                let body = view_body(*on_desk, layout, index);
+                let window = window.map(|window| (window, body, in_front));
+                let covered = layout.filled && index != layout.focused;
+                let placed = Placed {
+                    hidden: placed.hidden || covered,
+                    ..*placed
+                };
+                places.insert(pane.instance, (pane.program, window, placed));
+            }
+        }
+        for (seats, places) in wanted {
+            seats.update(cx, |seats, cx| seats.place(places, cx));
+        }
     }
 
     fn answer(&mut self, event: &SeatsEvent, cx: &mut Context<Self>) {

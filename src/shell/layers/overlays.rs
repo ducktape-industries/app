@@ -284,9 +284,9 @@ pub(super) fn run(
     match overlays.update(cx, |overlays, cx| overlays.submit(picked, cx)) {
         Some(Spot::Settings) => overlays.update(cx, |overlays, cx| overlays.open_settings(cx)),
         Some(Spot::Switch(url)) => app
-            .session
-            .update(cx, |session, cx| session.switch(url, cx)),
-        Some(Spot::OtherNetwork) => app.session.update(cx, |session, cx| session.disconnect(cx)),
+            .windows
+            .update(cx, |windows, cx| windows.switch(url, cx)),
+        Some(Spot::OtherNetwork) => app.windows.update(cx, |windows, cx| windows.leave(cx)),
         Some(Spot::CreateAccount) => app
             .account
             .update(cx, |account, cx| account.create_account(cx)),

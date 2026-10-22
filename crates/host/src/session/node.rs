@@ -104,6 +104,7 @@ pub struct Session {
     watch: fn(&backend::RpcClient, &str) -> crate::runtime::Writes,
     confirming: bool,
     hands_runtime: bool,
+    hands_notifiers: bool,
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -141,6 +142,7 @@ impl Session {
             watch: crate::runtime::writes,
             confirming: false,
             hands_runtime: true,
+            hands_notifiers: true,
         }
     }
 
@@ -159,6 +161,15 @@ impl Session {
         self.hands_runtime = false;
     }
 
+    pub fn hand_notifiers(&mut self, on: bool) {
+        let taken = on && !self.hands_notifiers && self.hands_runtime;
+        self.hands_notifiers = on;
+        if taken {
+            crate::runtime::take_up(&self.center, &self.state.chain);
+            self.network.hand_notifiers();
+        }
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn heads_through(&mut self, heads: HeadsSource) {
         self.heads_of = Rc::new(move |_: &str| heads.clone());
@@ -172,7 +183,9 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         if self.hands_runtime {
-            crate::runtime::take_up(&self.center, chain);
+            if self.hands_notifiers {
+                crate::runtime::take_up(&self.center, chain);
+            }
             self.network.connected(client, network, chain);
             self.client = Some(client.clone());
             self.armed = None;
@@ -851,7 +864,8 @@ impl Session {
         });
         self.screen
             .update(cx, |screen, cx| screen.set(Screen::Connect, cx));
-        if self.hands_runtime {
+        let notifies = self.hands_runtime && self.hands_notifiers;
+        if notifies {
             crate::runtime::take_up(&self.center, "");
         }
         self.left_network(cx);
@@ -860,7 +874,9 @@ impl Session {
     fn left_network(&mut self, cx: &mut Context<Self>) {
         if self.hands_runtime {
             self.network.disconnected();
-            crate::runtime::notifier::disconnected();
+            if self.hands_notifiers {
+                crate::runtime::notifier::disconnected();
+            }
         }
         self.heard.clear();
         self.client = None;

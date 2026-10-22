@@ -20,8 +20,8 @@ pub(crate) use dot::DotSlot;
 #[cfg(test)]
 pub(crate) use ducktape_host::session::AccountStep;
 pub(crate) use ducktape_host::session::{
-    Account, AccountEvent, AccountState, Chain, Notifications, Observed, Prefs, Rail, Screen,
-    Seats, Secret, Session, SessionEvent, SessionState, Shared, Slice, Toast, permission,
+    Account, AccountEvent, AccountState, Chain, Common, Net, Notifications, Observed, Prefs, Rail,
+    Screen, Seats, Secret, Session, SessionEvent, SessionState, Shared, Slice, Toast, permission,
     spawn_on_runtime,
 };
 pub(crate) use front::{Front, Listed, Popped};
@@ -35,6 +35,8 @@ mod account_tests;
 mod arrangement_tests;
 #[cfg(test)]
 mod desk_tests;
+#[cfg(test)]
+mod nets_tests;
 #[cfg(test)]
 mod windows_tests;
 
@@ -56,8 +58,8 @@ impl std::ops::Deref for Entities {
 
 impl Entities {
     pub(crate) fn new(shared: Shared, cx: &mut App) -> Self {
-        let windows = cx.new(|cx| Windows::new(shared.clone(), cx));
-        let desk_seats = cx.new(|cx| DeskSeats::new(&shared.seats, &windows, cx));
+        let windows = cx.new(|cx| Windows::new(shared.common.clone(), shared.net.clone(), cx));
+        let desk_seats = cx.new(|cx| DeskSeats::new(&windows, cx));
         windows.update(cx, |windows, _| windows.followed_by(desk_seats));
         Self { shared, windows }
     }
@@ -76,6 +78,7 @@ impl Entities {
 #[derive(Clone)]
 pub(crate) struct WindowEntities {
     pub(crate) kind: crate::shell::WindowKind,
+    pub(crate) net: Net,
     pub(crate) desk: Entity<Desk>,
     pub(crate) overlays: Entity<Overlays>,
     pub(crate) spotlight: Entity<Spotlight>,

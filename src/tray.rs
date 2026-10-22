@@ -2,7 +2,7 @@
 //! Quit. Elsewhere the tray is a no-op that still answers the shell.
 
 use crate::backend::Appearance;
-use crate::shell::entities::{Chain, Prefs, Session, SessionState, Shared, Slice};
+use crate::shell::entities::{Chain, Entities, Prefs, Session, SessionState, Slice, Windows};
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use gpui_kit::{App, AppContext as _, Context, Entity, Subscription};
 
@@ -104,12 +104,12 @@ pub struct Tray {
     chain: Entity<Chain>,
     prefs: Entity<Slice<Prefs>>,
     named: bool,
-    _follows: [Subscription; 3],
+    _follows: [Subscription; 4],
 }
 
 /// The item over `app`'s session, chain and prefs, drawn once now and
 /// again whenever one of them moves; and the rows clicked, by index.
-pub fn init(app: &Shared, cx: &mut App) -> (Entity<Tray>, UnboundedReceiver<usize>) {
+pub(crate) fn init(app: &Entities, cx: &mut App) -> (Entity<Tray>, UnboundedReceiver<usize>) {
     let (send, receive) = unbounded();
     #[cfg(target_os = "macos")]
     let native = match native::StatusItem::new(send) {
@@ -134,6 +134,9 @@ pub fn init(app: &Shared, cx: &mut App) -> (Entity<Tray>, UnboundedReceiver<usiz
                 cx.observe(&app.session, |tray: &mut Tray, _, cx| tray.follow(cx)),
                 cx.observe(&app.chain, |tray: &mut Tray, _, cx| tray.follow(cx)),
                 cx.observe(&app.prefs, |tray: &mut Tray, _, cx| tray.follow(cx)),
+                cx.observe(&app.windows, |tray: &mut Tray, windows, cx| {
+                    tray.console_moved(&windows, cx)
+                }),
             ],
         };
         tray.follow(cx);
@@ -143,6 +146,18 @@ pub fn init(app: &Shared, cx: &mut App) -> (Entity<Tray>, UnboundedReceiver<usiz
 }
 
 impl Tray {
+    fn console_moved(&mut self, windows: &Entity<Windows>, cx: &mut Context<Self>) {
+        let home = windows.read(cx).home().clone();
+        if home.session == self.session {
+            return;
+        }
+        self._follows[0] = cx.observe(&home.session, |tray: &mut Tray, _, cx| tray.follow(cx));
+        self._follows[1] = cx.observe(&home.chain, |tray: &mut Tray, _, cx| tray.follow(cx));
+        self.session = home.session;
+        self.chain = home.chain;
+        self.follow(cx);
+    }
+
     fn follow(&mut self, cx: &mut Context<Self>) {
         let next = Snapshot::of(
             self.session.read(cx).get(),
