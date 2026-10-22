@@ -5,7 +5,6 @@
 //! gives each node its stable id. The rest are the shapes of answers:
 //! [`compact`], [`offers`], [`delta`], [`nearest`].
 use super::*;
-use crate::render::VIEW_MARK;
 use gpui_kit::accesskit::{HasPopup, Invalid, Live, Orientation};
 
 pub(super) const ACTIONS: [(Action, &str); 9] = [
@@ -426,23 +425,12 @@ fn element_path<'a>(ids: impl Iterator<Item = &'a ElementId>) -> (Option<String>
     let mut program = None;
     let mut path = Vec::new();
     for id in ids {
-        match id {
-            ElementId::NamedChild(_, name) if crate::render::is_host_id(id) => {
-                match name.strip_prefix(VIEW_MARK) {
-                    Some(mark) => {
-                        program = Some(mark.to_owned());
-                        path.clear();
-                    }
-                    None => path.push(name.to_string()),
-                }
+        match crate::render::view_mark(id) {
+            Some(mark) => {
+                program = Some(mark.to_owned());
+                path.clear();
             }
-            ElementId::View(_)
-            | ElementId::FocusHandle(_)
-            | ElementId::Uuid(_)
-            | ElementId::CodeLocation(_)
-            | ElementId::OpaqueId(_) => {}
-            ElementId::Name(name) if name.contains("::") => {}
-            id => path.push(id.to_string()),
+            None => path.extend(crate::a11y::segment(id)),
         }
     }
     (program, path)
@@ -683,7 +671,10 @@ mod mark_tests {
                 .role(Role::Button)
                 .aria_label("Approve");
             div()
-                .id(crate::render::host_id(format!("{VIEW_MARK}chat")))
+                .id(crate::render::host_id(format!(
+                    "{}chat",
+                    crate::render::VIEW_MARK
+                )))
                 .size(px(200.))
                 .child(div().id("view/forge").size(px(100.)).child(approve))
         }

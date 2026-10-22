@@ -338,7 +338,7 @@ impl ViewTree {
                 None,
             ));
         }
-        let element = announce(element.child(styled), accessible(node));
+        let element = self.named(announce(element.child(styled), accessible(node)));
         #[cfg(any(test, feature = "test-support"))]
         let element = {
             use gpui_kit::test::TestSupportExt as _;

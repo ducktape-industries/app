@@ -133,7 +133,7 @@ impl ViewTree {
             }
         }
         let _ = (window, style, revision, commands, on_state);
-        link_line(id, url, cx)
+        link_line(id, url, self.author_of(&native_id(id)), cx)
     }
 
     pub(super) fn artifact(
@@ -168,7 +168,7 @@ impl ViewTree {
             }
         }
         let _ = (window, style);
-        link_line(id, link, cx)
+        link_line(id, link, self.author_of(&native_id(id)), cx)
     }
 
     #[cfg(feature = "web")]
@@ -291,13 +291,22 @@ fn ground(cx: &App) -> gpui_kit::Hsla {
     crate::theme::hsla(crate::theme::palette(cx).surface)
 }
 
-fn link_line(id: &wire::ElementIdWire, link: &str, cx: &mut Context<ViewTree>) -> AnyElement {
+fn link_line(
+    id: &wire::ElementIdWire,
+    link: &str,
+    author: Option<String>,
+    cx: &mut Context<ViewTree>,
+) -> AnyElement {
     let opened = link.to_owned();
+    let line = div()
+        .id(native_id(id))
+        .control(gpui_kit::Role::Link, link.to_owned());
+    let line = match author {
+        Some(author) => line.accessibility_id(author),
+        None => line,
+    };
     crate::a11y::keyboard(
-        div()
-            .id(native_id(id))
-            .control(gpui_kit::Role::Link, link.to_owned())
-            .w_full()
+        line.w_full()
             .min_w_0()
             .truncate()
             .cursor_pointer()

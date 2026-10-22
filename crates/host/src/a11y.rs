@@ -19,11 +19,184 @@ pub trait Control: StatefulInteractiveElement + ParentElement {
             label: Some(name.clone()),
             ..Default::default()
         };
-        inspected(self, native).role(role).aria_label(name)
+        inspected(self, native)
+            .role_named_by_id(role)
+            .aria_label(name)
     }
 }
 
 impl<E: StatefulInteractiveElement + ParentElement> Control for E {}
+
+pub trait Named: StatefulInteractiveElement {
+    fn role_named_by_id(mut self, role: Role) -> Self {
+        let id = own_id(&mut self);
+        let element = self.role(role);
+        match id {
+            Some(id) => element.accessibility_id(id),
+            None => element,
+        }
+    }
+}
+
+impl<E: StatefulInteractiveElement> Named for E {}
+
+pub struct Words {
+    text: gpui_kit::Text,
+    author: Option<String>,
+}
+
+pub fn words(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Words {
+    let id = id.into();
+    Words {
+        author: segment(&id),
+        text: gpui_kit::Text::new(id, text.into()),
+    }
+}
+
+impl Words {
+    pub fn in_view(mut self, program: &str) -> Self {
+        self.author = self
+            .author
+            .map(|author| crate::render::in_view(program, author));
+        self
+    }
+}
+
+impl IntoElement for Words {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui_kit::Element for Words {
+    type RequestLayoutState = <gpui_kit::Text as gpui_kit::Element>::RequestLayoutState;
+    type PrepaintState = <gpui_kit::Text as gpui_kit::Element>::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        gpui_kit::Element::id(&self.text)
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        gpui_kit::Element::source_location(&self.text)
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        gpui_kit::Element::a11y_role(&self.text)
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui_kit::accesskit::Node) {
+        gpui_kit::Element::write_a11y_info(&self.text, node);
+        if let Some(author) = &self.author {
+            node.set_author_id(author.clone());
+        }
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&gpui_kit::GlobalElementId>,
+        inspector_id: Option<&gpui_kit::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui_kit::LayoutId, Self::RequestLayoutState) {
+        gpui_kit::Element::request_layout(&mut self.text, id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&gpui_kit::GlobalElementId>,
+        inspector_id: Option<&gpui_kit::InspectorElementId>,
+        bounds: gpui_kit::Bounds<gpui_kit::Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        gpui_kit::Element::prepaint(
+            &mut self.text,
+            id,
+            inspector_id,
+            bounds,
+            request_layout,
+            window,
+            cx,
+        )
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&gpui_kit::GlobalElementId>,
+        inspector_id: Option<&gpui_kit::InspectorElementId>,
+        bounds: gpui_kit::Bounds<gpui_kit::Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        gpui_kit::Element::paint(
+            &mut self.text,
+            id,
+            inspector_id,
+            bounds,
+            request_layout,
+            prepaint,
+            window,
+            cx,
+        )
+    }
+}
+
+pub fn segment(id: &ElementId) -> Option<String> {
+    match id {
+        ElementId::NamedChild(_, name) if crate::render::is_host_id(id) => Some(name.to_string()),
+        ElementId::View(_)
+        | ElementId::FocusHandle(_)
+        | ElementId::Uuid(_)
+        | ElementId::CodeLocation(_)
+        | ElementId::OpaqueId(_) => None,
+        ElementId::Name(name) if name.contains("::") => None,
+        id => Some(id.to_string()),
+    }
+}
+
+pub fn own_id<E: InteractiveElement>(element: &mut E) -> Option<String> {
+    element
+        .interactivity()
+        .element_id
+        .as_ref()
+        .and_then(segment)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn misnamed(window: &Window) -> Vec<String> {
+    let Some(update) = window.a11y_tree() else {
+        return vec!["no tree".to_owned()];
+    };
+    update
+        .nodes
+        .iter()
+        .filter_map(|(node, built)| {
+            let element = window.a11y_element_id(*node)?;
+            let program = element
+                .iter()
+                .filter_map(crate::render::view_mark)
+                .next_back();
+            let own = element.iter().next_back().and_then(segment);
+            let wanted = match program {
+                Some(program) => own.map(|own| crate::render::in_view(program, own)),
+                None => own,
+            };
+            let has = built.author_id().map(str::to_owned);
+            let path: Vec<String> = element.iter().map(ToString::to_string).collect();
+            (has != wanted).then(|| {
+                format!(
+                    "{:?} {}: {has:?}, wants {wanted:?}",
+                    built.role(),
+                    path.join(" > ")
+                )
+            })
+        })
+        .collect()
+}
 
 /// What typing into a native field calls: the text, as SetValue gives it.
 pub type SetValue = std::rc::Rc<dyn Fn(String, &mut Window, &mut App)>;
@@ -382,7 +555,10 @@ pub fn combo_box(
     set_value: impl Fn(String, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     typed(
-        div().id(id).role(Role::EditableComboBox).track_focus(focus),
+        div()
+            .id(id)
+            .role_named_by_id(Role::EditableComboBox)
+            .track_focus(focus),
         set_value,
     )
 }

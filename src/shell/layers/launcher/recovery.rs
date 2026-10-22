@@ -6,6 +6,7 @@ use super::super::super::entities::Account;
 use super::super::super::ink::{self, *};
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen, buttons};
+use crate::a11y::Named as _;
 use gpui_kit::*;
 
 impl LauncherLayer {
@@ -106,7 +107,7 @@ impl LauncherLayer {
         let sheet = crate::a11y::private(
             div()
                 .id("phrase")
-                .role(Role::Group)
+                .role_named_by_id(Role::Group)
                 .aria_label(phrase.to_owned())
                 .flex()
                 .gap(px(24.))

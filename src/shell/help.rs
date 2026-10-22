@@ -5,6 +5,7 @@
 //! back.
 
 use super::*;
+use crate::a11y::Named as _;
 
 const CHORDED: [(&str, &str); 6] = [
     ("New window", "N"),
@@ -202,14 +203,14 @@ pub(super) fn help_view(
     });
     div()
         .id("help")
-        .role(Role::Document)
+        .role_named_by_id(Role::Document)
         .aria_label("Help")
         .size_full()
         .overflow_scroll()
         .child(
             div()
                 .id("help/page")
-                .role(Role::Group)
+                .role_named_by_id(Role::Group)
                 .aria_label(heading)
                 .mx_auto()
                 .w_full()

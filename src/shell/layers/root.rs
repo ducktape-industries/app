@@ -17,6 +17,7 @@
 use super::super::entities::{Desk, Entities, Observed, Overlays, Prefs, Screen, Slice};
 use super::super::{WindowKey, WindowKind, ink, layout, theme};
 use super::{BAR, Chrome, LauncherLayer, OverlayLayer, PaneLayer, SIDEBAR, StatusDot, ToastView};
+use crate::a11y::Named as _;
 use crate::render::deferred::HOST_BAND;
 use gpui_kit::{
     AnyView, AppContext as _, Context, Entity, FocusHandle, IntoElement, ParentElement as _,
@@ -317,7 +318,7 @@ impl Render for WindowRoot {
         // says where the keys are instead of reading the whole window out
         let root = crate::a11y::Patch::default().keys_fallback().on(root
             .id("desktop-root")
-            .role(gpui_kit::Role::Group)
+            .role_named_by_id(gpui_kit::Role::Group)
             .aria_label("Ducktape"));
         self.held
             .on(self.on_keys(root, cx))

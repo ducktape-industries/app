@@ -505,6 +505,18 @@ fn the_walk_closes_the_first_time_the_focus_is_back_on_the_first_stop(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn every_node_of_every_native_screen_is_named_by_its_own_id(cx: &mut TestAppContext) {
+    let mut misnamed: Vec<String> = Vec::new();
+    for (screen, _, build) in matrix() {
+        let (_view, mut native) = open(build(), cx);
+        native.update(snap);
+        let found = native.update(|window, _| ducktape_host::a11y::misnamed(window));
+        misnamed.extend(found.into_iter().map(|node| format!("{screen}: {node}")));
+    }
+    assert!(misnamed.is_empty(), "\n{}\n", misnamed.join("\n"));
+}
+
+#[gpui_kit::test]
 async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) {
     let matrix = matrix();
     let (_, _, build) = matrix

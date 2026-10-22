@@ -262,8 +262,12 @@ impl ViewTree {
         if interactivity.focusable {
             element = element.focusable();
         }
-        if let Some(value) = &aria.author_id {
-            element = element.accessibility_id(value.clone());
+        let segment = match &aria.author_id {
+            Some(value) => Some(value.to_string()),
+            None => crate::a11y::own_id(&mut element),
+        };
+        if let Some(segment) = segment {
+            element = element.accessibility_id(self.in_its_view(segment));
         }
         let drawn = || role.and_then(|_| descendant_text(node));
         if let Some(value) = &aria.label {

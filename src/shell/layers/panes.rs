@@ -23,6 +23,7 @@ use super::super::{
 };
 use super::{EmptyPane, HelpPane, MemoryPane};
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use crate::runtime::Seat;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -521,7 +522,7 @@ impl PaneView {
             .flex_col()
             .bg(ink.bg)
             .overflow_hidden()
-            .role(Role::Group);
+            .role_named_by_id(Role::Group);
         match pane.frame.filter(|_| on_desk) {
             None => body.size_full().children(contents).into_any_element(),
             Some(_) if filled => body
@@ -600,7 +601,7 @@ impl Render for PaneView {
             .keys_fallback()
             .on(div()
                 .id(SharedString::from(format!("pane/{index}/view")))
-                .role(Role::Group)
+                .role_named_by_id(Role::Group)
                 .aria_label(match &pane.title {
                     Some(title) => format!("{}, {title}", panes::label(&rail, pane.program)),
                     None => panes::label(&rail, pane.program),
@@ -617,7 +618,7 @@ impl Render for PaneView {
                         }))
                         .child(
                             crate::a11y::live(
-                                div().id("hold-say").role(Role::Status),
+                                div().id("hold-say").role_named_by_id(Role::Status),
                                 accesskit::Live::Polite,
                                 pane_hold::hold_words(&rail, pane.program),
                             )
@@ -1021,7 +1022,9 @@ impl Strip {
 
 fn bar(id: String, announced: String, ink: &super::super::ink::Ink) -> Stateful<Div> {
     crate::a11y::live(
-        div().id(SharedString::from(id)).role(Role::Group),
+        div()
+            .id(SharedString::from(id))
+            .role_named_by_id(Role::Group),
         accesskit::Live::Polite,
         announced,
     )

@@ -2,6 +2,7 @@
 
 use super::Chrome;
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use crate::shell::entities::{Notifications, Overlay, Popover, SettingsPage};
 use crate::shell::ink::{Ink, mono, sans, tall};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -69,7 +70,7 @@ impl Chrome {
             });
         let mut list = div()
             .id("notif-rows")
-            .role(Role::Menu)
+            .role_named_by_id(Role::Menu)
             .aria_label("Notifications")
             .flex()
             .flex_col()
@@ -230,7 +231,7 @@ impl Chrome {
         if entries.is_empty() {
             list = list.child(
                 crate::a11y::live(
-                    div().id("notif-empty").role(Role::Status),
+                    div().id("notif-empty").role_named_by_id(Role::Status),
                     accesskit::Live::Polite,
                     "You\u{2019}re all caught up",
                 )

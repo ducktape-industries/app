@@ -336,6 +336,7 @@ impl ViewTree {
                     cx.emit(wire::Event::Message(message))
                 }))
             });
+        let scrim = self.named(scrim);
         let mut layer = div()
             .id(native_id(id))
             .absolute()

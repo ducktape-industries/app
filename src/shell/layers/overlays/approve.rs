@@ -4,6 +4,7 @@ use super::super::super::entities::Account;
 use super::super::super::ink::{self, *};
 use super::super::fields::TextField;
 use super::{OverlayLayer, scrim};
+use crate::a11y::Named as _;
 use crate::shell::entities::Overlay;
 use gpui_kit::*;
 
@@ -69,7 +70,7 @@ impl OverlayLayer {
                     .child(crate::a11y::whole(
                         mono(400, 28.)
                             .id("approve-fingerprint")
-                            .role(Role::Label)
+                            .role_named_by_id(Role::Label)
                             .aria_label(fingerprint.clone())
                             .child(fingerprint.clone()),
                     ))

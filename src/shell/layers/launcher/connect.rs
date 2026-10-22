@@ -7,6 +7,7 @@ use super::super::super::theme;
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen};
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -43,7 +44,7 @@ impl LauncherLayer {
                             .line_height(px(13. * 1.55))
                             .text_color(ink.muted)
                             .id("connect-status")
-                            .role(Role::Status),
+                            .role_named_by_id(Role::Status),
                         accesskit::Live::Polite,
                         status.clone(),
                     )

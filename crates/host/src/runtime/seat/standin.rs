@@ -90,11 +90,14 @@ impl Standin {
             Some(title) => format!("{title}: {words}"),
             None => words.clone(),
         };
+        const RETRY: &str = "view-retry";
         let reason = div().id(id).max_w_full().flex().flex_col().gap_2();
         let reason = match loading {
             true => reason,
             false => crate::a11y::live(
-                reason.role(Role::Alert),
+                reason
+                    .role(Role::Alert)
+                    .accessibility_id(crate::render::in_view(program, id.to_owned())),
                 gpui_kit::accesskit::Live::Assertive,
                 alert_label,
             ),
@@ -103,14 +106,12 @@ impl Standin {
             .children(title.map(|title| {
                 div()
                     .font_weight(FontWeight::MEDIUM)
-                    .child(gpui_kit::Text::new(
-                        "view-unavailable-title".into(),
-                        title.into(),
-                    ))
+                    .child(crate::a11y::words("view-unavailable-title", title).in_view(program))
             }))
-            .child(gpui_kit::Text::new(words_id.into(), words.into()))
+            .child(crate::a11y::words(words_id, words).in_view(program))
             .children(offers_retry.then(|| {
-                Button::new("view-retry")
+                Button::new(RETRY)
+                    .accessibility_id(crate::render::in_view(program, RETRY.to_owned()))
                     .label("Retry")
                     .outline()
                     .on_click(move |_, _, cx| {

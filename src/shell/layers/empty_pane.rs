@@ -12,6 +12,7 @@ use super::super::ink::{self, Ink};
 use super::super::spin::{self, Spin};
 use super::super::{PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label};
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use crate::runtime::RailRow;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -455,7 +456,7 @@ impl EmptyPane {
         };
         div()
             .id("empty-window")
-            .role(Role::Group)
+            .role_named_by_id(Role::Group)
             .aria_label("Open in this window")
             .size_full()
             .flex()

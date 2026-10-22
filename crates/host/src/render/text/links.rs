@@ -137,24 +137,27 @@ impl ViewTree {
                 }),
             crate::a11y::ink(cx),
         );
+        element = self.named(element);
         if focused {
             element = element.child(
-                div()
-                    .id(("link", picked as u64))
-                    .absolute()
-                    .size_full()
-                    .role(Role::Link)
-                    .aria_label(words[picked].clone())
-                    .aria_active_descendant()
-                    .on_a11y_action(AccessibleAction::Click, move |_, _, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            this.activate();
-                            cx.emit(wire::Event::Select {
-                                handler,
-                                index: picked as u32,
-                            })
-                        });
-                    }),
+                self.named(
+                    div()
+                        .id(("link", picked as u64))
+                        .absolute()
+                        .size_full()
+                        .role(Role::Link)
+                        .aria_label(words[picked].clone())
+                        .aria_active_descendant()
+                        .on_a11y_action(AccessibleAction::Click, move |_, _, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.activate();
+                                cx.emit(wire::Event::Select {
+                                    handler,
+                                    index: picked as u32,
+                                })
+                            });
+                        }),
+                ),
             );
         }
         (

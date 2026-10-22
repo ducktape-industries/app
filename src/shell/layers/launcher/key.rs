@@ -5,6 +5,7 @@ use super::super::super::entities::{Account, Session};
 use super::super::super::ink::{self, *};
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen, buttons, closing};
+use crate::a11y::Named as _;
 use gpui_kit::*;
 
 impl LauncherLayer {
@@ -48,7 +49,7 @@ impl LauncherLayer {
                 ink.muted,
             )
             .id("other-chain")
-            .role(Role::Note)
+            .role_named_by_id(Role::Note)
             .into_any_element()
         });
         let password = account.key_exists.then(|| {

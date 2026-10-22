@@ -27,6 +27,7 @@ use super::super::{
     PaneMessage, WindowKey, WindowRoot, chord_label, keys, pane_hold, screens, theme,
 };
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -594,7 +595,9 @@ impl Chrome {
                 .when(unread > 0, |bell| {
                     bell.child(
                         crate::a11y::live(
-                            mono(500, 9.).id("rail-unread").role(Role::Status),
+                            mono(500, 9.)
+                                .id("rail-unread")
+                                .role_named_by_id(Role::Status),
                             accesskit::Live::Polite,
                             format!("{unread} unread notifications"),
                         )
@@ -947,7 +950,7 @@ impl Chrome {
         let moved = cx.entity().downgrade();
         div()
             .id("menubar")
-            .role(Role::MenuBar)
+            .role_named_by_id(Role::MenuBar)
             .aria_label("Ducktape")
             .h(px(BAR))
             .w_full()

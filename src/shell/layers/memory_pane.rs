@@ -5,6 +5,7 @@
 use super::super::WindowKey;
 use super::super::entities::{Entities, Prefs, Seats, Slice, Windows};
 use super::super::ink::{Ink, Kind, button, h1, mono, sans, words};
+use crate::a11y::Named as _;
 use ducktape_host::memory::{self, Figure, Group, OsMemory, Owned, Region};
 use gpui_kit::*;
 
@@ -220,7 +221,7 @@ fn page(
     }
     div()
         .id("memory")
-        .role(Role::Document)
+        .role_named_by_id(Role::Document)
         .aria_label("Memory")
         .size_full()
         .overflow_scroll()

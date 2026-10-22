@@ -5,6 +5,7 @@
 use super::super::super::ink::{self, *};
 use super::{LauncherLayer, LauncherScreen, buttons};
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use crate::backend::Layout;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -89,7 +90,7 @@ impl LauncherLayer {
         let group = crate::a11y::roving(
             div()
                 .id("layout-cards")
-                .role(Role::RadioGroup)
+                .role_named_by_id(Role::RadioGroup)
                 .aria_label("Layout"),
             &self.layout_stop,
             accesskit::Orientation::Horizontal,

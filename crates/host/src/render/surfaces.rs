@@ -141,10 +141,14 @@ impl ViewTree {
         match (nested, entry.as_ref()) {
             (false, Some(entry)) => escape(div().absolute().inset_0(), dismiss, cx)
                 .focus_trap(host_id("focus-trap-container"), entry)
-                .child(crate::a11y::modal(announce(layer, accessible(node))))
+                .child(crate::a11y::modal(
+                    self.named(announce(layer, accessible(node))),
+                ))
                 .into_any_element(),
-            _ => crate::a11y::modal(announce(escape(layer, dismiss, cx), accessible(node)))
-                .into_any_element(),
+            _ => crate::a11y::modal(
+                self.named(announce(escape(layer, dismiss, cx), accessible(node))),
+            )
+            .into_any_element(),
         }
     }
 }

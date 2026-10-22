@@ -4,6 +4,7 @@
 //! screen is ported from its board by reading the DOM and writing these.
 
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -119,8 +120,8 @@ pub(super) fn mono(weight: u16, size: f32) -> Div {
 /// Words assistive technology reads: a `Label` whose value is `text`, as
 /// gpui's own `Text` has it. `id` is explicit: the `text!` macro derives
 /// one from its call site, and text mapped over a list would share it.
-pub(super) fn words(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Text {
-    Text::new(id.into(), text.into())
+pub(super) fn words(id: impl Into<ElementId>, text: impl Into<SharedString>) -> crate::a11y::Words {
+    crate::a11y::words(id, text)
 }
 
 /// `<h1>`: `400 32px/1.18`; the screen's one `Heading`, level 1, its words
@@ -134,7 +135,7 @@ pub(super) fn h1(
     let text = text.into();
     sans(400, 32.)
         .id(id)
-        .role(Role::Heading)
+        .role_named_by_id(Role::Heading)
         .aria_label(text.clone())
         .aria_value(text.clone())
         .aria_level(1)
@@ -293,7 +294,7 @@ pub(super) fn alert(id: &'static str, said: String, ink: &Ink) -> AnyElement {
     let alert = sans(400, 13.)
         .line_height(px(13. * 1.5))
         .id(id)
-        .role(Role::Alert)
+        .role_named_by_id(Role::Alert)
         .text_color(ink.danger);
     crate::a11y::live(alert, accesskit::Live::Assertive, said.clone())
         .child(said)

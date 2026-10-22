@@ -6,6 +6,7 @@ use super::super::super::ink::{self, Ink, mono, sans, words};
 use super::super::Inset;
 use super::{DIALOG_EDGE, OverlayLayer, dialog_fit, scrim};
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use crate::shell::entities::{Overlay, Prefs, SettingsPage, Slice};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{App, Context, Window};
@@ -620,7 +621,7 @@ impl OverlayLayer {
         crate::a11y::roving(
             div()
                 .id(SharedString::from(id.to_owned()))
-                .role(Role::RadioGroup)
+                .role_named_by_id(Role::RadioGroup)
                 .aria_label(SharedString::from(name.to_owned())),
             &stop,
             accesskit::Orientation::Horizontal,

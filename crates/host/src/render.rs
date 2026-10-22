@@ -110,6 +110,17 @@ pub fn is_host_id(id: &ElementId) -> bool {
 /// program (`Seat::ax_mark`): the AX door reads the program off it.
 pub const VIEW_MARK: &str = "view/";
 
+pub fn view_mark(id: &ElementId) -> Option<&str> {
+    match id {
+        ElementId::NamedChild(_, name) if is_host_id(id) => name.strip_prefix(VIEW_MARK),
+        _ => None,
+    }
+}
+
+pub fn in_view(program: &str, segment: String) -> String {
+    format!("{VIEW_MARK}{program}/{segment}")
+}
+
 /// Whether a node of `role` is a control: what is pressed, toggled, picked
 /// or slid. Its words are its label, and a label is not text to read: as a
 /// browser's button and a native app's controls do, it stays out of the
@@ -464,6 +475,27 @@ impl ViewTree {
     pub fn with_perf_key(mut self, key: crate::perf::Key) -> Self {
         self.perf_key = Some(key);
         self
+    }
+
+    fn in_its_view(&self, segment: String) -> String {
+        match self.perf_key {
+            Some(crate::perf::Key::View { program, .. }) => in_view(program, segment),
+            _ => segment,
+        }
+    }
+
+    fn author_of(&self, id: &ElementId) -> Option<String> {
+        crate::a11y::segment(id).map(|segment| self.in_its_view(segment))
+    }
+
+    fn named<E: gpui_kit::StatefulInteractiveElement>(&self, mut element: E) -> E {
+        match crate::a11y::own_id(&mut element) {
+            Some(segment) => gpui_kit::StatefulInteractiveElement::accessibility_id(
+                element,
+                self.in_its_view(segment),
+            ),
+            None => element,
+        }
     }
 
     /// The live session the tree's publishing and remote pieces open their

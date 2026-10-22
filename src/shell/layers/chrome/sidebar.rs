@@ -13,6 +13,7 @@ use super::{
     drag_handle, tab_label,
 };
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use crate::runtime::{RailRow, WindowKey};
 use crate::shell::entities::Listed;
 use crate::shell::ink::{Ink, mono, sans};
@@ -186,7 +187,7 @@ impl Chrome {
             .child(self.gear(ink).h_full());
         div()
             .id("sidebar")
-            .role(Role::MenuBar)
+            .role_named_by_id(Role::MenuBar)
             .aria_label("Ducktape")
             .aria_orientation(accesskit::Orientation::Vertical)
             .size_full()

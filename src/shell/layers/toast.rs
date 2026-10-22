@@ -9,6 +9,7 @@ use super::super::WindowKey;
 use super::super::entities::{Entities, Observed, Prefs, Screen, Session, Slice, Toast};
 use super::super::ink::{Ink, Kind, Press, button, sans, tall};
 use super::super::status_bar::pulse;
+use crate::a11y::Named as _;
 use gpui_kit::*;
 
 pub(in crate::shell) struct ToastView {
@@ -70,7 +71,7 @@ impl Render for ToastView {
         let lost = lost.then(|| {
             let said = format!("{} isn't answering. What you write stays here.", network);
             crate::a11y::live(
-                bar("reconnecting").role(Role::Status),
+                bar("reconnecting").role_named_by_id(Role::Status),
                 gpui_kit::accesskit::Live::Polite,
                 said.clone(),
             )
@@ -90,7 +91,7 @@ impl Render for ToastView {
         });
         let toast = (!toast.is_empty()).then(|| {
             crate::a11y::live(
-                bar("toast").role(Role::Status),
+                bar("toast").role_named_by_id(Role::Status),
                 gpui_kit::accesskit::Live::Polite,
                 toast.clone(),
             )

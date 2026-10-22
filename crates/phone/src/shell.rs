@@ -44,6 +44,7 @@ pub mod stack;
 pub mod swipe;
 
 use ducktape_host::a11y::Control as _;
+use ducktape_host::a11y::Named as _;
 use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{Boot, KeyStorage, OsServices, Signal, SoftKeyboard};
 use ducktape_host::kept::Keeper;
@@ -2010,7 +2011,7 @@ impl Root {
         palette: look::Palette,
     ) -> AnyElement {
         let words = ducktape_host::a11y::live(
-            div().id("toast").role(gpui_kit::Role::Status),
+            div().id("toast").role_named_by_id(gpui_kit::Role::Status),
             gpui_kit::accesskit::Live::Polite,
             said.clone(),
         )

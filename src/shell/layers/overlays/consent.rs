@@ -3,6 +3,7 @@
 
 use super::super::super::ink::*;
 use super::{OverlayLayer, dialog_fit, scrim};
+use crate::a11y::Named as _;
 use crate::runtime::consent;
 use crate::shell::entities::Overlay;
 use gpui_kit::*;
@@ -63,7 +64,7 @@ impl OverlayLayer {
         let id = words.id;
         let instruction = sans(400, 13.)
             .id("consent-instruction")
-            .role(Role::Label)
+            .role_named_by_id(Role::Label)
             .aria_value(said.clone())
             .line_height(px(13. * 1.55))
             .text_color(ink.muted)
@@ -78,7 +79,7 @@ impl OverlayLayer {
         let shown = words.shown.map(|shown| {
             let label = mono(400, if described { 12. } else { 28. })
                 .id("consent-shown")
-                .role(Role::Label)
+                .role_named_by_id(Role::Label)
                 .aria_label(shown.clone());
             let label = match described {
                 true => label

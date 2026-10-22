@@ -343,7 +343,7 @@ impl ViewTree {
                 .children(menu_layer)
                 .capture_any_mouse_down(touched)
                 .refine_style(&placed);
-                announce(field, accessible).into_any_element()
+                self.named(announce(field, accessible)).into_any_element()
             }
             Engine::Area(state) => {
                 let pressed = path.clone();
@@ -357,19 +357,21 @@ impl ViewTree {
                             this.field_pressed(&pressed, event, window, cx)
                         }),
                     )
-                    .child(announce(
-                        crate::a11y::text_field(
-                            native_id(id),
-                            &focus,
-                            set_value,
-                            Textarea::new(state),
-                        )
-                        .child(contract.element())
-                        .children(menu_layer)
-                        .when(fills, |field| field.h_full())
-                        .capture_any_mouse_down(touched),
-                        accessible,
-                    ));
+                    .child(
+                        self.named(announce(
+                            crate::a11y::text_field(
+                                native_id(id),
+                                &focus,
+                                set_value,
+                                Textarea::new(state),
+                            )
+                            .child(contract.element())
+                            .children(menu_layer)
+                            .when(fills, |field| field.h_full())
+                            .capture_any_mouse_down(touched),
+                            accessible,
+                        )),
+                    );
                 let mut element = div().relative().id(host_id("field"));
                 *element.style() = (*style).clone();
                 let element =

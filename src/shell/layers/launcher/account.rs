@@ -6,6 +6,7 @@ use super::super::super::entities::Account;
 use super::super::super::ink::{self, *};
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen, buttons, closing};
+use crate::a11y::Named as _;
 use gpui_kit::*;
 
 const LINK_WAITING: &str = "On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Approve there only if it shows the same four-and-four. The code lasts five minutes.";
@@ -131,7 +132,7 @@ impl LauncherLayer {
             &ink,
         )
         .id("join-account")
-        .role(Role::Group)
+        .role_named_by_id(Role::Group)
         .aria_label("Already have an account");
         self.frame(
             LauncherScreen {
@@ -198,7 +199,7 @@ impl LauncherLayer {
                 .child(crate::a11y::whole(
                     mono(400, 28.)
                         .id(id)
-                        .role(Role::Label)
+                        .role_named_by_id(Role::Label)
                         .aria_label(text.clone())
                         .child(text),
                 ))
@@ -215,7 +216,7 @@ impl LauncherLayer {
                     .line_height(px(13. * 1.55))
                     .text_color(ink.muted)
                     .id("link-waiting-status")
-                    .role(Role::Status),
+                    .role_named_by_id(Role::Status),
                 accesskit::Live::Polite,
                 LINK_WAITING,
             )

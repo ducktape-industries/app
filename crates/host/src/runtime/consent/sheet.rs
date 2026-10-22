@@ -7,12 +7,13 @@
 
 use super::Words;
 use crate::a11y::Control as _;
+use crate::a11y::Named as _;
 use crate::fonts::{FAMILY_MONO, FAMILY_UI};
 use crate::theme::hsla as color;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, ClickEvent, Div, FontWeight, InteractiveElement as _, ParentElement as _, Role, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Text, div, px,
+    StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
 const XS: f32 = design::spacing::XS as f32;
@@ -48,7 +49,7 @@ pub fn sheet(
             .text_size(px(size))
             .line_height(px(line))
     };
-    let words = |id: String, text: String| Text::new(id.into(), text.into());
+    let words = |id: String, text: String| crate::a11y::words(id, text);
     let head = div()
         .flex()
         .flex_col()
@@ -58,7 +59,7 @@ pub fn sheet(
         .child(
             face(11., 14., 400, true)
                 .id("consent-title")
-                .role(Role::Label)
+                .role_named_by_id(Role::Label)
                 .aria_value(asked.title)
                 .text_color(color(palette.muted))
                 .child(asked.title.to_uppercase()),

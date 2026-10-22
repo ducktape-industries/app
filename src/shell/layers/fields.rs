@@ -6,6 +6,7 @@
 //! address rewritten to the node reached) the layer writes into the field
 //! from its observers.
 
+use crate::a11y::Named as _;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
     AppContext as _, Context, Entity, IntoElement as _, Styled as _, Subscription, Window,
@@ -118,8 +119,8 @@ impl NativeInput {
         };
         patch
             .on(match masked {
-                true => element.role(gpui_kit::Role::PasswordInput),
-                false => element.role(gpui_kit::Role::TextInput),
+                true => element.role_named_by_id(gpui_kit::Role::PasswordInput),
+                false => element.role_named_by_id(gpui_kit::Role::TextInput),
             })
             .into_any_element()
     }
