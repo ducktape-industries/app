@@ -1,6 +1,6 @@
 //! The `duck` scheme in every page: each `duck://` address answered from what
-//! the app reads of its network (`serve`), read-only, connecting to and nesting
-//! nothing but `duck:`, and the height a page loaded from one tells its browser.
+//! the app reads of its network (`serve`), read-only, loading nothing but `duck:`
+//! (scripts also from cdnjs), and the height a page loaded from one tells its browser.
 use cef::*;
 use std::os::raw::c_int;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -11,7 +11,7 @@ pub(crate) const HEIGHT: &str = "ducktape.height";
 
 const TELL: &str = "__ducktapeHeight";
 
-const POLICY: &str = "connect-src duck: data: blob:; frame-src duck: data: blob:; worker-src duck: data: blob:; object-src 'none'";
+const POLICY: &str = "default-src duck: data: blob: 'unsafe-inline'; script-src duck: data: blob: 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; worker-src duck: data: blob:; object-src 'none'";
 
 const WATCH: &str = "(() => { const tell = globalThis.__ducktapeHeight; delete globalThis.__ducktapeHeight; const watch = () => new ResizeObserver(() => tell(Math.ceil(document.documentElement.getBoundingClientRect().height))).observe(document.documentElement); if (document.documentElement) { watch(); } else { document.addEventListener('readystatechange', watch, { once: true }); } })();";
 

@@ -74,16 +74,17 @@ address IANA's special-purpose registries mark as not globally reachable
 documentation and reserved blocks). A WebSocket never reaches the app's
 request fence, Chromium's own local network check lets a `wss:` to this machine
 reach its TLS handshake, and a web page nested in an artifact would run under
-its own policy, so an artifact's `Content-Security-Policy` lets it connect
-(fetch, WebSocket, EventSource) only to `duck:`, `data:` and `blob:`
-addresses, nest frames and start workers only from those, and nest no
-`<object>` or `<embed>`: it reads its network and nothing else. Its scripts,
-styles, images and fonts may still load from https. An artifact never navigates in place: a
+its own policy, so an artifact's `Content-Security-Policy` lets it load
+anything (fetch, WebSocket, EventSource, images, styles, fonts, media, frames,
+workers) only from `duck:`, `data:` and `blob:` addresses, and scripts from
+those and `https://cdnjs.cloudflare.com` alone, the one host Claude's own
+artifacts load scripts from; it nests no `<object>` or `<embed>`: it reads its
+network and nothing else. An artifact never navigates in place: a
 link to another `duck://` page, or one you click to a public address, opens in
 the app instead, and a script that sends it elsewhere without a click, or to an
 address the fence names, is refused. Not
-fenced: a domain name whose DNS answers with a private address (CEF has no
-hook at the resolver); WebRTC, whose connections are not requests; a
+fenced: a script from cdnjs, should this machine's DNS answer that name with a
+private address (CEF has no hook at the resolver); WebRTC, whose connections are not requests; a
 `<link rel=preconnect>`, which opens a connection to the address it names and
 sends a TLS hello there but no bytes the page chooses; a link on the page,
 which Chromium may connect to ahead of a click, sending nothing; and a
