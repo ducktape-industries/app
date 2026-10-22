@@ -35,6 +35,15 @@ was (its one symlink, `LICENSE-APACHE`, copied as the file it named); the commit
   ~120 main-thread wakeups a second on a still screen in the simulator, 2 a second with this.
 - `src/ios/application.rs`: the app delegate hands Rust the remote-notification device token and a
   background push's payload (`IosPlatform`'s hooks; the phone's push), which zed's has neither of.
+- `src/gpui_ios.rs`, `src/ios.rs`, `src/ios/window.rs`, `src/ios/text_input.rs`, `Cargo.toml`:
+  `ios::show_edit_menu(at, items, pick)` and `ios::hide_edit_menu()` show UIKit's own edit menu
+  beside a text field's selection, which zed's crate has none of. The text input view adds a
+  `UIEditMenuInteraction` (iOS 16 and later; `UIMenuController` before) whose target rect is `at`,
+  answers `canPerformAction:withSender:` for `cut:`, `copy:`, `paste:` and `selectAll:` with the
+  `EditItem`s offered (and no other action while the menu is up), and hands a pick to `pick`. The
+  manifest adds objc2-ui-kit's `UIEditMenuInteraction`, `UIInteraction` and `UIMenuController`
+  features. The harness test asserts what the view answers before, during and after a menu, and
+  that a pick reaches `pick` once.
 
 The rest of `src/` and `tests/` is verbatim.
 
@@ -66,7 +75,10 @@ it. From the app's root on a Mac: `IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo build -
 --target aarch64-apple-ios-sim`, or the phone itself (`phone/Makefile`). The harness test
 (`tests/text_input.rs`) needs the crate's dev-dependencies, which cargo reads only for a workspace
 member: in a local copy that adds `vendor/gpui-ios` to the root's `members`, `cargo test -p
-ducktape-gpui-ios --target aarch64-apple-ios-sim`. `backtrace` 0.3.76 needs
+ducktape-gpui-ios --target aarch64-apple-ios-sim` with a simulator booted and
+`CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER="xcrun simctl spawn booted"`, since cargo would otherwise
+run the simulator binary on macOS, where dyld refuses it ("DYLD_ROOT_PATH not set for simulator
+program"). `backtrace` 0.3.76 needs
 libc <= 0.2.189 on iOS, which the app's lock holds.
 
 ## On a bump

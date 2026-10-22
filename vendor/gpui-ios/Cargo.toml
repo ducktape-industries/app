@@ -111,9 +111,12 @@ version = "0.3.2"
 features = [
     "NSText",
     "UIApplication",
+    "UIEditMenuInteraction",
     "UIEvent",
     "UIGeometry",
+    "UIInteraction",
     "UIInterface",
+    "UIMenuController",
     "UIOpenURLContext",
     "UIPasteboard",
     "UIResponder",

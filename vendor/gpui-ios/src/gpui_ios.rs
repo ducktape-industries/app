@@ -48,3 +48,16 @@ pub enum KeyboardKind {
     /// A search.
     Search,
 }
+
+/// One item of a text field's edit menu ([`ios::show_edit_menu`]): UIKit's own standard edit action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditItem {
+    /// `cut:`.
+    Cut,
+    /// `copy:`.
+    Copy,
+    /// `paste:`.
+    Paste,
+    /// `selectAll:`.
+    SelectAll,
+}

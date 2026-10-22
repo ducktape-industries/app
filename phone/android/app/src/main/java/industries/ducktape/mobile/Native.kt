@@ -74,4 +74,6 @@ object Native {
     @JvmStatic external fun swipeCancel()
 
     @JvmStatic external fun keepShows(ticket: Long): Boolean
+
+    @JvmStatic external fun editPick(item: Int)
 }

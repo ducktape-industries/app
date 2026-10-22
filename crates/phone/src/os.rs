@@ -37,6 +37,34 @@ pub mod ios {
         });
     }
 
+    pub(crate) fn edit_menu(menu: ducktape_host::contract::EditMenu) {
+        use ducktape_gpui_ios::EditItem;
+        use ducktape_host::contract::{EditAction, EditMenu, Signal};
+        fn picked(item: EditItem) {
+            super::send(Signal::Edit(match item {
+                EditItem::Cut => EditAction::Cut,
+                EditItem::Copy => EditAction::Copy,
+                EditItem::Paste => EditAction::Paste,
+                EditItem::SelectAll => EditAction::SelectAll,
+            }));
+        }
+        match menu {
+            EditMenu::Show(at, offers) => {
+                let items: Vec<EditItem> = offers
+                    .iter()
+                    .map(|offer| match offer {
+                        EditAction::Cut => EditItem::Cut,
+                        EditAction::Copy => EditItem::Copy,
+                        EditAction::Paste => EditItem::Paste,
+                        EditAction::SelectAll => EditItem::SelectAll,
+                    })
+                    .collect();
+                ducktape_gpui_ios::ios::show_edit_menu(at, &items, picked);
+            }
+            EditMenu::Hide => ducktape_gpui_ios::ios::hide_edit_menu(),
+        }
+    }
+
     /// Which of Apple's servers this build's APNs tokens belong to: the
     /// `aps-environment` of the provisioning profile the app was signed
     /// with (`embedded.mobileprovision` beside the executable, its plist in
@@ -72,8 +100,8 @@ pub mod ios {
 
 use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{
-    Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
-    Preload, RunnerConfig, Secrets, Signal, SoftKeyboard, ViewRunner,
+    Banners, Dirs, EditMenu, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts,
+    OsServices, Preload, RunnerConfig, Secrets, Signal, SoftKeyboard, ViewRunner,
 };
 use ducktape_host::motion;
 use ducktape_host::runtime::Answered;
@@ -646,6 +674,17 @@ impl OsServices for PhoneOs {
         }
     }
 
+    fn edit_menu(&self, window: &Window, menu: EditMenu) {
+        #[cfg(target_os = "ios")]
+        ios::edit_menu(menu);
+        #[cfg(target_os = "android")]
+        android::edit_menu(window, menu);
+        #[cfg(not(target_os = "android"))]
+        let _ = window;
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        let _ = menu;
+    }
+
     fn facts(&self) -> OsFacts {
         Self::facts_of()
     }
@@ -715,6 +754,46 @@ fn retain_only_current_build_cache(dir: &Path, build: &str) -> PathBuf {
         }
     }
     dir.join(build)
+}
+
+#[cfg(any(target_os = "android", test))]
+mod edit_items {
+    use ducktape_host::contract::EditAction;
+    use gpui_kit::{Bounds, Pixels};
+
+    const ORDER: [EditAction; 4] = [
+        EditAction::Cut,
+        EditAction::Copy,
+        EditAction::Paste,
+        EditAction::SelectAll,
+    ];
+
+    pub(crate) fn codes(offers: &[EditAction]) -> Vec<i32> {
+        offers
+            .iter()
+            .filter_map(|offer| ORDER.iter().position(|item| item == offer))
+            .filter_map(|at| i32::try_from(at).ok())
+            .collect()
+    }
+
+    pub(crate) fn picked(code: i32) -> Option<EditAction> {
+        usize::try_from(code)
+            .ok()
+            .and_then(|at| ORDER.get(at))
+            .copied()
+    }
+
+    pub(crate) fn pixels(at: Bounds<Pixels>, scale: f32) -> [i32; 4] {
+        let edge = |points: Pixels, round: fn(f64) -> f64| {
+            round(f64::from(points) * f64::from(scale)) as i32
+        };
+        [
+            edge(at.left(), f64::floor),
+            edge(at.top(), f64::floor),
+            edge(at.right(), f64::ceil),
+            edge(at.bottom(), f64::ceil),
+        ]
+    }
 }
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -976,6 +1055,27 @@ mod tests {
             "{client:?}"
         );
         assert!(client.ends_with("; phone)"), "{client:?}");
+    }
+
+    #[test]
+    fn the_activitys_edit_menu_gets_its_items_in_pixels_and_hands_back_each_pick() {
+        use ducktape_host::contract::EditAction;
+        let offers = [EditAction::Copy, EditAction::Paste, EditAction::SelectAll];
+        let codes = edit_items::codes(&offers);
+        assert_eq!(codes, [1, 2, 3], "not MainActivity's EDIT_ITEMS order");
+        let picks: Vec<_> = codes
+            .iter()
+            .filter_map(|code| edit_items::picked(*code))
+            .collect();
+        assert_eq!(picks, offers);
+        assert_eq!(edit_items::codes(&[EditAction::Cut]), [0]);
+        assert_eq!(edit_items::picked(4), None);
+        assert_eq!(edit_items::picked(-1), None);
+        let at = gpui_kit::Bounds::new(
+            gpui_kit::point(gpui_kit::px(10.5), gpui_kit::px(20.)),
+            gpui_kit::size(gpui_kit::px(30.), gpui_kit::px(8.25)),
+        );
+        assert_eq!(edit_items::pixels(at, 2.), [21, 40, 81, 57]);
     }
 
     #[test]

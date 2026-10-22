@@ -1,11 +1,11 @@
 use super::window::{IosWindowState, WindowReference};
-use crate::{Keyboard, KeyboardKind};
+use crate::{EditItem, Keyboard, KeyboardKind};
 use gpui::{
     Autocapitalize, PlatformInputHandler, TextInputAction, TextInputConfiguration,
     TextInputStateChange, px,
 };
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::runtime::{AnyClass, AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
@@ -126,6 +126,10 @@ pub(super) struct TextInputIvars {
     selection_changed: Cell<bool>,
     content_changed: Cell<bool>,
     native_edit: Cell<bool>,
+    edit_menu: RefCell<Option<Retained<UIEditMenuInteraction>>>,
+    edit_menu_at: Cell<CGRect>,
+    edit_menu_items: RefCell<Vec<EditItem>>,
+    edit_menu_pick: Cell<Option<fn(EditItem)>>,
 }
 
 define_class!(
@@ -193,6 +197,46 @@ define_class!(
             }
         }
 
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform_action(&self, action: Sel, sender: Option<&AnyObject>) -> bool {
+            let menu_up = self.ivars().edit_menu_pick.get().is_some();
+            match edit_item(action) {
+                Some(item) => self.ivars().edit_menu_items.borrow().contains(&item),
+                None if menu_up => false,
+                None => unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] },
+            }
+        }
+
+        #[unsafe(method(cut:))]
+        fn edit_cut(&self, _sender: Option<&AnyObject>) {
+            self.hand_on_pick(EditItem::Cut);
+        }
+
+        #[unsafe(method(copy:))]
+        fn edit_copy(&self, _sender: Option<&AnyObject>) {
+            self.hand_on_pick(EditItem::Copy);
+        }
+
+        #[unsafe(method(paste:))]
+        fn edit_paste(&self, _sender: Option<&AnyObject>) {
+            self.hand_on_pick(EditItem::Paste);
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn edit_select_all(&self, _sender: Option<&AnyObject>) {
+            self.hand_on_pick(EditItem::SelectAll);
+        }
+    }
+
+    unsafe impl UIEditMenuInteractionDelegate for TextInputView {
+        #[unsafe(method(editMenuInteraction:targetRectForConfiguration:))]
+        fn edit_menu_target_rect(
+            &self,
+            _interaction: &UIEditMenuInteraction,
+            _configuration: &UIEditMenuConfiguration,
+        ) -> CGRect {
+            self.ivars().edit_menu_at.get()
+        }
     }
 
     unsafe impl UIKeyInput for TextInputView {
@@ -509,6 +553,10 @@ impl TextInputView {
             selection_changed: Cell::new(false),
             content_changed: Cell::new(false),
             native_edit: Cell::new(false),
+            edit_menu: RefCell::new(None),
+            edit_menu_at: Cell::new(CGRect::ZERO),
+            edit_menu_items: RefCell::new(Vec::new()),
+            edit_menu_pick: Cell::new(None),
         });
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
@@ -597,6 +645,82 @@ impl TextInputView {
         .flatten()
     }
 
+    #[cfg_attr(
+        test,
+        allow(
+            dead_code,
+            reason = "the harness test includes this file and presents no menu"
+        )
+    )]
+    pub(super) fn show_edit_menu(
+        &self,
+        at: gpui::Bounds<gpui::Pixels>,
+        items: &[EditItem],
+        pick: fn(EditItem),
+    ) {
+        let at = self.convertRect_fromView(native_rect(at), self.superview().as_deref());
+        self.ivars().edit_menu_at.set(at);
+        self.ivars().edit_menu_items.replace(items.to_vec());
+        self.ivars().edit_menu_pick.set(Some(pick));
+        let Some(menu) = self.edit_menu_interaction() else {
+            menu_controller(self, Some(at));
+            return;
+        };
+        let source = CGPoint::new(at.origin.x + at.size.width / 2., at.origin.y);
+        let configuration = unsafe {
+            UIEditMenuConfiguration::configurationWithIdentifier_sourcePoint(
+                None,
+                source,
+                self.mtm(),
+            )
+        };
+        menu.presentEditMenuWithConfiguration(&configuration);
+    }
+
+    pub(super) fn hide_edit_menu(&self) {
+        self.ivars().edit_menu_items.borrow_mut().clear();
+        self.ivars().edit_menu_pick.set(None);
+        if !edit_menu_interaction_exists() {
+            menu_controller(self, None);
+            return;
+        }
+        let shown = self.ivars().edit_menu.borrow().clone();
+        if let Some(menu) = shown {
+            menu.dismissMenu();
+        }
+    }
+
+    #[cfg_attr(
+        test,
+        allow(
+            dead_code,
+            reason = "the harness test includes this file and presents no menu"
+        )
+    )]
+    fn edit_menu_interaction(&self) -> Option<Retained<UIEditMenuInteraction>> {
+        if !edit_menu_interaction_exists() {
+            return None;
+        }
+        let made = self.ivars().edit_menu.borrow().clone();
+        if made.is_some() {
+            return made;
+        }
+        let menu = UIEditMenuInteraction::initWithDelegate(
+            UIEditMenuInteraction::alloc(self.mtm()),
+            Some(ProtocolObject::from_ref(self)),
+        );
+        self.addInteraction(ProtocolObject::from_ref(&*menu));
+        self.ivars().edit_menu.replace(Some(menu.clone()));
+        Some(menu)
+    }
+
+    fn hand_on_pick(&self, item: EditItem) {
+        self.ivars().edit_menu_items.borrow_mut().clear();
+        if let Some(pick) = self.ivars().edit_menu_pick.take() {
+            pick(item);
+        }
+    }
+
     pub(super) fn set_keyboard_visible(&self, visible: bool) {
         self.ivars().keyboard_desired.set(visible);
         self.refresh_keyboard();
@@ -681,6 +805,31 @@ fn nonempty_caret_rect(mut rect: CGRect) -> CGRect {
     // GPUI can report a zero-width insertion location; UIKit needs a visible caret.
     rect.size.width = rect.size.width.max(1.);
     rect
+}
+
+fn edit_item(action: Sel) -> Option<EditItem> {
+    [
+        (sel!(cut:), EditItem::Cut),
+        (sel!(copy:), EditItem::Copy),
+        (sel!(paste:), EditItem::Paste),
+        (sel!(selectAll:), EditItem::SelectAll),
+    ]
+    .into_iter()
+    .find(|(named, _)| *named == action)
+    .map(|(_, item)| item)
+}
+
+fn edit_menu_interaction_exists() -> bool {
+    AnyClass::get(c"UIEditMenuInteraction").is_some()
+}
+
+#[allow(deprecated)]
+fn menu_controller(view: &TextInputView, at: Option<CGRect>) {
+    let menus = UIMenuController::sharedMenuController(view.mtm());
+    match at {
+        Some(at) => menus.showMenuFromView_rect(view, at),
+        None => menus.hideMenuFromView(view),
+    }
 }
 
 fn contains_range(outer: &Range<usize>, inner: &Range<usize>) -> bool {
@@ -804,6 +953,7 @@ pub(super) mod tests {
     )]
     pub(crate) fn native_protocol_smoke_test(main_thread: MainThreadMarker) {
         stale_native_objects_test(main_thread);
+        edit_menu_responder_test(main_thread);
         let view = TextInputView::new(CGRect::ZERO, main_thread);
         let position = view.new_position(3);
         assert_eq!(view.validated_offset(&position), Some(3));
@@ -985,6 +1135,46 @@ pub(super) mod tests {
         view.resignFirstResponder();
         assert!(view.ivars().keyboard_desired.get());
         window.setHidden(true);
+    }
+
+    thread_local! {
+        static PICKS: RefCell<Vec<EditItem>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn picked(item: EditItem) {
+        PICKS.with_borrow_mut(|picks| picks.push(item));
+    }
+
+    fn edit_menu_responder_test(main_thread: MainThreadMarker) {
+        let view = TextInputView::new(CGRect::ZERO, main_thread);
+        let can = |action: Sel| unsafe { view.canPerformAction_withSender(action, None) };
+        assert!(!can(sel!(copy:)), "an edit action answered with no menu up");
+        view.ivars()
+            .edit_menu_items
+            .replace(vec![EditItem::Copy, EditItem::SelectAll]);
+        view.ivars().edit_menu_pick.set(Some(picked));
+        assert!(can(sel!(copy:)));
+        assert!(can(sel!(selectAll:)));
+        assert!(!can(sel!(cut:)), "an item the field did not offer");
+        assert!(!can(sel!(paste:)), "an item the field did not offer");
+        assert!(
+            !can(sel!(toggleBoldface:)),
+            "another action while the menu is up"
+        );
+        let _: () = unsafe { msg_send![&*view, copy: None::<&AnyObject>] };
+        assert_eq!(PICKS.with_borrow(Clone::clone), [EditItem::Copy]);
+        assert!(
+            !can(sel!(selectAll:)),
+            "the menu still offered after a pick"
+        );
+        view.ivars().edit_menu_items.replace(vec![EditItem::Paste]);
+        view.ivars().edit_menu_pick.set(Some(picked));
+        view.hide_edit_menu();
+        assert!(
+            !can(sel!(paste:)),
+            "the menu still offered after it was hidden"
+        );
+        assert_eq!(PICKS.with_borrow(Vec::len), 1);
     }
 
     fn stale_native_objects_test(main_thread: MainThreadMarker) {

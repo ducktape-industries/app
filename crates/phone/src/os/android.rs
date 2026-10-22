@@ -12,7 +12,7 @@
 
 pub mod jni;
 
-use ducktape_host::contract::SoftKeyboard;
+use ducktape_host::contract::{EditMenu, SoftKeyboard};
 use gpui_kit::{Edges, Window, WindowInsets, px};
 use gpui_mobile::KeyboardType;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -74,5 +74,15 @@ pub fn soft_keyboard(want: SoftKeyboard) {
             Asked::Url => KeyboardType::URL,
         }),
         SoftKeyboard::Hide => gpui_mobile::hide_keyboard(),
+    }
+}
+
+pub(crate) fn edit_menu(window: &Window, menu: EditMenu) {
+    match menu {
+        EditMenu::Show(at, offers) => jni::show_edit_menu(
+            super::edit_items::pixels(at, window.scale_factor()),
+            &super::edit_items::codes(&offers),
+        ),
+        EditMenu::Hide => jni::hide_edit_menu(),
     }
 }

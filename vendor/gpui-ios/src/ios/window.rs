@@ -139,6 +139,25 @@ pub fn set_keyboard(keyboard: crate::Keyboard) {
     }
 }
 
+/// Show UIKit's own edit menu beside `at` (window points), offering `items`; a pick closes it
+/// and calls `pick`.
+pub fn show_edit_menu(at: Bounds<Pixels>, items: &[crate::EditItem], pick: fn(crate::EditItem)) {
+    if let Some(platform) = super::application::current_platform() {
+        platform.application.with_windows(|window| {
+            window.text_input_view.show_edit_menu(at, items, pick);
+        });
+    }
+}
+
+/// Hide the edit menu [`show_edit_menu`] showed.
+pub fn hide_edit_menu() {
+    if let Some(platform) = super::application::current_platform() {
+        platform.application.with_windows(|window| {
+            window.text_input_view.hide_edit_menu();
+        });
+    }
+}
+
 define_class!(
     #[unsafe(super = UIView)]
     #[thread_kind = MainThreadOnly]

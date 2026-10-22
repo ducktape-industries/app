@@ -3,7 +3,7 @@
 mod text_input;
 
 #[cfg(target_os = "ios")]
-use ducktape_gpui_ios::{Keyboard, KeyboardKind};
+use ducktape_gpui_ios::{EditItem, Keyboard, KeyboardKind};
 
 // Native protocol construction does not need a GPUI window, renderer, or a
 // second text model. This fixture deliberately has no registered input handler.
