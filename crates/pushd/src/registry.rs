@@ -916,7 +916,8 @@ mod tests {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = std::io::BufReader::new(stream.unwrap());
-                let (mut line, mut length) = (String::new(), 0);
+                let (mut request, mut line, mut length) = (String::new(), String::new(), 0);
+                stream.read_line(&mut request).unwrap();
                 while stream.read_line(&mut line).unwrap() > 2 {
                     if let Some((name, value)) = line.split_once(':')
                         && name.eq_ignore_ascii_case("content-length")
@@ -927,17 +928,12 @@ mod tests {
                 }
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
-                let query: noded_client::wire::Query = abi::decode(&body).unwrap();
-                let noded_client::wire::Ask::Signed(frame) = query.ask else {
-                    panic!("an unsigned query");
+                let answered = match request.starts_with("GET /v1/status ") {
+                    true => Ok(abi::encode(&binding_identity())),
+                    false => asked_of_key(&body, answer),
                 };
-                let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
-                let identity::Query::OfKey { key } = abi::decode(&frame.body.payload).unwrap()
-                else {
-                    panic!("the recheck asks OfKey first");
-                };
-                let (status, body) = match answer(&key) {
-                    Ok(reply) => ("200 OK", abi::encode(&abi::encode(&reply))),
+                let (status, body) = match answered {
+                    Ok(body) => ("200 OK", body),
                     Err(refusal) => ("400 Bad Request", abi::encode(&refusal)),
                 };
                 let head = format!(
@@ -951,6 +947,46 @@ mod tests {
             }
         });
         url
+    }
+
+    const IDENTITY_AT: &str = "owner/identity";
+
+    fn binding_identity() -> noded_client::wire::Status {
+        noded_client::wire::Status {
+            network: "testkit".into(),
+            time: 1,
+            block_time_ms: 2,
+            epoch_length: 3,
+            height: 4,
+            tip: [5; 32],
+            root: abi::Root([6; 32]),
+            epoch: 7,
+            identity: vec![8],
+            contract: noded_client::wire::NODE_CONTRACT,
+            genesis: [9; 32],
+            roles: abi::Roles::from_iter([(abi::role::IDENTITY, IDENTITY_AT)]),
+        }
+    }
+
+    fn asked_of_key(
+        body: &[u8],
+        answer: fn(&[u8]) -> Result<identity::Reply, abi::Refusal>,
+    ) -> Result<Vec<u8>, abi::Refusal> {
+        let query: noded_client::wire::Query = abi::decode(body).unwrap();
+        let noded_client::wire::Ask::Signed(frame) = query.ask else {
+            panic!("an unsigned query");
+        };
+        let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
+        if frame.body.target != IDENTITY_AT {
+            return Err(abi::Refusal::new(
+                abi::reason::UNKNOWN_PROGRAM,
+                frame.body.target,
+            ));
+        }
+        let identity::Query::OfKey { key } = abi::decode(&frame.body.payload).unwrap() else {
+            panic!("the recheck asks OfKey first");
+        };
+        answer(&key).map(|reply| abi::encode(&abi::encode(&reply)))
     }
 
     #[test]
