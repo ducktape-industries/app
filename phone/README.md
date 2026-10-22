@@ -3,6 +3,11 @@
 `crates/phone` (the shell) in the iOS launcher (`ios/`, XcodeGen) and the Android one (`android/`). How to build each:
 the head of `Makefile`.
 
+## The checks a change gets
+
+- **Kotlin:** `make -C phone android-check` (`compileDebugKotlin` alone, no Rust and no NDK) is the gate `android` of build.sh's lane, on a change that touches `android/`; the lane fills the JDK, SDK and gradle home it compiles with on the builds machine.
+- **Swift:** `make -C phone ios-check` type-checks `App.swift` and `DeviceKeyStore.swift` against `Phone.h`, and the driver, with `swiftc -typecheck` (seconds; no Rust, XcodeGen or simulator). `.forge/workflows/phone.toml` runs it on the mac relay for every change into `dev` and every push to `dev`. It is reported, never required: a Mac that sleeps holds no merge. It doesn't link, so an `@_cdecl` or `Phone.h` name Rust lacks shows only at `ios-sim` or the TestFlight archive.
+
 ## The mac service's driver
 
 `ios/Driver/Driver.swift` is an XCUITest bundle (`DucktapeDriver`, the `Ducktape` scheme's test target, so never in the
