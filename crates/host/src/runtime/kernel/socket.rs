@@ -170,10 +170,9 @@ fn approved(path: &Path) -> Vec<String> {
 }
 
 fn approve(path: &Path, hosts: &[String]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    noded_client::fs::atomic_write(path, &methods::encode(&hosts.to_vec()), false)
+    crate::contract::os()
+        .disk()
+        .write(path, &methods::encode(&hosts.to_vec()), false)
 }
 
 struct Asking {

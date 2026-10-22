@@ -516,6 +516,10 @@ impl OsServices for Headless {
         &self.dirs
     }
 
+    fn disk(&self) -> &dyn noded_client::fs::Disk {
+        &noded_client::fs::Native
+    }
+
     fn device_key(
         &self,
         _: &str,

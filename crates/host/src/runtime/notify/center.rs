@@ -694,11 +694,8 @@ impl Center {
         let saves = self.saves.clone();
         crate::runtime::kernel::in_order(&name, move || {
             let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
             if let Ok(bytes) = serde_json::to_vec(&entries) {
-                let _ = noded_client::fs::atomic_write(&path, &bytes, false);
+                let _ = crate::contract::os().disk().write(&path, &bytes, false);
             }
             #[cfg(test)]
             saves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

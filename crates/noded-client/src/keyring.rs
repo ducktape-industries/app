@@ -25,7 +25,12 @@ pub struct Keyring {
 /// claimed by whichever chain connects first, and keeps working for it),
 /// and any other chain with that name gets `<remotes>/<name>+<founded>` —
 /// its own keys, never the first chain's.
-pub fn bind(remotes: &Path, network: &str, founded: u64) -> Result<Keyring, String> {
+pub fn bind(
+    disk: &dyn crate::fs::Disk,
+    remotes: &Path,
+    network: &str,
+    founded: u64,
+) -> Result<Keyring, String> {
     let name: String = network
         .chars()
         .map(
@@ -45,14 +50,15 @@ pub fn bind(remotes: &Path, network: &str, founded: u64) -> Result<Keyring, Stri
             mark.display()
         )
     };
-    let known = match std::fs::read_to_string(&mark) {
-        Ok(text) => Some(
-            text.trim()
+    let known = match disk.read(&mark).map_err(|error| damaged(&error))? {
+        Some(bytes) => Some(
+            std::str::from_utf8(&bytes)
+                .map_err(|error| damaged(&error))?
+                .trim()
                 .parse::<u64>()
                 .map_err(|error| damaged(&error))?,
         ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(damaged(&error)),
+        None => None,
     };
     match known {
         Some(known) if known != founded => Ok(Keyring {
@@ -64,9 +70,7 @@ pub fn bind(remotes: &Path, network: &str, founded: u64) -> Result<Keyring, Stri
             other_chain: false,
         }),
         None => {
-            let written = std::fs::create_dir_all(remotes.join(&name)).and_then(|()| {
-                crate::fs::atomic_write(&mark, founded.to_string().as_bytes(), false)
-            });
+            let written = disk.write(&mark, founded.to_string().as_bytes(), false);
             if let Err(error) = written {
                 tracing::warn!(target: "ducktape::app", %error, network, "chain mark not written");
             }
@@ -85,17 +89,26 @@ mod tests {
     #[test]
     fn a_name_binds_to_the_chain_first_seen_under_it() {
         let remotes = tempfile::tempdir().unwrap();
-        let first = bind(remotes.path(), "testkit", 100).unwrap();
+        let first = bind(&crate::fs::Native, remotes.path(), "testkit", 100).unwrap();
         assert_eq!(first.dir, "testkit");
         assert!(!first.other_chain);
-        assert_eq!(bind(remotes.path(), "testkit", 100).unwrap(), first);
-        let other = bind(remotes.path(), "testkit", 200).unwrap();
+        assert_eq!(
+            bind(&crate::fs::Native, remotes.path(), "testkit", 100).unwrap(),
+            first
+        );
+        let other = bind(&crate::fs::Native, remotes.path(), "testkit", 200).unwrap();
         assert_eq!(other.dir, "testkit+200");
         assert!(other.other_chain);
-        assert_eq!(bind(remotes.path(), "testkit", 200).unwrap(), other);
-        assert_eq!(bind(remotes.path(), "testkit", 100).unwrap(), first);
-        assert!(bind(remotes.path(), "", 1).is_err());
-        assert!(bind(remotes.path(), "..", 1).is_err());
+        assert_eq!(
+            bind(&crate::fs::Native, remotes.path(), "testkit", 200).unwrap(),
+            other
+        );
+        assert_eq!(
+            bind(&crate::fs::Native, remotes.path(), "testkit", 100).unwrap(),
+            first
+        );
+        assert!(bind(&crate::fs::Native, remotes.path(), "", 1).is_err());
+        assert!(bind(&crate::fs::Native, remotes.path(), "..", 1).is_err());
     }
 
     #[test]
@@ -108,14 +121,14 @@ mod tests {
         std::fs::create_dir_all(mark.parent().unwrap()).unwrap();
         for damaged in ["", "10O", "\u{0}\u{0}"] {
             std::fs::write(&mark, damaged).unwrap();
-            let refused = bind(remotes.path(), "testkit", 100).unwrap_err();
+            let refused = bind(&crate::fs::Native, remotes.path(), "testkit", 100).unwrap_err();
             assert!(refused.contains(CHAIN_FOUNDING_TIME_FILE), "{refused}");
             let left = std::fs::read_to_string(&mark).unwrap();
             assert_eq!(left, damaged, "the mark was claimed");
         }
         std::fs::remove_file(&mark).unwrap();
         std::fs::create_dir(&mark).unwrap();
-        assert!(bind(remotes.path(), "testkit", 100).is_err());
+        assert!(bind(&crate::fs::Native, remotes.path(), "testkit", 100).is_err());
         assert!(mark.is_dir());
     }
 
@@ -129,8 +142,17 @@ mod tests {
             .join("default.key");
         std::fs::create_dir_all(keys.parent().unwrap()).unwrap();
         std::fs::write(&keys, "sealed").unwrap();
-        assert_eq!(bind(remotes.path(), "testkit", 7).unwrap().dir, "testkit");
+        assert_eq!(
+            bind(&crate::fs::Native, remotes.path(), "testkit", 7)
+                .unwrap()
+                .dir,
+            "testkit"
+        );
         assert!(keys.exists(), "the old key is left where it was");
-        assert!(bind(remotes.path(), "testkit", 8).unwrap().other_chain);
+        assert!(
+            bind(&crate::fs::Native, remotes.path(), "testkit", 8)
+                .unwrap()
+                .other_chain
+        );
     }
 }

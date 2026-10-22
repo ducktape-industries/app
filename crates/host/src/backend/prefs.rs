@@ -41,12 +41,12 @@ fn edit_prefs_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Va
     if prefs == before {
         return true;
     }
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    serde_json::to_vec_pretty(&prefs)
-        .ok()
-        .is_some_and(|bytes| noded_client::fs::atomic_write(path, &bytes, false).is_ok())
+    serde_json::to_vec_pretty(&prefs).ok().is_some_and(|bytes| {
+        crate::contract::os()
+            .disk()
+            .write(path, &bytes, false)
+            .is_ok()
+    })
 }
 
 #[cfg(any(test, feature = "test-support"))]

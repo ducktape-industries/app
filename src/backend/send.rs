@@ -381,8 +381,13 @@ pub(crate) fn send(ask: &Ask) -> Result<Sent, Failure> {
         .ok_or_else(|| Failure::Unbound(ask.network.clone()))?;
     let client = super::rpc_client(target.url.clone());
     let status = runtime.block_on(reach(&client, &target))?;
-    let keyring = noded_client::keyring::bind(&super::dirs().remotes, &status.network, status.time)
-        .map_err(Failure::Keyring)?;
+    let keyring = noded_client::keyring::bind(
+        ducktape_host::contract::os().disk(),
+        &super::dirs().remotes,
+        &status.network,
+        status.time,
+    )
+    .map_err(Failure::Keyring)?;
     let key = open_key(&keyring.dir, &target.url, &status)?;
     runtime.block_on(submit(&client, &status, key, &ask.program, &ask.call))
 }

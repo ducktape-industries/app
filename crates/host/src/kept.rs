@@ -113,10 +113,7 @@ fn write(path: &Path, written: &Mutex<u64>, seq: u64, bytes: &[u8]) {
     if seq <= *at {
         return;
     }
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match noded_client::fs::atomic_write(path, bytes, false) {
+    match crate::contract::os().disk().write(path, bytes, false) {
         Ok(()) => *at = seq,
         Err(error) => {
             tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "a record was not kept")

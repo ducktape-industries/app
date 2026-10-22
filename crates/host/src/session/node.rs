@@ -343,8 +343,12 @@ impl Session {
             return;
         };
         let remotes = &crate::contract::os().dirs().remotes;
-        let Ok(keyring) = noded_client::keyring::bind(remotes, &saved.network, saved.founded)
-        else {
+        let Ok(keyring) = noded_client::keyring::bind(
+            crate::contract::os().disk(),
+            remotes,
+            &saved.network,
+            saved.founded,
+        ) else {
             return;
         };
         let other_chain = keyring.other_chain;
@@ -455,7 +459,12 @@ impl Session {
             self.disconnect(cx);
         }
         let remotes = &crate::contract::os().dirs().remotes;
-        let keyring = match noded_client::keyring::bind(remotes, &status.network, status.time) {
+        let keyring = match noded_client::keyring::bind(
+            crate::contract::os().disk(),
+            remotes,
+            &status.network,
+            status.time,
+        ) {
             Ok(keyring) => keyring,
             Err(error) => return self.connect_failed(origin, error, cx),
         };

@@ -139,6 +139,10 @@ impl OsServices for DesktopOs {
         &self.dirs
     }
 
+    fn disk(&self) -> &dyn noded_client::fs::Disk {
+        &noded_client::fs::Native
+    }
+
     /// The OS store's key for `keyring` (`backend::device_key`: on macOS
     /// the data protection keychain, read with Touch ID), or the file it
     /// falls back to; a password-locked key from before keys moved into

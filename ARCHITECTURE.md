@@ -633,7 +633,7 @@ Connect ─► /v1/status ─► contract check ─► keyring::bind ─► devi
    builds the status source over `backend::RpcClient` and asks `/v1/status`,
    waiting for its answer. `connect_answered` refuses a
    `status.contract` other than `noded::NODE_CONTRACT`, then
-   `noded_client::keyring::bind(remotes, network, founded)` picks the key
+   `noded_client::keyring::bind(disk, remotes, network, founded)` picks the key
    directory under `Dirs::remotes` (`<ducktape home>/remotes/` on the
    desktop): `<network>`, or `<network>+<founded>` when
    another chain already took the name (`other_chain`; the

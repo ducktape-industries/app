@@ -297,7 +297,7 @@ fn a_node_that_does_not_answer_is_named_with_the_bound_ones() {
 #[test]
 fn a_bare_name_whose_node_runs_a_chain_this_device_has_no_key_for_mints_none() {
     let remotes = &crate::backend::dirs().remotes;
-    noded_client::keyring::bind(remotes, "test-network", 1).unwrap();
+    noded_client::keyring::bind(&noded_client::fs::Native, remotes, "test-network", 1).unwrap();
     let (url, _) = node_running(
         "test-network",
         2,

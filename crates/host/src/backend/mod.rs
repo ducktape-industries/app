@@ -127,17 +127,16 @@ pub fn read_or_set_aside<T, E: std::fmt::Display>(
     path: &Path,
     parse: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> std::io::Result<Option<T>> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+    let disk = crate::contract::os().disk();
+    let Some(bytes) = disk.read(path)? else {
+        return Ok(None);
     };
     match parse(&bytes) {
         Ok(parsed) => Ok(Some(parsed)),
         Err(error) => {
             let mut bad = path.as_os_str().to_owned();
             bad.push(".bad");
-            std::fs::rename(path, &bad)?;
+            disk.rename(path, Path::new(&bad))?;
             tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "unreadable file set aside as .bad, starting empty");
             Ok(None)
         }

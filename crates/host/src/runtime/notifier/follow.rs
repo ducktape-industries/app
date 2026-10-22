@@ -283,9 +283,10 @@ pub async fn follow(url: String) -> Option<Followed> {
     let (network, founded) = (status.network.clone(), status.time);
     let (of, file) = (chain.clone(), notify::log_file(&chain));
     let (key, read) = rt::task::blocking(move || {
-        let key = noded_client::keyring::bind(&remotes, &network, founded)
-            .ok()
-            .and_then(|keyring| crate::backend::device_key_of(&keyring.dir));
+        let key =
+            noded_client::keyring::bind(crate::contract::os().disk(), &remotes, &network, founded)
+                .ok()
+                .and_then(|keyring| crate::backend::device_key_of(&keyring.dir));
         (key.unwrap_or_default(), Log::read(&of, file))
     })
     .await

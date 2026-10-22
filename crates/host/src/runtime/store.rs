@@ -201,13 +201,7 @@ fn carried_from(root: &Path, renamed: &[String], program: &str) -> PathBuf {
 }
 
 fn rename(from: &Path, to: &Path) -> Result<(), wire::Error> {
-    let renamed = || -> std::io::Result<()> {
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::rename(from, to)
-    };
-    match renamed() {
+    match crate::contract::os().disk().rename(from, to) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
             Err(refusal(methods::refusal::HOST_FAULT, error))
         }
@@ -392,13 +386,10 @@ fn load(path: &Path) -> Result<Kept, wire::Error> {
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<(), wire::Error> {
-    let write = || -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        noded_client::fs::atomic_write(path, bytes, false)
-    };
-    write().map_err(|error| refusal(methods::refusal::HOST_FAULT, error))
+    crate::contract::os()
+        .disk()
+        .write(path, bytes, false)
+        .map_err(|error| refusal(methods::refusal::HOST_FAULT, error))
 }
 
 #[cfg(test)]

@@ -522,7 +522,8 @@ async fn reach(url: String) -> Result<Network, String> {
     let chain = ducklink::ChainId::of(&status.network, &status.genesis)
         .map_or_else(|| status.network.clone(), |chain| chain.to_string());
     let keyring =
-        noded_client::keyring::bind(&os.dirs().remotes, &status.network, status.time)?.dir;
+        noded_client::keyring::bind(os.disk(), &os.dirs().remotes, &status.network, status.time)?
+            .dir;
     let public = match os.device_key(&keyring).await {
         Ok(Some(key)) => key.public_key(),
         Ok(None) => return Err(NO_KEY.to_owned()),

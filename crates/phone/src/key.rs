@@ -192,9 +192,12 @@ mod tests {
         let documents = tempfile::tempdir().unwrap();
         let remotes = crate::os::dirs(documents.path(), documents.path()).remotes;
         assert_eq!(remotes, documents.path().join("remotes"));
-        let first = noded_client::keyring::bind(&remotes, "testkit", 1).unwrap();
-        let again = noded_client::keyring::bind(&remotes, "testkit", 1).unwrap();
-        let other = noded_client::keyring::bind(&remotes, "testkit", 2).unwrap();
+        let first =
+            noded_client::keyring::bind(&noded_client::fs::Native, &remotes, "testkit", 1).unwrap();
+        let again =
+            noded_client::keyring::bind(&noded_client::fs::Native, &remotes, "testkit", 1).unwrap();
+        let other =
+            noded_client::keyring::bind(&noded_client::fs::Native, &remotes, "testkit", 2).unwrap();
         assert_eq!(alias(&first.dir), "ducktape:device-key:testkit");
         assert_eq!(alias(&again.dir), alias(&first.dir));
         assert_eq!(alias(&other.dir), "ducktape:device-key:testkit+2");

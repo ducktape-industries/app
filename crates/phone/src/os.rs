@@ -571,6 +571,10 @@ impl OsServices for PhoneOs {
         &self.dirs
     }
 
+    fn disk(&self) -> &dyn noded_client::fs::Disk {
+        &noded_client::fs::Native
+    }
+
     /// Always an OS-kept key (made on first ask): a phone never had the
     /// desktop's password-locked key files.
     fn device_key(

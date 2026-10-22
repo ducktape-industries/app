@@ -1,6 +1,42 @@
-//! Files written whole or not at all.
+//! Files written whole or not at all, and the device's kept files as one seat (`Disk`): read whole,
+//! written whole, renamed. `Native` is the file system's; a browser keeps them in its own store.
 
 use std::path::Path;
+
+pub trait Disk: Send + Sync {
+    fn read(&self, path: &Path) -> std::io::Result<Option<Vec<u8>>>;
+    fn write(&self, path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()>;
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+}
+
+pub struct Native;
+
+impl Disk for Native {
+    fn read(&self, path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+        match std::fs::read(path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
+        folder_of(path)?;
+        atomic_write(path, bytes, private)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        folder_of(to)?;
+        std::fs::rename(from, to)
+    }
+}
+
+fn folder_of(path: &Path) -> std::io::Result<()> {
+    match path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        Some(dir) => std::fs::create_dir_all(dir),
+        None => Ok(()),
+    }
+}
 
 /// Writes `bytes` to `path` whole or not at all: into a temp file of its
 /// own beside it, synced, renamed over it, then the directory synced. A
@@ -48,6 +84,20 @@ pub fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_native_disk_reads_nothing_where_nothing_is_and_makes_the_folders_it_writes_into() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a").join("b").join("kept.json");
+        assert_eq!(Native.read(&path).unwrap(), None);
+        Native.write(&path, b"one", false).unwrap();
+        assert_eq!(Native.read(&path).unwrap().as_deref(), Some(&b"one"[..]));
+        let moved = dir.path().join("c").join("kept.json");
+        Native.rename(&path, &moved).unwrap();
+        assert_eq!(Native.read(&path).unwrap(), None);
+        assert_eq!(Native.read(&moved).unwrap().as_deref(), Some(&b"one"[..]));
+        assert!(Native.read(dir.path()).is_err(), "a folder read as a file");
+    }
 
     #[cfg(unix)]
     #[test]

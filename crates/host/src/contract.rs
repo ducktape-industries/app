@@ -44,6 +44,10 @@ use std::sync::{Arc, OnceLock};
 pub trait OsServices: Send + Sync + 'static {
     /// Where files go.
     fn dirs(&self) -> &Dirs;
+    /// The device's kept files (prefs, kept records, a view's store, the
+    /// notification log, socket approvals, the keyring mark), each read and
+    /// written whole: `noded_client::fs::Native` on a desktop and a phone.
+    fn disk(&self) -> &dyn noded_client::fs::Disk;
     /// This device's key for `keyring`, made on first ask; it signs and
     /// never hands the key out. A store call that may block or prompt runs
     /// on `rt::task::blocking`, never in this call or in its future itself:
@@ -156,7 +160,7 @@ pub trait Files: Send + Sync {
 
 /// Where the host keeps files. `cache` the OS may purge; `config` and
 /// `data` it keeps; `remotes` holds the keyring directories
-/// (`noded_client::keyring::bind(remotes, network, founded)`); `runtime`
+/// (`noded_client::keyring::bind(disk, remotes, network, founded)`); `runtime`
 /// is a directory that EXISTS and that only this user or app can enter:
 /// every `OsServices` impl makes it so before `install` (the desktop:
 /// `$XDG_RUNTIME_DIR/ducktape`, else one it creates mode 0700), because
@@ -849,6 +853,10 @@ pub mod testing {
                 };
             }
             DIRS.with(|dirs| *dirs)
+        }
+
+        fn disk(&self) -> &dyn noded_client::fs::Disk {
+            &noded_client::fs::Native
         }
 
         fn device_key(
