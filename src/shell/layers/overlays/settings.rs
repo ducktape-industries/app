@@ -460,6 +460,7 @@ impl OverlayLayer {
             .into_iter()
             .map(|row| {
                 let program = row.program;
+                let at = crate::runtime::slug(program);
                 let name = super::super::tab_label(&row);
                 let chosen = settings.views.get(program).copied();
                 let week = self.notifications.read(cx).this_week(program, now);
@@ -468,7 +469,7 @@ impl OverlayLayer {
                     week => format!("{week} this week"),
                 };
                 let control = self.segmented(
-                    &format!("notify/view/{program}"),
+                    &format!("notify/view/{at}"),
                     &format!("{name} notifications"),
                     Permission::ALL.map(|permission| {
                         let (notifications, prefs) = (
@@ -504,11 +505,11 @@ impl OverlayLayer {
                             .items_baseline()
                             .gap(px(12.))
                             .child(sans(500, 14.).child(words(
-                                SharedString::from(format!("notify/view/{program}/name")),
+                                SharedString::from(format!("notify/view/{at}/name")),
                                 name,
                             )))
                             .child(sans(400, 13.).text_color(ink.muted).child(words(
-                                SharedString::from(format!("notify/view/{program}/week")),
+                                SharedString::from(format!("notify/view/{at}/week")),
                                 hint,
                             ))),
                     )

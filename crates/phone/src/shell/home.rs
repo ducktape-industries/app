@@ -366,6 +366,8 @@ fn tile(
     cx: &mut Context<Root>,
 ) -> Stateful<Div> {
     let program = row.program;
+    let at = ducktape_host::runtime::slug(program);
+    let (tile_id, note_id) = (format!("{section}/{at}"), format!("{section}/{at}/note"));
     let name = name_of(row);
     let prepared = row.prep == Prep::Settled;
     let mut face = glyph(row, 60., 30., palette);
@@ -373,7 +375,7 @@ fn tile(
         face = div().child(face.opacity(look::PREPARING));
     }
     if row.prep == Prep::Working {
-        let id = format!("{section}/{program}/ring");
+        let id = format!("{section}/{at}/ring");
         face = face.child(ring(id, !cx.reduce_motion(), palette, window, cx));
     }
     let mut face = face.relative();
@@ -389,8 +391,8 @@ fn tile(
         );
     }
     let mut tile = div()
-        .id(SharedString::from(format!("{section}/{program}")))
-        .debug_selector(move || format!("{section}/{program}"))
+        .id(SharedString::from(tile_id.clone()))
+        .debug_selector(move || tile_id.clone())
         .control(Role::Button, name.clone())
         .w(relative(1. / 4.))
         .flex()
@@ -415,7 +417,7 @@ fn tile(
     if let Some(stage) = row.note.filter(|_| prepared) {
         tile = tile.child(
             look::text(look::TINY, FontWeight::NORMAL, palette.muted())
-                .debug_selector(move || format!("{section}/{program}/note"))
+                .debug_selector(move || note_id.clone())
                 .mt(px(-look::gap::XS))
                 .child(stage),
         );
@@ -623,6 +625,7 @@ pub fn open(
     let now = cx.background_executor().now();
     let rows = opened.iter().map(|opened| {
         let program = opened.program;
+        let at = ducktape_host::runtime::slug(program);
         let row = row_of(shared, program, cx);
         let name = row.as_ref().map_or_else(|| program.to_owned(), name_of);
         let title = titles.get(&opened.instance).map(String::as_str);
@@ -634,7 +637,7 @@ pub fn open(
         let cost = readout.map(|readout| {
             let seat = shared.seats.read(cx).seat(opened.instance);
             let memory = seat.and_then(|seat| seat.read(cx).memory_bytes());
-            let id = format!("open/{program}/cost");
+            let id = format!("open/{at}/cost");
             div()
                 .id(SharedString::from(id.clone()))
                 .debug_selector(move || id.clone())
@@ -647,7 +650,7 @@ pub fn open(
                 )
         });
         let mut line = div()
-            .id(SharedString::from(format!("open/{program}")))
+            .id(SharedString::from(format!("open/{at}")))
             .control(Role::Button, name.clone())
             .min_h(px(56.))
             .flex()
@@ -697,7 +700,7 @@ pub fn open(
         }
         line.child(
             div()
-                .id(SharedString::from(format!("open/{program}/close")))
+                .id(SharedString::from(format!("open/{at}/close")))
                 .control(Role::Button, format!("Close {name}"))
                 .size(px(look::HIT))
                 .flex_none()

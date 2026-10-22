@@ -320,6 +320,14 @@ impl Roster {
     }
 }
 
+pub fn slug(program: &str) -> String {
+    super::store::escaped(program)
+}
+
+pub fn named(program: &str) -> &str {
+    program.rsplit_once('/').map_or(program, |(_, name)| name)
+}
+
 /// The app's one roster.
 pub fn roster() -> &'static Roster {
     &in_hand().roster
@@ -466,15 +474,17 @@ impl Roster {
                     Some(Slot::Compiled(view)) if !view.name.is_empty() => {
                         (view.name.clone(), None, false)
                     }
-                    Some(Slot::Ready(_) | Slot::Compiled(_)) => (program.to_owned(), None, false),
+                    Some(Slot::Ready(_) | Slot::Compiled(_)) => {
+                        (named(program).to_owned(), None, false)
+                    }
                     Some(Slot::Listed(listing) | Slot::Compiling(listing))
                         if !listing.name.is_empty() =>
                     {
                         (listing.name.clone(), Some("Loading"), false)
                     }
-                    Some(Slot::Empty) => (program.to_owned(), None, true),
-                    Some(Slot::Failed(_)) => (program.to_owned(), Some("Failed"), false),
-                    Some(_) | None => (program.to_owned(), Some("Loading"), false),
+                    Some(Slot::Empty) => (named(program).to_owned(), None, true),
+                    Some(Slot::Failed(_)) => (named(program).to_owned(), Some("Failed"), false),
+                    Some(_) | None => (named(program).to_owned(), Some("Loading"), false),
                 };
                 let pending = matches!(
                     seat.as_ref().map(|seat| &seat.slot),
@@ -796,6 +806,15 @@ fn local_seat(link: &str, rows: &[RailRow]) -> Option<&'static str> {
     if let Some(row) = rows.iter().find(|row| row.program == name && !row.empty) {
         return Some(row.program);
     }
+    let mut owned = rows
+        .iter()
+        .filter(|row| !row.empty && named(row.program) == name);
+    if let Some(first) = owned.next() {
+        let alone = owned.next().is_none();
+        if alone {
+            return Some(first.program);
+        }
+    }
     let mut matches = rows
         .iter()
         .filter(|row| !row.empty && row.note.is_none() && row.label.to_lowercase() == name);
@@ -866,6 +885,52 @@ mod local_link_tests {
         assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
         rows[0].note = Some("Loading");
         assert_eq!(local_seat("duck://preferences", &rows), None);
+    }
+
+    #[test]
+    fn a_short_link_names_an_owner_name_program_by_its_name_while_it_is_the_one() {
+        let shown = |program: &'static str| RailRow {
+            program,
+            label: "Shown".into(),
+            icon: String::new(),
+            tint: Tint::None,
+            description: String::new(),
+            note: Some("Loading"),
+            empty: false,
+            pending: false,
+            prep: Prep::Reading,
+        };
+        let mut rows = vec![shown("owner/named")];
+        assert_eq!(local_seat("duck://named", &rows), Some("owner/named"));
+        assert_eq!(
+            local_seat_route("duck://named/room/1", &rows),
+            Some(("owner/named", "room/1".into()))
+        );
+        rows.push(shown("named"));
+        assert_eq!(
+            local_seat("duck://named", &rows),
+            Some("named"),
+            "its own id first"
+        );
+        rows[1] = shown("other/named");
+        assert_eq!(
+            local_seat("duck://named", &rows),
+            None,
+            "two owners name it"
+        );
+        assert_eq!(named("owner/named"), "named");
+        assert_eq!(named("named"), "named");
+        assert_ne!(
+            slug("alice/b-c"),
+            slug("alice-b/c"),
+            "a hyphen keeps them apart"
+        );
+        assert_ne!(
+            slug("alice/b-c"),
+            slug("alice-b-c"),
+            "an owner keeps them apart"
+        );
+        assert_eq!(slug("named"), "named", "a bare id is itself");
     }
 
     #[test]
@@ -975,6 +1040,18 @@ mod rail_tests {
         assert!(!row.empty);
         assert!(row.pending, "whether it ships a view is not known yet");
         assert_eq!(row.prep, Prep::Reading, "no seat yet: its bytes not read");
+    }
+
+    #[test]
+    fn an_owner_name_program_is_named_by_its_name_until_its_manifest_names_it() {
+        let program = "rail-tests/owner-named";
+        let row = Roster::listing(&[program])
+            .rail()
+            .into_iter()
+            .find(|row| row.program == program)
+            .expect("listed program appears in the rail");
+        assert_eq!(row.label, "owner-named");
+        assert_eq!(row.note, Some("Loading"));
     }
 
     #[test]

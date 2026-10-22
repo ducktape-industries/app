@@ -537,8 +537,12 @@ impl Page {
             Page::Root(Tab::Open) => "screen::open".into(),
             Page::Root(Tab::Notifications) => "screen::notifications".into(),
             Page::Root(Tab::Account) => "screen::account".into(),
-            Page::Program(program) => format!("screen::program/{program}").into(),
-            Page::About(program) => format!("screen::about/{program}").into(),
+            Page::Program(program) => {
+                format!("screen::program/{}", ducktape_host::runtime::slug(program)).into()
+            }
+            Page::About(program) => {
+                format!("screen::about/{}", ducktape_host::runtime::slug(program)).into()
+            }
         }
     }
 

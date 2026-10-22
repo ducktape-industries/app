@@ -311,7 +311,10 @@ fn profile(key: Option<crate::perf::Key>) -> std::path::PathBuf {
         Some(crate::perf::Key::View { program, .. }) => program,
         _ => "unknown",
     };
-    crate::backend::dirs().cache.join("web").join(program)
+    crate::backend::dirs()
+        .cache
+        .join("web")
+        .join(crate::runtime::slug(program))
 }
 
 #[cfg(test)]

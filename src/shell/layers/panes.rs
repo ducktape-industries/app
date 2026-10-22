@@ -922,11 +922,12 @@ impl Strip {
     ) -> AnyElement {
         use super::super::ink::*;
         let name = panes::label(self.rail.read(cx).rows(), program);
+        let at = crate::runtime::slug(program);
         let line =
             format!("{name} shares live data with the people in its rooms, through your node.");
         let notifications = self.notifications.entity().clone();
         let ok = bar_button(
-            format!("live-line/{program}/ok"),
+            format!("live-line/{at}/ok"),
             "OK",
             false,
             ink,
@@ -936,7 +937,7 @@ impl Strip {
                 })
             }),
         );
-        bar(format!("live-line/{program}"), line.clone(), ink)
+        bar(format!("live-line/{at}"), line.clone(), ink)
             .child(
                 sans(500, 14.)
                     .flex_1()
@@ -957,22 +958,17 @@ impl Strip {
         use super::super::ink::*;
         use crate::runtime::notify::Permission;
         let name = panes::label(self.rail.read(cx).rows(), program);
+        let at = crate::runtime::slug(program);
         let burst = self.prefs.read(cx).get().notify.burst;
         let (notifications, prefs) = (
             self.notifications.entity().clone(),
             self.prefs.entity().clone(),
         );
         let button = |id: &str, text: &'static str, filled: bool, answer: Box<dyn Fn(&mut App)>| {
-            bar_button(
-                format!("notify-ask/{program}/{id}"),
-                text,
-                filled,
-                ink,
-                answer,
-            )
+            bar_button(format!("notify-ask/{at}/{id}"), text, filled, ink, answer)
         };
         bar(
-            format!("notify-ask/{program}"),
+            format!("notify-ask/{at}"),
             format!("{name} wants to show desktop notifications"),
             ink,
         )

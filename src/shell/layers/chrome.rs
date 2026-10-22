@@ -900,7 +900,10 @@ impl Chrome {
                 let tip = narrow.then(|| SharedString::from(name.clone()));
                 let hover = ink.ink;
                 let tab = crate::a11y::roving_item(
-                    sans(400, 13.).id(SharedString::from(format!("rail/{program}"))),
+                    sans(400, 13.).id(SharedString::from(format!(
+                        "rail/{}",
+                        crate::runtime::slug(program)
+                    ))),
                     (n == active).then_some(&stop),
                     ink.ink,
                 )

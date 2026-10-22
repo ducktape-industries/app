@@ -1291,7 +1291,7 @@ impl LoadTiming {
 
 pub(super) fn view_override(program: &str) -> Option<PathBuf> {
     let dir = crate::backend::dirs().views_override.as_ref()?;
-    let path = dir.join(format!("{program}_view.wasm"));
+    let path = dir.join(format!("{}_view.wasm", super::slug(program)));
     path.is_file().then_some(path)
 }
 

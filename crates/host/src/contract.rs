@@ -161,9 +161,6 @@ pub trait Files: Send + Sync {
 /// the AX door file's token, and anything else written there, is written
 /// plainly and relies on it. The host never creates that directory, so an
 /// impl that forgets gets an error, not a world-readable default.
-/// `views_override` is a VIEW DEVELOPER'S directory of
-/// `<program>_view.wasm` files that stand in for the network's (the
-/// desktop reads `DUCKTAPE_VIEWS_DIR`; a phone has none).
 #[derive(Clone, Debug)]
 pub struct Dirs {
     /// What the OS may purge: fetched blobs, compiled view code.

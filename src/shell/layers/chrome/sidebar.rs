@@ -96,7 +96,7 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
             layout::EMPTY => "New window",
             layout::HELP => "Help",
             layout::MEMORY => "Memory",
-            program => program,
+            program => crate::runtime::named(program),
         };
         entries.push(Entry {
             row: Row::Window(window.instance),
@@ -115,11 +115,13 @@ impl Entry {
     /// and `rail-new/<instance>` for Help, Memory and an empty window.
     fn id(&self) -> SharedString {
         let id = match (self.row, self.program) {
-            (Row::Program(program), _) => format!("rail/{program}"),
+            (Row::Program(program), _) => format!("rail/{}", crate::runtime::slug(program)),
             (Row::Window(instance), layout::HELP) => format!("rail-help/{instance}"),
             (Row::Window(instance), layout::MEMORY) => format!("rail-memory/{instance}"),
             (Row::Window(instance), layout::EMPTY) => format!("rail-new/{instance}"),
-            (Row::Window(instance), program) => format!("rail/{program}/{instance}"),
+            (Row::Window(instance), program) => {
+                format!("rail/{}/{instance}", crate::runtime::slug(program))
+            }
         };
         id.into()
     }
@@ -322,7 +324,10 @@ impl Chrome {
             let desk = self.window.clone();
             let surface = ink.surface;
             div()
-                .id(SharedString::from(format!("rail/{program}/split")))
+                .id(SharedString::from(format!(
+                    "rail/{}/split",
+                    crate::runtime::slug(program)
+                )))
                 .control(
                     Role::Button,
                     SharedString::from(format!("Open another {} window", entry.label)),
@@ -346,7 +351,10 @@ impl Chrome {
                 )
         });
         div()
-            .id(SharedString::from(format!("rail/{program}/row")))
+            .id(SharedString::from(format!(
+                "rail/{}/row",
+                crate::runtime::slug(program)
+            )))
             .h(px(30.))
             .flex_shrink_0()
             .flex()

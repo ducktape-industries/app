@@ -299,7 +299,11 @@ impl Seat {
     /// (`ax::tree`) reads the program off it. A host id, so no id a view
     /// sends is one.
     pub fn ax_mark(&self) -> gpui_kit::ElementId {
-        crate::render::host_id(format!("{}{}", crate::render::VIEW_MARK, self.program))
+        crate::render::host_id(format!(
+            "{}{}",
+            crate::render::VIEW_MARK,
+            super::super::slug(self.program)
+        ))
     }
 
     pub fn tree(&self) -> Option<Entity<crate::render::ViewTree>> {

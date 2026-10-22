@@ -378,7 +378,10 @@ impl EmptyPane {
                 count => format!("{count} unread"),
             };
             sans(400, 15.)
-                .id(SharedString::from(format!("empty/{program}")))
+                .id(SharedString::from(format!(
+                    "empty/{}",
+                    crate::runtime::slug(program)
+                )))
                 .control(Role::ListBoxOption, SharedString::from(name.clone()))
                 .aria_selected(picked)
                 .when(picked, |row| row.aria_active_descendant())
