@@ -90,11 +90,18 @@ impl noded_client::Signer for Seated {
 
     /// Refused, as locked, also when another key was seated since: its
     /// signature would not be this signer's.
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> Result<[u8; 64], SignError> {
-        match key_of(&self.network) {
-            Some(key) if key.public_key() == self.public => key.sign(namespace, message),
-            _ => Err(SignError(LOCKED.into())),
-        }
+    fn sign<'a>(
+        &'a self,
+        namespace: &'a [u8],
+        message: &'a [u8],
+    ) -> rt::Fut<'a, Result<[u8; 64], SignError>> {
+        let key = key_of(&self.network).filter(|key| key.public_key() == self.public);
+        Box::pin(async move {
+            match key {
+                Some(key) => key.sign(namespace, message).await,
+                None => Err(SignError(LOCKED.into())),
+            }
+        })
     }
 }
 
@@ -124,7 +131,8 @@ pub async fn seated_frame(
         Some(salt()),
         target,
         payload,
-    );
+    )
+    .await;
     frame.map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))
 }
 
@@ -144,7 +152,8 @@ pub async fn seated_role_frame(
         Some(salt()),
         &target,
         payload,
-    );
+    )
+    .await;
     frame.map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))
 }
 
@@ -166,6 +175,7 @@ pub async fn seated_sign(key: &[u8], namespace: &[u8], message: &[u8]) -> Result
         .ok_or_else(locked_seat)?;
     let proof = signer
         .sign(namespace, message)
+        .await
         .map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))?;
     Ok(proof.to_vec())
 }
@@ -203,14 +213,16 @@ mod tests {
     #[tokio::test]
     async fn a_seated_signer_refuses_once_the_key_is_locked() {
         let _serial = seat_serial();
-        let sign = |signer: &Seated| noded_client::Signer::sign(signer, b"ns", b"message");
+        async fn sign(signer: &Seated) -> Result<[u8; 64], SignError> {
+            noded_client::Signer::sign(signer, b"ns", b"message").await
+        }
         seat_key("a", Arc::new(ed25519::PrivateKey::from_seed(3))).await;
         let seated = seated_signer("a").unwrap();
-        assert!(sign(&seated).is_ok());
+        assert!(sign(&seated).await.is_ok());
         lock_signer().await;
-        assert_eq!(sign(&seated), Err(SignError(LOCKED.into())));
+        assert_eq!(sign(&seated).await, Err(SignError(LOCKED.into())));
         seat_key("a", Arc::new(ed25519::PrivateKey::from_seed(4))).await;
-        assert_eq!(sign(&seated), Err(SignError(LOCKED.into())));
+        assert_eq!(sign(&seated).await, Err(SignError(LOCKED.into())));
         lock_signer().await;
         assert!(seated_signer("a").is_err());
     }

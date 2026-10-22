@@ -154,6 +154,7 @@ pub async fn submit_signed(
         &target,
         abi::encode(op),
     )
+    .await
     .map_err(|refused| refused.to_string())?;
     submit(client, frame.encode()).await
 }
@@ -435,8 +436,14 @@ mod tests {
             fn public_key(&self) -> [u8; 32] {
                 [1; 32]
             }
-            fn sign(&self, _: &[u8], _: &[u8]) -> Result<[u8; 64], SignError> {
-                Err(SignError("the key store refused".into()))
+            fn sign<'a>(
+                &'a self,
+                _: &'a [u8],
+                _: &'a [u8],
+            ) -> rt::Fut<'a, Result<[u8; 64], SignError>> {
+                Box::pin(std::future::ready(Err(SignError(
+                    "the key store refused".into(),
+                ))))
             }
         }
         let status = crate::wire::Status {

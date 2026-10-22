@@ -20,7 +20,7 @@
 
 use super::{AccountStep, Prefs, Screen, Slice, spawn_on_runtime};
 use crate::backend;
-use crate::contract::{self, KeyRefusal};
+use crate::contract;
 use gpui_kit::{Context, Entity, EventEmitter, Task};
 
 /// A typed secret or a recovery phrase: wiped when it drops, so leaving a
@@ -274,13 +274,7 @@ impl Account {
         self.edit(|state| state.seating = true, cx);
         let (keyring, network) = (self.keyring.clone(), self.network.clone());
         let work = async move {
-            let opened = rt::task::blocking(move || contract::os().device_key(&keyring))
-                .await
-                .unwrap_or_else(|_| {
-                    Err(KeyRefusal::Broken(
-                        "opening this device's key did not finish".into(),
-                    ))
-                });
+            let opened = contract::os().device_key(&keyring).await;
             match opened {
                 Ok(Some(key)) => Ok(Some(backend::seat_key(&network, key).await)),
                 Ok(None) => Ok(None),

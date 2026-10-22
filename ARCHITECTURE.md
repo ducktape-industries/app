@@ -646,7 +646,9 @@ Connect ─► /v1/status ─► contract check ─► keyring::bind ─► devi
    executor's timer, one unanswered poll reads reconnecting, one
    answer recovers.
 2. **Device key** (`backend/device_key.rs`, `Account::open_device_key`).
-   On the blocking pool: `device_key::open(keyring, legacy)` reads the OS
+   `DesktopOs::device_key` runs `device_key::open(keyring, legacy)` on the
+   blocking pool (`rt::task::blocking`; the phone's `PhoneOs` opens its
+   store the same way): it reads the OS
    store (Keychain, Credential Manager, Secret Service via the `keyring`
    crate; a 0600 file with `DUCKTAPE_DEVICE_KEY_STORE=file`) and makes an
    ed25519 key only when the store answers that it holds none — unless a

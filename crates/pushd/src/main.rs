@@ -516,8 +516,13 @@ impl OsServices for Headless {
         &self.dirs
     }
 
-    fn device_key(&self, _: &str) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
-        Err(KeyRefusal::NoStore("pushd holds no keys".into()))
+    fn device_key(
+        &self,
+        _: &str,
+    ) -> rt::Fut<'static, Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>> {
+        Box::pin(std::future::ready(Err(KeyRefusal::NoStore(
+            "pushd holds no keys".into(),
+        ))))
     }
 
     fn key_storage(&self, _: &str) -> Result<KeyStorage, KeyRefusal> {

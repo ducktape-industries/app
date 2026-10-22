@@ -1,5 +1,6 @@
 //! The browser half against a fake node (`tests/web_node.py`, at `NODED_FAKE` when built), in Chrome
 //! through wasm-bindgen-test-runner: `cargo test --target wasm32-unknown-unknown -p noded-client --lib`.
+//! Every wasm32 build of these tests, a `clippy --tests` included, needs `NODED_FAKE` set; any address does for clippy.
 
 use crate::wire::Submitted;
 use crate::{Client, Error, hex::hex_encode, net::Net};

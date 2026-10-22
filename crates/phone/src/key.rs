@@ -59,12 +59,19 @@ impl noded_client::Signer for DeviceKey {
         self.public
     }
 
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
-        store::sign(
-            &self.alias,
-            &commonware_utils::union_unique(namespace, message),
-        )
-        .map_err(noded_client::SignError)
+    fn sign<'a>(
+        &'a self,
+        namespace: &'a [u8],
+        message: &'a [u8],
+    ) -> rt::Fut<'a, Result<[u8; 64], noded_client::SignError>> {
+        let alias = self.alias.clone();
+        let message = commonware_utils::union_unique(namespace, message);
+        Box::pin(async move {
+            rt::task::blocking(move || store::sign(&alias, &message))
+                .await
+                .map_err(|_| noded_client::SignError("the key store's work did not finish".into()))?
+                .map_err(noded_client::SignError)
+        })
     }
 }
 
@@ -159,13 +166,19 @@ impl noded_client::Signer for Reader {
         public
     }
 
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
+    fn sign<'a>(
+        &'a self,
+        namespace: &'a [u8],
+        message: &'a [u8],
+    ) -> rt::Fut<'a, Result<[u8; 64], noded_client::SignError>> {
         let signature = self
             .0
             .sign(&commonware_utils::union_unique(namespace, message));
-        signature.as_ref().try_into().map_err(|_| {
-            noded_client::SignError("Ed25519 answered a signature that is not 64 bytes.".into())
-        })
+        Box::pin(std::future::ready(signature.as_ref().try_into().map_err(
+            |_| {
+                noded_client::SignError("Ed25519 answered a signature that is not 64 bytes.".into())
+            },
+        )))
     }
 }
 
@@ -223,7 +236,7 @@ mod tests {
     #[test]
     fn the_reader_signs_the_namespaced_message() {
         let reader = Reader::new().unwrap();
-        let signature = reader.sign(b"ducktape", b"query").unwrap();
+        let signature = futures::executor::block_on(reader.sign(b"ducktape", b"query")).unwrap();
         let public =
             ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, reader.public_key());
         public

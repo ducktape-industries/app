@@ -2142,7 +2142,12 @@ fn a_standing_query_is_answered_at_once_then_only_with_a_block_that_names_it() {
     let key = noded_client::Signer::public_key(&*reader);
     assert_eq!(frame.body.signer, key);
     let preimage = frame.body.preimage();
-    let signed = noded_client::Signer::sign(&*reader, noded::QUERY_NAMESPACE, &preimage).unwrap();
+    let signed = futures::executor::block_on(noded_client::Signer::sign(
+        &*reader,
+        noded::QUERY_NAMESPACE,
+        &preimage,
+    ))
+    .unwrap();
     assert_eq!(frame.proof, signed, "a query frame its reader signed");
     assert_eq!(one_drain(&view), [watch_item(2, Some(&first(b"x", id)))]);
     fake.push

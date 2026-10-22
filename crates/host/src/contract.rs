@@ -45,15 +45,17 @@ pub trait OsServices: Send + Sync + 'static {
     /// Where files go.
     fn dirs(&self) -> &Dirs;
     /// This device's key for `keyring`, made on first ask; it signs and
-    /// never hands the key out. Called off the window thread (a store may
-    /// prompt). `Ok(None)`: no OS-kept key, but a key from before keys
+    /// never hands the key out. A store call that may block or prompt runs
+    /// on `rt::task::blocking`, never in this call or in its future itself:
+    /// the caller awaits it on the kernel's one thread. `Ok(None)`: no
+    /// OS-kept key, but a key from before keys
     /// moved into the OS is here under a password; the shell asks for it
     /// and seats it itself (the desktop's `shell::sign_in`). A phone never
     /// answers `None`.
     fn device_key(
         &self,
         keyring: &str,
-    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>;
+    ) -> rt::Fut<'static, Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>>;
     /// Where that key is kept, in the store's own words (the Settings row
     /// "Key storage").
     fn key_storage(&self, keyring: &str) -> Result<KeyStorage, KeyRefusal>;
@@ -631,8 +633,12 @@ pub mod testing {
             self.0
         }
 
-        fn sign(&self, _: &[u8], _: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
-            Ok([8; 64])
+        fn sign<'a>(
+            &'a self,
+            _: &'a [u8],
+            _: &'a [u8],
+        ) -> rt::Fut<'a, Result<[u8; 64], noded_client::SignError>> {
+            Box::pin(std::future::ready(Ok([8; 64])))
         }
     }
 
@@ -753,19 +759,6 @@ pub mod testing {
         }
     }
 
-    static OPENED: std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> =
-        std::sync::Mutex::new(Vec::new());
-
-    /// Each keyring a device key was opened for so far, by every test, and
-    /// the thread it was opened on: a test tells a key opened off the
-    /// thread that asked from one opened on it.
-    pub fn keys_opened() -> Vec<(String, std::thread::ThreadId)> {
-        OPENED
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
     thread_local! {
         /// This test thread's `Limits::snapshot_every`: the desktop's
         /// `None` unless a test keeps a death replay
@@ -861,18 +854,13 @@ pub mod testing {
         fn device_key(
             &self,
             keyring: &str,
-        ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
-            OPENED
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push((keyring.to_owned(), std::thread::current().id()));
-            // a key of the keyring's name: the same device key every time a
-            // test meets the same network, none kept anywhere
+        ) -> rt::Fut<'static, Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>> {
             let mut seed = [0u8; 32];
             let name = keyring.as_bytes();
             let n = name.len().min(32);
             seed[..n].copy_from_slice(&name[..n]);
-            Ok(Some(Arc::new(FakeKey(seed))))
+            let key: Arc<dyn noded_client::Signer> = Arc::new(FakeKey(seed));
+            Box::pin(std::future::ready(Ok(Some(key))))
         }
 
         fn key_storage(&self, _: &str) -> Result<KeyStorage, KeyRefusal> {

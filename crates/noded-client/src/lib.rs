@@ -43,7 +43,11 @@ use wire::{
 /// names one key and carries another's proof.
 pub trait Signer: Send + Sync {
     fn public_key(&self) -> [u8; 32];
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> std::result::Result<[u8; 64], SignError>;
+    fn sign<'a>(
+        &'a self,
+        namespace: &'a [u8],
+        message: &'a [u8],
+    ) -> rt::Fut<'a, std::result::Result<[u8; 64], SignError>>;
 }
 
 /// Why a [`Signer`] did not sign, in words for the person.
@@ -71,12 +75,16 @@ impl Signer for commonware_cryptography::ed25519::PrivateKey {
     }
 
     /// Never refuses: the key is in memory.
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> std::result::Result<[u8; 64], SignError> {
+    fn sign<'a>(
+        &'a self,
+        namespace: &'a [u8],
+        message: &'a [u8],
+    ) -> rt::Fut<'a, std::result::Result<[u8; 64], SignError>> {
         let signature = commonware_cryptography::Signer::sign(self, namespace, message);
-        Ok(signature
+        Box::pin(std::future::ready(Ok(signature
             .as_ref()
             .try_into()
-            .expect("an ed25519 signature is 64 bytes"))
+            .expect("an ed25519 signature is 64 bytes"))))
     }
 }
 
@@ -265,18 +273,19 @@ impl Client {
         payload: Vec<u8>,
     ) -> std::result::Result<Vec<u8>, Asked> {
         let anchor = self.anchor().await.map_err(Asked::Node)?;
-        let sign = |anchor| {
-            Frame::query(signer, network, anchor, target, payload.clone()).map_err(Asked::Unsigned)
-        };
-        match self.signed_query(layer, sign(anchor)?).await {
+        let frame = Frame::query(signer, network, anchor, target, payload.clone())
+            .await
+            .map_err(Asked::Unsigned)?;
+        match self.signed_query(layer, frame).await {
             Err(Error::Refused(refusal)) if refusal.reason == abi::reason::ANCHOR => {
                 let fresh = self.status().await.map_err(Asked::Node)?.anchor();
                 if fresh == anchor {
                     return Err(Asked::Node(Error::Refused(refusal)));
                 }
-                self.signed_query(layer, sign(fresh)?)
+                let frame = Frame::query(signer, network, fresh, target, payload)
                     .await
-                    .map_err(Asked::Node)
+                    .map_err(Asked::Unsigned)?;
+                self.signed_query(layer, frame).await.map_err(Asked::Node)
             }
             answer => answer.map_err(Asked::Node),
         }
@@ -291,6 +300,7 @@ impl Client {
     ) -> std::result::Result<Vec<u8>, Asked> {
         let anchor = self.anchor().await.map_err(Asked::Node)?;
         Frame::query(signer, network, anchor, target, payload)
+            .await
             .map(|frame| frame.encode())
             .map_err(Asked::Unsigned)
     }
@@ -626,8 +636,12 @@ impl Signer for FixedSigner {
         [1; 32]
     }
 
-    fn sign(&self, _: &[u8], _: &[u8]) -> std::result::Result<[u8; 64], SignError> {
-        Ok([2; 64])
+    fn sign<'a>(
+        &'a self,
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> rt::Fut<'a, std::result::Result<[u8; 64], SignError>> {
+        Box::pin(std::future::ready(Ok([2; 64])))
     }
 }
 

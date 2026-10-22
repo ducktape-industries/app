@@ -148,12 +148,21 @@ impl OsServices for DesktopOs {
     fn device_key(
         &self,
         keyring: &str,
-    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
-        let legacy = crate::backend::key_exists(keyring);
-        match crate::backend::device_key::open(keyring, legacy) {
-            Ok(key) => Ok(key.map(|key| Arc::new(key) as Arc<dyn noded_client::Signer>)),
-            Err(sentence) => Err(KeyRefusal::Denied(sentence)),
-        }
+    ) -> rt::Fut<'static, Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>> {
+        let keyring = keyring.to_owned();
+        Box::pin(async move {
+            let opened = rt::task::blocking(move || {
+                let legacy = crate::backend::key_exists(&keyring);
+                crate::backend::device_key::open(&keyring, legacy)
+            });
+            match opened.await {
+                Ok(Ok(key)) => Ok(key.map(|key| Arc::new(key) as Arc<dyn noded_client::Signer>)),
+                Ok(Err(sentence)) => Err(KeyRefusal::Denied(sentence)),
+                Err(_) => Err(KeyRefusal::Broken(
+                    "opening this device's key did not finish".into(),
+                )),
+            }
+        })
     }
 
     /// Asked without Touch ID (`backend::device_key::level`).

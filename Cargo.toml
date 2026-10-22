@@ -115,6 +115,7 @@ default = ["av", "call"]
 [dependencies]
 # the blind host core, shared with the phone
 ducktape-host = { path = "crates/host" }
+rt = { package = "ducktape-rt", path = "crates/rt" }
 # feature `call`: where Cisco's OpenH264 binary is (`codec::cisco`)
 ducktape-av = { path = "crates/av", optional = true }
 gpui-kit = "=0.7.3"

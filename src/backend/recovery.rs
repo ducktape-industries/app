@@ -92,6 +92,7 @@ pub(crate) async fn add_recovery_key(
         &target,
         abi::encode(&add),
     )
+    .await
     .map_err(|refused| refused.to_string())?;
     submit(client, frame.encode()).await.map(drop)
 }

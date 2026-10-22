@@ -135,7 +135,7 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn sign(
+    pub async fn sign(
         signer: &dyn Signer,
         network: &[u8],
         anchor: Tip,
@@ -152,9 +152,10 @@ impl Frame {
             target,
             payload,
         )
+        .await
     }
 
-    pub fn query(
+    pub async fn query(
         signer: &dyn Signer,
         network: &[u8],
         anchor: Tip,
@@ -170,9 +171,10 @@ impl Frame {
             target,
             payload,
         )
+        .await
     }
 
-    fn signed(
+    async fn signed(
         namespace: &[u8],
         signer: &dyn Signer,
         network: &[u8],
@@ -191,7 +193,7 @@ impl Frame {
             payload,
             client: client(),
         };
-        let proof = signer.sign(namespace, &body.preimage())?.to_vec();
+        let proof = signer.sign(namespace, &body.preimage()).await?.to_vec();
         Ok(Frame { body, proof })
     }
 
@@ -471,7 +473,15 @@ mod tests {
             height: 3,
             id: [4; 32],
         };
-        let frame = Frame::sign(&key, b"net", anchor, Some(5), "demo", vec![1, 2]).unwrap();
+        let frame = futures::executor::block_on(Frame::sign(
+            &key,
+            b"net",
+            anchor,
+            Some(5),
+            "demo",
+            vec![1, 2],
+        ))
+        .unwrap();
         assert_eq!(frame.body.signer, Commonware::public_key(&key).as_ref());
         assert_eq!(frame.body.scheme, abi::Scheme::Ed25519);
         let decoded: Frame = abi::decode(&frame.encode()).unwrap();
@@ -487,9 +497,15 @@ mod tests {
             height: 3,
             id: [4; 32],
         };
-        let frame = Frame::query(&crate::FixedSigner, b"net", anchor, "demo", vec![1])
-            .unwrap()
-            .encode();
+        let frame = futures::executor::block_on(Frame::query(
+            &crate::FixedSigner,
+            b"net",
+            anchor,
+            "demo",
+            vec![1],
+        ))
+        .unwrap()
+        .encode();
         let decoded: Frame = abi::decode(&frame).unwrap();
         assert_eq!(decoded.body.target, "demo");
         assert_eq!(decoded.body.network, b"net");
@@ -511,7 +527,9 @@ mod tests {
             height: 3,
             id: [4; 32],
         };
-        let frame = Frame::query(&key, b"net", anchor, "demo", vec![1]).unwrap();
+        let frame =
+            futures::executor::block_on(Frame::query(&key, b"net", anchor, "demo", vec![1]))
+                .unwrap();
         let reference = Commonware::sign(&key, QUERY_NAMESPACE, &frame.body.preimage());
         assert_eq!(frame.proof, reference.as_ref());
     }

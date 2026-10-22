@@ -548,19 +548,32 @@ impl OsServices for PhoneOs {
     fn device_key(
         &self,
         keyring: &str,
-    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
+    ) -> rt::Fut<'static, Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         {
-            let key = crate::key::DeviceKey::open(keyring).map_err(KeyRefusal::Denied)?;
-            let public = noded_client::Signer::public_key(&key);
-            let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
-            tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
-            Ok(Some(Arc::new(key)))
+            let keyring = keyring.to_owned();
+            Box::pin(async move {
+                let opened = rt::task::blocking(move || {
+                    let key = crate::key::DeviceKey::open(&keyring).map_err(KeyRefusal::Denied)?;
+                    let public = noded_client::Signer::public_key(&key);
+                    let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
+                    let keyring = keyring.as_str();
+                    tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
+                    Ok(Some(Arc::new(key) as Arc<dyn noded_client::Signer>))
+                });
+                opened.await.unwrap_or_else(|_| {
+                    Err(KeyRefusal::Broken(
+                        "opening this device's key did not finish".into(),
+                    ))
+                })
+            })
         }
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
             let _ = keyring;
-            Err(KeyRefusal::NoStore(NO_STORE.into()))
+            Box::pin(std::future::ready(Err(KeyRefusal::NoStore(
+                NO_STORE.into(),
+            ))))
         }
     }
 
@@ -931,8 +944,12 @@ mod tests {
             fn public_key(&self) -> [u8; 32] {
                 [1; 32]
             }
-            fn sign(&self, _: &[u8], _: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
-                Ok([0; 64])
+            fn sign<'a>(
+                &'a self,
+                _: &'a [u8],
+                _: &'a [u8],
+            ) -> rt::Fut<'a, Result<[u8; 64], noded_client::SignError>> {
+                Box::pin(std::future::ready(Ok([0; 64])))
             }
         }
         name_client();
@@ -940,8 +957,15 @@ mod tests {
             height: 1,
             id: [0; 32],
         };
-        let frame = noded_client::wire::Frame::sign(&Key, b"testkit", anchor, None, "chat", vec![])
-            .map_err(|refused| refused.0);
+        let frame = futures::executor::block_on(noded_client::wire::Frame::sign(
+            &Key,
+            b"testkit",
+            anchor,
+            None,
+            "chat",
+            vec![],
+        ))
+        .map_err(|refused| refused.0);
         let client = frame
             .ok()
             .and_then(|frame| frame.body.client)
