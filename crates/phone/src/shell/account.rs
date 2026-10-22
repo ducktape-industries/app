@@ -161,6 +161,19 @@ pub fn tab(
     if ok {
         storage = storage.child(badge("OK", palette));
     }
+    let share_log = row(
+        "account/share-log",
+        "icons/file-text.svg",
+        "Share the app's log",
+        Some(caption(
+            "This launch's log and the one before, to send with a bug.",
+            palette,
+        )),
+        palette,
+    )
+    .control(Role::Button, "Share the app's log")
+    .active(|style| style.opacity(look::PRESSED))
+    .on_click(cx.listener(|root, _, _, cx| root.share_log(cx)));
     let network = match session.connected_rpc.is_empty() {
         true => row(
             "account/network",
@@ -243,6 +256,7 @@ pub fn tab(
                 .child(about::section("This phone", None, palette))
                 .child(phone)
                 .child(storage)
+                .child(share_log)
                 .child(about::section("Network", None, palette))
                 .child(network)
                 .child(switch)

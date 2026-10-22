@@ -10,6 +10,7 @@
 //! and its loopback listener, recovery keys, invite minting with the node
 //! this machine runs) stays in the desktop shell's `backend/`.
 
+pub mod app_log;
 mod endpoints;
 pub mod identity;
 pub mod join;

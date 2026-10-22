@@ -38,6 +38,7 @@ mod home;
 mod join;
 mod look;
 mod running;
+mod share_log;
 mod sheet;
 pub mod stack;
 pub mod swipe;
@@ -2775,6 +2776,7 @@ mod tests {
         for id in [
             "account/phone",
             "account/key-storage",
+            "account/share-log",
             "account/network",
             "account/switch",
             "appearance/system",
@@ -2788,6 +2790,12 @@ mod tests {
         assert!(
             cx.debug_bounds("account/add-device").is_none(),
             "Add a device with no account to approve for"
+        );
+        click("account/share-log", cx);
+        assert_eq!(
+            shared.toast.read_with(cx, |toast, _| toast.get().clone()),
+            "This build keeps no log to share.",
+            "a press on Share the app's log said nothing in a build with no log"
         );
         seed_found(&shared, Some("A1F3 09C2"), false, cx);
         run_out(cx);

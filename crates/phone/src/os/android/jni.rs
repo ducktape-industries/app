@@ -79,6 +79,7 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_create<'caller>(
             PathBuf::from(files.to_string()),
             PathBuf::from(cache.to_string()),
         );
+        crate::os::install_log(Some(cache.as_path()), false);
         if let Err(error) = host::set_activity(env, id(host), &activity) {
             tracing::error!(target: "ducktape::phone", %error, "gm did not take the Activity");
         }

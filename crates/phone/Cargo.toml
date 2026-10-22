@@ -74,9 +74,6 @@ ducktape-host = { path = "../host", default-features = false, features = ["av"] 
 ducktape-av = { path = "../av" }
 ducktape-host-jsc = { path = "../host-jsc" }
 ducktape-gpui-ios.workspace = true
-# the log on the simulator's console (Android's goes to logcat through gm's
-# `android_logger`, which tracing's `log` records reach)
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
 # the system's version App settings names (`os::phone`); gpui_ios's own
 # Foundation bindings
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
@@ -104,9 +101,7 @@ gpui-pre-mobile = { workspace = true, features = ["device_info"] }
 jni = "0.22"
 # gm's NativeActivity glue, which names `android_main` (os/android/jni.rs)
 android-activity = "0.6"
-# the host's events as `log` records, which gm's `android_logger` puts in
-# logcat (no tracing subscriber is set on Android)
-tracing = { workspace = true, features = ["log"] }
+tracing = { workspace = true, features = ["log-always"] }
 ndk = { version = "0.9", features = ["nativewindow"] }
 # the camera and the microphone (the host's `av`); the glue hands av how
 # the Activity asks for a permission, and `ndk-context` the app's Context,

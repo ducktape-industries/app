@@ -208,15 +208,6 @@ fn call_voice(alive: bool) {
 /// `documents` and `caches` are NUL-terminated strings alive for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *const c_char) {
-    let env = std::env::var("RUST_LOG").unwrap_or_default();
-    let filter = tracing_subscriber::EnvFilter::builder()
-        .parse(format!("info,{env}"))
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
     // SAFETY: the caller's contract above.
     let (documents, caches) = unsafe {
         (
@@ -225,6 +216,7 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
         )
     };
     let (documents, caches) = (documents.map(PathBuf::from), caches.map(PathBuf::from));
+    crate::os::install_log(caches.as_deref(), true);
     let (Some(documents), Some(caches)) = (documents, caches) else {
         tracing::error!(target: "ducktape::phone", "the launcher passed no app container");
         std::process::abort();

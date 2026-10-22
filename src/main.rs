@@ -177,14 +177,6 @@ fn raise_open_file_limit() {
 /// home by now (`install_os` refused without one); the restart waiter, which
 /// has no OS services, logs nowhere when it has none.
 fn install_log() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    use tracing_subscriber::util::SubscriberInitExt as _;
-    use tracing_subscriber::{EnvFilter, Layer as _};
-
-    let env = std::env::var("RUST_LOG").unwrap_or_default();
-    let filter = EnvFilter::builder()
-        .parse(format!("info,{env}"))
-        .unwrap_or_else(|_| EnvFilter::new("info"));
     let file = backend::app_log_path().ok().and_then(|path| {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -195,34 +187,5 @@ fn install_log() {
             .open(path)
             .ok()
     });
-    let file_layer = file.map(|file| {
-        tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_writer(std::sync::Mutex::new(file))
-    });
-    let _ = tracing_subscriber::registry()
-        .with(file_layer.with_filter(filter))
-        .try_init();
-    install_panic_hook();
-}
-
-fn install_panic_hook() {
-    let default = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let location = info
-            .location()
-            .map(|at| format!("{}:{}:{}", at.file(), at.line(), at.column()))
-            .unwrap_or_default();
-        let backtrace = std::backtrace::Backtrace::force_capture();
-        tracing::error!(
-            target: "ducktape::app",
-            event = "app_panic",
-            thread = std::thread::current().name().unwrap_or("?"),
-            payload = info.payload_as_str().unwrap_or("non-string panic payload"),
-            location,
-            backtrace = %backtrace,
-            "panicked at: {info}"
-        );
-        default(info);
-    }));
+    ducktape_host::backend::app_log::install(file, false);
 }

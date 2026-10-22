@@ -99,6 +99,7 @@ pub mod ios {
 }
 
 use ducktape_host::backend::Appearance;
+use ducktape_host::backend::app_log::{self, Launches};
 use ducktape_host::contract::{
     Banners, Dirs, EditMenu, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts,
     OsServices, Preload, RunnerConfig, Secrets, Signal, SoftKeyboard, ViewRunner,
@@ -112,6 +113,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 static INBOUND: OnceLock<Inbound> = OnceLock::new();
+
+static APP_LOG: OnceLock<Option<Launches>> = OnceLock::new();
 
 /// Keeps the host's inbound sender for [`send`]. Once: the host starts once
 /// per process.
@@ -387,6 +390,30 @@ pub fn dirs(documents: &Path, caches: &Path) -> Dirs {
         cache,
         views_override: None,
     }
+}
+
+#[cfg_attr(
+    not(any(target_os = "ios", target_os = "android")),
+    expect(dead_code, reason = "only a phone's launcher enters")
+)]
+pub(crate) fn install_log(caches: Option<&Path>, stderr: bool) {
+    APP_LOG.get_or_init(|| {
+        let launches = caches.map(|caches| Launches::in_dir(&caches.join("ducktape")));
+        let begun = launches.as_ref().map(Launches::begin).transpose();
+        let (file, unbegun) = match begun {
+            Ok(file) => (file, None),
+            Err(error) => (None, Some(error)),
+        };
+        app_log::install(file, stderr);
+        if let Some(error) = unbegun {
+            tracing::error!(target: "ducktape::phone", %error, "the app's log could not be begun");
+        }
+        launches
+    });
+}
+
+pub(crate) fn app_log() -> Option<&'static Launches> {
+    APP_LOG.get().and_then(Option::as_ref)
 }
 
 fn made(dirs: &Dirs) -> std::io::Result<()> {

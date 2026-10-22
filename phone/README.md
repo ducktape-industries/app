@@ -8,6 +8,15 @@ the head of `Makefile`.
 - **Kotlin:** `make -C phone android-check` (`compileDebugKotlin` alone, no Rust and no NDK) is the gate `android` of build.sh's lane, on a change that touches `android/`; the lane fills the JDK, SDK and gradle home it compiles with on the builds machine.
 - **Swift:** `make -C phone ios-check` type-checks `App.swift` and `DeviceKeyStore.swift` against `Phone.h`, and the driver, with `swiftc -typecheck` (seconds; no Rust, XcodeGen or simulator). `.forge/workflows/phone.toml` runs it on the mac relay for every change into `dev` and every push to `dev`. It is reported, never required: a Mac that sleeps holds no merge. It doesn't link, so an `@_cdecl` or `Phone.h` name Rust lacks shows only at `ios-sim` or the TestFlight archive.
 
+## The app's log
+
+The phone writes the desktop's log format (`ducktape_host::backend::app_log`: tracing's lines at `info` plus what
+`RUST_LOG` adds, a panic's backtrace as `app_panic`) to `app.log` in the app container's caches (`<Caches>/ducktape/`
+on iOS, `cacheDir/ducktape/` on Android). Each launch begins it afresh and keeps the one before as `app.previous.log`.
+iOS writes it to stderr too (Xcode's console), and Android to logcat. Account › This phone › **Share the app's log**
+copies both, the launch before first, to `ducktape-<phone>-<day>-<hhmm>Z.log` and hands the copy to the OS (iOS's share
+sheet, Android's create-document dialog). The shell removes the copy once the person is through.
+
 ## The mac service's driver
 
 `ios/Driver/Driver.swift` is an XCUITest bundle (`DucktapeDriver`, the `Ducktape` scheme's test target, so never in the

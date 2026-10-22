@@ -82,6 +82,7 @@ live-wire.workspace = true
 # the node address's host, which the QUIC dial resolves: reqwest's own parser, already in the graph
 url = "2"
 tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
 view-wire = { workspace = true, features = ["manifest"] }
 program.workspace = true
 abi.workspace = true
@@ -136,8 +137,6 @@ noded-client = { path = "../noded-client", features = ["commonware"] }
 wat = "1"
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 ducktape-a11y-platform = { path = "../a11y-platform", features = ["test-support"] }
-# what a test reads back of the warnings a cache problem logs (`runner/wasmtime.rs`)
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
 blobs = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "blobs" }
