@@ -170,11 +170,11 @@ async fn ask(
 ) -> Result<::programs::Reply, Fetch> {
     let payload = abi::encode(&query);
     let answer = client
-        .query(
+        .role_query(
             Layer::Preconfirmed,
             signer,
             network.as_bytes(),
-            ::programs::PROGRAM,
+            abi::role::PROGRAMS,
             payload,
         )
         .await

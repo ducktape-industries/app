@@ -84,7 +84,11 @@ pub(crate) async fn create_account(
         },
     };
     let anchor = anchor(client).await.map_err(|refusal| refusal.message)?;
-    let body = passkey_body(&passkey, network, anchor, abi::encode(&add));
+    let target = client
+        .bound(abi::role::IDENTITY)
+        .await
+        .map_err(|error| error.to_string())?;
+    let body = passkey_body(&passkey, network, anchor, &target, abi::encode(&add));
     let assertion = asserted(
         keyscheme::webauthn_challenge(FRAME_NAMESPACE, &body.preimage()),
         "2/2",
@@ -142,14 +146,20 @@ fn consenting_key(account: &identity::Account, preimage: &[u8], proof: &[u8]) ->
         .map(|held| held.key.clone())
 }
 
-pub(super) fn passkey_body(pubkey: &[u8], network: &str, anchor: Tip, payload: Vec<u8>) -> Body {
+pub(super) fn passkey_body(
+    pubkey: &[u8],
+    network: &str,
+    anchor: Tip,
+    target: &str,
+    payload: Vec<u8>,
+) -> Body {
     Body {
         scheme: abi::Scheme::Secp256r1,
         signer: pubkey.to_vec(),
         network: network.as_bytes().to_vec(),
         anchor,
         salt: Some(salt()),
-        target: identity::PROGRAM.to_owned(),
+        target: target.to_owned(),
         payload,
         client: noded_client::wire::client(),
     }
@@ -232,7 +242,11 @@ mod tests {
             height: 9,
             id: [1; 32],
         };
-        let body = passkey_body(&pubkey, "testkit", anchor, vec![1, 2, 3]);
+        let body = passkey_body(&pubkey, "testkit", anchor, "owner/identity", vec![1, 2, 3]);
+        assert_eq!(
+            body.target, "owner/identity",
+            "the frame goes where it was told"
+        );
         assert!(body.salt.is_some(), "a passkey's write carries a salt");
         let assertion = page_answer(&sk, FRAME_NAMESPACE, &body.preimage(), &[]);
         let frame = passkey_frame(body, &assertion).expect("its own signer");

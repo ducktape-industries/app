@@ -215,6 +215,7 @@ mod tests {
                 height: 0,
                 id: [0; 32],
             },
+            identity::PROGRAM,
             vec![1],
         );
         let (authenticator_data, client_data_json, signature) = testkit::passkey_assertion_parts(

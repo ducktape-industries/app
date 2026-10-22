@@ -698,6 +698,13 @@ impl Writes {
     pub(crate) async fn next(&mut self) -> Option<()> {
         self.heard.recv().await
     }
+
+    #[cfg(test)]
+    pub(crate) fn idle() -> (tokio::sync::mpsc::Sender<()>, Self) {
+        let (tell, heard) = tokio::sync::mpsc::channel(1);
+        let follower = rt::task::spawn(std::future::pending());
+        (tell, Self { heard, follower })
+    }
 }
 
 impl Drop for Writes {

@@ -109,6 +109,9 @@ pub struct Session {
     connect: Option<Task<()>>,
     poll: Option<Task<()>>,
     heard: Vec<Task<()>>,
+    client: Option<backend::RpcClient>,
+    armed: Option<abi::Roles>,
+    watch: fn(&backend::RpcClient, &str) -> crate::runtime::Writes,
     confirming: bool,
     hands_runtime: bool,
 }
@@ -140,9 +143,22 @@ impl Session {
             connect: None,
             poll: None,
             heard: Vec::new(),
+            client: None,
+            armed: None,
+            watch: crate::runtime::writes,
             confirming: false,
             hands_runtime: true,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watching_with(
+        &mut self,
+        client: backend::RpcClient,
+        watch: fn(&backend::RpcClient, &str) -> crate::runtime::Writes,
+    ) {
+        self.client = Some(client);
+        self.watch = watch;
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -160,19 +176,50 @@ impl Session {
         if self.hands_runtime {
             crate::runtime::take_up(&self.center, chain);
             self.network.connected(client, network, chain);
-            self.hear_writes(client, cx);
+            self.client = Some(client.clone());
+            self.armed = None;
+            self.heard.clear();
+            let roles = self
+                .chain
+                .read(cx)
+                .node
+                .as_ref()
+                .map(|node| node.roles.clone());
+            if let Some(roles) = roles {
+                self.follow_roles(&roles, cx);
+            }
         }
     }
 
-    fn hear_writes(&mut self, client: &backend::RpcClient, cx: &mut Context<Self>) {
-        let programs = crate::runtime::writes(client, ::programs::PROGRAM);
-        let identity = crate::runtime::writes(client, identity::PROGRAM);
-        self.heard = vec![
-            Self::hear(programs, cx, |this, _| this.network.deployments_checked()),
-            Self::hear(identity, cx, |this, cx| {
+    fn follow_roles(&mut self, roles: &abi::Roles, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        client.heard_roles(roles);
+        if self.armed.as_ref() == Some(roles) {
+            return;
+        }
+        self.armed = Some(roles.clone());
+        self.hear_writes(&client, roles, cx);
+    }
+
+    fn hear_writes(
+        &mut self,
+        client: &backend::RpcClient,
+        roles: &abi::Roles,
+        cx: &mut Context<Self>,
+    ) {
+        let watch = self.watch;
+        let writes = |role| roles.bound(role).ok().map(|program| watch(client, program));
+        let (programs, identity) = (writes(abi::role::PROGRAMS), writes(abi::role::IDENTITY));
+        let programs = programs
+            .map(|heard| Self::hear(heard, cx, |this, _| this.network.deployments_checked()));
+        let identity = identity.map(|heard| {
+            Self::hear(heard, cx, |this, cx| {
                 this.account.update(cx, |account, cx| account.resolve(cx))
-            }),
-        ];
+            })
+        });
+        self.heard = programs.into_iter().chain(identity).collect();
     }
 
     fn hear(
@@ -363,6 +410,7 @@ impl Session {
             cx,
         );
         self.apply_status(status, cx);
+        self.follow_roles(&status.roles, cx);
         if self.poll.is_none() {
             self.source = Some(source);
             self.start_poll(STATUS_EVERY, cx);
@@ -502,6 +550,7 @@ impl Session {
                 let moved =
                     i64::try_from(status.height).unwrap_or(-1) != self.chain.read(cx).height;
                 self.apply_status(&status, cx);
+                self.follow_roles(&status.roles, cx);
                 let due =
                     moved && self.hands_runtime && self.network.deployments_due(status.height);
                 if due {
@@ -585,9 +634,12 @@ impl Session {
             }
             Foreground if self.state.connected && self.poll.is_none() => {
                 self.start_poll(Duration::ZERO, cx);
-                if self.hands_runtime {
+                if let Some(roles) = self.armed.clone() {
                     let client = backend::rpc_client(self.state.connected_rpc.clone());
-                    self.hear_writes(&client, cx);
+                    client.heard_roles(&roles);
+                    self.hear_writes(&client, &roles, cx);
+                }
+                if self.hands_runtime {
                     self.network.deployments_checked();
                     self.account.update(cx, |account, cx| account.resolve(cx));
                 }
@@ -649,6 +701,8 @@ impl Session {
             crate::runtime::notifier::disconnected();
         }
         self.heard.clear();
+        self.client = None;
+        self.armed = None;
         self.roster.clear();
         cx.emit(SessionEvent::LeftNetwork);
     }

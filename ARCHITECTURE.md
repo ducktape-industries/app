@@ -46,10 +46,13 @@ What the app deliberately does not know:
 
 - **No user program by name.** Panes, tabs and labels come from the roster
   (`Roster::rail`), a tab's name and the icon it draws on a folded menu bar
-  from the view's manifest. Two *system* programs are named by id and
-  nothing else: `identity` (`backend/passkey.rs`, `backend/join.rs`:
-  accounts and keys) and `programs` (`backend/views.rs`: the roster
-  query; `shell/layers/chrome/menus.rs`: the Account menu opens it).
+  from the view's manifest. Two *system* programs are named, by role and
+  nothing else: the identity role (`backend/passkey.rs`, `backend/join.rs`:
+  accounts and keys) and the programs role (`backend/views.rs`: the roster
+  query; `shell/layers/chrome/menus.rs` and the phone's Account tab open
+  its view), each at the id the node's `/v1/status` binds to the role
+  (`noded_client::Client::bound`, `role_query`), so a renamed role program
+  is followed with no app release.
 - **No payload.** `program.query` and `op.submit` carry `Call{target, body}`;
   the app signs and forwards `body` and returns the program's bytes as
   they are. `program.describe` renders an op readable by running the

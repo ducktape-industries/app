@@ -128,6 +128,26 @@ pub async fn seated_frame(
     frame.map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))
 }
 
+pub async fn seated_role_frame(
+    client: &RpcClient,
+    network: &str,
+    role: &str,
+    payload: Vec<u8>,
+) -> Result<Frame, Error> {
+    let key = key_of(network).ok_or_else(locked_seat)?;
+    let anchor = anchor(client).await?;
+    let target = client.bound(role).await.map_err(refused)?;
+    let frame = Frame::sign(
+        &*key,
+        network.as_bytes(),
+        anchor,
+        Some(salt()),
+        &target,
+        payload,
+    );
+    frame.map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))
+}
+
 pub async fn anchor(client: &RpcClient) -> Result<Tip, Error> {
     Ok(client.status().await.map_err(refused)?.anchor())
 }
@@ -193,6 +213,49 @@ mod tests {
         assert_eq!(sign(&seated), Err(SignError(LOCKED.into())));
         lock_signer().await;
         assert!(seated_signer("a").is_err());
+    }
+
+    fn node_binding(identity: &'static str) -> RpcClient {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = RpcClient::new(format!("http://{}", listener.local_addr().unwrap()));
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 2 {
+                    line.clear();
+                }
+                let status = crate::backend::NodeStatus {
+                    roles: abi::Roles::from_iter([(abi::role::IDENTITY, identity)]),
+                    ..crate::session::tests::status(7)
+                };
+                let body = abi::encode(&status);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        client
+    }
+
+    #[tokio::test]
+    async fn a_seated_role_frame_goes_where_its_own_status_read_binds_the_role() {
+        let _serial = seat_serial();
+        seat_key("bound", Arc::new(ed25519::PrivateKey::from_seed(7))).await;
+        let client = node_binding("owner/identity");
+        client.heard_roles(&abi::Roles::from_iter([(abi::role::IDENTITY, "identity")]));
+        let frame = seated_role_frame(&client, "bound", abi::role::IDENTITY, vec![1])
+            .await
+            .unwrap();
+        assert_eq!(
+            frame.body.target, "owner/identity",
+            "the stale binding was used"
+        );
+        lock_signer().await;
     }
 
     #[tokio::test]

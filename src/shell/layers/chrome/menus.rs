@@ -11,8 +11,6 @@ use crate::shell::status_bar::pulse;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-const ACCOUNT_VIEW: &str = "programs";
-
 impl Chrome {
     pub(super) fn node_menu(
         &self,
@@ -166,17 +164,24 @@ impl Chrome {
             None => network,
         };
         let menu = Overlay::Menu(Popover::Account);
-        let mut rows = div().flex().flex_col().child(self.menu_row(
-            "account-view",
-            "Account",
-            self.closing(
-                menu,
-                self.on_windows(|windows, cx| {
-                    windows.select_view(crate::runtime::intern(ACCOUNT_VIEW), cx)
-                }),
-            ),
-            ink,
-        ));
+        let account_view = self
+            .chain
+            .read(cx)
+            .node
+            .as_ref()
+            .and_then(|node| node.roles.bound(abi::role::PROGRAMS).ok())
+            .map(|program| crate::runtime::intern(program));
+        let mut rows = div().flex().flex_col().children(account_view.map(|view| {
+            self.menu_row(
+                "account-view",
+                "Account",
+                self.closing(
+                    menu,
+                    self.on_windows(move |windows, cx| windows.select_view(view, cx)),
+                ),
+                ink,
+            )
+        }));
         if self.prefs.read(cx).get().debug {
             rows = rows.child(self.menu_row(
                 "account-memory",

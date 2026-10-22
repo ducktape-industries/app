@@ -143,6 +143,7 @@ pub struct Client {
     reads: net::Net,
     base: String,
     newest: std::sync::Arc<std::sync::Mutex<Option<Tip>>>,
+    roles: std::sync::Arc<std::sync::Mutex<Option<abi::Roles>>>,
 }
 
 impl Client {
@@ -153,6 +154,7 @@ impl Client {
             reads: net::Net::new(Some((READ_CONNECT, READ_IDLE))),
             base,
             newest: Default::default(),
+            roles: Default::default(),
         }
     }
 
@@ -167,6 +169,7 @@ impl Client {
     pub async fn status(&self) -> Result<Status> {
         let status: Status = self.fetch(route::STATUS).await?;
         self.heard(status.anchor());
+        self.heard_roles(&status.roles);
         Ok(status)
     }
 
@@ -177,6 +180,56 @@ impl Client {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if newest.is_none_or(|newest| newest.height < tip.height) {
             *newest = Some(tip);
+        }
+    }
+
+    pub fn heard_roles(&self, roles: &abi::Roles) {
+        *self
+            .roles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(roles.clone());
+    }
+
+    pub async fn bound(&self, role: &str) -> Result<String> {
+        let known = self
+            .roles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let roles = match known {
+            Some(roles) => roles,
+            None => self.status().await?.roles,
+        };
+        roles.bound(role).cloned().map_err(Error::Refused)
+    }
+
+    pub async fn role_query(
+        &self,
+        layer: Layer,
+        signer: &dyn Signer,
+        network: &[u8],
+        role: &str,
+        payload: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, Asked> {
+        let target = self.bound(role).await.map_err(Asked::Node)?;
+        match self
+            .query(layer, signer, network, &target, payload.clone())
+            .await
+        {
+            Err(Asked::Node(Error::Refused(refusal)))
+                if refusal.reason == abi::reason::UNKNOWN_PROGRAM =>
+            {
+                let roles = self.status().await.map_err(Asked::Node)?.roles;
+                let now = roles
+                    .bound(role)
+                    .cloned()
+                    .map_err(|unbound| Asked::Node(Error::Refused(unbound)))?;
+                match now == target {
+                    true => Err(Asked::Node(Error::Refused(refusal))),
+                    false => self.query(layer, signer, network, &now, payload).await,
+                }
+            }
+            answer => answer,
         }
     }
 

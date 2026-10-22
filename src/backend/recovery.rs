@@ -80,12 +80,16 @@ pub(crate) async fn add_recovery_key(
         },
     };
     let anchor = anchor(client).await.map_err(|refusal| refusal.message)?;
+    let target = client
+        .bound(abi::role::IDENTITY)
+        .await
+        .map_err(|error| error.to_string())?;
     let frame = Frame::sign(
         &recovery,
         network.as_bytes(),
         anchor,
         Some(salt()),
-        identity::PROGRAM,
+        &target,
         abi::encode(&add),
     )
     .map_err(|refused| refused.to_string())?;

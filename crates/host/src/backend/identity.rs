@@ -7,7 +7,7 @@
 use identity::Op;
 use noded_client::identity::submit;
 
-use super::{RpcClient, query_signer, seated_frame, seated_key};
+use super::{RpcClient, query_signer, seated_key, seated_role_frame};
 
 /// A self-serve account on `network` whose one key is this device's
 /// (seated) key: identity's `Create`, no passkey. Its number and name, as
@@ -48,7 +48,7 @@ pub async fn account_of_key(
 }
 
 pub async fn submit_seated(client: &RpcClient, network: &str, op: &Op) -> Result<Vec<u8>, String> {
-    let frame = seated_frame(client, network, identity::PROGRAM, abi::encode(op))
+    let frame = seated_role_frame(client, network, abi::role::IDENTITY, abi::encode(op))
         .await
         .map_err(|refusal| refusal.message)?;
     submit(client, frame.encode()).await

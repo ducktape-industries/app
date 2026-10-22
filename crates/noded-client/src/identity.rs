@@ -18,11 +18,11 @@ pub async fn ask(
     signer: &dyn Signer,
 ) -> Result<Reply, String> {
     let reply = client
-        .query(
+        .role_query(
             Layer::Preconfirmed,
             signer,
             network.as_bytes(),
-            identity::PROGRAM,
+            abi::role::IDENTITY,
             abi::encode(&query),
         )
         .await
@@ -58,11 +58,11 @@ pub async fn account_of_key(
     signer: &dyn Signer,
 ) -> Result<Option<(u64, String)>, String> {
     let asked = client
-        .query(
+        .role_query(
             Layer::Preconfirmed,
             signer,
             network.as_bytes(),
-            identity::PROGRAM,
+            abi::role::IDENTITY,
             abi::encode(&Query::OfKey { key }),
         )
         .await;
@@ -142,12 +142,16 @@ pub async fn submit_signed(
         .await
         .map_err(|error| node_error(error.to_string()))?
         .anchor();
+    let target = client
+        .bound(abi::role::IDENTITY)
+        .await
+        .map_err(|error| node_error(error.to_string()))?;
     let frame = Frame::sign(
         signer,
         network.as_bytes(),
         anchor,
         Some(salt()),
-        identity::PROGRAM,
+        &target,
         abi::encode(op),
     )
     .map_err(|refused| refused.to_string())?;
@@ -222,7 +226,126 @@ mod tests {
             height: 1,
             id: [1; 32],
         });
+        client.heard_roles(&abi::Roles::from_iter([(
+            abi::role::IDENTITY,
+            identity::PROGRAM,
+        )]));
         client
+    }
+
+    fn status_binding(identity: &str) -> crate::wire::Status {
+        crate::wire::Status {
+            network: "testkit".into(),
+            time: 1,
+            block_time_ms: 2,
+            epoch_length: 3,
+            height: 4,
+            tip: [5; 32],
+            root: abi::Root([6; 32]),
+            epoch: 7,
+            identity: vec![8],
+            contract: crate::wire::NODE_CONTRACT,
+            genesis: [9; 32],
+            roles: abi::Roles::from_iter([(abi::role::IDENTITY, identity)]),
+        }
+    }
+
+    async fn node_binding_identity(
+        binds: &'static str,
+        serves: &'static str,
+    ) -> (Client, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut reader = tokio::io::BufReader::new(&mut stream);
+                let (mut request, mut line, mut length) = (String::new(), String::new(), 0);
+                reader.read_line(&mut request).await.unwrap();
+                while reader.read_line(&mut line).await.unwrap_or(0) > 2 {
+                    let sized = line
+                        .split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"));
+                    if let Some((_, value)) = sized {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                    line.clear();
+                }
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body).await;
+                let (status, answer) = match request.starts_with("GET /v1/status ") {
+                    true => ("200 OK", abi::encode(&status_binding(binds))),
+                    false => {
+                        let query: crate::wire::Query = abi::decode(&body).unwrap();
+                        let crate::wire::Ask::Signed(frame) = query.ask else {
+                            panic!("an unsigned query");
+                        };
+                        let frame: crate::wire::Frame = abi::decode(&frame).unwrap();
+                        let target = frame.body.target.clone();
+                        seen.lock().unwrap().push(target.clone());
+                        match target == serves {
+                            true => ("200 OK", abi::encode(&abi::encode(&Reply::Generation(3)))),
+                            false => (
+                                "400 Bad Request",
+                                abi::encode(&abi::Refusal::new(
+                                    abi::reason::UNKNOWN_PROGRAM,
+                                    target,
+                                )),
+                            ),
+                        }
+                    }
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {BYTES}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    answer.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(&answer).await;
+            }
+        });
+        let client = Client::new(url);
+        client.heard(crate::wire::Tip {
+            height: 1,
+            id: [1; 32],
+        });
+        client.heard_roles(&abi::Roles::from_iter([(
+            abi::role::IDENTITY,
+            identity::PROGRAM,
+        )]));
+        (client, asked)
+    }
+
+    #[tokio::test]
+    async fn a_moved_identity_role_is_asked_where_the_status_now_binds_it() {
+        let (client, asked) = node_binding_identity("owner/identity", "owner/identity").await;
+        let answered = generation(&client, "testkit", &[1], &FixedSigner).await;
+        assert_eq!(answered, Ok(3));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [identity::PROGRAM, "owner/identity"]
+        );
+        let again = generation(&client, "testkit", &[1], &FixedSigner).await;
+        assert_eq!(again, Ok(3));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [identity::PROGRAM, "owner/identity", "owner/identity"],
+            "the moved binding is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_identity_the_status_still_binds_is_refused_as_it_came() {
+        let (client, asked) = node_binding_identity(identity::PROGRAM, "nobody").await;
+        let answered = generation(&client, "testkit", &[1], &FixedSigner).await;
+        let refused = answered.unwrap_err();
+        assert!(
+            refused.starts_with(abi::reason::UNKNOWN_PROGRAM),
+            "{refused}"
+        );
+        assert_eq!(*asked.lock().unwrap(), [identity::PROGRAM]);
     }
 
     const BYTES: &str = "application/octet-stream";

@@ -339,7 +339,10 @@ pub fn needed(
         verb: APPROVE,
         danger: false,
     };
-    if target == identity::PROGRAM {
+    let identity_role = roles
+        .and_then(|roles| roles.bound(abi::role::IDENTITY).ok())
+        .map_or(identity::PROGRAM, String::as_str);
+    if target == identity_role {
         let Ok(op) = abi::decode::<identity::Op>(body) else {
             return Some(Words {
                 described: true,
@@ -702,7 +705,10 @@ mod tests {
     fn a_role_program_asks_as_system_and_any_other_by_its_id() {
         let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
         let said = |program: &str, roles: Option<&abi::Roles>| {
-            needed(program, roles, identity::PROGRAM, &suspend, Some(7))
+            let target = roles.map_or(identity::PROGRAM, |roles| {
+                roles.bound(abi::role::IDENTITY).unwrap().as_str()
+            });
+            needed(program, roles, target, &suspend, Some(7))
                 .unwrap()
                 .said
         };

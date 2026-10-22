@@ -530,3 +530,69 @@ fn a_presumed_desk_whose_key_holds_no_account_goes_to_the_account_step(cx: &mut 
         }
     );
 }
+
+thread_local! {
+    static WATCHED: RefCell<Vec<(String, tokio::sync::mpsc::Sender<()>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+fn watched(_: &crate::backend::RpcClient, program: &str) -> crate::runtime::Writes {
+    let (tell, writes) = crate::runtime::Writes::idle();
+    WATCHED.with(|watched| watched.borrow_mut().push((program.to_owned(), tell)));
+    writes
+}
+
+fn watching() -> Vec<(String, bool)> {
+    WATCHED.with(|watched| {
+        watched
+            .borrow()
+            .iter()
+            .map(|(program, tell)| (program.clone(), !tell.is_closed()))
+            .collect()
+    })
+}
+
+#[gpui_kit::test]
+fn a_moved_identity_role_moves_the_watch_the_session_follows(cx: &mut TestAppContext) {
+    WATCHED.with(|watched| watched.borrow_mut().clear());
+    let binding = |identity: &str, height: u64| NodeStatus {
+        roles: abi::Roles::from_iter([
+            (abi::role::PROGRAMS, "programs"),
+            (abi::role::IDENTITY, identity),
+        ]),
+        ..testnet(height)
+    };
+    let session = cx.update(session);
+    let (source, _) = source(move |n| match n {
+        0 => Ok(binding("identity", 7)),
+        _ => Ok(binding("owner/identity", 7 + n as u64)),
+    });
+    session.update(cx, |session, cx| {
+        session.watching_with(crate::backend::rpc_client(ORIGIN), watched);
+        let on_node = SessionState {
+            connected: true,
+            connected_rpc: ORIGIN.into(),
+            endpoint: ORIGIN.into(),
+            network: "session-test".into(),
+            chain: "session-test".into(),
+            ..SessionState::booted()
+        };
+        session.seed_connected(on_node, source, cx);
+    });
+    poll(cx);
+    let own = |program: &str, open: bool| (program.to_owned(), open);
+    assert_eq!(watching(), [own("programs", true), own("identity", true)]);
+    poll(cx);
+    assert_eq!(
+        watching(),
+        [
+            own("programs", false),
+            own("identity", false),
+            own("programs", true),
+            own("owner/identity", true),
+        ],
+        "the watch did not follow identity's move"
+    );
+    poll(cx);
+    assert_eq!(watching().len(), 4, "an unmoved binding re-armed");
+}

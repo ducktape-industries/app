@@ -17,7 +17,7 @@
 //! the system).
 
 use super::look::{self, Palette};
-use super::{ACCOUNT_PROGRAM, Root, about, home, join};
+use super::{Root, about, home, join};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{KeyLevel, KeyStorage};
@@ -89,7 +89,15 @@ pub fn tab(
             .active(|style| style.opacity(look::PRESSED))
             .child(chevron(palette))
     };
-    let program = home::row_of(shared, ACCOUNT_PROGRAM, cx).map(|_| {
+    let account_program = shared
+        .chain
+        .read(cx)
+        .node
+        .as_ref()
+        .and_then(|node| node.roles.bound(abi::role::PROGRAMS).ok().cloned());
+    let listed = account_program.and_then(|program| home::row_of(shared, &program, cx));
+    let program = listed.map(|shown| {
+        let program = shown.program;
         let said = "Keys, agents and invites, in the Account program.";
         let keys = row(
             "account/program",
@@ -98,8 +106,8 @@ pub fn tab(
             Some(caption(said, palette)),
             palette,
         );
-        opens(keys, "Keys and agents").on_click(cx.listener(|root, _, _, cx| {
-            root.open(ACCOUNT_PROGRAM, cx);
+        opens(keys, "Keys and agents").on_click(cx.listener(move |root, _, _, cx| {
+            root.open(program, cx);
         }))
     });
     let add = me.map(|_| {

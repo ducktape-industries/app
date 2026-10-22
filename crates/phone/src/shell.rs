@@ -83,11 +83,6 @@ pub const WINDOW: &str = "phone";
 #[cfg(feature = "ax-door")]
 pub const DOOR_PORT: u16 = 7777;
 
-/// The system program whose view is the account (`ARCHITECTURE.md` §1: the
-/// host names `identity` and `programs` only), opened by name as the
-/// desktop's Account menu opens it (SPEC §7.4).
-const ACCOUNT_PROGRAM: &str = "programs";
-
 /// What the shell keeps for the process: the host's entities, the stack
 /// (an Android Activity made again finds it as it was), the window on
 /// screen, and the links the OS handed over before there was one.
