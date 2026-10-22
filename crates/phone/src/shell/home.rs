@@ -1004,16 +1004,21 @@ pub fn tab_bar(
             _ => SharedString::from(label),
         };
         if unread > 0 && tab == Tab::Notifications {
-            glyph = glyph.child(
-                dot(palette)
-                    .debug_selector(|| "tab/notifications/dot".to_owned())
-                    .size(px(12.))
-                    .border_2()
-                    .border_color(palette.background())
-                    .absolute()
-                    .top(px(-2.))
-                    .right(px(-6.)),
-            );
+            let marker = dot(palette)
+                .id("tab/notifications/dot")
+                .debug_selector(|| "tab/notifications/dot".to_owned())
+                .size(px(12.))
+                .border_2()
+                .border_color(palette.background())
+                .absolute()
+                .top(px(-2.))
+                .right(px(-6.));
+            #[cfg(test)]
+            let marker = {
+                use gpui_kit::test::TestSupportExt as _;
+                marker.test_support()
+            };
+            glyph = glyph.child(marker);
         }
         let mut item = div()
             .id(id)

@@ -117,6 +117,7 @@ ndk-context = "0.1"
 [dev-dependencies]
 ducktape-host = { path = "../host", features = ["test-support"] }
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+ducktape-a11y-platform = { path = "../a11y-platform", features = ["test-support"] }
 tempfile.workspace = true
 
 [lints.rust]

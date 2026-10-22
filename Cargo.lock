@@ -3006,6 +3006,7 @@ dependencies = [
  "commonware-utils",
  "design",
  "ducklink",
+ "ducktape-a11y-platform",
  "ducktape-av",
  "ducktape-gpui-ios",
  "ducktape-host",

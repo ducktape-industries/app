@@ -2326,6 +2326,7 @@ impl Render for Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ducktape_a11y_platform::headless::Harness;
     use ducktape_host::runtime::Roster;
     use ducktape_host::session::Screen;
     use gpui_kit::test::TestWindowExt as _;
@@ -2358,20 +2359,7 @@ mod tests {
     fn phone(cx: &mut TestAppContext) -> (Entity<Root>, Entity<Stack>, &mut VisualTestContext) {
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
-        let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
-        let stack = cx.new(|_| Stack::default());
-        cx.update(|cx| {
-            let registrar = crate::push::Registrar::start(shared.clone(), cx);
-            log_on_connect(&shared, cx);
-            cx.set_global(Phone {
-                shared: shared.clone(),
-                stack: stack.clone(),
-                window: None,
-                waiting: Vec::new(),
-                notices: Vec::new(),
-                registrar,
-            })
-        });
+        let (shared, stack) = cx.update(seated);
         let (root, cx) =
             cx.add_window_view(|window, cx| Root::new(shared.clone(), stack.clone(), window, cx));
         cx.update(|window, _| window.activate_window());
@@ -2380,6 +2368,50 @@ mod tests {
         });
         cx.run_until_parked();
         (root, stack, cx)
+    }
+
+    fn seated(cx: &mut gpui_kit::App) -> (Shared, Entity<Stack>) {
+        let shared = Shared::for_test(Default::default(), Default::default(), cx);
+        let stack = cx.new(|_| Stack::default());
+        let registrar = crate::push::Registrar::start(shared.clone(), cx);
+        log_on_connect(&shared, cx);
+        cx.set_global(Phone {
+            shared: shared.clone(),
+            stack: stack.clone(),
+            window: None,
+            waiting: Vec::new(),
+            notices: Vec::new(),
+            registrar,
+        });
+        (shared, stack)
+    }
+
+    fn harnessed() -> (Entity<Root>, Harness<Root>) {
+        let mut harness = Harness::open_with(
+            gpui_kit::init,
+            gpui_kit::size(gpui_kit::px(1920.), gpui_kit::px(1080.)),
+            |window, cx| {
+                let (shared, stack) = seated(cx);
+                Root::new(shared, stack, window, cx)
+            },
+        );
+        harness.dispatcher.allow_parking();
+        harness.update(|window, _| window.activate_window());
+        let root = harness.root();
+        let shared = root.read_with(&harness, |root, _| root.shared.clone());
+        shared.screen.update(&mut harness, |screen, cx| {
+            screen.set(Screen::Desk, cx);
+        });
+        harness.run_until_parked();
+        (root, harness)
+    }
+
+    fn run_out_harnessed(harness: &Harness<Root>) {
+        harness
+            .dispatcher
+            .advance_clock(std::time::Duration::from_secs(1));
+        harness.update(|window, cx| window.simulate_next_frame(cx));
+        harness.run_until_parked();
     }
 
     /// A swipe let go, through the window as the OS's is.
@@ -3147,21 +3179,21 @@ mod tests {
     }
 
     /// The Notifications tab's name to a screen reader, as last drawn.
-    fn notifications_tab_name(cx: &mut VisualTestContext) -> String {
-        cx.update(|window, cx| {
-            window.activate_a11y();
+    fn notifications_tab_name(harness: &Harness<Root>) -> String {
+        harness.update(|window, cx| {
+            harness.activate_in(window);
             ducktape_host::render::draw_frame(window, cx);
-            let tree = window.a11y_tree().expect("an accessibility tree");
-            let tab = tree.nodes.iter().find(|(_, node)| {
-                node.role() == gpui_kit::accesskit::Role::Tab
-                    && node
-                        .label()
-                        .is_some_and(|name| name.starts_with("Notifications"))
-            });
-            tab.and_then(|(_, node)| node.label())
-                .unwrap_or_default()
-                .to_owned()
-        })
+        });
+        let tree = harness.tree();
+        let tab = tree.nodes.iter().find(|(_, node)| {
+            node.role() == gpui_kit::accesskit::Role::Tab
+                && node
+                    .label()
+                    .is_some_and(|name| name.starts_with("Notifications"))
+        });
+        tab.and_then(|(_, node)| node.label())
+            .unwrap_or_default()
+            .to_owned()
     }
 
     /// A notice the push server carried, as the OS hands it over (the
@@ -3172,17 +3204,18 @@ mod tests {
     /// the OS, its row is read. One that came while the app was in front on
     /// its chain is left to this phone's own run of the notifier; another
     /// chain's waits for that chain, once however often it is handed over.
-    #[gpui_kit::test]
-    fn a_pushed_notice_is_one_row_in_the_notifications_tab(cx: &mut TestAppContext) {
+    #[test]
+    fn a_pushed_notice_is_one_row_in_the_notifications_tab() {
         use ducktape_host::session::SessionState;
         let _seat = ducktape_host::backend::seat_serial();
-        let (root, _, cx) = phone(cx);
+        let (root, mut harness) = harnessed();
+        let cx = &mut harness;
         let shared = root.read_with(cx, |root, _| root.shared.clone());
         ducktape_host::runtime::seat_for_test(PROGRAM, 320);
         shared.rail.update(cx, |rail, cx| {
             rail.read_off(Roster::listing(&[PROGRAM]), cx)
         });
-        let shown = |chain: &str, title: &str, at: i64, front: bool, cx: &mut VisualTestContext| {
+        let shown = |chain: &str, title: &str, at: i64, front: bool, cx: &mut Harness<Root>| {
             // `Push::show`'s APNs body (crates/pushd)
             let payload = serde_json::json!({
                 "aps": { "alert": { "title": title, "body": "said" }, "thread-id": PROGRAM },
@@ -3194,9 +3227,9 @@ mod tests {
             let opened = at == 101;
             let notice = crate::os::OsNotice::of(&payload.to_string(), at, front, opened);
             cx.update(|_, cx| os_notice(notice.expect("a notice"), cx));
-            run_out(cx);
+            run_out_harnessed(cx);
         };
-        let rows = |cx: &mut VisualTestContext| {
+        let rows = |cx: &mut Harness<Root>| {
             let entries = shared.notifications.read_with(cx, |it, _| it.entries());
             let rows = entries
                 .iter()
@@ -3214,7 +3247,7 @@ mod tests {
             };
             session.seed(state, cx);
         });
-        run_out(cx);
+        run_out_harnessed(cx);
         let hello = ("Hello".to_owned(), "room".to_owned(), 100, false);
         assert_eq!(rows(cx), std::slice::from_ref(&hello));
         shown("garage#1", "Hello", 100, false, cx);
@@ -3223,7 +3256,7 @@ mod tests {
             [hello],
             "the OS's list read again logged it again"
         );
-        assert!(cx.debug_bounds("tab/notifications/dot").is_some());
+        assert!(cx.update(|window, _| window.try_find("tab/notifications/dot").is_some()));
         assert_eq!(notifications_tab_name(cx), "Notifications, 1 unread");
 
         shown("garage#1", "Hello", 101, false, cx);
