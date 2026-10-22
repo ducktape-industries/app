@@ -1404,13 +1404,35 @@ pub(super) async fn put(
             })
         }
     });
-    if let Err(error) = node.client.put_blobs(frame.encode(), stream).await {
+    let mut heard = None;
+    let uploaded = {
+        let upload = std::pin::pin!(node.client.put_blobs(frame.encode(), stream));
+        let lapse = std::pin::pin!(lapsed(
+            &node,
+            &mut blocks,
+            frame.body.id(),
+            frame.body.until(),
+            &mut heard
+        ));
+        match futures::future::select(upload, lapse).await {
+            futures::future::Either::Left((uploaded, _)) => uploaded,
+            futures::future::Either::Right((lapsed, _)) => return Err(lapsed),
+        }
+    };
+    if let Err(error) = uploaded {
         // a blob that could not be read again ended the upload: its refusal
         let unread = unread.lock().expect("an unread blob").take();
         return Err(unread.unwrap_or_else(|| refused(error)));
     }
     sent(total);
-    let bundle = landed(&node, &mut blocks, frame.body.id(), frame.body.until()).await?;
+    let bundle = landed(
+        &node,
+        &mut blocks,
+        frame.body.id(),
+        frame.body.until(),
+        heard,
+    )
+    .await?;
     drop(blocks);
     let key = blob::contract::bundle_key(bundle);
     while let Some(change) = bundles.next().await {
@@ -1433,6 +1455,47 @@ pub(super) async fn put(
     ))
 }
 
+async fn lapsed(
+    node: &Node,
+    blocks: &mut (impl futures::Stream<Item = noded_client::Result<noded::Change>> + Unpin),
+    id: [u8; 32],
+    until: u64,
+    heard: &mut Option<u64>,
+) -> wire::Error {
+    use futures::StreamExt as _;
+    let ask = noded::TxAsk {
+        tx: noded::TxRef::Hash(id),
+        most: 0,
+    };
+    while let Some(change) = blocks.next().await {
+        let height = match change {
+            Ok(change) => change.height,
+            Err(error) => return refused(error),
+        };
+        *heard = Some(height);
+        if height <= until {
+            continue;
+        }
+        let carried = match node.client.tx(&ask).await {
+            Ok(located) => located.is_some_and(|located| located.tx.receipt.is_some()),
+            Err(error) => return refused(error),
+        };
+        if carried {
+            return futures::future::pending().await;
+        }
+        return wire::Error::new(
+            abi::reason::ANCHOR,
+            format!(
+                "the upload was still going past block {until}, the last its frame may land at: attach it again"
+            ),
+        );
+    }
+    wire::Error::new(
+        refusal::NODE_FAILED,
+        "the node stopped telling its blocks before the upload ended",
+    )
+}
+
 /// The bundle the block that carries frame `id` put, read off `blocks` (a
 /// change a block): the program's refusal where it rejected the put, and
 /// `anchor` once a block at `until` (the last that may carry the frame)
@@ -1442,14 +1505,17 @@ async fn landed(
     blocks: &mut (impl futures::Stream<Item = noded_client::Result<noded::Change>> + Unpin),
     id: [u8; 32],
     until: u64,
+    heard: Option<u64>,
 ) -> Result<u64, wire::Error> {
     use futures::StreamExt as _;
     let ask = noded::TxAsk {
         tx: noded::TxRef::Hash(id),
         most: 0,
     };
-    while let Some(change) = blocks.next().await {
-        let height = change.map_err(refused)?.height;
+    let heard = futures::stream::iter(heard.map(Ok::<u64, noded_client::Error>));
+    let mut heights = heard.chain(blocks.map(|change| change.map(|change| change.height)));
+    while let Some(height) = heights.next().await {
+        let height = height.map_err(refused)?;
         let located = node.client.tx(&ask).await.map_err(refused)?;
         if let Some(receipt) = located.and_then(|located| located.tx.receipt) {
             return match receipt.outcome {

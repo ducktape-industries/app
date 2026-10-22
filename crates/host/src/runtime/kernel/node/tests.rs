@@ -1312,6 +1312,149 @@ async fn a_put_no_block_carries_by_its_until_is_refused_anchor() {
     );
 }
 
+#[tokio::test]
+async fn a_block_heard_while_the_upload_went_is_read_by_the_wait_for_its_landing() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(48)),
+    )
+    .await;
+    let fake = put_node(bundle_five());
+    let frame = backend::seated_frame(&fake.node.client, &fake.node.network, KEEPER, Vec::new())
+        .await
+        .unwrap();
+    let encoded = abi::encode(&frame);
+    let mut upload = (encoded.len() as u32).to_le_bytes().to_vec();
+    upload.extend(encoded);
+    *fake.upload.lock().unwrap() = Some(upload);
+    let (id, until) = (frame.body.id(), frame.body.until());
+    let (tell, mut blocks) = futures::channel::mpsc::unbounded();
+    let carrying = noded::Change {
+        height: 8,
+        root: abi::Root([0; 32]),
+        writes: Vec::new(),
+    };
+    tell.unbounded_send(Ok(carrying)).unwrap();
+    let mut heard = None;
+    {
+        let mut lapse = std::pin::pin!(lapsed(&fake.node, &mut blocks, id, until, &mut heard));
+        assert!(futures::poll!(&mut lapse).is_pending());
+    }
+    assert_eq!(heard, Some(8), "the block went by while the upload went");
+    drop(tell);
+    match landed(&fake.node, &mut blocks, id, until, heard).await {
+        Ok(bundle) => assert_eq!(bundle, 5),
+        Err(refusal) => panic!("the block that carried the put was lost: {refusal:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_put_whose_upload_is_unanswered_past_its_frames_until_is_refused_and_cut() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    backend::seat_key(
+        "test-network",
+        std::sync::Arc::new(commonware_cryptography::ed25519::PrivateKey::from_seed(47)),
+    )
+    .await;
+    let blobs = put_of(&view(), vec![bytes("chunk", b"tape")]);
+    let (node, mut cut) = unanswered_put_node();
+    let refusal = put(node, blobs, |_| {}).await.unwrap_err();
+    let until = TIP.height + noded::ANCHOR_WINDOW;
+    assert_eq!(refusal.code, abi::reason::ANCHOR);
+    assert_eq!(
+        refusal.message,
+        format!(
+            "the upload was still going past block {until}, the last its frame may land at: attach it again"
+        )
+    );
+    cut.wait_for(|cut| *cut).await.unwrap();
+}
+
+fn unanswered_put_node() -> (Node, tokio::sync::watch::Receiver<bool>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let node = Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+        on: Default::default(),
+    };
+    let (began, beginning) = tokio::sync::watch::channel(false);
+    let (cut, cutting) = tokio::sync::watch::channel(false);
+    let (began, cut) = (std::sync::Arc::new(began), std::sync::Arc::new(cut));
+    handle().spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        while let Ok((stream, _)) = listener.accept().await {
+            let (began, beginning, cut) = (began.clone(), beginning.clone(), cut.clone());
+            tokio::spawn(serve_unanswered_put(stream, began, beginning, cut));
+        }
+    });
+    (node, cutting)
+}
+
+async fn serve_unanswered_put(
+    stream: tokio::net::TcpStream,
+    began: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
+    mut beginning: tokio::sync::watch::Receiver<bool>,
+    cut: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
+) {
+    use futures::{SinkExt as _, StreamExt as _};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut head = [0; 64];
+    let read = stream.peek(&mut head).await.unwrap();
+    let line = String::from_utf8_lossy(&head[..read]).into_owned();
+    if let Some(program) = line.strip_prefix("GET /v1/changes/") {
+        let blocks = program.starts_with(noded::RECENT) || program.starts_with("%24recent");
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        if blocks {
+            beginning.wait_for(|began| *began).await.unwrap();
+            let until = TIP.height + noded::ANCHOR_WINDOW;
+            for height in [until, until + 1] {
+                let change = noded::Change {
+                    height,
+                    root: abi::Root([0; 32]),
+                    writes: vec![(b"tip".to_vec(), Some(Vec::new()))],
+                };
+                let block = tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change));
+                socket.send(block).await.unwrap();
+            }
+        }
+        while socket.next().await.is_some() {}
+        return;
+    }
+    let mut stream = tokio::io::BufReader::new(stream);
+    let (request, _) = read_http(&mut stream).await;
+    let answer = match request.split(' ').nth(1).unwrap() {
+        noded::route::STATUS => {
+            let mut status = status_at(TIP);
+            status.roles = status
+                .roles
+                .iter()
+                .map(|(role, program)| (role.to_owned(), program.clone()))
+                .chain([(abi::role::BLOBS.to_owned(), KEEPER.into())])
+                .collect();
+            abi::encode(&status)
+        }
+        noded::route::TX => abi::encode(&None::<noded::Located>),
+        noded::route::BLOB_PUT => {
+            began.send_replace(true);
+            let mut rest = [0; 4096];
+            while matches!(stream.read(&mut rest).await, Ok(read) if read > 0) {}
+            cut.send_replace(true);
+            return;
+        }
+        other => panic!("{other}"),
+    };
+    let reply = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        answer.len()
+    );
+    stream.write_all(reply.as_bytes()).await.unwrap();
+    stream.write_all(&answer).await.unwrap();
+}
+
 /// What `op.put` refuses at the ask, before anything is read or signed;
 /// a blob of any size is taken.
 #[test]
