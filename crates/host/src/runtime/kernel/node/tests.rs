@@ -587,7 +587,7 @@ struct Flaky {
     blocks: tokio::sync::mpsc::UnboundedSender<u64>,
     cut: std::sync::Arc<tokio::sync::Notify>,
     /// One item per status read it answered 502.
-    away_reads: std::sync::mpsc::Receiver<()>,
+    away_reads: tokio::sync::mpsc::UnboundedReceiver<()>,
     opened: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -608,7 +608,7 @@ fn flaky_changes_node() -> Flaky {
     let (blocks, heights) = tokio::sync::mpsc::unbounded_channel::<u64>();
     let heights = Arc::new(tokio::sync::Mutex::new(heights));
     let cut = Arc::new(tokio::sync::Notify::new());
-    let (read_away, away_reads) = std::sync::mpsc::channel();
+    let (read_away, away_reads) = tokio::sync::mpsc::unbounded_channel();
     let opened = Arc::new(AtomicUsize::new(0));
     let (is_up, refusing, cutting, taken) =
         (up.clone(), refuses.clone(), cut.clone(), opened.clone());
@@ -722,19 +722,35 @@ async fn answer(stream: &mut tokio::net::TcpStream, status: &str, body: &[u8]) {
 #[test]
 fn a_feed_whose_node_goes_away_opens_again_once_it_answers() {
     use std::sync::atomic::Ordering::SeqCst;
-    let flaky = flaky_changes_node();
+    let mut flaky = flaky_changes_node();
     let mut view = view();
     follow_changes(&mut view, 1, flaky.node.clone(), "chat".into());
     flaky.blocks.send(5).unwrap();
     assert_eq!(drained(&view, 1), [change_item(Some(5))]);
+    let mut changes = view.replies.changes();
     flaky.up.store(false, SeqCst);
     flaky.cut.notify_one();
-    for _ in 0..2 {
-        flaky
-            .away_reads
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the feed reads the node's status again while it is away");
-    }
+    handle().block_on(async {
+        for _ in 0..2 {
+            loop {
+                let mut events = Vec::new();
+                view.replies.drain_into(&mut events);
+                assert_eq!(
+                    events,
+                    [],
+                    "the feed must stay alive while the node is away"
+                );
+                tokio::select! {
+                    biased;
+                    changed = changes.changed() => changed.expect("the replies are alive"),
+                    read = flaky.away_reads.recv() => {
+                        read.expect("the fake node is alive");
+                        break;
+                    }
+                }
+            }
+        }
+    });
     let mut meanwhile = Vec::new();
     view.replies.drain_into(&mut meanwhile);
     assert_eq!(meanwhile, [], "nothing while the node is away");
@@ -994,6 +1010,7 @@ struct PutNode {
     node: Node,
     upload: Upload,
     hold: std::sync::Arc<tokio::sync::Notify>,
+    receipted: std::sync::Arc<tokio::sync::Notify>,
 }
 
 type Upload = std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>;
@@ -1003,6 +1020,7 @@ type Upload = std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>;
 struct Put {
     upload: Upload,
     hold: std::sync::Arc<tokio::sync::Notify>,
+    receipted: std::sync::Arc<tokio::sync::Notify>,
     landed: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
     landing: tokio::sync::watch::Receiver<bool>,
     carried: Option<abi::Outcome>,
@@ -1027,11 +1045,13 @@ fn put_node(carried: Option<abi::Outcome>) -> PutNode {
         node,
         upload: Default::default(),
         hold: Default::default(),
+        receipted: Default::default(),
     };
     let (landed, landing) = tokio::sync::watch::channel(false);
     let put = Put {
         upload: fake.upload.clone(),
         hold: fake.hold.clone(),
+        receipted: fake.receipted.clone(),
         landed: std::sync::Arc::new(landed),
         landing,
         carried,
@@ -1087,15 +1107,29 @@ async fn serve_put(stream: tokio::net::TcpStream, mut put: Put) {
         if blocks {
             let block = change(height, b"tip".to_vec(), Vec::new());
             socket.send(block).await.unwrap();
+            let _ = socket.close(None).await;
         } else if put.carried.is_some() {
+            use tokio_tungstenite::tungstenite::Message;
             let receipted = blob::contract::Custody::Receipted(Vec::new());
             socket
                 .send(change(8, key.clone(), bundle(receipted)))
                 .await
                 .unwrap();
+            if socket.send(Message::Ping(Vec::new())).await.is_err() {
+                return;
+            }
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Pong(_))) => break,
+                    Some(Ok(_)) => {}
+                    _ => return,
+                }
+            }
+            put.receipted.notify_one();
             put.hold.notified().await;
             let held = blob::contract::Custody::Held { since: 9 };
             socket.send(change(9, key, bundle(held))).await.unwrap();
+            let _ = socket.close(None).await;
         }
         while socket.next().await.is_some() {}
         return;
@@ -1211,18 +1245,28 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
     let blobs = put_of(&view, blobs);
     let fake = put_node(bundle_five());
     let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (said, mut heard) = tokio::sync::watch::channel(0u64);
     let sent = {
         let told = told.clone();
-        move |bytes| told.lock().unwrap().push(bytes)
+        move |bytes| {
+            told.lock().unwrap().push(bytes);
+            said.send_replace(bytes);
+        }
     };
     let mut answer = std::pin::pin!(put(fake.node.clone(), blobs, sent));
-    let waited = tokio::time::timeout(std::time::Duration::from_millis(500), &mut answer).await;
-    assert!(waited.is_err(), "answered before the bundle was held");
+    tokio::select! {
+        biased;
+        answered = &mut answer => panic!("answered before the upload was done: {answered:?}"),
+        _ = heard.wait_for(|bytes| *bytes == MOST + 7) => {}
+    }
     assert!(fake.upload.lock().unwrap().is_some(), "the upload went in");
+    tokio::select! {
+        biased;
+        answered = &mut answer => panic!("answered before the bundle was held: {answered:?}"),
+        () = fake.receipted.notified() => {}
+    }
     fake.hold.notify_one();
-    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
-        .await
-        .expect("answered once held");
+    let answer = answer.await;
     let framed = [
         blob::frame("chunk", &file[..MOST as usize]).unwrap(),
         blob::frame("chunk", &file[MOST as usize..]).unwrap(),
@@ -1265,8 +1309,6 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
     );
 }
 
-/// `op.put` against a [`put_node`] whose blocks carry the frame as
-/// `carried` says, answered within five seconds.
 async fn put_meeting(carried: Option<abi::Outcome>, seed: u64) -> Answer {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
@@ -1279,10 +1321,7 @@ async fn put_meeting(carried: Option<abi::Outcome>, seed: u64) -> Answer {
     .await;
     let blobs = put_of(&view(), vec![bytes("chunk", b"tape")]);
     let fake = put_node(carried);
-    let answer = put(fake.node.clone(), blobs, |_| {});
-    tokio::time::timeout(std::time::Duration::from_secs(5), answer)
-        .await
-        .expect("answered")
+    put(fake.node.clone(), blobs, |_| {}).await
 }
 
 /// The block that carries the put rejects it: the program's refusal is

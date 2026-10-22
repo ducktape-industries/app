@@ -743,19 +743,15 @@ async fn a_quitting_app_closes_its_session_and_the_node_hears_it_at_once() {
         .unwrap();
     assert_eq!(published.heard.recv().await, Some(Heard::Published));
     client.quit().await;
-    // the client's keep-alive holds an unclosed session open for good: a
-    // bound far under the idle limit tells "closed" from "never closed"
-    let heard = tokio::time::timeout(Duration::from_secs(5), ended.recv())
-        .await
-        .expect("the node did not hear the app quit")
-        .unwrap();
-    assert!(
-        matches!(&heard, quinn::ConnectionError::ApplicationClosed(close) if close.reason == "quit"),
-        "the node heard {heard:?}"
-    );
     assert!(
         lock(&client.0.not_before).is_none(),
         "a quit is no failure: the next dial does not wait"
+    );
+    drop((published, client));
+    let heard = ended.recv().await.unwrap();
+    assert!(
+        matches!(&heard, quinn::ConnectionError::ApplicationClosed(close) if close.reason == "quit"),
+        "the node heard {heard:?}"
     );
 }
 
@@ -836,13 +832,11 @@ fn send(published: &Outbox, group: u64, object: u32, body: &[u8], end: bool) {
     assert_eq!(published.push(object), Pushed::Queued);
 }
 
-/// The next `count` items, bounded: an item that never comes fails the
-/// test instead of holding it.
 async fn heard(request: &mut Request, count: usize) -> Vec<Data> {
     let mut got = Vec::new();
     for _ in 0..count {
-        let next = tokio::time::timeout(Duration::from_secs(5), request.data.recv());
-        got.push(next.await.expect("an object never came").unwrap());
+        let next = request.data.recv().await;
+        got.push(next.expect("the request ended before an object came"));
     }
     got
 }

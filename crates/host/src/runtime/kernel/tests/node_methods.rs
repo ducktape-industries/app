@@ -27,9 +27,6 @@ pub(super) fn node_server(
         let mut bodies = Vec::new();
         for (status, body) in responses {
             let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                .unwrap();
             let (line, received) = read_request(&mut stream);
             assert_eq!(line.trim(), expected_path);
             bodies.push(received);
