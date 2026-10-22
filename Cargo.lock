@@ -3064,6 +3064,7 @@ dependencies = [
  "accesskit 0.25.1",
  "cef",
  "cef-dll-sys",
+ "ducktape-a11y-platform",
  "ducktape-gpui-linux",
  "futures",
  "gpui-kit",

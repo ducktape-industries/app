@@ -601,11 +601,11 @@ mod tests {
     //! Chromium's own updates, recorded from this crate's handler
     //! (`testdata/`), read and built into a gpui window: no CEF.
     use super::*;
+    use ducktape_a11y_platform::headless::Harness;
     use gpui_kit::accesskit::TreeUpdate;
     use gpui_kit::{
         Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-        StatefulInteractiveElement as _, Styled as _, TestAppContext, VisualTestContext, div, px,
-        size,
+        StatefulInteractiveElement as _, Styled as _, div, px, size,
     };
 
     /// The local test page: loaded; a click into "User name"; "a" typed.
@@ -648,18 +648,15 @@ mod tests {
     }
 
     /// The window's tree with `page` in it, and the window's scale.
-    fn tree(page: &Rc<RefCell<PageTree>>, cx: &mut TestAppContext) -> (TreeUpdate, f64) {
-        cx.update(gpui_kit::init);
+    fn tree(page: &Rc<RefCell<PageTree>>) -> (TreeUpdate, f64) {
         let page = page.clone();
-        let window = cx.open_window(size(px(1100.), px(760.)), move |_, _| Piece(page));
-        let mut native = VisualTestContext::from_window(window.into(), cx);
+        let native = Harness::open_with(gpui_kit::init, size(px(1100.), px(760.)), move |_, _| {
+            Piece(page)
+        });
         native.update(|window, cx| {
-            window.activate_a11y();
+            native.activate_in(window);
             window.draw(cx).clear(cx);
-            (
-                window.a11y_tree().unwrap().clone(),
-                f64::from(window.scale_factor()),
-            )
+            (native.tree(), f64::from(window.scale_factor()))
         })
     }
 
@@ -677,14 +674,14 @@ mod tests {
     /// node's one child), each node listed under one parent, in window
     /// pixels; the page's focus is the node's active descendant, and what
     /// is typed is the field's value.
-    #[gpui_kit::test]
-    fn a_recorded_page_reads_under_the_pages_node(cx: &mut TestAppContext) {
+    #[test]
+    fn a_recorded_page_reads_under_the_pages_node() {
         let lines: Vec<&str> = PAGE.lines().collect();
         let page = Rc::new(RefCell::new(PageTree::default()));
         feed(&mut page.borrow_mut(), lines[..1].iter().copied());
         // the recording's device pixels were logical ones (scale 1); the
         // piece's top is 21 logical pixels down a window of any scale
-        let (update, scale) = tree(&page, cx);
+        let (update, scale) = tree(&page);
         let top = 21. * scale;
 
         let (_, piece) = node(&update, Role::Group, "page");
@@ -736,7 +733,7 @@ mod tests {
         assert!(piece.active_descendant().is_some_and(|focus| focus == root));
 
         feed(&mut page.borrow_mut(), lines[1..].iter().copied());
-        let (update, _) = tree(&page, cx);
+        let (update, _) = tree(&page);
         let (_, piece) = node(&update, Role::Group, "page");
         let (user, field) = node(&update, Role::TextInput, "User name");
         assert_eq!(piece.active_descendant(), Some(user));
@@ -745,7 +742,7 @@ mod tests {
         // scrolled 100 device pixels: the heading leaves the top as an
         // empty box; the link's centre is off the page, so is its Click
         page.borrow_mut().scrolled(0., 100.);
-        let (update, _) = tree(&page, cx);
+        let (update, _) = tree(&page);
         let (_, heading) = node(&update, Role::Heading, "Ducktape page heading");
         assert_eq!(heading.bounds().map(|b| (b.y0, b.y1)), Some((top, top)));
         assert!(
@@ -759,11 +756,11 @@ mod tests {
 
     /// An iframe's document sits under its iframe, placed where the iframe
     /// is on the page.
-    #[gpui_kit::test]
-    fn an_iframes_document_sits_under_its_iframe(cx: &mut TestAppContext) {
+    #[test]
+    fn an_iframes_document_sits_under_its_iframe() {
         let page = Rc::new(RefCell::new(PageTree::default()));
         feed(&mut page.borrow_mut(), IFRAME.lines());
-        let (update, _) = tree(&page, cx);
+        let (update, _) = tree(&page);
         let (inner, document) = node(&update, Role::RootWebArea, "Second page");
         let (_, iframe) = update
             .nodes

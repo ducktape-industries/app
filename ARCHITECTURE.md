@@ -735,7 +735,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   Click, a dialog's node, keyed ids) on the tree it reads. `Harness` draws its window while it
   is dirty once the dispatcher parks (the window's `frame_waker` and `prepare_frame`),
   keystrokes go through `Window::dispatch_keystroke` and other input through the window's
-  input callback, and an AT action runs once the dispatcher parks. The host's a11y tests that read the tree
+  input callback, and an AT action runs once the dispatcher parks. The host's and the web crate's a11y tests that read the tree
   directly open, activate, read and act through it; the door, and the tests that read
   through the door, still read gpui-pre's own `Window::a11y_tree`.
 - **The door** (`crates/host/src/ax.rs`, `crates/host/src/ax/{http,tree,actions}.rs`). Built only

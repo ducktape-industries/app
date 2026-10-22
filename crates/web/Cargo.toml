@@ -80,3 +80,4 @@ cef-dll-sys = { version = "=154.5.0", default-features = false, optional = true 
 [dev-dependencies]
 # a page's tree built into a test window
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+ducktape-a11y-platform = { path = "../a11y-platform", features = ["test-support"] }
