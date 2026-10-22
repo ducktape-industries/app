@@ -193,6 +193,17 @@ impl ViewTree {
     }
 }
 
+#[cfg(all(feature = "web", feature = "test-support"))]
+impl ViewTree {
+    pub fn pages_for_test(&self) -> Vec<Entity<ducktape_web::Page>> {
+        self.webs
+            .pages
+            .values()
+            .map(|piece| piece.page.clone())
+            .collect()
+    }
+}
+
 #[cfg(feature = "web")]
 fn open(
     address: &str,

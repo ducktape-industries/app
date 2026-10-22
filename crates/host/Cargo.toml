@@ -46,6 +46,11 @@ call = ["av", "ducktape-av/call"]
 # `wat` turns the test views' text into the wasm a runner takes
 test-support = ["ui", "gpui-kit/test-support", "wasmtime", "dep:wat", "dep:libc"]
 
+[[test]]
+name = "artifact_row"
+harness = false
+required-features = ["web", "test-support"]
+
 [dependencies]
 gpui-kit = { version = "=0.7.3", optional = true }
 gpui-base = { version = "=0.7.3", optional = true }
