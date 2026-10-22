@@ -1,7 +1,8 @@
 use super::*;
+use ducktape_a11y_platform::headless::Harness;
 use gpui_kit::Keystroke;
 
-fn line(tree: &Entity<ViewTree>, cx: &gpui_kit::VisualTestContext) -> Entity<InputState> {
+fn line(tree: &Entity<ViewTree>, cx: &impl gpui_kit::AppContext) -> Entity<InputState> {
     tree.read_with(cx, |tree, _| {
         tree.first_input_for_test().expect("a one-line field")
     })
@@ -216,10 +217,9 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
     );
 }
 
-#[gpui_kit::test]
-fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn a_read_only_field_takes_no_typing_and_no_set_value() {
     use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
-    cx.update(gpui_kit::init);
     for (read_only, disabled, changes) in [
         (true, false, false),
         (false, true, false),
@@ -231,12 +231,13 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
         };
         options.read_only = read_only;
         let root = container("form", [field]);
-        let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root));
-        let tree = window.root(cx).unwrap();
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let mut native = Harness::open_with(gpui_kit::init, size(px(400.), px(200.)), |_, _| {
+            ViewTree::new(root)
+        });
+        let tree = native.root();
         let (events, _subscription) = emitted(&tree, &mut native);
         let state = native.update(|window, cx| {
-            window.activate_a11y();
+            native.activate_in(window);
             crate::render::draw_frame(window, cx);
             crate::render::draw_frame(window, cx);
             let state = tree.read(cx).first_input_for_test().unwrap();
@@ -244,24 +245,18 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
             state
         });
         native.simulate_input(" typed");
-        native.update(|window, cx| {
-            crate::render::draw_frame(window, cx);
-            let update = window.a11y_tree().expect("an a11y tree once activated");
-            let (node, _) = update
-                .nodes
-                .iter()
-                .find(|(_, node)| node.role() == gpui_kit::Role::TextInput)
-                .expect("the field has a node");
-            let node = *node;
-            window.dispatch_a11y_action(
-                ActionRequest {
-                    action: Action::SetValue,
-                    target_tree: TreeId::ROOT,
-                    target_node: node,
-                    data: Some(ActionData::Value("set".into())),
-                },
-                cx,
-            );
+        native.update(crate::render::draw_frame);
+        let update = native.tree();
+        let (node, _) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == gpui_kit::Role::TextInput)
+            .expect("the field has a node");
+        native.act(ActionRequest {
+            action: Action::SetValue,
+            target_tree: TreeId::ROOT,
+            target_node: *node,
+            data: Some(ActionData::Value("set".into())),
         });
         native.run_until_parked();
         let value = state.read_with(&native, |state, _| state.value().to_string());
@@ -304,15 +299,15 @@ fn filter_row(width: impl Into<gpui_kit::Length> + Clone, border: gpui_kit::Hsla
     )
 }
 
-#[gpui_kit::test]
-fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
+#[test]
+fn a_focused_field_wears_one_ring_on_its_own_box() {
     let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let root = filter_row(px(260.), grey);
-    let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let drawn = |native: &mut gpui_kit::VisualTestContext| {
+    let mut native = Harness::open_with(gpui_kit::init, size(px(600.), px(200.)), |_, _| {
+        ViewTree::new(root)
+    });
+    let tree = native.root();
+    let drawn = |native: &mut Harness<ViewTree>| {
         native.update(|window, cx| {
             crate::render::draw_frame(window, cx);
             let scale = window.scale_factor();
@@ -328,7 +323,7 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
             let over = bordered()
                 .filter(|quad| quad.bounds != field.bounds && quad.bounds.intersects(&field.bounds))
                 .count();
-            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let update = &native.tree();
             let node = update
                 .nodes
                 .iter()
@@ -345,7 +340,7 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
             )
         })
     };
-    native.update(|window, _| window.activate_a11y());
+    native.update(|window, _| native.activate_in(window));
     let unfocused = drawn(&mut native);
     assert_eq!((unfocused.0, unfocused.1, unfocused.2), (16., grey, 0));
     let state = line(&tree, &native);

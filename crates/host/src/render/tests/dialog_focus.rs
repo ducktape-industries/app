@@ -1,5 +1,6 @@
 //! A view dialog gives the keyboard back to what opened it (AX-120).
 use super::*;
+use ducktape_a11y_platform::headless::Harness;
 
 fn handled(key: &str, name: &str, handle: u64) -> wire::Node {
     let mut node = button(key, name);
@@ -348,12 +349,12 @@ fn a_popover_dialog_takes_the_keys_and_keeps_them(cx: &mut gpui_kit::TestAppCont
     );
 }
 
-fn held_by_the_dialog(native: &mut gpui_kit::VisualTestContext) -> Vec<String> {
+fn held_by_the_dialog(native: &mut Harness<ViewTree>) -> Vec<String> {
     native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let update = &native.tree();
         let nodes: std::collections::HashMap<_, _> =
             update.nodes.iter().map(|(id, node)| (*id, node)).collect();
         let (dialog, _) = update
@@ -372,13 +373,11 @@ fn held_by_the_dialog(native: &mut gpui_kit::VisualTestContext) -> Vec<String> {
     })
 }
 
-#[gpui_kit::test]
-fn a_popover_dialog_holds_its_controls_for_assistive_technology(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+#[test]
+fn a_popover_dialog_holds_its_controls_for_assistive_technology() {
+    let mut native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
         ViewTree::new(popover(true))
     });
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let held = held_by_the_dialog(&mut native);
     assert!(
         ["Submit", "Cancel"]
@@ -472,13 +471,11 @@ fn picking(open: bool, beside: bool) -> wire::Node {
     sized("root", page, Some(fill()), Some(fill()))
 }
 
-#[gpui_kit::test]
-fn a_dialogs_own_deferred_draw_sits_under_its_node(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+#[test]
+fn a_dialogs_own_deferred_draw_sits_under_its_node() {
+    let mut native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
         ViewTree::new(picking(true, true))
     });
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let held = held_by_the_dialog(&mut native);
     assert!(
         ["Name", "Alice"]
@@ -486,18 +483,16 @@ fn a_dialogs_own_deferred_draw_sits_under_its_node(cx: &mut gpui_kit::TestAppCon
             .all(|name| held.iter().any(|held| held == name)),
         "the dialog holds {held:?}"
     );
-    beside_and_out_of_it(&mut native, &held);
+    beside_and_out_of_it(&native, &held);
 }
 
-fn beside_and_out_of_it(native: &mut gpui_kit::VisualTestContext, held: &[String]) {
-    let drawn = native.update(|window, _| {
-        let update = window.a11y_tree().expect("an a11y tree once activated");
-        update
-            .nodes
-            .iter()
-            .filter_map(|(_, node)| node.label().map(str::to_owned))
-            .collect::<Vec<_>>()
-    });
+fn beside_and_out_of_it(native: &Harness<ViewTree>, held: &[String]) {
+    let drawn = native
+        .tree()
+        .nodes
+        .iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect::<Vec<_>>();
     assert!(
         drawn.iter().any(|drawn| drawn == "Bob") && !held.iter().any(|held| held == "Bob"),
         "the draw beside the dialog is drawn, out of it: {drawn:?}, the dialog {held:?}"
@@ -554,9 +549,8 @@ fn tab_reaches_a_dialogs_own_deferred_draw_and_stays_in_the_dialog(
     );
 }
 
-#[gpui_kit::test]
-fn a_sheets_own_deferred_draw_sits_under_its_node(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
+#[test]
+fn a_sheets_own_deferred_draw_sits_under_its_node() {
     let sheet = wire::Node::Sheet {
         id: named_id("actions"),
         label: Some("Message actions".into()),
@@ -571,8 +565,9 @@ fn a_sheets_own_deferred_draw_sits_under_its_node(cx: &mut gpui_kit::TestAppCont
     let beside = listed("beside", handled("bob", "Bob", 4));
     let page = container("page", [button("open", "Actions"), sheet, beside]);
     let root = sized("root", page, Some(fill()), Some(fill()));
-    let window = cx.open_window(size(px(300.), px(200.)), move |_, _| ViewTree::new(root));
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let mut native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), move |_, _| {
+        ViewTree::new(root)
+    });
     let held = held_by_the_dialog(&mut native);
     assert!(
         ["Copy text", "Alice"]
@@ -580,5 +575,5 @@ fn a_sheets_own_deferred_draw_sits_under_its_node(cx: &mut gpui_kit::TestAppCont
             .all(|name| held.iter().any(|held| held == name)),
         "the sheet holds {held:?}"
     );
-    beside_and_out_of_it(&mut native, &held);
+    beside_and_out_of_it(&native, &held);
 }

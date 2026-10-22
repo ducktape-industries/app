@@ -279,12 +279,13 @@ impl Render for Seat {
 /// Every event `tree` emits while the subscription lives.
 pub(super) fn emitted(
     tree: &Entity<ViewTree>,
-    native: &mut gpui_kit::VisualTestContext,
+    native: &mut impl gpui_kit::AppContext,
 ) -> (Rc<RefCell<Vec<wire::Event>>>, Subscription) {
     let events = Rc::new(RefCell::new(Vec::new()));
     let observed = events.clone();
-    let subscription = native.update(|_, cx| {
-        cx.subscribe(tree, move |_, event: &wire::Event, _| {
+    let subscription = native.update_entity(tree, |_, cx| {
+        let app: &mut gpui_kit::App = cx;
+        app.subscribe(tree, move |_, event: &wire::Event, _| {
             observed.borrow_mut().push(event.clone());
         })
     });

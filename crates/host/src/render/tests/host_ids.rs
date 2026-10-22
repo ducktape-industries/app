@@ -4,6 +4,7 @@
 //! elements share one gpui state; now each draws with every node in the
 //! tree and every click on its own element.
 use super::*;
+use ducktape_a11y_platform::headless::Harness;
 
 fn plain_text(id: Option<wire::ElementIdWire>, content: &str) -> wire::Node {
     wire::Node::Text(view_wire::TextNode {
@@ -164,8 +165,8 @@ fn a_view_text_spelled_like_an_inputs_field_is_its_own_node(cx: &mut gpui_kit::T
     assert_eq!(field.id, "t:i");
 }
 
-#[gpui_kit::test]
-fn a_view_text_spelled_layer_keeps_a_nested_dialog_its_node(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn a_view_text_spelled_layer_keeps_a_nested_dialog_its_node() {
     let overlay =
         |key: &str, label: &str, base: wire::Node, modal: wire::Node| wire::Node::Overlay {
             id: named_id(key),
@@ -186,15 +187,15 @@ fn a_view_text_spelled_layer_keeps_a_nested_dialog_its_node(cx: &mut gpui_kit::T
         plain_text(Some(named_id("layer")), "base"),
         inner,
     );
-    cx.update(gpui_kit::init);
     let root = sized("root", outer, Some(fill()), Some(fill()));
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let native = Harness::open_with(gpui_kit::init, size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(root)
+    });
     let labels = native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        let tree = window.a11y_tree().unwrap();
+        let tree = &native.tree();
         let mut labels: Vec<(gpui_kit::Role, String)> = tree
             .nodes
             .iter()

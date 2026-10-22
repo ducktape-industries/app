@@ -2906,6 +2906,7 @@ dependencies = [
  "describe",
  "design",
  "ducklink",
+ "ducktape-a11y-platform",
  "ducktape-av",
  "ducktape-rt",
  "ducktape-web",

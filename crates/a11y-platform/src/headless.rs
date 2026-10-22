@@ -1,7 +1,7 @@
 //! A headless inner platform for tests, driven by gpui's `TestDispatcher` through
 //! `Application::run_embedded`, and `Harness`: one window of it under `A11yPlatform`.
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     ffi::OsString,
     path::{Path, PathBuf},
@@ -12,16 +12,17 @@ use std::{
 use anyhow::Result;
 use futures::channel::oneshot;
 use gpui::{
-    A11yCallbacks, Action, AnyWindowHandle, App, AppContext, Application, ApplicationHandle,
-    AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, BackgroundExecutor, Bounds, Capslock,
-    ClipboardItem, Context, CursorStyle, DevicePixels, DispatchEventResult, DisplayId,
-    DummyKeyboardMapper, ForegroundExecutor, GpuSpecs, Keymap, Menu, MenuItem, Modifiers,
-    NoopTextSystem, PathPromptOptions, Pixels, Platform, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper,
-    PlatformTextSystem, PlatformWindow, Point, PromptButton, PromptLevel, Render,
-    RequestFrameOptions, Scene, Size, Task, TestDispatcher, ThermalState, TileId, Window,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowHandle,
-    WindowOptions, WindowParams, WindowVisibility, accesskit, px,
+    A11yCallbacks, Action, AnyView, AnyWindowHandle, App, AppContext, Application,
+    ApplicationHandle, AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, BackgroundExecutor,
+    Bounds, Capslock, ClipboardItem, Context, CursorStyle, DevicePixels, DispatchEventResult,
+    DisplayId, DummyKeyboardMapper, Entity, EntityId, ForegroundExecutor, Global, GpuSpecs,
+    GpuiBorrow, InputEvent, Keymap, Keystroke, Menu, MenuItem, Modifiers, NoopTextSystem,
+    PathPromptOptions, Pixels, Platform, PlatformAtlas, PlatformDisplay, PlatformInput,
+    PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    PlatformWindow, Point, PromptButton, PromptLevel, Render, RequestFrameOptions, Reservation,
+    Scene, Size, Task, TestDispatcher, ThermalState, TileId, Window, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowHandle, WindowOptions,
+    WindowParams, WindowVisibility, accesskit, px,
 };
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle as RawWindowHandle,
@@ -53,12 +54,15 @@ impl HeadlessPlatform {
 }
 
 type FrameRequest = Box<dyn FnMut(RequestFrameOptions)>;
+type InputCallback = Box<dyn FnMut(PlatformInput) -> DispatchEventResult>;
 
 #[derive(Default)]
 pub struct HeadlessWindow {
     bounds: Bounds<Pixels>,
     input_handler: RefCell<Option<PlatformInputHandler>>,
     request_frame: RefCell<Option<FrameRequest>>,
+    input: RefCell<Option<InputCallback>>,
+    wants_frame: Rc<Cell<bool>>,
     a11y: RefCell<Option<A11yCallbacks>>,
     tree: RefCell<Option<accesskit::TreeUpdate>>,
 }
@@ -74,6 +78,13 @@ impl HeadlessWindow {
             });
             *self.request_frame.borrow_mut() = Some(callback);
         }
+    }
+
+    pub fn input(&self, event: PlatformInput) -> Option<DispatchEventResult> {
+        let mut callback = self.input.borrow_mut().take()?;
+        let result = callback(event);
+        *self.input.borrow_mut() = Some(callback);
+        Some(result)
     }
 
     pub fn adapter_activates(&self) -> bool {
@@ -99,16 +110,34 @@ pub struct Harness<V: 'static> {
 }
 
 impl<V: Render + 'static> Harness<V> {
-    pub fn open(build: impl FnOnce(&mut Window, &mut Context<V>) -> V + 'static) -> Self {
+    pub fn open(build: impl FnOnce(&mut Window, &mut Context<V>) -> V) -> Self {
+        Self::opened(|_| {}, WindowOptions::default(), build)
+    }
+
+    pub fn open_with(
+        init: impl FnOnce(&mut App) + 'static,
+        size: Size<Pixels>,
+        build: impl FnOnce(&mut Window, &mut Context<V>) -> V,
+    ) -> Self {
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(Point::default(), size))),
+            ..Default::default()
+        };
+        Self::opened(init, options, build)
+    }
+
+    fn opened(
+        init: impl FnOnce(&mut App) + 'static,
+        options: WindowOptions,
+        build: impl FnOnce(&mut Window, &mut Context<V>) -> V,
+    ) -> Self {
         let dispatcher = TestDispatcher::new(0);
         let headless = HeadlessPlatform::new(dispatcher.clone());
         let platform = A11yPlatform::new(headless.clone());
-        let app = Application::with_platform(platform.clone()).run_embedded(|_: &mut App| {});
+        let app = Application::with_platform(platform.clone()).run_embedded(init);
         let root = app.update(|cx| {
-            cx.open_window(WindowOptions::default(), |window, cx| {
-                cx.new(|cx| build(window, cx))
-            })
-            .expect("the headless platform opens every window")
+            cx.open_window(options, |window, cx| cx.new(|cx| build(window, cx)))
+                .expect("the headless platform opens every window")
         });
         let inner = headless.windows()[0].clone();
         let a11y = platform
@@ -121,8 +150,15 @@ impl<V: Render + 'static> Harness<V> {
             a11y,
             root,
         };
-        harness.draw();
+        harness.frame();
+        harness.settle();
         harness
+    }
+
+    pub fn root(&self) -> Entity<V> {
+        self.app
+            .update(|cx| self.root.root(cx))
+            .expect("the harness window stays open")
     }
 
     pub fn draw(&self) {
@@ -141,25 +177,163 @@ impl<V: Render + 'static> Harness<V> {
         })
     }
 
+    pub fn update<R>(&self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+        self.app.update(|cx| {
+            cx.update_window(self.root.into(), |_, window, cx| f(window, cx))
+                .expect("the harness window stays open")
+        })
+    }
+
+    pub fn activate_in(&self, window: &mut Window) {
+        assert!(self.a11y.activate(), "gpui gave the window its callbacks");
+        window.refresh();
+    }
+
     pub fn tree(&self) -> accesskit::TreeUpdate {
         self.a11y.tree().expect("a tree gpui sent while active")
     }
 
-    pub fn act(&self, action: accesskit::Action, target: accesskit::NodeId) {
-        let tree_id = self.tree().tree_id;
-        self.a11y.act(accesskit::ActionRequest {
-            action,
-            target_node: target,
-            target_tree: tree_id,
-            data: None,
-        });
-        self.draw();
+    pub fn act(&self, request: accesskit::ActionRequest) {
+        assert!(self.a11y.act(request), "gpui gave the window its callbacks");
+        self.settle();
+    }
+
+    pub fn simulate_keystrokes(&self, keystrokes: &str) {
+        for keystroke in keystrokes.split(' ') {
+            self.type_key(keystroke);
+        }
+        self.settle();
+    }
+
+    pub fn simulate_input(&self, input: &str) {
+        for keystroke in input.split("") {
+            self.type_key(keystroke);
+        }
+        self.settle();
+    }
+
+    pub fn simulate_event<E: InputEvent>(&self, event: E) {
+        self.inner.input(event.to_platform_input());
+        self.settle();
+    }
+
+    pub fn run_until_parked(&self) {
+        self.settle();
+    }
+
+    fn type_key(&self, keystroke: &str) {
+        let keystroke = Keystroke::parse(keystroke).expect("a keystroke gpui parses");
+        self.update(|window, cx| window.dispatch_keystroke(keystroke, cx));
     }
 
     fn settle_and_draw(&self, force_render: bool) {
         self.dispatcher.run_until_parked();
         self.inner.draw(force_render);
         self.dispatcher.run_until_parked();
+    }
+}
+
+impl<V: 'static> Harness<V> {
+    fn frame(&self) {
+        self.app.update(|cx| {
+            cx.update_window(self.root.into(), |_, window, cx| window.draw(cx).clear(cx))
+                .expect("the harness window stays open")
+        });
+    }
+
+    fn settle(&self) {
+        self.dispatcher.run_until_parked();
+        while self.inner.wants_frame.get() {
+            self.frame();
+            self.dispatcher.run_until_parked();
+        }
+    }
+}
+
+impl<V: 'static> AppContext for Harness<V> {
+    fn new<T: 'static>(&mut self, build_entity: impl FnOnce(&mut Context<T>) -> T) -> Entity<T> {
+        self.app.update(|cx| cx.new(build_entity))
+    }
+
+    fn reserve_entity<T: 'static>(&mut self) -> Reservation<T> {
+        self.app.update(|cx| cx.reserve_entity())
+    }
+
+    fn insert_entity<T: 'static>(
+        &mut self,
+        reservation: Reservation<T>,
+        build_entity: impl FnOnce(&mut Context<T>) -> T,
+    ) -> Entity<T> {
+        self.app
+            .update(|cx| cx.insert_entity(reservation, build_entity))
+    }
+
+    fn update_entity<T, R>(
+        &mut self,
+        handle: &Entity<T>,
+        update: impl FnOnce(&mut T, &mut Context<T>) -> R,
+    ) -> R
+    where
+        T: 'static,
+    {
+        self.app.update(|cx| cx.update_entity(handle, update))
+    }
+
+    fn as_mut<'a, T>(&'a mut self, _: &Entity<T>) -> GpuiBorrow<'a, T>
+    where
+        T: 'static,
+    {
+        panic!("the harness lends no borrow across its app: use update_entity")
+    }
+
+    fn read_entity<T, R>(&self, handle: &Entity<T>, read: impl FnOnce(&T, &App) -> R) -> R
+    where
+        T: 'static,
+    {
+        self.app.update(|cx| cx.read_entity(handle, read))
+    }
+
+    fn update_window<T, F>(&mut self, window: AnyWindowHandle, f: F) -> Result<T>
+    where
+        F: FnOnce(AnyView, &mut Window, &mut App) -> T,
+    {
+        self.app.update(|cx| cx.update_window(window, f))
+    }
+
+    fn with_window<R>(
+        &mut self,
+        entity_id: EntityId,
+        f: impl FnOnce(&mut Window, &mut App) -> R,
+    ) -> Option<R> {
+        self.app.update(|cx| cx.with_window(entity_id, f))
+    }
+
+    fn read_window<T, R>(
+        &self,
+        window: &WindowHandle<T>,
+        read: impl FnOnce(Entity<T>, &App) -> R,
+    ) -> Result<R>
+    where
+        T: 'static,
+    {
+        self.app.update(|cx| cx.read_window(window, read))
+    }
+
+    fn background_spawn<R>(
+        &self,
+        future: impl std::future::Future<Output = R> + Send + 'static,
+    ) -> Task<R>
+    where
+        R: Send + 'static,
+    {
+        self.app.update(|cx| cx.background_spawn(future))
+    }
+
+    fn read_global<G, R>(&self, callback: impl FnOnce(&G, &App) -> R) -> R
+    where
+        G: Global,
+    {
+        self.app.update(|cx| cx.read_global(callback))
     }
 }
 
@@ -448,7 +622,9 @@ impl PlatformWindow for OpenWindow {
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         *self.0.request_frame.borrow_mut() = Some(callback);
     }
-    fn on_input(&self, _: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {}
+    fn on_input(&self, callback: InputCallback) {
+        *self.0.input.borrow_mut() = Some(callback);
+    }
     fn on_active_status_change(&self, _: Box<dyn FnMut(bool)>) {}
     fn on_visibility_change(&self, _: Box<dyn FnMut(WindowVisibility)>) {}
     fn on_hover_status_change(&self, _: Box<dyn FnMut(bool)>) {}
@@ -470,6 +646,14 @@ impl PlatformWindow for OpenWindow {
         None
     }
     fn update_ime_position(&self, _: Bounds<Pixels>) {}
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        let wants = self.0.wants_frame.clone();
+        Some(Rc::new(move || wants.set(true)))
+    }
+    fn prepare_frame(&self) -> bool {
+        self.0.wants_frame.set(false);
+        false
+    }
     fn a11y_init(&self, callbacks: A11yCallbacks) {
         *self.0.a11y.borrow_mut() = Some(callbacks);
     }

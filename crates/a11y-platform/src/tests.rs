@@ -12,7 +12,7 @@ use gpui::{
     deferred, div, prelude::FluentBuilder, px,
 };
 
-use accesskit::{Action, Node, NodeId, Role, TreeUpdate};
+use accesskit::{Action, ActionRequest, Node, NodeId, Role, TreeId, TreeUpdate};
 
 use crate::headless::Harness;
 
@@ -40,6 +40,15 @@ fn has(tree: &TreeUpdate, label: &str) -> bool {
     tree.nodes
         .iter()
         .any(|(_, node)| node.label() == Some(label))
+}
+
+fn click(target: NodeId) -> ActionRequest {
+    ActionRequest {
+        action: Action::Click,
+        target_node: target,
+        target_tree: TreeId::ROOT,
+        data: None,
+    }
 }
 
 struct SendButton {
@@ -73,7 +82,7 @@ fn activates_reads_and_acts_on_the_tree_through_the_wrapper() {
     h.draw();
     let send = find(&h.tree(), "Send 0").0;
 
-    h.act(Action::Click, send);
+    h.act(click(send));
     assert_eq!(h.with(|send, _, _| send.clicks), 1);
     assert!(has(&h.tree(), "Send 1"), "the tree follows the click");
 }
@@ -334,7 +343,7 @@ fn row_15_an_at_click_on_a_covered_control_runs_the_host_rule_once() {
     let shared = clicks.clone();
     let h = active(move |_, _| Covered { clicks: shared });
     let go = find(&h.tree(), "Go").0;
-    h.act(Action::Click, go);
+    h.act(click(go));
     assert_eq!(clicks.get(), 1);
 }
 

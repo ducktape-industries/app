@@ -387,18 +387,16 @@ mod tests {
     }
 
     #[cfg(not(feature = "web"))]
-    #[gpui_kit::test]
-    fn without_the_web_view_a_piece_is_its_link_which_a_key_opens(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
+    #[test]
+    fn without_the_web_view_a_piece_is_its_link_which_a_key_opens() {
         use gpui_kit::px;
-        cx.update(gpui_kit::init);
         for (node, link) in [(artifact(), PLAN), (web(), "https://example.com")] {
-            let window = cx.open_window(gpui_kit::size(px(400.), px(300.)), |_, _| {
-                ViewTree::new(holder(vec![node]))
-            });
-            let tree = window.root(cx).unwrap();
-            let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            let native = ducktape_a11y_platform::headless::Harness::open_with(
+                gpui_kit::init,
+                gpui_kit::size(px(400.), px(300.)),
+                |_, _| ViewTree::new(holder(vec![node])),
+            );
+            let tree = native.root();
             let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let _opened = native.update(|_, cx| {
                 let heard = heard.clone();
@@ -407,11 +405,11 @@ mod tests {
                 })
             });
             let focused = native.update(|window, cx| {
-                window.activate_a11y();
+                native.activate_in(window);
                 crate::render::draw_frame(window, cx);
                 window.focus_next(cx);
                 crate::render::draw_frame(window, cx);
-                let tree = window.a11y_tree().unwrap();
+                let tree = &native.tree();
                 tree.nodes
                     .iter()
                     .find(|(id, _)| *id == tree.focus)

@@ -134,6 +134,7 @@ noded-client = { path = "../noded-client", features = ["commonware"] }
 # hand-written wasm for the describe method's hostile-section tests
 wat = "1"
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+ducktape-a11y-platform = { path = "../a11y-platform", features = ["test-support"] }
 # what a test reads back of the warnings a cache problem logs (`runner/wasmtime.rs`)
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)

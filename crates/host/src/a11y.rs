@@ -538,6 +538,7 @@ impl gpui_kit::Element for Cached {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ducktape_a11y_platform::headless::Harness;
     use gpui_kit::{Context, Render, TestAppContext, VisualTestContext, px, size};
 
     struct Patched(FocusHandle);
@@ -559,16 +560,16 @@ mod tests {
 
     /// Everything one element needs lands on its node: a live region set
     /// beside a modal does not replace it.
-    #[gpui_kit::test]
-    fn one_patch_writes_every_property_it_collects(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(200.), px(200.)), |_, cx| Patched(cx.focus_handle()));
-        let mut native = VisualTestContext::from_window(window.into(), cx);
+    #[test]
+    fn one_patch_writes_every_property_it_collects() {
+        let native = Harness::open_with(gpui_kit::init, size(px(200.), px(200.)), |_, cx| {
+            Patched(cx.focus_handle())
+        });
         native.update(|window, cx| {
-            window.activate_a11y();
+            native.activate_in(window);
             crate::render::draw_frame(window, cx);
             crate::render::draw_frame(window, cx);
-            let update = window.a11y_tree().unwrap();
+            let update = &native.tree();
             let (_, node) = update
                 .nodes
                 .iter()

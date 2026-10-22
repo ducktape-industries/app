@@ -1,8 +1,9 @@
 //! A rich text's links are one Tab stop: the arrows pick one, Enter presses
 //! it as a pointer would, Tab moves on.
 use super::*;
+use ducktape_a11y_platform::headless::Harness;
 
-fn press(native: &mut gpui_kit::VisualTestContext, stroke: &str) -> Option<String> {
+fn press(native: &mut Harness<ViewTree>, stroke: &str) -> Option<String> {
     native.update(|window, cx| {
         match stroke {
             "tab" => window.focus_next(cx),
@@ -11,7 +12,7 @@ fn press(native: &mut gpui_kit::VisualTestContext, stroke: &str) -> Option<Strin
             }
         }
         crate::render::draw_frame(window, cx);
-        let tree = window.a11y_tree().unwrap();
+        let tree = &native.tree();
         tree.nodes
             .iter()
             .find(|(id, _)| *id == tree.focus)
@@ -19,18 +20,16 @@ fn press(native: &mut gpui_kit::VisualTestContext, stroke: &str) -> Option<Strin
     })
 }
 
-#[gpui_kit::test]
-fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    cx.update(gpui_kit::init);
+#[test]
+fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it() {
     let root = axis_container("root", Axis::Column, [rich(), button("next", "Next")]);
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let mut native = Harness::open_with(gpui_kit::init, size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(root)
+    });
+    let tree = native.root();
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
     });
@@ -42,18 +41,11 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
     assert_eq!(press(&mut native, "left").as_deref(), Some("the docs"));
     assert_eq!(press(&mut native, "left").as_deref(), Some("the docs"));
     assert_eq!(press(&mut native, "down").as_deref(), Some("the code"));
-    native.update(|window, cx| {
-        use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
-        let focus = window.a11y_tree().unwrap().focus;
-        window.dispatch_a11y_action(
-            ActionRequest {
-                action: Action::Click,
-                target_tree: TreeId::ROOT,
-                target_node: focus,
-                data: None,
-            },
-            cx,
-        );
+    native.act(gpui_kit::accesskit::ActionRequest {
+        action: gpui_kit::accesskit::Action::Click,
+        target_tree: gpui_kit::accesskit::TreeId::ROOT,
+        target_node: native.tree().focus,
+        data: None,
     });
     let code = wire::Event::Select {
         handler: 72,
@@ -124,8 +116,8 @@ fn the_keys_arriving_at_the_links_redraw_a_cached_view(cx: &mut gpui_kit::TestAp
     assert!(settle(&mut native) > arrived, "the keys leaving redraw");
 }
 
-#[gpui_kit::test]
-fn a_rich_text_without_links_is_no_tab_stop(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn a_rich_text_without_links_is_no_tab_stop() {
     let wire::Node::RichText {
         id,
         style,
@@ -148,11 +140,11 @@ fn a_rich_text_without_links_is_no_tab_stop(cx: &mut gpui_kit::TestAppContext) {
         on_hover: None,
         tooltip: None,
     };
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(plain));
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let mut native = Harness::open_with(gpui_kit::init, size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(plain)
+    });
     native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
     });
@@ -160,12 +152,9 @@ fn a_rich_text_without_links_is_no_tab_stop(cx: &mut gpui_kit::TestAppContext) {
     assert!(native.update(|window, cx| window.focused(cx)).is_none());
 }
 
-#[gpui_kit::test]
-fn space_on_a_link_box_presses_its_link_and_does_not_reach_the_composite_around_it(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+#[test]
+fn space_on_a_link_box_presses_its_link_and_does_not_reach_the_composite_around_it() {
     const KEYS: u32 = 9;
-    cx.update(gpui_kit::init);
     let mut grid = axis_container("messages", Axis::Column, [rich()]);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut grid {
         let interactivity = interactivity.get_or_insert_default();
@@ -175,12 +164,13 @@ fn space_on_a_link_box_presses_its_link_and_does_not_reach_the_composite_around_
         interactivity.tab_stop = Some(true);
         interactivity.on_key_down = Some(KEYS);
     }
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(grid));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let mut native = Harness::open_with(gpui_kit::init, size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(grid)
+    });
+    let tree = native.root();
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
     });

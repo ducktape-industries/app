@@ -1,4 +1,5 @@
 use super::*;
+use ducktape_a11y_platform::headless::Harness;
 use std::time::{Duration, Instant};
 
 mod node_methods;
@@ -940,11 +941,10 @@ fn the_placement_is_told_at_subscribe_and_on_each_change() {
 /// with the one activation the host stamps for it, and the view's
 /// `link.open` on that click goes out. No stamp refuses it `needs_gesture`;
 /// a second click on the same press asks twice and the second is refused.
-#[gpui_kit::test]
-fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn a_readers_press_on_a_link_opens_it_once() {
     use gpui_kit::Styled as _;
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
-    cx.update(gpui_kit::init);
     let link = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("docs".into())),
         style: crate::render::test_style(gpui_kit::div().size_full().style().clone()),
@@ -959,12 +959,12 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
         })),
         children: Vec::new(),
     });
-    let window = cx.open_window(
+    let native = Harness::open_with(
+        gpui_kit::init,
         gpui_kit::size(gpui_kit::px(200.), gpui_kit::px(40.)),
         |_, _| crate::render::ViewTree::new(link),
     );
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let tree = native.root();
     let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let seen = events.clone();
     let _subscription = native.update(|_, cx| {
@@ -972,27 +972,23 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
             seen.borrow_mut().push(event.clone());
         })
     });
-    native.update(|window, cx| {
-        window.activate_a11y();
+    let target = native.update(|window, cx| {
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        let target = window
-            .a11y_tree()
-            .unwrap()
+        native
+            .tree()
             .nodes
             .iter()
             .find(|(_, node)| node.label() == Some("the docs"))
             .map(|(id, _)| *id)
-            .expect("the link is in the tree");
-        window.dispatch_a11y_action(
-            ActionRequest {
-                action: Action::Click,
-                target_tree: TreeId::ROOT,
-                target_node: target,
-                data: None,
-            },
-            cx,
-        );
+            .expect("the link is in the tree")
+    });
+    native.act(ActionRequest {
+        action: Action::Click,
+        target_tree: TreeId::ROOT,
+        target_node: target,
+        data: None,
     });
     // the seat hands the tree's stamp to the view at its next turn
     // (`a_trees_activation_reaches_its_view_on_the_next_turn`), and the

@@ -1,4 +1,5 @@
 use super::*;
+use ducktape_a11y_platform::headless::Harness;
 
 #[test]
 fn text_is_a_label_its_content_names() {
@@ -465,10 +466,8 @@ fn a_rich_texts_ranges_are_links_a_press_reaches(cx: &mut gpui_kit::TestAppConte
     });
 }
 
-#[gpui_kit::test]
-fn a_readers_click_on_a_covered_button_is_its_click_on_its_bounds(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+#[test]
+fn a_readers_click_on_a_covered_button_is_its_click_on_its_bounds() {
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
     let pressable = |key: &str, name: &str, handler: u32, mut style: gpui_kit::Div| {
         let mut node = container_with_style(key, style.style().clone(), []);
@@ -493,33 +492,29 @@ fn a_readers_click_on_a_covered_button_is_its_click_on_its_bounds(
             ),
         ],
     );
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let mut native = Harness::open_with(gpui_kit::init, size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(root)
+    });
+    let tree = native.root();
     let (events, _subscription) = emitted(&tree, &mut native);
-    let drawn = native.update(|window, cx| {
-        window.activate_a11y();
+    let (target, drawn) = native.update(|window, cx| {
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        let target = window
-            .a11y_tree()
-            .unwrap()
+        let target = native
+            .tree()
             .nodes
             .iter()
             .find(|(_, node)| node.label() == Some("Go"))
             .map(|(id, _)| *id)
             .unwrap();
-        window.dispatch_a11y_action(
-            ActionRequest {
-                action: Action::Click,
-                target_tree: TreeId::ROOT,
-                target_node: target,
-                data: None,
-            },
-            cx,
-        );
-        window.find("go").bounds()
+        (target, window.find("go").bounds())
+    });
+    native.act(ActionRequest {
+        action: Action::Click,
+        target_tree: TreeId::ROOT,
+        target_node: target,
+        data: None,
     });
     let clicks: Vec<_> = events
         .borrow()
