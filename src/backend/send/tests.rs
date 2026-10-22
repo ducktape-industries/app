@@ -151,11 +151,11 @@ fn three_arguments_are_the_network_the_program_and_the_calls_bytes() {
         Ask {
             network: "duckpond".into(),
             program: "identity".into(),
-            payload: vec![0x0b, 0x15, 0xff],
+            call: Call::Bytes(vec![0x0b, 0x15, 0xff]),
         }
     );
     let empty = Ask::parse(&args(&["duckpond", "identity", ""])).unwrap();
-    assert!(empty.payload.is_empty());
+    assert_eq!(empty.call, Call::Bytes(Vec::new()));
 }
 
 #[test]
@@ -172,13 +172,40 @@ fn any_other_count_is_the_usage_before_anything_starts() {
 }
 
 #[test]
-fn bytes_that_are_not_hex_are_refused_before_anything_starts() {
-    for bad in ["zz", "abc", "0x00"] {
+fn an_op_that_is_no_json_hex_or_base64_is_refused_before_anything_starts() {
+    for (bad, unread) in [("zz", true), ("!!", true), ("{\"open\"", false)] {
         let wrong = args(&["duckpond", "identity", bad]);
-        assert!(matches!(Ask::parse(&wrong), Err(Wrong::Hex(_))), "{bad}");
+        let parsed = Ask::parse(&wrong);
+        match unread {
+            true => assert_eq!(parsed, Err(Wrong::Unread), "{bad}"),
+            false => assert!(matches!(parsed, Err(Wrong::Json(_))), "{bad}"),
+        }
         let code = cli(&wrong, || panic!("nothing starts for wrong arguments"));
         assert_eq!(code, 2);
     }
+}
+
+#[test]
+fn an_op_reads_as_json_hex_or_base64() {
+    let read = |given: &str| Call::read(given).unwrap();
+    assert_eq!(
+        read(r#"{"register_program": {"program": "chat"}}"#),
+        Call::Json(serde_json::json!({"register_program": {"program": "chat"}}))
+    );
+    assert_eq!(read(r#""pause""#), Call::Json(serde_json::json!("pause")));
+    let bytes = Call::Bytes(vec![0x0b, 0x15, 0xff]);
+    for given in ["0b15ff", "0B15FF", "0x0b15ff", " 0b15ff\n", "CxX/", "CxX_"] {
+        assert_eq!(read(given), bytes, "{given}");
+    }
+    assert_eq!(read("Cw=="), Call::Bytes(vec![0x0b]));
+    assert_eq!(read("Cw"), Call::Bytes(vec![0x0b]));
+    assert_eq!(read(""), Call::Bytes(Vec::new()));
+}
+
+#[test]
+fn hex_digits_of_even_length_read_as_hex_though_they_read_as_base64_too() {
+    assert_eq!(Call::read("abcd").unwrap(), Call::Bytes(vec![0xab, 0xcd]));
+    assert_eq!(Call::read("abc").unwrap(), Call::Bytes(vec![0x69, 0xb7]));
 }
 
 #[test]
@@ -330,7 +357,7 @@ fn a_send_signs_one_frame_with_the_bound_key_and_reads_its_block() {
     let ask = Ask {
         network: "test-network".into(),
         program: "identity".into(),
-        payload: call.clone(),
+        call: Call::Bytes(call.clone()),
     };
     let sent = send(&ask).unwrap();
     let submits = heard(&requests, route::SUBMIT);
@@ -389,4 +416,124 @@ fn a_frame_refused_at_preconfirm_is_its_refusal_and_waits_for_no_block() {
     assert_eq!(sent.outcome, abi::Outcome::Rejected(refusal));
     assert_eq!(sent.exit_code(), 1);
     assert!(heard(&requests, route::TX).is_empty());
+}
+
+fn applied() -> abi::Outcome {
+    abi::Outcome::Applied { output: Vec::new() }
+}
+
+fn leb128(mut value: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    loop {
+        let low = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            bytes.push(low);
+            return bytes;
+        }
+        bytes.push(low | 0x80);
+    }
+}
+
+fn identity_code() -> Vec<u8> {
+    let schema = abi::encode(&::program::schema::interface::<identity::Identity>());
+    let name = SECTION.as_bytes();
+    let mut section = leb128(name.len());
+    section.extend_from_slice(name);
+    section.extend_from_slice(&schema);
+    let mut module = b"\0asm\x01\0\0\0".to_vec();
+    module.push(0);
+    module.extend(leb128(section.len()));
+    module.extend(section);
+    module
+}
+
+fn node_running_identity(code: Vec<u8>) -> (String, mpsc::Receiver<(String, Vec<u8>)>) {
+    use sha2::Digest as _;
+    let mut framed = format!("program {}\0", code.len()).into_bytes();
+    framed.extend_from_slice(&code);
+    let id = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
+    fake_node(Box::new(move |path, _| match path {
+        route::STATUS => ("200 OK", abi::encode(&status("test-network", 1))),
+        route::QUERY => {
+            let roster = ::programs::Reply::Roster {
+                height: 1,
+                programs: vec![::programs::Entry {
+                    program: "identity".into(),
+                    code: id,
+                    params: Vec::new(),
+                }],
+                views: Vec::new(),
+            };
+            ("200 OK", abi::encode(&abi::encode(&roster)))
+        }
+        route::BLOB_GET => ("200 OK", abi::encode(&Some(framed.clone()))),
+        route::SUBMIT => (
+            "200 OK",
+            abi::encode(&Submitted::Preconfirmed(receipt(applied()))),
+        ),
+        route::TX => ("200 OK", abi::encode(&located(9, applied()))),
+        other => panic!("{other}"),
+    }))
+}
+
+#[test]
+fn a_json_op_is_encoded_through_the_programs_own_schema_and_sent_as_its_bytes() {
+    let _seat = crate::backend::seat_serial();
+    let key = ed25519::PrivateKey::from_seed(43);
+    crate::backend::device_key::save("test-network", &key).unwrap();
+    let (url, requests) = node_running_identity(identity_code());
+    crate::backend::note_endpoint(recent(&url, "test-network", 1));
+    let op = r#"{"register_program": {"program": "chat"}}"#;
+    let ask = Ask::parse(&args(&["test-network", "identity", op])).unwrap();
+    let sent = send(&ask).unwrap();
+    assert_eq!(sent.height, Some(9));
+    let submits = heard(&requests, route::SUBMIT);
+    let [submit] = submits.as_slice() else {
+        panic!("one frame is sent, not {}", submits.len());
+    };
+    let submit: Submit = abi::decode(submit).unwrap();
+    let frame: Frame = abi::decode(&submit.frame).unwrap();
+    assert_eq!(frame.body.target, "identity");
+    let encoded = abi::encode(&identity::Op::RegisterProgram {
+        program: "chat".into(),
+    });
+    assert!(
+        frame.body.payload == encoded,
+        "the frame carries identity's own bytes for the op"
+    );
+}
+
+#[test]
+fn a_json_op_for_a_program_the_network_does_not_run_sends_nothing() {
+    let _seat = crate::backend::seat_serial();
+    let key = ed25519::PrivateKey::from_seed(44);
+    crate::backend::device_key::save("test-network", &key).unwrap();
+    let (url, requests) = node_running_identity(identity_code());
+    crate::backend::note_endpoint(recent(&url, "test-network", 1));
+    let ask = Ask::parse(&args(&["test-network", "chat", r#"{"post": {}}"#])).unwrap();
+    let failure = send(&ask).unwrap_err();
+    assert!(
+        matches!(&failure, Failure::Unlisted(program) if program == "chat"),
+        "{failure:?}"
+    );
+    assert!(heard(&requests, route::SUBMIT).is_empty());
+}
+
+#[test]
+fn an_op_that_does_not_fit_names_where_and_code_with_no_schema_says_to_send_bytes() {
+    let interface = interface_of("identity", &identity_code()).unwrap();
+    let fault = interface
+        .encode_op(&serde_json::json!({"register_program": {}}))
+        .unwrap_err();
+    assert!(
+        fault.to_string().contains("field program is missing"),
+        "{fault}"
+    );
+    let failure = interface_of("identity", b"\0asm\x01\0\0\0").unwrap_err();
+    assert!(
+        matches!(&failure, Failure::Schemaless(program) if program == "identity"),
+        "{failure:?}"
+    );
+    assert!(failure.to_string().contains("hex or base64"), "{failure}");
 }

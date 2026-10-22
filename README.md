@@ -124,7 +124,7 @@ mkdir -p /tmp/ducktape && tar xzf /tmp/ducktape.tar.gz -C /tmp/ducktape
 ## Sending a transaction from the terminal
 
 ```bash
-ducktape-app send <network> <program> <hex>
+ducktape-app send <network> <program> <op>
 ```
 
 This sends one transaction, signed with the key this device holds for the
@@ -135,8 +135,17 @@ network: the same key the app's own screens sign with. It opens no window.
   for the chain that node runs now. A name with its founding time
   (`duckpond+1792250296000`) picks that one chain.
 - `<program>` is the program's name on the chain (`identity`).
-- `<hex>` is the call's bytes, hex-encoded, exactly as the program decodes
-  them (a borsh `identity::Op`, for example).
+- `<op>` is the call, in one of three forms, told apart by how it starts:
+  - JSON, starting with `{` (or `"` for an op with no fields), such as
+    `{"remove_channel_meta": {"channel_id": "…", "key": "widget.pinned"}}`.
+    The app reads the program's interface out of its code (the
+    `ducktape.schema` section) and encodes the op through it: the same JSON
+    `network_schema` and the ducktape CLI show, variants in snake_case and
+    bytes as hex. An op that does not fit is refused naming where
+    (`at op.remove_channel_meta: field key is missing`).
+  - hex: the op's borsh bytes as hex digits of even length, `0x` allowed.
+  - base64: the op's borsh bytes, standard or URL-safe, padding optional.
+  Digits that read both as hex and as base64 are hex.
 
 The key opens the way it does in the app. The OS may ask to unlock its key
 store, or for Touch ID. A password-locked key from before keys moved into

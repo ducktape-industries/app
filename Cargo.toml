@@ -43,6 +43,7 @@ ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "9d0
 design = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
 describe = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "describe" }
+borsh-json = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "borsh-json" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
 identity = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "identity" }
 
@@ -147,6 +148,7 @@ zeroize.workspace = true
 rpassword.workspace = true
 view-wire = { workspace = true, features = ["manifest"] }
 program.workspace = true
+borsh-json.workspace = true
 abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
@@ -203,6 +205,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "58b5d91e97d2f0b0e22a5374b6e2a70037b98f14", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "programs" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }

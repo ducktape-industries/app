@@ -68,7 +68,7 @@ fn main() {
             println!("usage: ducktape-app [--version | --help]");
             println!("       ducktape-app install  (install this binary; it then updates itself)");
             println!(
-                "       ducktape-app send <network> <program> <hex>  (one transaction, signed with this device's key)"
+                "       ducktape-app send <network> <program> <op>  (one transaction, signed with this device's key; the op as JSON, hex or base64)"
             );
             #[cfg(feature = "ax-door")]
             println!("       ducktape-app ax <command...>  (the AX door's client)");

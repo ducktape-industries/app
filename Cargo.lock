@@ -1119,6 +1119,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "borsh-json"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/programs?rev=9d0f734233c7988f190f3436ffdc7c6927405aa3#9d0f734233c7988f190f3436ffdc7c6927405aa3"
+dependencies = [
+ "abi",
+ "borsh",
+ "design",
+ "program",
+ "serde_json",
+]
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2726,6 +2738,7 @@ dependencies = [
  "base64 0.22.1",
  "block2 0.5.1",
  "borsh",
+ "borsh-json",
  "bzip2",
  "commonware-codec",
  "commonware-cryptography",
@@ -2755,6 +2768,7 @@ dependencies = [
  "objc2-user-notifications 0.2.2",
  "p256 0.13.2",
  "program",
+ "programs",
  "rand 0.8.8",
  "raw-window-handle",
  "reqwest",
