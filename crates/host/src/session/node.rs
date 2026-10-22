@@ -1,33 +1,15 @@
-//! The node in hand: reached, polled, switched, left. `Session` holds what
-//! the shell draws of it (`SessionState`, compared: reached or on its way,
-//! which network, what was typed, what went wrong) and owns the work that
-//! moves it: the connect attempt and the 2 s status poll, each a task
-//! dropped with the attempt it belongs to. The poll writes `Chain` (the
-//! height, when it moved, the node's answer). No status line: "Connected ·
-//! block N" moved with every block, and the screens that say it build it
-//! from `Chain`'s height.
-//!
-//! Leaving a network (a disconnect, or another chain taken up) empties the
-//! roster at once, before anything of the next network is read, so neither
-//! the rail nor a link is ever read against the left network's programs.
-//! What other entities do for it follows through events: the network left
-//! (`SessionEvent::LeftNetwork`: `Windows` clears the desks and the active
-//! program, `Rail` its badges and rows), a failure said over a network in hand
-//! (`Toast`), the console brought forward as a node answers (`Connected`,
-//! `Windows`).
+//! The node in hand: reached, followed through its heads socket, switched, left. `Session`
+//! holds what the shell draws of it and owns the work that moves it, each a task dropped with
+//! the attempt it belongs to; it writes `Chain` from each head and each status answered.
 
 use super::{Account, Chain, Screen, Slice, on_runtime, spawn_on_runtime};
 use crate::backend;
 use crate::runtime::{Roster, notify};
-use futures::FutureExt as _;
 use futures::future::LocalBoxFuture;
+use futures::stream::LocalBoxStream;
+use futures::{FutureExt as _, StreamExt as _};
 use gpui_kit::{Context, Entity, EventEmitter, Task};
 use std::rc::Rc;
-use std::time::Duration;
-
-/// How often the node's status is asked for while connected; each other
-/// listed network's too (`runtime::follow`).
-pub use crate::runtime::STATUS_EVERY;
 
 /// The session's compared value.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -97,6 +79,11 @@ pub enum SessionEvent {
 pub type StatusSource =
     Rc<dyn Fn() -> LocalBoxFuture<'static, Result<backend::NodeStatus, noded_client::Error>>>;
 
+/// Where heads come from: the node's heads socket, or a test's feed. An error is the node lost
+/// while the source reaches for it again; its end, lost until an event starts it again.
+pub type HeadsSource =
+    Rc<dyn Fn() -> LocalBoxStream<'static, Result<noded_client::wire::Head, noded_client::Error>>>;
+
 pub struct Session {
     state: SessionState,
     chain: Entity<Chain>,
@@ -106,8 +93,11 @@ pub struct Session {
     network: std::sync::Arc<crate::runtime::Network>,
     roster: Roster,
     source: Option<StatusSource>,
+    heads_of: Rc<dyn Fn(&str) -> HeadsSource>,
     connect: Option<Task<()>>,
-    poll: Option<Task<()>>,
+    follow: Option<Task<()>>,
+    asking: Option<Task<()>>,
+    watched: bool,
     heard: Vec<Task<()>>,
     client: Option<backend::RpcClient>,
     armed: Option<abi::Roles>,
@@ -140,8 +130,11 @@ impl Session {
             network,
             roster,
             source: None,
+            heads_of: Rc::new(Self::heads_source),
             connect: None,
-            poll: None,
+            follow: None,
+            asking: None,
+            watched: false,
             heard: Vec::new(),
             client: None,
             armed: None,
@@ -164,6 +157,11 @@ impl Session {
     #[cfg(any(test, feature = "test-support"))]
     pub fn apart_from_runtime(&mut self) {
         self.hands_runtime = false;
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn heads_through(&mut self, heads: HeadsSource) {
+        self.heads_of = Rc::new(move |_: &str| heads.clone());
     }
 
     fn hand_runtime(
@@ -212,8 +210,12 @@ impl Session {
         let watch = self.watch;
         let writes = |role| roles.bound(role).ok().map(|program| watch(client, program));
         let (programs, identity) = (writes(abi::role::PROGRAMS), writes(abi::role::IDENTITY));
-        let programs = programs
-            .map(|heard| Self::hear(heard, cx, |this, _| this.network.deployments_checked()));
+        let programs = programs.map(|heard| {
+            Self::hear(heard, cx, |this, cx| {
+                this.network.deployments_checked();
+                this.ask_status(cx);
+            })
+        });
         let identity = identity.map(|heard| {
             Self::hear(heard, cx, |this, cx| {
                 this.account.update(cx, |account, cx| account.resolve(cx))
@@ -265,6 +267,57 @@ impl Session {
         Rc::new(move || {
             let client = client.clone();
             async move { client.status().await }.boxed_local()
+        })
+    }
+
+    fn heads_source(origin: &str) -> HeadsSource {
+        let client = backend::rpc_client(origin);
+        Rc::new(move || {
+            let client = client.clone();
+            let (mut tell, heard) = futures::channel::mpsc::channel(0);
+            let pump = async move {
+                use futures::SinkExt as _;
+                let mut block_time_ms = None;
+                loop {
+                    if block_time_ms.is_none() {
+                        block_time_ms = client
+                            .status()
+                            .await
+                            .ok()
+                            .map(|status| status.block_time_ms);
+                    }
+                    let lost = match client.heads_kept(block_time_ms).await {
+                        Ok(mut heads) => {
+                            if block_time_ms.is_none() {
+                                block_time_ms = client
+                                    .status()
+                                    .await
+                                    .ok()
+                                    .map(|status| status.block_time_ms);
+                            }
+                            while let Some(Ok(head)) = heads.next().await {
+                                if tell.send(Ok(head)).await.is_err() {
+                                    return;
+                                }
+                            }
+                            noded_client::Error::Transport("the heads socket closed".into())
+                        }
+                        Err(error) => error,
+                    };
+                    let refused = refuses(&lost);
+                    let unheard = tell.send(Err(lost)).await.is_err();
+                    let ends = unheard || refused;
+                    if ends {
+                        return;
+                    }
+                    match client.answering(block_time_ms).await {
+                        Ok(answered) => block_time_ms = Some(answered),
+                        Err(_) => return,
+                    }
+                }
+            };
+            let pumped = pump.into_stream().filter_map(|()| std::future::ready(None));
+            futures::stream::select(heard, pumped).boxed_local()
         })
     }
 
@@ -384,9 +437,9 @@ impl Session {
     fn unconfirmed(&mut self, source: StatusSource, error: String, cx: &mut Context<Self>) {
         tracing::debug!(target: "ducktape::app", %error, "status not answered");
         self.edit(|state| state.reconnecting = true, cx);
-        if self.poll.is_none() {
+        if self.follow.is_none() {
             self.source = Some(source);
-            self.start_poll(STATUS_EVERY, cx);
+            self.start_follow(false, cx);
         }
     }
 
@@ -415,9 +468,9 @@ impl Session {
         );
         self.apply_status(status, cx);
         self.follow_roles(&status.roles, cx);
-        if self.poll.is_none() {
+        if self.follow.is_none() {
             self.source = Some(source);
-            self.start_poll(STATUS_EVERY, cx);
+            self.start_follow(false, cx);
         }
     }
 
@@ -506,7 +559,7 @@ impl Session {
             account.resolve(cx);
         });
         self.source = Some(source);
-        self.start_poll(STATUS_EVERY, cx);
+        self.start_follow(false, cx);
     }
 
     fn unreadable(&mut self, origin: String, sentence: String, cx: &mut Context<Self>) {
@@ -602,33 +655,130 @@ impl Session {
         });
     }
 
-    fn start_poll(&mut self, first: Duration, cx: &mut Context<Self>) {
+    fn start_follow(&mut self, ask_first: bool, cx: &mut Context<Self>) {
+        if self.source.is_none() {
+            return;
+        }
+        if ask_first {
+            self.ask_status(cx);
+        }
+        let heads = (self.heads_of)(&self.state.connected_rpc);
+        self.follow = Some(cx.spawn(async move |this, cx| {
+            let mut heard = heads();
+            while let Some(item) = on_runtime(heard.next()).await {
+                let told = this.update(cx, |this, cx| match item {
+                    Ok(head) => this.head_heard(head, cx),
+                    Err(error) => this.heads_lost(error.to_string(), cx),
+                });
+                if told.is_err() {
+                    return;
+                }
+            }
+            let ended = "the heads socket ended".to_owned();
+            let _ = this.update(cx, |this, cx| this.heads_lost(ended, cx));
+        }));
+    }
+
+    fn head_heard(&mut self, head: noded_client::wire::Head, cx: &mut Context<Self>) {
+        let was_lost = self.state.reconnecting;
+        self.edit(|state| state.reconnecting = false, cx);
+        let height = i64::try_from(head.height).unwrap_or(-1);
+        let now = notify::wall();
+        let moved = self.chain.update(cx, |chain, cx| {
+            let moved = height != chain.height;
+            let node = chain.node.clone().map(|node| backend::NodeStatus {
+                height: head.height,
+                tip: head.id,
+                ..node
+            });
+            let block_seen = match moved {
+                true => now,
+                false => chain.block_seen,
+            };
+            let next = Chain {
+                height,
+                block_seen,
+                node,
+                heard: now,
+            };
+            chain.set(next, cx);
+            moved
+        });
+        let due = moved && self.hands_runtime && self.network.deployments_due(head.height);
+        if due {
+            self.network.deployments_checked();
+        }
+        if moved {
+            self.account
+                .update(cx, |account, cx| account.resolve_unanswered(cx));
+        }
+        let asks = was_lost || self.confirming || self.watched;
+        if asks {
+            self.ask_status(cx);
+        }
+    }
+
+    fn heads_lost(&mut self, error: String, cx: &mut Context<Self>) {
+        tracing::debug!(target: "ducktape::app", %error, "heads not heard");
+        self.edit(|state| state.reconnecting = state.connected, cx);
+    }
+
+    pub fn node_watched(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.watched = open;
+        if open {
+            self.ask_status(cx);
+        }
+    }
+
+    fn ask_status(&mut self, cx: &mut Context<Self>) {
         let Some(source) = self.source.clone() else {
             return;
         };
-        self.poll = Some(cx.spawn(async move |this, cx| {
-            let mut wait = first;
-            loop {
-                cx.background_executor().timer(wait).await;
-                wait = STATUS_EVERY;
-                let ask = source.clone();
-                let answer = on_runtime(async move {
-                    match rt::time::timeout(STATUS_EVERY, ask()).await {
-                        Ok(answer) => answer,
-                        Err(_) => Err(noded_client::Error::Transport(
-                            "the node did not answer in time".into(),
-                        )),
-                    }
-                })
-                .await;
-                if this
-                    .update(cx, |this, cx| this.status_answered(answer, cx))
-                    .is_err()
-                {
-                    break;
-                }
-            }
+        if self.asking.is_some() {
+            return;
+        }
+        self.asking = Some(spawn_on_runtime(cx, source(), |this, answer, cx| {
+            this.asking = None;
+            this.status_read(answer, cx);
         }));
+    }
+
+    fn newest(&self, status: backend::NodeStatus, cx: &mut Context<Self>) -> backend::NodeStatus {
+        let chain = self.chain.read(cx);
+        let headed = chain
+            .node
+            .as_ref()
+            .filter(|node| node.height > status.height);
+        match headed {
+            Some(node) => backend::NodeStatus {
+                height: node.height,
+                tip: node.tip,
+                ..status
+            },
+            None => status,
+        }
+    }
+
+    fn status_read(
+        &mut self,
+        answer: Result<backend::NodeStatus, noded_client::Error>,
+        cx: &mut Context<Self>,
+    ) {
+        match answer {
+            Ok(status) if self.confirming => self.status_answered(Ok(status), cx),
+            Ok(status) => {
+                let status = self.newest(status, cx);
+                self.apply_status(&status, cx);
+                self.follow_roles(&status.roles, cx);
+            }
+            Err(noded_client::Error::Decode(refusal)) => {
+                let origin = self.state.connected_rpc.clone();
+                self.unreadable(origin, refusal.sentence, cx);
+            }
+            Err(error) => {
+                tracing::debug!(target: "ducktape::app", %error, "status not answered");
+            }
+        }
     }
 
     /// The app's phase moved (`Signal::Lifecycle`): in the background the
@@ -636,13 +786,15 @@ impl Session {
     /// coming to the front asks at once and polls on.
     pub fn lifecycle(&mut self, phase: gpui_kit::AppLifecyclePhase, cx: &mut Context<Self>) {
         use gpui_kit::AppLifecyclePhase::{Background, Foreground};
+        let resumes = self.state.connected && self.follow.is_none();
         match phase {
             Background => {
-                self.poll = None;
+                self.follow = None;
+                self.asking = None;
                 self.heard.clear();
             }
-            Foreground if self.state.connected && self.poll.is_none() => {
-                self.start_poll(Duration::ZERO, cx);
+            Foreground if resumes => {
+                self.start_follow(true, cx);
                 if let Some(roles) = self.armed.clone() {
                     let client = backend::rpc_client(self.state.connected_rpc.clone());
                     client.heard_roles(&roles);
@@ -662,7 +814,7 @@ impl Session {
     pub fn poll_now(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.state.connected {
-            self.start_poll(Duration::ZERO, cx);
+            self.start_follow(true, cx);
         }
     }
 
@@ -671,7 +823,8 @@ impl Session {
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.connect = None;
-        self.poll = None;
+        self.follow = None;
+        self.asking = None;
         self.source = None;
         self.confirming = false;
         self.edit(
@@ -777,7 +930,7 @@ impl Session {
         );
         self.apply_status(status, cx);
         self.source = Some(Self::status_source(&origin));
-        self.start_poll(STATUS_EVERY, cx);
+        self.start_follow(false, cx);
     }
 
     /// The state a test starts from.
@@ -798,6 +951,15 @@ impl Session {
     ) {
         self.seed(state, cx);
         self.source = Some(source);
-        self.start_poll(STATUS_EVERY, cx);
+        self.start_follow(false, cx);
+    }
+}
+
+fn refuses(error: &noded_client::Error) -> bool {
+    use noded_client::Error;
+    match error {
+        Error::Refused(_) | Error::Decode(_) => true,
+        Error::Failed { status, .. } => (400..500).contains(status),
+        Error::Unreachable(_) | Error::Transport(_) => false,
     }
 }

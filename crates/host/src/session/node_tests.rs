@@ -7,8 +7,8 @@
 //! machine's, not a unit test's. The sessions here are seeded on a node
 //! already reached (`Session::seed_connected`); the take-up itself is
 //! `Account::take_up`'s row in account_tests.rs and the kit's.
-use super::tests::{notifies, session, source, status};
-use super::{AccountStep, STATUS_EVERY, Screen, Session, SessionEvent, SessionState};
+use super::tests::{Heads, heads, notifies, session, source, status};
+use super::{AccountStep, Screen, Session, SessionEvent, SessionState};
 use crate::backend::NodeStatus;
 use gpui_kit::{Entity, Subscription, TestAppContext};
 use std::cell::{Cell, RefCell};
@@ -52,31 +52,34 @@ fn state(session: &Entity<Session>, cx: &mut TestAppContext) -> SessionState {
     session.read_with(cx, |session, _| session.get().clone())
 }
 
-fn poll(cx: &mut TestAppContext) {
-    cx.executor().advance_clock(STATUS_EVERY);
-    cx.run_until_parked();
+fn on_node() -> SessionState {
+    SessionState {
+        connected: true,
+        connected_rpc: ORIGIN.into(),
+        endpoint: ORIGIN.into(),
+        network: "session-test".into(),
+        chain: "session-test".into(),
+        ..SessionState::booted()
+    }
 }
 
-fn connected(
+fn following(
     answer: impl Fn(usize) -> Result<NodeStatus, noded_client::Error> + 'static,
     cx: &mut TestAppContext,
-) -> (Entity<Session>, Rc<Cell<usize>>) {
+) -> (Entity<Session>, Rc<Cell<usize>>, Heads) {
     let session = cx.update(session);
     let (source, asked) = source(answer);
+    let (fed, heads) = heads();
     session.update(cx, |session, cx| {
-        let on_node = SessionState {
-            connected: true,
-            connected_rpc: ORIGIN.into(),
-            endpoint: ORIGIN.into(),
-            network: "session-test".into(),
-            chain: "session-test".into(),
-            ..SessionState::booted()
-        };
-        session.seed_connected(on_node, source, cx);
+        session.heads_through(fed);
+        session.seed_connected(on_node(), source, cx);
     });
-    poll(cx);
-    assert_eq!(asked.get(), 1, "the first poll did not land");
-    (session, asked)
+    cx.run_until_parked();
+    (session, asked, heads)
+}
+
+fn height(session: &Entity<Session>, cx: &mut TestAppContext) -> i64 {
+    chain(session, cx).read_with(cx, |chain, _| chain.height)
 }
 
 #[gpui_kit::test]
@@ -142,29 +145,38 @@ fn a_connect_out_reaches_for_the_address_it_was_started_with(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
-fn an_unchanged_status_poll_notifies_nothing(cx: &mut TestAppContext) {
-    let (session, asked) = connected(|_| Ok(testnet(7)), cx);
+fn an_unchanged_head_notifies_nothing(cx: &mut TestAppContext) {
+    let (session, asked, heads) = following(|_| Ok(testnet(7)), cx);
+    heads.send(7);
+    cx.run_until_parked();
     let chain = chain(&session, cx);
     let (sessions, _a) = notifies(&session, cx);
     let (chains, _b) = notifies(&chain, cx);
-    poll(cx);
-    assert_eq!(asked.get(), 2, "two seconds on the clock: one poll");
-    poll(cx);
-    assert_eq!(asked.get(), 3);
+    heads.send(7);
+    heads.send(7);
+    cx.run_until_parked();
     assert_eq!(sessions.get(), 0, "a still chain moved the session");
     assert_eq!(chains.get(), 0, "a still chain moved the chain");
+    assert_eq!(
+        asked.get(),
+        0,
+        "a head asked a status with the node menu shut"
+    );
 }
 
 #[gpui_kit::test]
 fn a_moved_height_notifies_the_chain_and_not_the_session(cx: &mut TestAppContext) {
-    let (session, _) = connected(|n| Ok(testnet(7 + n as u64)), cx);
+    let (session, _, heads) = following(|_| Ok(testnet(7)), cx);
+    heads.send(7);
+    cx.run_until_parked();
     let chain = chain(&session, cx);
     assert_eq!(chain.read_with(cx, |chain, _| chain.height), 7);
     chain.update(cx, |chain, _| chain.block_seen = 0);
     let (sessions, _a) = notifies(&session, cx);
     let (chains, _b) = notifies(&chain, cx);
     let before = crate::runtime::notify::wall();
-    poll(cx);
+    heads.send(8);
+    cx.run_until_parked();
     let (height, block_seen) = chain.read_with(cx, |chain, _| (chain.height, chain.block_seen));
     assert_eq!(height, 8);
     assert!(
@@ -177,7 +189,9 @@ fn a_moved_height_notifies_the_chain_and_not_the_session(cx: &mut TestAppContext
 
 #[gpui_kit::test]
 fn heard_moves_without_a_notify(cx: &mut TestAppContext) {
-    let (session, _) = connected(|_| Ok(testnet(7)), cx);
+    let (session, _, heads) = following(|_| Ok(testnet(7)), cx);
+    heads.send(7);
+    cx.run_until_parked();
     let chain = chain(&session, cx);
     chain.update(cx, |chain, _| {
         chain.heard = 0;
@@ -185,7 +199,8 @@ fn heard_moves_without_a_notify(cx: &mut TestAppContext) {
     });
     let (chains, _b) = notifies(&chain, cx);
     let before = crate::runtime::notify::wall();
-    poll(cx);
+    heads.send(7);
+    cx.run_until_parked();
     let (heard, block_seen) = chain.read_with(cx, |chain, _| (chain.heard, chain.block_seen));
     assert!(
         heard >= before,
@@ -195,41 +210,55 @@ fn heard_moves_without_a_notify(cx: &mut TestAppContext) {
     assert_eq!(
         chains.get(),
         0,
-        "a poll that only moved heard notified the chain"
+        "a head that only moved heard notified the chain"
     );
 }
 
 #[gpui_kit::test]
-fn a_missed_poll_reads_reconnecting_and_one_answer_recovers(cx: &mut TestAppContext) {
-    let (session, _) = connected(
-        |n| match n {
-            1 | 2 => Err(noded_client::Error::Unreachable("no".into())),
-            _ => Ok(testnet(7)),
-        },
-        cx,
-    );
-    let (sessions, _a) = notifies(&session, cx);
-    poll(cx);
-    assert!(
-        state(&session, cx).reconnecting,
-        "one miss is the node lost"
-    );
-    poll(cx);
+fn a_lost_node_reads_answering_at_its_next_head_which_asks_its_status(cx: &mut TestAppContext) {
+    let (session, asked, heads) = following(|_| Ok(testnet(7)), cx);
+    heads.send(7);
+    cx.run_until_parked();
+    heads.lose();
+    cx.run_until_parked();
     let lost = state(&session, cx);
-    assert!(lost.reconnecting);
+    assert!(lost.reconnecting, "a lost socket left the node answering");
     assert!(lost.connected, "a lost node is still the node in hand");
-    poll(cx);
-    assert!(!state(&session, cx).reconnecting);
-    assert_eq!(
-        sessions.get(),
-        2,
-        "reconnecting moved other than there and back"
+    assert_eq!(asked.get(), 0, "the loss asked a status");
+    heads.send(8);
+    cx.run_until_parked();
+    assert!(
+        !state(&session, cx).reconnecting,
+        "a head did not read the node back"
     );
+    assert_eq!(asked.get(), 1, "the head after a loss asked no status");
+    assert_eq!(heads.opens(), 1, "a loss its source heals opened it again");
+}
+
+#[gpui_kit::test]
+fn the_open_node_menu_asks_the_status_on_each_head(cx: &mut TestAppContext) {
+    let (session, asked, heads) = following(|n| Ok(testnet(7 + n as u64)), cx);
+    heads.send(7);
+    cx.run_until_parked();
+    assert_eq!(asked.get(), 0, "a head asked a status with the menu shut");
+    session.update(cx, |session, cx| session.node_watched(true, cx));
+    cx.run_until_parked();
+    assert_eq!(asked.get(), 1, "opening the menu asked no status");
+    heads.send(8);
+    cx.run_until_parked();
+    assert_eq!(asked.get(), 2, "a head under the open menu asked no status");
+    let shown =
+        chain(&session, cx).read_with(cx, |chain, _| chain.node.as_ref().map(|node| node.height));
+    assert_eq!(shown, Some(8));
+    session.update(cx, |session, cx| session.node_watched(false, cx));
+    heads.send(9);
+    cx.run_until_parked();
+    assert_eq!(asked.get(), 2, "a head asked a status once the menu shut");
 }
 
 #[gpui_kit::test]
 fn a_switch_that_does_not_land_keeps_the_network_in_hand(cx: &mut TestAppContext) {
-    let (session, asked) = connected(|_| Ok(testnet(7)), cx);
+    let (session, _, heads) = following(|_| Ok(testnet(7)), cx);
     let (heard, _heard) = events(&session, cx);
     let (other, _) = source(|_| {
         Err(noded_client::Error::Unreachable(
@@ -259,9 +288,9 @@ fn a_switch_that_does_not_land_keeps_the_network_in_hand(cx: &mut TestAppContext
         "{:?}",
         heard.borrow()
     );
-    let polls = asked.get();
-    poll(cx);
-    assert_eq!(asked.get(), polls + 1, "the poll stopped");
+    heads.send(9);
+    cx.run_until_parked();
+    assert_eq!(height(&session, cx), 9, "the heads stopped");
     session.update(cx, |session, cx| session.switch(ORIGIN.into(), cx));
     assert!(!state(&session, cx).connecting);
 }
@@ -269,7 +298,7 @@ fn a_switch_that_does_not_land_keeps_the_network_in_hand(cx: &mut TestAppContext
 #[gpui_kit::test]
 fn disconnecting_leaves_everything_of_the_network(cx: &mut TestAppContext) {
     let _seat = crate::backend::seat_serial();
-    let (session, asked) = connected(|_| Ok(testnet(7)), cx);
+    let (session, _, heads) = following(|_| Ok(testnet(7)), cx);
     let (chain, account, _) = session.read_with(cx, |session, _| session.parts());
     account.update(cx, |account, cx| {
         let mut signed_in = account.get().clone();
@@ -287,16 +316,21 @@ fn disconnecting_leaves_everything_of_the_network(cx: &mut TestAppContext) {
     assert_eq!(screen(&session, cx), Screen::Connect);
     let account = account.read_with(cx, |account, _| account.get().clone());
     assert!(account.signer_key.is_empty() && account.error.is_empty());
-    let polls = asked.get();
-    poll(cx);
-    assert_eq!(asked.get(), polls, "the poll went on after leaving");
+    heads.send(9);
+    cx.run_until_parked();
+    assert_ne!(
+        height(&session, cx),
+        9,
+        "the heads were followed after leaving"
+    );
 }
 
 #[gpui_kit::test]
 fn session_methods_record_under_reducer_connect(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
-    let (_session, _) = connected(|_| Ok(testnet(7)), cx);
-    poll(cx);
+    let (session, _, _heads) = following(|_| Ok(testnet(7)), cx);
+    session.update(cx, |session, cx| session.poll_now(cx));
+    cx.run_until_parked();
     let snapshot = crate::perf::snapshot(false);
     assert!(
         snapshot["shell"]["reducer.connect"].is_object(),
@@ -306,18 +340,25 @@ fn session_methods_record_under_reducer_connect(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_poll_stops_in_the_background_and_asks_at_once_in_front(cx: &mut TestAppContext) {
+fn the_heads_stop_in_the_background_and_the_status_is_asked_in_front(cx: &mut TestAppContext) {
     use gpui_kit::AppLifecyclePhase::{Background, Foreground};
-    let (session, asked) = connected(|n| Ok(testnet(n as u64 + 1)), cx);
+    let (session, asked, heads) = following(|n| Ok(testnet(n as u64 + 1)), cx);
     session.update(cx, |session, cx| session.lifecycle(Background, cx));
-    poll(cx);
-    poll(cx);
-    assert_eq!(asked.get(), 1, "the node was asked in the background");
+    heads.send(5);
+    cx.run_until_parked();
+    assert_eq!(
+        height(&session, cx),
+        -1,
+        "a head was heard in the background"
+    );
+    assert_eq!(asked.get(), 0, "the node was asked in the background");
     session.update(cx, |session, cx| session.lifecycle(Foreground, cx));
     cx.run_until_parked();
-    assert_eq!(asked.get(), 2, "coming to the front did not ask at once");
-    poll(cx);
-    assert_eq!(asked.get(), 3, "the poll did not go on");
+    assert_eq!(asked.get(), 1, "coming to the front did not ask at once");
+    assert_eq!(heads.opens(), 2, "the heads socket did not open again");
+    heads.send(9);
+    cx.run_until_parked();
+    assert_eq!(height(&session, cx), 9);
 }
 
 fn saved(url: &str, signed_in: bool, genesis: [u8; 32]) {
@@ -341,8 +382,10 @@ fn a_saved_network_lands_on_the_desk_before_its_node_answers(cx: &mut TestAppCon
     const SAVED: &str = "http://127.0.0.1:11";
     saved(SAVED, true, [0; 32]);
     let session = cx.update(session);
-    let (source, asked) = source(|n| Ok(status(7 + n as u64)));
+    let (source, _) = source(|n| Ok(status(7 + n as u64)));
+    let (fed, heads) = heads();
     session.update(cx, |session, cx| {
+        session.heads_through(fed);
         session.connect_through(SAVED.into(), source, cx)
     });
     let presumed = state(&session, cx);
@@ -364,11 +407,12 @@ fn a_saved_network_lands_on_the_desk_before_its_node_answers(cx: &mut TestAppCon
         7
     );
     assert!(on_desk(screen(&session, cx)));
-    poll(cx);
+    heads.send(9);
+    cx.run_until_parked();
     assert_eq!(
-        asked.get(),
-        2,
-        "the poll did not start on the confirming answer"
+        height(&session, cx),
+        9,
+        "the heads were not followed on the confirming answer"
     );
 }
 
@@ -379,13 +423,15 @@ fn a_saved_network_whose_node_does_not_answer_stays_on_the_desk(cx: &mut TestApp
     const SAVED: &str = "http://127.0.0.1:12";
     saved(SAVED, true, [0; 32]);
     let session = cx.update(session);
-    let (source, _) = source(|n| match n {
+    let (source, asked) = source(|n| match n {
         0 => Err(noded_client::Error::Unreachable(
             "error sending request for url".into(),
         )),
         _ => Ok(status(7)),
     });
+    let (fed, heads) = heads();
     session.update(cx, |session, cx| {
+        session.heads_through(fed);
         session.connect_through(SAVED.into(), source, cx)
     });
     cx.run_until_parked();
@@ -396,11 +442,13 @@ fn a_saved_network_whose_node_does_not_answer_stays_on_the_desk(cx: &mut TestApp
         "a saved network's miss was said as a failure"
     );
     assert!(on_desk(screen(&session, cx)));
-    poll(cx);
+    heads.send(7);
+    cx.run_until_parked();
     assert!(
         !state(&session, cx).reconnecting,
-        "the poll's answer did not confirm"
+        "a head did not read the node answering"
     );
+    assert_eq!(asked.get(), 2, "the head asked no status to confirm");
     assert_eq!(
         chain(&session, cx).read_with(cx, |chain, _| chain.height),
         7
@@ -436,20 +484,23 @@ fn a_saved_node_on_another_contract_is_left_saying_so(cx: &mut TestAppContext) {
         left.error
     );
     assert_eq!(screen(&session, cx), Screen::Connect);
-    poll(cx);
-    assert_eq!(asked.get(), 1, "a node on another contract was polled on");
+    cx.run_until_parked();
+    assert_eq!(asked.get(), 1, "a node on another contract was asked on");
 }
 
 #[gpui_kit::test]
 fn a_node_that_moves_to_another_contract_is_left_saying_so(cx: &mut TestAppContext) {
-    let (session, asked) = connected(
+    let (session, asked, heads) = following(
         |n| match n {
             0 => Ok(testnet(7)),
             _ => one_contract_behind(),
         },
         cx,
     );
-    poll(cx);
+    session.update(cx, |session, cx| session.node_watched(true, cx));
+    cx.run_until_parked();
+    heads.send(8);
+    cx.run_until_parked();
     let left = state(&session, cx);
     assert!(!left.connected && !left.reconnecting, "{left:?}");
     assert!(
@@ -457,8 +508,9 @@ fn a_node_that_moves_to_another_contract_is_left_saying_so(cx: &mut TestAppConte
         "{}",
         left.error
     );
-    poll(cx);
-    assert_eq!(asked.get(), 2, "a node on another contract was polled on");
+    heads.send(9);
+    cx.run_until_parked();
+    assert_eq!(asked.get(), 2, "a node on another contract was asked on");
 }
 
 #[gpui_kit::test]
@@ -569,20 +621,15 @@ fn a_moved_identity_role_moves_the_watch_the_session_follows(cx: &mut TestAppCon
     });
     session.update(cx, |session, cx| {
         session.watching_with(crate::backend::rpc_client(ORIGIN), watched);
-        let on_node = SessionState {
-            connected: true,
-            connected_rpc: ORIGIN.into(),
-            endpoint: ORIGIN.into(),
-            network: "session-test".into(),
-            chain: "session-test".into(),
-            ..SessionState::booted()
-        };
-        session.seed_connected(on_node, source, cx);
+        session.seed_connected(on_node(), source, cx);
+        session.node_watched(true, cx);
+        session.node_watched(false, cx);
     });
-    poll(cx);
+    cx.run_until_parked();
     let own = |program: &str, open: bool| (program.to_owned(), open);
     assert_eq!(watching(), [own("programs", true), own("identity", true)]);
-    poll(cx);
+    written("programs");
+    cx.run_until_parked();
     assert_eq!(
         watching(),
         [
@@ -593,6 +640,67 @@ fn a_moved_identity_role_moves_the_watch_the_session_follows(cx: &mut TestAppCon
         ],
         "the watch did not follow identity's move"
     );
-    poll(cx);
+    written("programs");
+    cx.run_until_parked();
     assert_eq!(watching().len(), 4, "an unmoved binding re-armed");
+}
+
+fn written(program: &str) {
+    WATCHED.with(|watched| {
+        let watched = watched.borrow();
+        let open = watched
+            .iter()
+            .rev()
+            .find(|(name, tell)| name == program && !tell.is_closed());
+        if let Some((_, tell)) = open {
+            let _ = tell.try_send(());
+        }
+    });
+}
+
+#[gpui_kit::test]
+fn a_heads_socket_that_ends_reads_the_node_lost_until_retry_opens_it_again(
+    cx: &mut TestAppContext,
+) {
+    let (session, asked, heads) = following(|_| Ok(testnet(8)), cx);
+    heads.send(7);
+    cx.run_until_parked();
+    assert_eq!(height(&session, cx), 7, "a head moved no height");
+    assert!(!state(&session, cx).reconnecting);
+    heads.cut();
+    cx.run_until_parked();
+    assert!(
+        state(&session, cx).reconnecting,
+        "a socket that ended left the node answering"
+    );
+    assert_eq!(asked.get(), 0, "the loss asked a status");
+    session.update(cx, |session, cx| session.poll_now(cx));
+    cx.run_until_parked();
+    assert_eq!(asked.get(), 1, "Retry asked no status");
+    assert_eq!(
+        heads.opens(),
+        2,
+        "Retry did not open the heads socket again"
+    );
+    heads.send(9);
+    cx.run_until_parked();
+    let back = state(&session, cx);
+    assert!(back.connected && !back.reconnecting, "{back:?}");
+    assert_eq!(height(&session, cx), 9);
+}
+
+#[gpui_kit::test]
+fn a_status_that_fails_while_heads_arrive_leaves_the_node_answering(cx: &mut TestAppContext) {
+    let (session, _, heads) =
+        following(|_| Err(noded_client::Error::Unreachable("slow".into())), cx);
+    for at in [7, 8] {
+        heads.send(at);
+        cx.executor().advance_clock(crate::runtime::STATUS_EVERY);
+        cx.run_until_parked();
+    }
+    assert!(
+        !state(&session, cx).reconnecting,
+        "a status read judged the node lost while its heads came"
+    );
+    assert_eq!(height(&session, cx), 8);
 }

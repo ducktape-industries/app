@@ -209,7 +209,7 @@ impl Pushing<'_> {
                 tracing::warn!(target: "ducktape::app", program = self.program, reason = lost,
                     "changes stream lost: it opens again once the node answers");
             }
-            match answering(self.client, block_time_ms).await {
+            match self.client.answering(block_time_ms).await {
                 Ok(answered) => block_time_ms = Some(answered),
                 Err(error) => return self.end(refused(error)),
             }

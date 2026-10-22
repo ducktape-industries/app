@@ -23,6 +23,9 @@ fn a_shared_on_its_own_network_connects_seats_and_leaves_there(cx: &mut TestAppC
         let changes = futures::channel::mpsc::unbounded().1;
         Shared::new(network.clone(), Default::default(), changes, cx)
     });
+    shared.session.update(cx, |session, _| {
+        session.heads_through(super::tests::quiet())
+    });
     let (source, asked) = source(|_| {
         Ok(NodeStatus {
             network: NETWORK.into(),

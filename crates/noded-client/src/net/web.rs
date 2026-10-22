@@ -66,6 +66,40 @@ impl Net {
         Ok(Box::pin(Self::open(url).await?))
     }
 
+    pub(crate) async fn socket_kept(
+        &self,
+        url: &str,
+        probe: &str,
+        quiet: Duration,
+        idle: Duration,
+    ) -> Result<rt::BoxStream<'static, Result<Vec<u8>>>> {
+        let socket = Self::open(url).await?;
+        let (net, probe) = (self.clone(), probe.to_owned());
+        let kept = futures::stream::unfold(Some(socket), move |socket| {
+            let (net, probe) = (net.clone(), probe.clone());
+            async move {
+                let mut socket = socket?;
+                loop {
+                    match rt::time::timeout(quiet, socket.next()).await {
+                        Ok(Some(item)) => {
+                            let ends = item.is_err();
+                            return Some((item, (!ends).then_some(socket)));
+                        }
+                        Ok(None) => return None,
+                        Err(_) => {}
+                    }
+                    let probed = rt::time::timeout(idle, net.get(&probe)).await;
+                    let answered = matches!(probed, Ok(Ok(_)));
+                    if !answered {
+                        let sentence = format!("the node answered no status within {idle:?}");
+                        return Some((Err(Error::Transport(sentence)), None));
+                    }
+                }
+            }
+        });
+        Ok(Box::pin(kept))
+    }
+
     pub(crate) async fn duplex(&self, url: &str) -> Result<super::Duplex> {
         let socket = match Self::open(url).await {
             Ok(socket) => socket,

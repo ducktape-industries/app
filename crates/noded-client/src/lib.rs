@@ -149,6 +149,7 @@ impl std::fmt::Display for Asked {
 pub struct Client {
     http: net::Net,
     reads: net::Net,
+    idle: Duration,
     base: String,
     newest: std::sync::Arc<std::sync::Mutex<Option<Tip>>>,
     roles: std::sync::Arc<std::sync::Mutex<Option<abi::Roles>>>,
@@ -160,9 +161,19 @@ impl Client {
         Client {
             http: net::Net::new(None),
             reads: net::Net::new(Some((READ_CONNECT, READ_IDLE))),
+            idle: READ_IDLE,
             base,
             newest: Default::default(),
             roles: Default::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reading_within(base: &str, connect: Duration, idle: Duration) -> Client {
+        Client {
+            reads: net::Net::new(Some((connect, idle))),
+            idle,
+            ..Client::new(base)
         }
     }
 
@@ -175,7 +186,7 @@ impl Client {
     }
 
     pub async fn status(&self) -> Result<Status> {
-        let status: Status = self.fetch(route::STATUS).await?;
+        let status: Status = answered(self.reads.get(&self.url(route::STATUS))).await?;
         self.heard(status.anchor());
         self.heard_roles(&status.roles);
         Ok(status)
@@ -429,9 +440,23 @@ impl Client {
         Ok((Watching(sending), pushed))
     }
 
-    pub async fn heads(&self) -> Result<impl Stream<Item = Result<Head>> + Unpin> {
+    pub async fn heads_kept(
+        &self,
+        block_time_ms: Option<u64>,
+    ) -> Result<impl Stream<Item = Result<Head>> + Unpin> {
+        let url = format!("{}{}", self.base.replacen("http", "ws", 1), route::HEADS);
+        let quiet = block_time_ms
+            .filter(|ms| *ms > 0)
+            .map_or(self.idle, Duration::from_millis);
+        let probe = self.url(route::STATUS);
+        let socket = self
+            .http
+            .socket_kept(&url, &probe, quiet, self.idle)
+            .await?;
         let heard = self.clone();
-        let heads = self.follow::<Head>(route::HEADS.to_owned()).await?;
+        let heads = socket.map(|message| {
+            message.and_then(|bytes| abi::decode::<Head>(&bytes).map_err(Error::Decode))
+        });
         Ok(heads.inspect(move |head| {
             if let Ok(head) = head {
                 heard.heard(Tip {
@@ -440,6 +465,20 @@ impl Client {
                 });
             }
         }))
+    }
+
+    pub async fn answering(&self, block_time_ms: Option<u64>) -> Result<u64> {
+        loop {
+            let error = match self.status().await {
+                Ok(status) => return Ok(status.block_time_ms),
+                Err(error) => error,
+            };
+            let Some(block_time_ms) = block_time_ms else {
+                return Err(error);
+            };
+            tracing::debug!(target: "ducktape::app", %error, "status not answered");
+            rt::time::sleep(Duration::from_millis(block_time_ms / 2)).await;
+        }
     }
 
     async fn follow<T: BorshDeserialize>(

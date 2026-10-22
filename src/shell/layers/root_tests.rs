@@ -67,14 +67,19 @@ fn render_counts(key: crate::runtime::WindowKey) -> Vec<(String, u64)> {
 
 #[gpui_kit::test]
 fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
-    use crate::shell::entities::{STATUS_EVERY, SessionState};
+    use crate::shell::entities::SessionState;
     const PROGRAM: &str = "root-still-view";
     let _on = crate::perf::on_for_test();
     let (app, key, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(PROGRAM, 400, line("a line"));
     set_motion(&app, false, &mut native);
     pane(&view, PaneMessage::Select(PROGRAM), &mut native);
-    let (source, asked) = source(|_| Ok(status(7)));
+    let (source, _) = source(|_| Ok(status(7)));
+    let (fed, heads) = ducktape_host::session::tests::heads();
+    let chain = app
+        .session
+        .read_with(&native, |session, _| session.parts().0);
+    chain.update(&mut native, |chain, _| chain.height = 7);
     app.session.update(&mut native, |session, cx| {
         let on_node = SessionState {
             connected: true,
@@ -82,10 +87,11 @@ fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
             chain: "testkit".into(),
             ..SessionState::booted()
         };
+        session.heads_through(fed);
         session.seed_connected(on_node, source, cx)
     });
     let poll = |native: &mut VisualTestContext| {
-        native.executor().advance_clock(STATUS_EVERY);
+        heads.send(7);
         native.run_until_parked();
     };
     poll(&mut native);
@@ -100,21 +106,23 @@ fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
             .any(|(name, count)| name == "renders.chrome" && *count > 0),
         "the bar never drew: {still:?}"
     );
-    let before = asked.get();
     for _ in 0..6 {
         poll(&mut native);
     }
-    assert_eq!(asked.get(), before + 6, "the poll did not run");
     assert_eq!(
         render_counts(key),
         still,
-        "a poll that moved nothing drew the window"
+        "a head that moved nothing drew the window"
     );
     assert_eq!(
         tree_renders(PROGRAM),
         tree,
         "a still chain drew a pane's tree"
     );
+    heads.send(8);
+    native.run_until_parked();
+    let height = chain.read_with(&native, |chain, _| chain.height);
+    assert_eq!(height, 8, "the heads were not followed");
     assert!(
         crate::perf::snapshot(false)["shell"]
             .get("dispatch")

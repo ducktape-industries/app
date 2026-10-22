@@ -1,7 +1,6 @@
-//! The chain as the node last told it: its height, when that last moved,
-//! the node's whole answer. Times are wall seconds (`notify::wall()`), so
-//! the open node menu ages them from its own clock. Written by
-//! `Session`'s poll.
+//! The chain as the node last told it: its height, when that last moved, the node's whole
+//! answer. Times are wall seconds (`notify::wall()`), so the open node menu ages them from its
+//! own clock. Written by `Session` from the node's heads and its status answers.
 use gpui_kit::Context;
 
 #[derive(Clone, Debug, PartialEq)]

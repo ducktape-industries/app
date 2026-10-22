@@ -57,6 +57,7 @@ pub(crate) struct SpotRow {
 }
 
 pub(crate) struct Overlays {
+    session: Entity<Session>,
     open: Option<Overlay>,
     page: SettingsPage,
     left_by_keys: bool,
@@ -82,6 +83,7 @@ impl Overlays {
             }
         });
         Self {
+            session: session.clone(),
             open: None,
             page: SettingsPage::default(),
             left_by_keys: false,
@@ -101,6 +103,12 @@ impl Overlays {
         }
         if self.open == open {
             return;
+        }
+        let node = |open: Option<Overlay>| open == Some(Overlay::Menu(Popover::Node));
+        let watched = node(open);
+        if node(self.open) != watched {
+            self.session
+                .update(cx, |session, cx| session.node_watched(watched, cx));
         }
         if let Some(Overlay::Settings(page)) = open {
             self.page = page;

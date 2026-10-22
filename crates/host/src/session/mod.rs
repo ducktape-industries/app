@@ -22,7 +22,7 @@ mod toast;
 pub use account::{Account, AccountEvent, AccountState, Secret};
 pub use chain::Chain;
 #[cfg(any(test, feature = "test-support"))]
-pub use node::{STATUS_EVERY, StatusSource};
+pub use node::{HeadsSource, StatusSource};
 pub use node::{Session, SessionEvent, SessionState};
 pub use notifications::{Notifications, permission};
 pub use prefs::{DYNAMIC_TYPE_BODY, Prefs, TextSize, text_scale};
@@ -119,13 +119,17 @@ impl Shared {
     /// As `new`, with a rail no loader thread wakes: a test refreshes it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(roster: Roster, center: CenterHandle, cx: &mut App) -> Self {
-        Self::over(
+        let shared = Self::over(
             crate::runtime::in_hand().clone(),
             roster,
             center,
             mpsc::unbounded().1,
             cx,
-        )
+        );
+        shared
+            .session
+            .update(cx, |session, _| session.heads_through(tests::quiet()));
+        shared
     }
 }
 
@@ -152,6 +156,7 @@ pub mod tests {
                 Roster::default(),
             );
             session.apart_from_runtime();
+            session.heads_through(quiet());
             session
         })
     }
@@ -180,6 +185,63 @@ pub mod tests {
             std::future::ready(answer(n)).boxed_local()
         });
         (source, asked)
+    }
+
+    pub(crate) fn quiet() -> HeadsSource {
+        use futures::StreamExt as _;
+        std::rc::Rc::new(|| futures::stream::pending().boxed_local())
+    }
+
+    type Feed = futures::channel::mpsc::UnboundedSender<
+        Result<noded_client::wire::Head, noded_client::Error>,
+    >;
+
+    /// A test's heads socket: each head it is told, and its end when cut.
+    pub struct Heads {
+        feed: std::rc::Rc<std::cell::RefCell<Option<Feed>>>,
+        opens: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Heads {
+        pub fn send(&self, height: u64) {
+            let head = noded_client::wire::Head {
+                height,
+                id: [0; 32],
+                time: 0,
+            };
+            if let Some(feed) = self.feed.borrow().as_ref() {
+                let _ = feed.unbounded_send(Ok(head));
+            }
+        }
+
+        pub fn cut(&self) {
+            self.feed.borrow_mut().take();
+        }
+
+        pub fn lose(&self) {
+            let lost = noded_client::Error::Transport("the socket closed".into());
+            if let Some(feed) = self.feed.borrow().as_ref() {
+                let _ = feed.unbounded_send(Err(lost));
+            }
+        }
+
+        pub fn opens(&self) -> usize {
+            self.opens.get()
+        }
+    }
+
+    pub fn heads() -> (HeadsSource, Heads) {
+        use futures::StreamExt as _;
+        let feed = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let opens = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (fed, opened) = (feed.clone(), opens.clone());
+        let source: HeadsSource = std::rc::Rc::new(move || {
+            let (tell, heard) = futures::channel::mpsc::unbounded();
+            *fed.borrow_mut() = Some(tell);
+            opened.set(opened.get() + 1);
+            heard.boxed_local()
+        });
+        (source, Heads { feed, opens })
     }
 
     /// The node's answer at `height`, for the tests that feed the session

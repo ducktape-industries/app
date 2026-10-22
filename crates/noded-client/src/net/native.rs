@@ -4,7 +4,7 @@
 use crate::{Error, Result, refusal};
 use bytes::Bytes;
 use futures::channel::mpsc;
-use futures::{Stream, StreamExt as _};
+use futures::{SinkExt as _, Stream, StreamExt as _};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -54,6 +54,55 @@ impl Net {
                 .await
                 .map_err(not_opened)?;
         Ok(Box::pin(binary(socket)))
+    }
+
+    pub(crate) async fn socket_kept(
+        &self,
+        url: &str,
+        _probe: &str,
+        quiet: Duration,
+        idle: Duration,
+    ) -> Result<rt::BoxStream<'static, Result<Vec<u8>>>> {
+        let (socket, _) =
+            tokio_tungstenite::connect_async_with_config(url, Some(unbounded()), false)
+                .await
+                .map_err(not_opened)?;
+        let kept = futures::stream::unfold(Some(socket.split()), move |socket| async move {
+            let (mut sink, mut read) = socket?;
+            let mut pinged = false;
+            loop {
+                let wait = match pinged {
+                    true => idle,
+                    false => quiet,
+                };
+                let next = match rt::time::timeout(wait, read.next()).await {
+                    Ok(next) => next,
+                    Err(_) if pinged => {
+                        let sentence = format!("the node answered no ping within {idle:?}");
+                        return Some((Err(Error::Transport(sentence)), None));
+                    }
+                    Err(_) => {
+                        if let Err(error) = sink.send(Message::Ping(Vec::new())).await {
+                            return Some((Err(Error::Transport(error.to_string())), None));
+                        }
+                        pinged = true;
+                        continue;
+                    }
+                };
+                pinged = false;
+                match next {
+                    Some(Ok(Message::Binary(bytes))) => {
+                        return Some((Ok(bytes), Some((sink, read))));
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => {
+                        return Some((Err(Error::Transport(error.to_string())), None));
+                    }
+                    None => return None,
+                }
+            }
+        });
+        Ok(Box::pin(kept))
     }
 
     pub(crate) async fn duplex(&self, url: &str) -> Result<super::Duplex> {
@@ -168,3 +217,6 @@ fn not_opened(error: tokio_tungstenite::tungstenite::Error) -> Error {
         error => Error::Transport(error.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests;

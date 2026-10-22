@@ -833,23 +833,6 @@ fn node_refuses(error: &noded_client::Error) -> bool {
     }
 }
 
-/// The node's block time once its status answers: read at once, then at
-/// half `block_time_ms` (the one it last gave) until it does. A node that
-/// never gave one has no pace to wait at: its first unanswered read is why.
-async fn answering(client: &RpcClient, block_time_ms: Option<u64>) -> noded_client::Result<u64> {
-    loop {
-        let error = match client.status().await {
-            Ok(status) => return Ok(status.block_time_ms),
-            Err(error) => error,
-        };
-        let Some(block_time_ms) = block_time_ms else {
-            return Err(error);
-        };
-        tracing::debug!(target: "ducktape::app", %error, "status not answered");
-        rt::time::sleep(std::time::Duration::from_millis(block_time_ms / 2)).await;
-    }
-}
-
 pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
     if !payload.is_empty() {
         view.refuse(
@@ -895,7 +878,14 @@ async fn heads_socket(client: RpcClient, followers: Followers<Answer>) {
     let mut block_time_ms = None;
     let mut away = false;
     loop {
-        let lost = match client.heads().await {
+        if block_time_ms.is_none() {
+            block_time_ms = client
+                .status()
+                .await
+                .ok()
+                .map(|status| status.block_time_ms);
+        }
+        let lost = match client.heads_kept(block_time_ms).await {
             Ok(mut heads) => {
                 away = false;
                 if block_time_ms.is_none() {
@@ -921,7 +911,7 @@ async fn heads_socket(client: RpcClient, followers: Followers<Answer>) {
             tracing::warn!(target: "ducktape::app", reason = lost,
                 "heads stream lost: it opens again once the node answers");
         }
-        match answering(&client, block_time_ms).await {
+        match client.answering(block_time_ms).await {
             Ok(answered) => block_time_ms = Some(answered),
             Err(error) => {
                 end(&followers, Err(refused(error)));
