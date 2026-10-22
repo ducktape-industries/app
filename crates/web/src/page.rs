@@ -23,6 +23,26 @@ pub struct PageState {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub height: Option<u32>,
+    pub loaded: Option<Loaded>,
+}
+
+/// How the page's own document last loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Loaded {
+    /// Answered with this HTTP status.
+    Answered(u16),
+    /// Failed with no answer (refused, unreachable).
+    Failed,
+}
+
+impl PageState {
+    pub fn failed(&self) -> bool {
+        match self.loaded {
+            Some(Loaded::Answered(status)) => status != 200,
+            Some(Loaded::Failed) => true,
+            None => false,
+        }
+    }
 }
 
 pub struct Leave(pub String);

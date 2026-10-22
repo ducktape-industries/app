@@ -429,6 +429,29 @@ wrap_load_handler! {
             state.can_go_forward = can_go_forward != 0;
             self.shared.dirty.set(true);
         }
+
+        fn on_load_end(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, http_status_code: c_int) {
+            if frame.is_some_and(|frame| frame.is_main() == 1) {
+                let status = u16::try_from(http_status_code).unwrap_or_default();
+                self.shared.state.borrow_mut().loaded = Some(crate::page::Loaded::Answered(status));
+                self.shared.dirty.set(true);
+            }
+        }
+
+        fn on_load_error(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            error_code: Errorcode,
+            _error_text: Option<&CefString>,
+            _failed_url: Option<&CefString>,
+        ) {
+            let failed = frame.is_some_and(|frame| frame.is_main() == 1) && error_code != Errorcode::ABORTED;
+            if failed {
+                self.shared.state.borrow_mut().loaded = Some(crate::page::Loaded::Failed);
+                self.shared.dirty.set(true);
+            }
+        }
     }
 }
 

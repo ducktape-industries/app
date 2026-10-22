@@ -26,7 +26,12 @@ nothing until you press Update now there.
 For nightly, read `nightly.json` instead of `stable.json` below.
 
 Releases carry the web view (CEF), which draws web pages and artifacts in
-place.
+place. An artifact is a page from `duck://`: a file, a blob, or a file inside a
+zip a file holds, read where it lies (`duck://<chain>/files/<path>/site.zip/index.html`,
+and a link ending in a folder, `site.zip/`, reads that folder's `index.html`), so a
+site exported as a zip runs as posted. Where an artifact's own page answers
+anything but 200 (its file removed, a zip with no such member), the room shows
+its link in its place, and the page comes back when its file does.
 
 **macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`, with
 CEF's framework and its helper apps in `Contents/Frameworks/`, all

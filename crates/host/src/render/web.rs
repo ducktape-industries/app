@@ -149,7 +149,9 @@ impl ViewTree {
         if crate::runtime::artifact::serves(link) {
             let piece = self.page(node, link, None, true, window, cx);
             let (page, height) = (piece.page.clone(), piece.height.get());
-            if !page.read(cx).unavailable() {
+            let shown = page.read(cx);
+            let shows = shows_its_page(shown.unavailable(), shown.state());
+            if shows {
                 let height =
                     height.map_or(window.viewport_size().height, |height| px(height as f32));
                 let palette = crate::theme::palette(cx);
@@ -213,12 +215,29 @@ fn open(
         }),
         serves: crate::runtime::artifact::serves,
     });
+    let followed = follows
+        .then(|| crate::runtime::artifact::follow(address))
+        .flatten();
+    let held =
+        std::cell::RefCell::new((address.to_owned(), crate::runtime::artifact::hold(address)));
     let page = cx.new(|cx| ducktape_web::Page::new(address, profile(key), window, cx));
     let route = std::rc::Rc::new(std::cell::Cell::new(on_state));
     let height = std::rc::Rc::new(std::cell::Cell::new(None));
+    let answered = std::cell::Cell::new(false);
     let (heard, measured) = (route.clone(), height.clone());
     let state = cx.subscribe(&page, move |_, _, state: &ducktape_web::PageState, cx| {
-        if measured.replace(state.height) != state.height {
+        let moved_on = held.borrow().0 != state.url;
+        let lands_elsewhere = moved_on && !state.url.is_empty();
+        if lands_elsewhere {
+            *held.borrow_mut() = (
+                state.url.clone(),
+                crate::runtime::artifact::hold(&state.url),
+            );
+        }
+        let resized = measured.replace(state.height) != state.height;
+        let answer_moved = answered.replace(state.failed()) != state.failed();
+        let redraws = resized || answer_moved;
+        if redraws {
             cx.notify();
         }
         if let Some(handler) = heard.get() {
@@ -229,20 +248,17 @@ fn open(
     let leave = cx.subscribe(&page, |_, _, leave: &ducktape_web::Leave, cx| {
         cx.emit(Opened(leave.0.clone()))
     });
-    let follow = follows
-        .then(|| crate::runtime::artifact::follow(address))
-        .flatten()
-        .map(|(following, mut changed)| {
-            let shown = page.downgrade();
-            let reloads = cx.spawn(async move |_, cx| {
-                while changed.next().await.is_some() {
-                    if shown.update(cx, |page, _| page.reload()).is_err() {
-                        return;
-                    }
+    let follow = followed.map(|(following, mut changed)| {
+        let shown = page.downgrade();
+        let reloads = cx.spawn(async move |_, cx| {
+            while changed.next().await.is_some() {
+                if shown.update(cx, |page, _| page.reload()).is_err() {
+                    return;
                 }
-            });
-            (following, reloads)
+            }
         });
+        (following, reloads)
+    });
     Piece {
         page,
         revision: 0,
@@ -252,6 +268,11 @@ fn open(
         _leave: leave,
         _follow: follow,
     }
+}
+
+#[cfg(feature = "web")]
+fn shows_its_page(unavailable: bool, state: &ducktape_web::PageState) -> bool {
+    !unavailable && !state.failed()
 }
 
 #[cfg(feature = "web")]
@@ -370,6 +391,27 @@ mod tests {
         }
         let title = told(&page("", &"x".repeat(500))).title;
         assert_eq!(title.chars().count(), 500);
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn an_artifact_draws_its_page_only_while_its_document_answered_200() {
+        let state = |loaded| ducktape_web::PageState {
+            loaded,
+            ..Default::default()
+        };
+        for (loaded, shows) in [
+            (None, true),
+            (Some(ducktape_web::Loaded::Answered(200)), true),
+            (Some(ducktape_web::Loaded::Answered(404)), false),
+            (Some(ducktape_web::Loaded::Failed), false),
+        ] {
+            assert_eq!(shows_its_page(false, &state(loaded)), shows, "{loaded:?}");
+        }
+        assert!(
+            !shows_its_page(true, &state(None)),
+            "with no web view, no page"
+        );
     }
 
     const PLAN: &str = "duck://duckpond-725bcad1/files/shared/plan.html";

@@ -10,7 +10,7 @@ use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ducktape_web::{Leave, Network, Page, PageState, Served};
+use ducktape_web::{Leave, Loaded, Network, Page, PageState, Served};
 use gpui_kit::accesskit::Role;
 use gpui_kit::{
     AppContext as _, Context, Entity, IntoElement, Modifiers, ParentElement as _, Point, Render,
@@ -469,6 +469,11 @@ fn served(address: &str, ports: &[(String, String)]) -> Served {
             mime: "text/plain".to_owned(),
             body: b"ok".to_vec(),
         },
+        "missing.html" => Served {
+            status: 404,
+            mime: "text/plain; charset=utf-8".to_owned(),
+            body: b"no such file".to_vec(),
+        },
         "outline.html" => Served {
             status: 200,
             mime: "text/html; charset=utf-8".to_owned(),
@@ -805,17 +810,40 @@ impl Run {
         self.refusal = None;
         self.until(&page, |run| {
             let state = run.state(&page);
-            state
+            let sized = state
                 .height
-                .is_some_and(|height| state.title == format!("size:{height}:{height}"))
+                .is_some_and(|height| state.title == format!("size:{height}:{height}"));
+            sized && state.loaded.is_some()
         });
         let state = self.state(&page);
+        let missing = (state.loaded != Some(Loaded::Answered(200)))
+            .then(|| format!("its document loaded as {:?}", state.loaded));
         Verdict {
             case: "outline",
             title: state.title,
             reached: Vec::new(),
-            missing: None,
+            missing,
         }
+    }
+
+    fn missing(&mut self) -> Verdict {
+        println!("live missing: opens");
+        let (window, page) = self.open(&format!("{SITE}missing.html"));
+        self.visual = Some(VisualTestContext::from_window(window.into(), &self.cx));
+        self.refusal = None;
+        self.until(&page, |run| run.state(&page).loaded.is_some());
+        let state = self.state(&page);
+        let missing = (!state.failed())
+            .then(|| format!("a document answered 404 loaded as {:?}", state.loaded));
+        let verdict = Verdict {
+            case: "missing",
+            title: state.title,
+            reached: Vec::new(),
+            missing,
+        };
+        verdict.say();
+        self.close(window.into());
+        verdict
     }
 }
 
@@ -878,6 +906,9 @@ fn inner() -> i32 {
         .collect();
     if chosen("outline") {
         verdicts.push(run.outline());
+    }
+    if chosen("missing") {
+        verdicts.push(run.missing());
     }
     println!("live: every case");
     for verdict in &verdicts {

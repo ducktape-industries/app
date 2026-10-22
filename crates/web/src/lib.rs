@@ -41,7 +41,7 @@ mod menu;
 mod page;
 mod scheme;
 
-pub use page::{Leave, Page, PageState};
+pub use page::{Leave, Loaded, Page, PageState};
 
 pub fn color_scheme(dark: bool) {
     ENGINE.with_borrow_mut(|engine| {

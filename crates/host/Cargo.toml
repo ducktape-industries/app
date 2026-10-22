@@ -108,6 +108,7 @@ rt = { package = "ducktape-rt", path = "../rt" }
 view-runner = { path = "../view-runner" }
 # an artifact's file read and followed (`runtime/kernel/node/artifact.rs`): the files program's own query and reply
 files = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "files" }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "../web", optional = true }
 # feature `av` only: V4L2, AVFoundation, cpal and everything that names them
