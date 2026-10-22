@@ -1,5 +1,6 @@
 # The app CI, minimal but mechanical (orthory, #engineering 912/913): rustfmt, the dependency
-# gate (tools/dep-gate.sh), clippy -D warnings on the workspace and with --features ax-door; no
+# gate (tools/dep-gate.sh), clippy -D warnings on the workspace and with --features ax-door, and
+# clippy -D warnings for wasm32 on the crates the web build has so far (J-137); no
 # tests, which wait for a release cut. gates.sh (GATES=check) from the forge repo tools at its
 # main head runs them in one pod, cloned from the forge this repository's own clone came from
 # (J-033).
@@ -18,18 +19,23 @@ id = "gates"
 runs-on = ["pods"]
 # What the pod asks: the quota queues a check that does not fit, and cargo runs as many jobs as
 # CPUs. The target dir is memory-backed scratch (gates.sh puts it at /var/tmp/target), so the
-# build never writes the node's disk; memory covers that target and the compile: a check run's
-# pod peaked at 7.9 GiB (its target 2.4 GiB) in CI.
+# build never writes the node's disk; memory covers that target and the compile: the pod's cgroup
+# peaked at 9.89 GiB in CI.
 cpu = "16"
-memory = "8Gi"
+memory = "10Gi"
 scratch = ["/var/tmp/target"]
-image = "localhost:5000/toolchain:f8ff9f00de3f@sha256:bbdcb20bbddd8035fd9a9fc0acf03330e0b4f5d00b05292bed7fd8279306b25c"
+image = "localhost:5000/toolchain:b240e4516c93@sha256:d80bfd948f37f381542c720e3f67a39c06606e88aec9f66f88aefb295468136b"
 steps = [
     "git config --global --add safe.directory '*'",
     "git clone -q \"$(git remote get-url origin | sed 's#/forge/app$#/forge/tools#')\" /var/tmp/tools",
     "sh /var/tmp/tools/gates.sh /work/app",
+    "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-rt -p noded-client -p view-runner -p ducktape-host-web -- -D warnings",
+    "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-host-web --tests -- -D warnings",
+    "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked -p ducktape-host --no-default-features --lib -- -D warnings",
 ]
 
 [jobs.env]
 GATES = "check"
 WORKSPACE_FEATURES = "ax-door"
+FEATURE_SETS = "ducktape-web:cef ducktape-host:web"
+AGENTS_LINT = "1"

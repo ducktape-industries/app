@@ -114,14 +114,21 @@ jobs:
           sudo apt-get install -y pkg-config libclang-dev libasound2-dev \
             libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig1-dev libfreetype6-dev \
-            mesa-vulkan-drivers libvulkan1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo build --locked --profile dist -p ducktape-app
+            mesa-vulkan-drivers libvulkan1 \
+            cmake ninja-build libglib2.0-dev libnss3 libnspr4 libatk1.0-0t64 \
+            libatk-bridge2.0-0t64 libatspi2.0-0t64 libcups2t64 libdbus-1-3 libgbm1 \
+            libpango-1.0-0 libcairo2 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2
+      - run: cargo build --locked --profile dist -p ducktape-app --features web
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tar czf "$ASSET" -C target/dist ducktape-app
+          files="ducktape-app libcef.so libvk_swiftshader.so libvulkan.so.1 vk_swiftshader_icd.json \
+            icudtl.dat v8_context_snapshot.bin resources.pak chrome_100_percent.pak \
+            chrome_200_percent.pak locales CREDITS.html"
+          strip --strip-unneeded target/dist/libcef.so target/dist/libvk_swiftshader.so
+          printf '%s\n' $files > target/dist/release.files
+          tar czf "$ASSET" -C target/dist $files release.files
           # Both jobs may try to create the release; the loser finds it made.
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
             --prerelease --latest=false --target "$SHA" --title "$TAG" \
@@ -146,6 +153,20 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.plan.outputs.sha }}
+      - name: CEF's build tools
+        run: |
+          tools="$RUNNER_TEMP/cef-tools"
+          mkdir -p "$tools/ninja"
+          curl -fsSL -o "$tools/cmake.tar.gz" https://cmake.org/files/v3.31/cmake-3.31.6-macos-universal.tar.gz
+          echo "330b9514f5112e5ed4fb08b8b05803b776fd9b539a6ae12927d14dcc0ee2ba8d  $tools/cmake.tar.gz" | shasum -a 256 -c -
+          tar xzf "$tools/cmake.tar.gz" -C "$tools"
+          curl -fsSL -o "$tools/ninja-mac.zip" https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-mac.zip
+          echo "89a287444b5b3e98f88a945afa50ce937b8ffd1dcc59c555ad9b1baf855298c9  $tools/ninja-mac.zip" | shasum -a 256 -c -
+          unzip -o "$tools/ninja-mac.zip" -d "$tools/ninja"
+          {
+            echo "$tools/cmake-3.31.6-macos-universal/CMake.app/Contents/bin"
+            echo "$tools/ninja"
+          } >> "$GITHUB_PATH"
       # ad-hoc signed here: macos-sign signs it for real
       - run: ops/bundle-app-macos.sh
         env:
@@ -272,6 +293,16 @@ jobs:
           retention-days: 7
           overwrite: true
 
+  contract:
+    needs: [plan, linux, macos-sign]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: contract gate
+        run: python3 ops/contract-gate.py https://duckpond.ducktape.industries
+
   # Sign the channel's manifest over both archives and upload: archives
   # first (immutable, named by their sha256), then the channel's one file,
   # so a client never reads a manifest whose archive is not there, nor a
@@ -280,7 +311,7 @@ jobs:
   # the build jobs build whatever commit they are given, and nothing they
   # leave behind reaches the job that holds the key.
   publish:
-    needs: [plan, linux, macos-sign]
+    needs: [plan, linux, macos-sign, contract]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release

@@ -1,0 +1,19 @@
+# The phone's Swift type-checked on the mac relay for each change into dev and each push to dev (`make -C phone ios-check`):
+# reported, not required, so a Mac that sleeps holds no merge.
+name = "phone"
+
+[on]
+push = ["dev"]
+change = ["opened", "updated"]
+
+[notify]
+channel = "ci"
+
+[[jobs]]
+id = "ios"
+runs-on = ["mac"]
+runners = [44]
+steps = ["make -C phone ios-check"]
+
+[jobs.env]
+FORGE_REACH = "phone/ios phone/Makefile"

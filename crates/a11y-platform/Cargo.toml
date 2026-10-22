@@ -1,0 +1,29 @@
+# ducktape-a11y-platform: a gpui `Platform` wrapping another, whose windows keep the
+# accessibility callbacks and the last tree gpui hands them, so the host can activate, read
+# and act on AccessKit as an OS adapter does; `headless` (feature `test-support`) runs it in tests.
+
+[package]
+name = "ducktape-a11y-platform"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[features]
+test-support = ["gpui/test-support", "dep:image", "dep:uuid"]
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+anyhow = "1"
+futures.workspace = true
+parking_lot = "0.12"
+raw-window-handle = "0.6"
+smallvec = "1"
+image = { version = "0.25", default-features = false, optional = true }
+uuid = { version = "1", optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation"] }
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
+uuid = "1"

@@ -28,6 +28,100 @@ pub struct PictureBytes {
 
 pub type Checked = Result<(), &'static str>;
 
+pub type Read = futures::future::BoxFuture<'static, Result<Vec<u8>, String>>;
+
+#[derive(Clone)]
+pub struct PictureReader(Arc<dyn Fn(Vec<abi::BlobId>) -> Read + Send + Sync>);
+
+impl PictureReader {
+    pub fn on(network: &Arc<super::Network>) -> Self {
+        let on = super::roster::On::of(network);
+        Self(Arc::new(move |ids| {
+            let on = on.clone();
+            let (tell, heard) = futures::channel::oneshot::channel();
+            rt::task::spawn(async move {
+                let _ = tell.send(read_blobs(on, ids).await);
+            });
+            Box::pin(async move {
+                heard
+                    .await
+                    .unwrap_or_else(|_| Err("the read stopped before it answered".into()))
+            })
+        }))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn of(read: impl Fn(Vec<abi::BlobId>) -> Read + Send + Sync + 'static) -> Self {
+        Self(Arc::new(read))
+    }
+
+    pub fn read(&self, ids: Vec<abi::BlobId>) -> Read {
+        (self.0)(ids)
+    }
+}
+
+pub fn blob_id(id: &str) -> Option<abi::BlobId> {
+    let digest = noded_client::hex::hex_decode(id.strip_prefix("sha256:")?).ok()?;
+    Some(abi::BlobId::Sha256(digest.try_into().ok()?))
+}
+
+async fn read_blobs(on: super::roster::On, ids: Vec<abi::BlobId>) -> Result<Vec<u8>, String> {
+    let unread = |error| crate::backend::refused(error).message;
+    let client = on
+        .get()
+        .and_then(|network| network.connection.lock().expect("views rpc").client.clone())
+        .ok_or_else(|| "the app is on no network".to_owned())?;
+    let mut blobs = client.blobs_stream(&ids).await.map_err(unread)?;
+    let mut gathered = Gathered::new(crate::backend::memory_bounds().picture_bytes);
+    for _ in &ids {
+        match blobs.next_blob().await.map_err(unread)? {
+            Some(true) => {}
+            Some(false) => return Err("the node holds no such blob".into()),
+            None => return Err("the node's answer ended before every blob".into()),
+        }
+        while let Some(piece) = blobs.piece().await.map_err(unread)? {
+            gathered.take(&piece)?;
+        }
+        gathered.blob_end()?;
+    }
+    Ok(gathered.picture)
+}
+
+pub(crate) struct Gathered {
+    picture: Vec<u8>,
+    framed: Vec<u8>,
+    budget: u64,
+}
+
+impl Gathered {
+    pub(crate) fn new(budget: u64) -> Self {
+        Self {
+            picture: Vec::new(),
+            framed: Vec::new(),
+            budget,
+        }
+    }
+
+    pub(crate) fn take(&mut self, piece: &[u8]) -> Result<(), String> {
+        self.framed.extend_from_slice(piece);
+        let head = (self.framed.iter())
+            .position(|byte| *byte == 0)
+            .map_or(0, |at| at + 1);
+        let held = self.picture.len() + self.framed.len() - head;
+        match held as u64 <= self.budget {
+            true => Ok(()),
+            false => Err("the picture is past the device's picture memory setting".into()),
+        }
+    }
+
+    pub(crate) fn blob_end(&mut self) -> Result<(), String> {
+        let framed = std::mem::take(&mut self.framed);
+        let body = noded_client::wire::unframe(&framed).ok_or("a blob has no header")?;
+        self.picture.extend_from_slice(body);
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct Vector {
     pub bytes: Arc<[u8]>,
@@ -219,6 +313,46 @@ mod tests {
             .vector
             .get(&hash)
             .map(|held| held.bytes.to_vec())
+    }
+
+    #[test]
+    fn one_blob_past_the_picture_budget_is_refused_at_the_piece_that_crosses_it() {
+        let mut gathered = Gathered::new(1000);
+        gathered
+            .take(b"chunk 4000\0")
+            .expect("the header holds no picture");
+        let mut taken = 0;
+        let refused = loop {
+            match gathered.take(&[7; 300]) {
+                Ok(()) => taken += 1,
+                Err(why) => break why,
+            }
+            assert!(taken <= 4, "4000 bytes past a budget of 1000 never refused");
+        };
+        assert_eq!(taken, 3, "three pieces fit, the fourth crosses the budget");
+        assert!(refused.contains("picture memory"), "{refused}");
+        assert!(
+            gathered.framed.len() <= 1000 + 300 + 11,
+            "held at most one piece past it"
+        );
+    }
+
+    #[test]
+    fn blobs_within_the_budget_gather_whole_in_order_and_one_past_it_is_refused() {
+        let framed = |body: &[u8]| [format!("chunk {}\0", body.len()).as_bytes(), body].concat();
+        let mut gathered = Gathered::new(6);
+        for body in [&b"abc"[..], b"de"] {
+            let framed = framed(body);
+            let (head, tail) = framed.split_at(framed.len() - 1);
+            gathered.take(head).expect("within the budget");
+            gathered.take(tail).expect("within the budget");
+            gathered.blob_end().expect("a framed blob");
+        }
+        assert_eq!(gathered.picture, b"abcde");
+        assert!(
+            gathered.take(&framed(b"fg")).is_err(),
+            "seven bytes past six"
+        );
     }
 
     #[test]

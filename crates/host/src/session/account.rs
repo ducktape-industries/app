@@ -20,7 +20,7 @@
 
 use super::{AccountStep, Prefs, Screen, Slice, spawn_on_runtime};
 use crate::backend;
-use crate::contract::{self, KeyRefusal};
+use crate::contract;
 use gpui_kit::{Context, Entity, EventEmitter, Task};
 
 /// A typed secret or a recovery phrase: wiped when it drops, so leaving a
@@ -238,6 +238,7 @@ impl Account {
         self.unanswered = false;
         self.phrase = None;
         self.client = backend::rpc_client("");
+        backend::unseat(&self.network);
         self.network.clear();
         self.keyring.clear();
         self.approve_code.clear();
@@ -253,7 +254,6 @@ impl Account {
             cx,
         );
         self.show(Screen::Unlock { awaiting: false }, cx);
-        spawn_on_runtime(cx, backend::lock_signer(), |_, _, _| {}).detach();
     }
 
     /// Opens this device's key for the network in hand
@@ -272,17 +272,11 @@ impl Account {
             return;
         }
         self.edit(|state| state.seating = true, cx);
-        let keyring = self.keyring.clone();
+        let (keyring, network) = (self.keyring.clone(), self.network.clone());
         let work = async move {
-            let opened = tokio::task::spawn_blocking(move || contract::os().device_key(&keyring))
-                .await
-                .unwrap_or_else(|_| {
-                    Err(KeyRefusal::Broken(
-                        "opening this device's key did not finish".into(),
-                    ))
-                });
+            let opened = contract::os().device_key(&keyring).await;
             match opened {
-                Ok(Some(key)) => Ok(Some(backend::seat_key(key).await)),
+                Ok(Some(key)) => Ok(Some(backend::seat_key(&network, key).await)),
                 Ok(None) => Ok(None),
                 Err(refused) => Err(refused.sentence()),
             }

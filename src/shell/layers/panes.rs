@@ -365,10 +365,10 @@ impl Render for PaneLayer {
                 .relative()
                 .size_full()
                 .child(canvas)
-                .child(
-                    AnyView::from(self.empty_desk.clone())
-                        .cached(StyleRefinement::default().size_full()),
-                )
+                .child(ducktape_host::a11y::cached(
+                    AnyView::from(self.empty_desk.clone()),
+                    StyleRefinement::default().size_full(),
+                ))
                 .into_any_element();
         }
         let views = layout
@@ -440,12 +440,17 @@ impl PaneView {
                     1,
                 );
                 match (seat.standin(), seat.tree()) {
-                    (Some(standin), _) => {
-                        standin.element(seat.program(), seat.instance(), seat.ax_mark())
-                    }
+                    (Some(standin), _) => standin.element(
+                        seat.network(),
+                        seat.program(),
+                        seat.instance(),
+                        seat.ax_mark(),
+                    ),
                     (None, Some(tree)) => {
-                        let view =
-                            AnyView::from(tree).cached(StyleRefinement::default().size_full());
+                        let view = ducktape_host::a11y::cached(
+                            AnyView::from(tree),
+                            StyleRefinement::default().size_full(),
+                        );
                         let mut context = KeyContext::default();
                         context.set("ducktape_view", format!("view{}", seat.instance()));
                         div()
@@ -466,12 +471,16 @@ impl PaneView {
                     (None, None) => div().size_full().into_any_element(),
                 }
             }
-            Body::Help(help) => AnyView::from(help.clone())
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
-            Body::Empty(empty) => AnyView::from(empty.clone())
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
+            Body::Help(help) => ducktape_host::a11y::cached(
+                AnyView::from(help.clone()),
+                StyleRefinement::default().size_full(),
+            )
+            .into_any_element(),
+            Body::Empty(empty) => ducktape_host::a11y::cached(
+                AnyView::from(empty.clone()),
+                StyleRefinement::default().size_full(),
+            )
+            .into_any_element(),
             Body::Memory(memory) => AnyView::from(memory.clone()).into_any_element(),
             Body::Missing => div().size_full().into_any_element(),
         }
@@ -629,14 +638,14 @@ impl Render for PaneView {
             self.kind == WindowKind::Console && pane.frame.is_some() && layout.fills(index);
         let strip = match strip_grows {
             true => self.strip.clone().into_any_element(),
-            false => AnyView::from(self.strip.clone())
-                .cached(
-                    StyleRefinement::default()
-                        .w_full()
-                        .h(px(if filled { FILL_STRIP } else { TITLE }))
-                        .flex_shrink_0(),
-                )
-                .into_any_element(),
+            false => ducktape_host::a11y::cached(
+                AnyView::from(self.strip.clone()),
+                StyleRefinement::default()
+                    .w_full()
+                    .h(px(if filled { FILL_STRIP } else { TITLE }))
+                    .flex_shrink_0(),
+            )
+            .into_any_element(),
         };
         self.place(
             index,
@@ -913,11 +922,12 @@ impl Strip {
     ) -> AnyElement {
         use super::super::ink::*;
         let name = panes::label(self.rail.read(cx).rows(), program);
+        let at = crate::runtime::slug(program);
         let line =
             format!("{name} shares live data with the people in its rooms, through your node.");
         let notifications = self.notifications.entity().clone();
         let ok = bar_button(
-            format!("live-line/{program}/ok"),
+            format!("live-line/{at}/ok"),
             "OK",
             false,
             ink,
@@ -927,7 +937,7 @@ impl Strip {
                 })
             }),
         );
-        bar(format!("live-line/{program}"), line.clone(), ink)
+        bar(format!("live-line/{at}"), line.clone(), ink)
             .child(
                 sans(500, 14.)
                     .flex_1()
@@ -948,22 +958,17 @@ impl Strip {
         use super::super::ink::*;
         use crate::runtime::notify::Permission;
         let name = panes::label(self.rail.read(cx).rows(), program);
+        let at = crate::runtime::slug(program);
         let burst = self.prefs.read(cx).get().notify.burst;
         let (notifications, prefs) = (
             self.notifications.entity().clone(),
             self.prefs.entity().clone(),
         );
         let button = |id: &str, text: &'static str, filled: bool, answer: Box<dyn Fn(&mut App)>| {
-            bar_button(
-                format!("notify-ask/{program}/{id}"),
-                text,
-                filled,
-                ink,
-                answer,
-            )
+            bar_button(format!("notify-ask/{at}/{id}"), text, filled, ink, answer)
         };
         bar(
-            format!("notify-ask/{program}"),
+            format!("notify-ask/{at}"),
             format!("{name} wants to show desktop notifications"),
             ink,
         )

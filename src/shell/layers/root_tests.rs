@@ -230,7 +230,7 @@ fn door_ids(native: &mut VisualTestContext) -> Vec<String> {
 }
 
 #[gpui_kit::test]
-fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
+fn under_a11y_every_layer_draws_uncached_and_keeps_its_nodes(cx: &mut TestAppContext) {
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
     const PROGRAM: &str = "root-a11y-view";
     const TAB: &str = "rail/root-a11y-view";
@@ -287,20 +287,15 @@ fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
             "after pulse {pulse} a node moved"
         );
     }
-    assert_eq!(
-        window_count(key, "renders.chrome"),
-        chrome,
-        "a pulse or a read drew the bar"
+    let rose = |now: u64, before: u64| now.saturating_sub(before);
+    let (chrome, strip, tree) = (
+        rose(window_count(key, "renders.chrome"), chrome),
+        rose(window_count(key, "renders.strip.0"), strip),
+        rose(tree_renders(PROGRAM), tree),
     );
-    assert_eq!(
-        window_count(key, "renders.strip.0"),
-        strip,
-        "a pulse or a read drew the strip"
-    );
-    assert_eq!(
-        tree_renders(PROGRAM),
-        tree,
-        "a pulse or a read drew the tree"
+    assert!(
+        chrome >= 10 && strip >= 10 && tree >= 10,
+        "under AT every drawn frame renders each layer: bar {chrome}, strip {strip}, tree {tree} in ten pulses and ten reads"
     );
     assert!(
         draws() >= drawn + 20,
@@ -342,10 +337,9 @@ fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
             first
         );
     }
-    assert_eq!(
-        window_count(key, "renders.chrome"),
-        chrome,
-        "a pulse drew the bar under its menu"
+    assert!(
+        window_count(key, "renders.chrome") >= chrome + 5,
+        "under AT a pulse renders the bar under its menu"
     );
 }
 
@@ -393,7 +387,7 @@ fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_focus_move_re_renders_two_layers_not_the_window(cx: &mut TestAppContext) {
+fn under_a11y_a_focus_move_re_renders_every_layer(cx: &mut TestAppContext) {
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
     const PROGRAM: &str = "root-focus-view";
     let _on = crate::perf::on_for_test();
@@ -465,11 +459,14 @@ fn a_focus_move_re_renders_two_layers_not_the_window(cx: &mut TestAppContext) {
     let root = drawn[0];
     assert!(root > 0, "the focus move drew no frame");
     assert_eq!(
-        drawn,
-        [root, root, 1, 1, 0, 0],
-        "[root, pane view, bar, strip, dialogs, footer] drawn"
+        drawn, [root; 6],
+        "under AT each layer draws with the root: [root, pane view, bar, strip, dialogs, footer]"
     );
-    assert_eq!(tree_renders(PROGRAM), tree, "the focus move drew the tree");
+    assert_eq!(
+        tree_renders(PROGRAM) - tree,
+        root,
+        "under AT the focus move drew the tree with the root"
+    );
 }
 
 #[gpui_kit::test]
@@ -1061,7 +1058,7 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
+fn a_dialogs_scrim_over_a_views_tooltip_source_closes_the_tooltip(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
     use view_wire as wire;
     const MAGENTA: u32 = 0xff00ff;
@@ -1141,13 +1138,12 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
             .expect("the dialog's scrim paints");
         let tip = quads
             .iter()
-            .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(MAGENTA).into()))
-            .unwrap_or_else(|| panic!("{program}: the tooltip still paints"));
+            .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(MAGENTA).into()));
         assert!(
-            tip.order < scrim.order,
-            "{program}: the tooltip {} over the scrim {}",
-            tip.order,
-            scrim.order
+            tip.is_none(),
+            "{program}: the dialog's scrim {} covers the source, yet its tooltip paints at {:?}",
+            scrim.order,
+            tip.map(|tip| tip.order)
         );
         let at = gpui_kit::point(
             gpui_kit::px(pane.origin.x.0 / scale + 8.),

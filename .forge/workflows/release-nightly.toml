@@ -1,0 +1,66 @@
+# The nightly release: chief's daily Dispatch of "nightly" at dev's head builds Linux in a pod and macOS on the mac relay, the signer Developer ID signs the Mac app and publishes the release record as tag release/nightly/<sequence>, then mirrors it to R2.
+# A newer dispatch supersedes a run no runner has taken yet, and a taken run goes on to its end; ops/signer/README.md has the signer's half.
+# publish waits on the contract job, run once linux and macos-sign are done: a release goes out only while this commit's NODE_CONTRACT is the one duckpond's /v1/status answers (ops/contract-gate.py).
+name = "release-nightly"
+
+[on]
+dispatch = ["nightly"]
+trigger = false
+supersede = "unstarted"
+
+[notify]
+channel = "ci"
+
+[[jobs]]
+id = "contract"
+runs-on = ["pods"]
+needs = ["linux", "macos-sign"]
+runners = [38]
+image = "localhost:5000/toolchain:b240e4516c93@sha256:d80bfd948f37f381542c720e3f67a39c06606e88aec9f66f88aefb295468136b"
+steps = ["git config --global --add safe.directory '*'", "python3 ops/contract-gate.py \"$NODE\""]
+
+[jobs.env]
+NODE = "https://duckpond.ducktape.industries"
+
+[[jobs]]
+id = "linux"
+runs-on = ["pods"]
+runners = [38]
+cpu = "16"
+memory = "11Gi"
+scratch = ["/var/tmp/target"]
+image = "localhost:5000/toolchain:b240e4516c93@sha256:d80bfd948f37f381542c720e3f67a39c06606e88aec9f66f88aefb295468136b"
+steps = ["git config --global --add safe.directory '*'", "ops/release-linux.sh \"$OUT\""]
+
+[jobs.env]
+CARGO_TARGET_DIR = "/var/tmp/target"
+
+[[jobs]]
+id = "macos"
+runs-on = ["mac"]
+runners = [44]
+steps = ["ops/release-macos.sh \"$OUT\""]
+
+[[jobs]]
+id = "macos-sign"
+runs-on = ["sign:dev.ducktape.app"]
+needs = ["macos"]
+steps = ["developer-id"]
+
+[[jobs]]
+id = "publish"
+runs-on = ["sign:dev.ducktape.app"]
+needs = ["contract", "linux", "macos-sign"]
+steps = ["release-manifest"]
+
+[jobs.env]
+CHANNEL = "nightly"
+
+[[jobs]]
+id = "mirror"
+runs-on = ["sign:dev.ducktape.app"]
+needs = ["linux", "macos-sign", "publish"]
+steps = ["r2-mirror"]
+
+[jobs.env]
+CHANNEL = "nightly"

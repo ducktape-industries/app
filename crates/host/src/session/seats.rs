@@ -12,11 +12,12 @@
 //! program's notifier (`runtime::notifier`) is handed the same session and
 //! has what it asks routed as a pane's.
 use super::{Account, Notifications, Rail, Session};
-use crate::runtime::{Intent, Placed, Seat};
+use crate::runtime::{Intent, Network, Placed, Seat};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Context, Entity, EventEmitter, Subscription,
 };
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 struct Routed {
     seat: Entity<Seat>,
@@ -62,6 +63,7 @@ pub struct Seats {
     account: Entity<Account>,
     rail: Entity<Rail>,
     notifications: Entity<Notifications>,
+    network: Arc<Network>,
     props: Vec<u8>,
     _observing: Vec<Subscription>,
     _notifiers: gpui_kit::Task<()>,
@@ -75,6 +77,7 @@ impl Seats {
         account: &Entity<Account>,
         rail: &Entity<Rail>,
         notifications: &Entity<Notifications>,
+        network: Arc<Network>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut heard = crate::runtime::notifier::intents();
@@ -101,6 +104,7 @@ impl Seats {
             account: account.clone(),
             rail: rail.clone(),
             notifications: notifications.clone(),
+            network,
         };
         this.props = this.encode(cx);
         crate::runtime::notifier::set_props(this.props.clone());
@@ -153,9 +157,10 @@ impl Seats {
         let mut moved = !gone.is_empty();
         for (instance, (program, window, placed)) in wanted {
             let props = &self.props;
+            let network = &self.network;
             let routed = self.map.entry(instance).or_insert_with(|| {
                 moved = true;
-                let seat = cx.new(|cx| Seat::new(program, instance, cx));
+                let seat = cx.new(|cx| Seat::on(network.clone(), program, instance, cx));
                 let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
                     this.route(program, instance, intent.clone(), cx)
                 });

@@ -23,35 +23,65 @@ pub(super) fn cache_fits(count: usize, used: usize, additional: usize, budget: u
 }
 
 pub(super) fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
-    let mut pixels = match data {
-        wire::ImageData::Resource(_) | wire::ImageData::Refusal(_) => return None,
+    let pixels = match data {
+        wire::ImageData::Resource(_) | wire::ImageData::Refusal(_) | wire::ImageData::Blobs(_) => {
+            return None;
+        }
         wire::ImageData::Rgba {
             width,
             height,
             pixels,
         } => image::RgbaImage::from_raw(*width, *height, pixels.clone())?,
-        wire::ImageData::Encoded(bytes) => {
-            let budget = picture_bytes();
-            let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-                .with_guessed_format()
-                .ok()?;
-            let mut limits = image::Limits::no_limits();
-            limits.max_alloc = Some(budget);
-            reader.limits(limits);
-            let decoder = reader.into_decoder().ok()?;
-            let (width, height) = decoder.dimensions();
-            if !rgba_fits(width, height, budget) {
-                return None;
-            }
-            image::DynamicImage::from_decoder(decoder)
-                .ok()?
-                .into_rgba8()
-        }
+        wire::ImageData::Encoded(bytes) => encoded(bytes)?,
     };
+    Some(rendered(pixels))
+}
+
+fn encoded(bytes: &[u8]) -> Option<image::RgbaImage> {
+    let budget = picture_bytes();
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::no_limits();
+    limits.max_alloc = Some(budget);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    if !rgba_fits(width, height, budget) {
+        return None;
+    }
+    Some(
+        image::DynamicImage::from_decoder(decoder)
+            .ok()?
+            .into_rgba8(),
+    )
+}
+
+fn rendered(mut pixels: image::RgbaImage) -> RenderImage {
     for pixel in pixels.pixels_mut() {
         pixel.0.swap(0, 2);
     }
-    Some(RenderImage::new(vec![image::Frame::new(pixels)]))
+    RenderImage::new(vec![image::Frame::new(pixels)])
+}
+
+pub(super) fn decode_fitted(bytes: &[u8], most: (u32, u32)) -> Option<RenderImage> {
+    let pixels = encoded(bytes)?;
+    let (width, height) = pixels.dimensions();
+    let scale = f64::min(
+        f64::from(most.0) / f64::from(width),
+        f64::from(most.1) / f64::from(height),
+    );
+    if scale >= 1. {
+        return Some(rendered(pixels));
+    }
+    let side = |length: u32| ((f64::from(length) * scale).round() as u32).max(1);
+    let fitted = image::imageops::resize(
+        &pixels,
+        side(width),
+        side(height),
+        image::imageops::FilterType::Triangle,
+    );
+    Some(rendered(fitted))
 }
 
 #[cfg(test)]

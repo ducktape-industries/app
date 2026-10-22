@@ -42,7 +42,7 @@ fn fake_connection(
         chain: "net#1".into(),
         rev,
         live: Some(Arc::new(Fake(Mutex::new(opened), Mutex::new(refusing)))),
-        apart: None,
+        on: Default::default(),
     }
 }
 
@@ -667,7 +667,7 @@ fn a_subscription_losing_its_session_is_told_and_opened_again() {
     let (_, ends) = opened(&opens);
     drop(ends);
     assert_eq!(
-        subscription.recv(),
+        handle().block_on(subscription.recv()),
         Some(Subscribed::Heard(TrackHeard::Ended {
             code: refusal::NOT_CONNECTED.into()
         }))
@@ -691,7 +691,7 @@ fn a_host_subscription_queues_a_datagram_burst() {
         })
         .unwrap();
     assert_eq!(
-        subscription.recv(),
+        handle().block_on(subscription.recv()),
         Some(Subscribed::Heard(TrackHeard::Up { subscribers: 0 }))
     );
     let object = |object: u32| Data::Object {
@@ -703,7 +703,10 @@ fn a_host_subscription_queues_a_datagram_burst() {
         ends.latest.put(object(n));
     }
     for n in 0..3 {
-        assert_eq!(subscription.recv(), Some(Subscribed::Data(object(n))));
+        assert_eq!(
+            handle().block_on(subscription.recv()),
+            Some(Subscribed::Data(object(n)))
+        );
     }
 }
 
@@ -803,7 +806,7 @@ fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
         })
         .unwrap();
     assert_eq!(
-        subscription.recv(),
+        handle().block_on(subscription.recv()),
         Some(Subscribed::Heard(TrackHeard::Up { subscribers: 0 }))
     );
     let object = Data::Object {
@@ -812,7 +815,10 @@ fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
         body: vec![7],
     };
     handle().block_on(ends.data.send(object.clone())).unwrap();
-    assert_eq!(subscription.recv(), Some(Subscribed::Data(object)));
+    assert_eq!(
+        handle().block_on(subscription.recv()),
+        Some(Subscribed::Data(object))
+    );
     ends.heard
         .send(Heard::Closed(wire::Error::new(
             refusal::UNKNOWN_TRACK,
@@ -820,7 +826,7 @@ fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
         )))
         .unwrap();
     assert_eq!(
-        subscription.recv(),
+        handle().block_on(subscription.recv()),
         Some(Subscribed::Heard(TrackHeard::Ended {
             code: refusal::UNKNOWN_TRACK.into()
         }))
@@ -839,4 +845,31 @@ fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
     let (again, _ends) = opened(&opens);
     assert!(matches!(again, Ask::Subscribe { .. }));
     drop(subscription);
+}
+
+#[tokio::test]
+async fn a_pieces_tracks_go_on_its_seats_network() {
+    let network = crate::runtime::Network::new(false);
+    let client = crate::backend::rpc_client("http://127.0.0.1:9");
+    network.take(&client, "other", "other#1");
+    let live = HostLive::new("piece", &network);
+    let (_, chain) = live.current().expect("its network's live session");
+    assert_eq!(chain, "other#1", "on the network in hand");
+}
+
+#[test]
+fn a_close_ends_every_networks_live_session() {
+    let networks = [
+        crate::runtime::Network::new(false),
+        crate::runtime::Network::new(false),
+    ];
+    let client = crate::backend::rpc_client("http://127.0.0.1:9");
+    for (nth, network) in networks.iter().enumerate() {
+        network.take(&client, "other", &format!("other#{nth}"));
+    }
+    drop(close(&networks));
+    for network in &networks {
+        let live = network.connection.lock().unwrap().live.is_some();
+        assert!(!live, "a network's live session outlived the close");
+    }
 }

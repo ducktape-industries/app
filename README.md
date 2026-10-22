@@ -25,7 +25,11 @@ the app still checks and says what is newer, but downloads and installs
 nothing until you press Update now there.
 For nightly, read `nightly.json` instead of `stable.json` below.
 
-**macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`,
+Releases carry the web view (CEF), which draws web pages and artifacts in
+place.
+
+**macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`, with
+CEF's framework and its helper apps in `Contents/Frameworks/`, all
 Developer ID signed and notarized, with a Developer ID provisioning profile
 embedded: it authorizes the app's application identifier and keychain access
 group, which a key locked by Touch ID needs (macOS keeps those in the data
@@ -47,18 +51,54 @@ browser download is quarantined: after dragging it to `/Applications`, run
 
 **Linux (x86_64).** Needs `jq`, and at runtime `libxcb1`,
 `libxkbcommon-x11-0`, ALSA's library for the microphone and speakers
-(`libasound2`; `libasound2t64` from Ubuntu 24.04 on) and a Vulkan driver
-(`libvulkan1` and `mesa-vulkan-drivers` on Ubuntu). `ducktape-app install`
-puts the binary under `~/.local/share/ducktape/` and registers a desktop
-entry; the extracted copy can be deleted after.
+(`libasound2`; `libasound2t64` from Ubuntu 24.04 on), a Vulkan driver
+(`libvulkan1` and `mesa-vulkan-drivers` on Ubuntu), and the libraries CEF
+loads: `libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0
+libcups2 libdbus-1-3 libgbm1 libpango-1.0-0 libcairo2 libglib2.0-0
+libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2` (Ubuntu 24.04
+names some of these with `t64`). `ducktape-app install` puts the binary and
+CEF's files under `~/.local/share/ducktape/` and registers a desktop entry;
+the extracted copy can be deleted after.
+
+On Linux the web view runs **without Chromium's sandbox**: releases ship no
+`chrome-sandbox`, since its setuid-root helper can't live in a folder you own.
+A page's renderer then runs with your user's rights, so a flaw in Chromium
+that a page exploits can read and write what you can. A web page's own
+requests and frames reach any https site, and simple POSTs get through even
+where CORS blocks reading the answers. An artifact (a page from `duck://`) is
+fenced off this machine and private networks: the app cancels every request
+the artifact, a frame in it or a worker it starts makes (fetch, images,
+scripts, frames, redirects) to `localhost`, a name under it, or an
+address IANA's special-purpose registries mark as not globally reachable
+(loopback, the RFC 1918 and RFC 6598 private ranges, link-local, unique-local,
+documentation and reserved blocks). A WebSocket never reaches the app's
+request fence, Chromium's own local network check lets a `wss:` to this machine
+reach its TLS handshake, and a web page nested in an artifact would run under
+its own policy, so an artifact's `Content-Security-Policy` lets it load
+anything (fetch, WebSocket, EventSource, images, styles, fonts, media, frames,
+workers) only from `duck:`, `data:` and `blob:` addresses, and scripts from
+those and `https://cdnjs.cloudflare.com` alone, the one host Claude's own
+artifacts load scripts from; it nests no `<object>` or `<embed>`: it reads its
+network and nothing else. An artifact never navigates in place: a
+link to another `duck://` page, or one you click to a public address, opens in
+the app instead, and a script that sends it elsewhere without a click, or to an
+address the fence names, is refused. Not
+fenced: a script from cdnjs, should this machine's DNS answer that name with a
+private address (CEF has no hook at the resolver); WebRTC, whose connections are not requests; a
+`<link rel=preconnect>`, which opens a connection to the address it names and
+sends a TLS hello there but no bytes the page chooses; a link on the page,
+which Chromium may connect to ahead of a click, sending nothing; and a
+`dns-prefetch`, which only sends a name to the system resolver. A root-owned setuid
+`chrome-sandbox` placed beside the installed binary turns the sandbox back
+on. macOS runs every CEF child in its own sandbox.
 
 ```bash
 sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
   | jq -r .manifest | jq -r '.artifacts["linux-x86_64"].sha256')
 curl -fLo /tmp/ducktape.tar.gz "https://dl.ducktape.industries/app/Ducktape-$sha-linux-x86_64.tar.gz"
 echo "$sha  /tmp/ducktape.tar.gz" | sha256sum -c
-tar xzf /tmp/ducktape.tar.gz -C /tmp
-/tmp/ducktape-app install
+mkdir -p /tmp/ducktape && tar xzf /tmp/ducktape.tar.gz -C /tmp/ducktape
+/tmp/ducktape/ducktape-app install
 ```
 
 ## What the app does
@@ -72,14 +112,31 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   its tab. A program without the section is left off the rail.
 - **Relay.** A view asks through the kernel contract (`crates/host/src/runtime/kernel.rs`),
   every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
-  `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
+  `program.query`/`op.submit`/`program.watch` `Call{target, body}` (`program.watch`: a standing
+  query the node answers again with each block that moves it), `program.changes <program>`,
   `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
   `blob.get`, `blob.manifest`, `link.open`, `link.window`, `host.widget` (the one MessagePack method: a tree
   command), `live.*` (`publish`/`send`/`subscribe`/`tracks`: a view's live
   tracks through the node's relay, off consensus, on one QUIC or websocket
   session per connection, `src/backend/live.rs`), and the app's own
-  (`host.*`, `clock.ticks`, `clipboard.*`, `notify.*`, `store.*`). A view
-  reaches only the capabilities its manifest declares. The app forwards the
+  (`host.*`, `clock.ticks`, `clipboard.*`, `notify.*`, `store.*`), and
+  `socket.open`/`socket.send` (a WebSocket from this device to a `wss://`
+  host the view's manifest lists, once the person allowed exactly those
+  hosts on a card, asked again whenever an update changes the list;
+  `src/runtime/kernel/socket.rs`) with `host.random`, and
+  `store.secret_get`/`store.secret_set` (a view's secrets in the OS key
+  store, one item each under its network, key, program and name, never in
+  its store file: `src/runtime/secret.rs` over each shell's
+  `contract::Secrets`; the desktop's Secret Service or keychain item, or a
+  file only this user reads with `DUCKTAPE_DEVICE_KEY_STORE=file`; the
+  iPhone's Keychain item, this device only; on Android a file sealed by the
+  Keystore key that seals the device key; none in pushd, which refuses
+  `no_secret_store`). A view
+  reaches only the capabilities its manifest declares. A view instance
+  belongs to the key it was seated with: when the seated key moves to
+  another, or the session locks, every view and notifier on that network
+  starts again fresh, with nothing carried, so no socket, request or
+  memory of one key's runs on under the next (`seat.rs` `Mounted::rekey`). The app forwards the
   bytes to the program the view names and signs writes with the seated key;
   it never reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's
@@ -90,7 +147,7 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
 ## Sending a transaction from the terminal
 
 ```bash
-ducktape-app send <network> <program> <hex>
+ducktape-app send <network> <program> <op>
 ```
 
 This sends one transaction, signed with the key this device holds for the
@@ -101,8 +158,17 @@ network: the same key the app's own screens sign with. It opens no window.
   for the chain that node runs now. A name with its founding time
   (`duckpond+1792250296000`) picks that one chain.
 - `<program>` is the program's name on the chain (`identity`).
-- `<hex>` is the call's bytes, hex-encoded, exactly as the program decodes
-  them (a borsh `identity::Op`, for example).
+- `<op>` is the call, in one of three forms, told apart by how it starts:
+  - JSON, starting with `{` (or `"` for an op with no fields), such as
+    `{"remove_channel_meta": {"channel_id": "…", "key": "widget.pinned"}}`.
+    The app reads the program's interface out of its code (the
+    `ducktape.schema` section) and encodes the op through it: the same JSON
+    `network_schema` and the ducktape CLI show, variants in snake_case and
+    bytes as hex. An op that does not fit is refused naming where
+    (`at op.remove_channel_meta: field key is missing`).
+  - hex: the op's borsh bytes as hex digits of even length, `0x` allowed.
+  - base64: the op's borsh bytes, standard or URL-safe, padding optional.
+  Digits that read both as hex and as base64 are hex.
 
 The key opens the way it does in the app. The OS may ask to unlock its key
 store, or for Touch ID. A password-locked key from before keys moved into
@@ -126,8 +192,11 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 | Path | What |
 |---|---|
-| `crates/noded-client` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch, and the flows onto an account; shared with the phone |
+| `crates/noded-client` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch, and the flows onto an account; shared with the phone; its transport (`src/net/`) is reqwest and tokio-tungstenite in a process, the page's fetch and WebSocket in a browser, tested there against `tests/web_node.py` (`src/net/web/tests.rs`) |
+| `crates/rt` | the runtime where targets differ, the one place a runtime target cfg lives: `Fut`, `BoxStream`, `MaybeSend`, time (`sleep`, `timeout`, `Instant`), where a task runs (`task`: `spawn` on the I/O loop as a `Task`, `worker`, `blocking`; natively the `views-kernel` runtime, `handle`) and the process's own facts (`process`: the local offset, pages, resident memory), tested natively and in headless Chrome (`src/task/tests.rs`) |
 | `crates/host` | the blind host core the desktop shell and the phone shell share; `src/contract.rs` is the one interface a shell implements (directories, the reader key, banners, OS facts, invite minting) |
+| `crates/view-runner` | the contract between the host and what runs a view's code (`ViewRunner`, `ViewInstance`, `Landing`, `Fault`), with no runtime or window in it, so a runner depends on it and not on the host; its README holds the rules every runner keeps, and `ducktape_host::contract` re-exports it |
+| `crates/host-web` | the browser's view runner: that contract over the page's own `WebAssembly` through js-sys, each view metered by `crates/view-meter`, tested in headless Chrome (`src/page/tests.rs`) |
 | `crates/host/src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `crates/host/src/backend/session.rs` | the seated key (any `noded_client::Signer`), its frames, preferences |
 | `crates/host/src/backend/live.rs`, `crates/host/src/runtime/kernel/live.rs` | the live session with the node's relay (core's `live-wire`: QUIC, or the websocket) and the `live.*` methods over it |
@@ -139,9 +208,9 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (rev `6a2a21b4d259e3ecb8e7c4b46aa9bfcfde572cee`): `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, `files`.
-`ducktape-industries/ducktape` (rev `facd3c32542a6dcd90f8320a81d1a6e5f534de5f`, the rev that programs rev pins): `abi`, `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
-`ducktape-industries/gpui-pre` (rev `2622bd8294b97a966f8febbd3b9dcb2cb5850aca`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
+`ducktape-industries/programs` (rev `f45348abf11f5c53c8b8313ca97fcd352ac756ba`): `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, `files`.
+`ducktape-industries/ducktape` (rev `f836730c6a3adeb1657bbe61f6c04524149bfcc3`, the rev that programs rev pins): `abi`, `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
+`ducktape-industries/gpui-pre` (rev `eef11e96c9fcf7e0389d31f125013370a1b02d92`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
 
 ## Building
 
@@ -170,3 +239,13 @@ Each commit on `main` and `dev` also has a built app: the prerelease
 Developer ID signed, notarized `ducktape-app-aarch64-apple-darwin.dmg`
 (`.github/workflows/release.yml`); the same build is what the stable (`main`)
 or nightly (`dev`) channel publishes (see [Install](#install)).
+
+On forge the same releases are built by `.forge/workflows/release-stable.toml`
+(each push to `main`) and `release-nightly.toml` (a `nightly` dispatch, once a
+day at `dev`'s head): Linux in a pods check (`ops/release-linux.sh`), macOS on
+the mac relay (`ops/release-macos.sh`, keyless), then the signer's
+`developer-id`, `release-manifest` and `r2-mirror` tools (`ops/signer/`, its
+README) sign the Mac app, sign the channel file, publish the release record as
+the forge tag `release/<channel>/<sequence>` with the archives under
+`/shared/releases/app/<sha256>/` in files, and only then mirror to R2. Nothing
+is signed there until the signer serves the `sign:dev.ducktape.app` label.

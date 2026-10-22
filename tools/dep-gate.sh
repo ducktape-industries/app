@@ -38,7 +38,7 @@ tree() {
 # backends (`gpui-pre-linux`, `gpui-pre-macos`) and its a11y stack's bus
 # (`zbus`, under accesskit on Linux), which gpui-kit carries on those
 # targets and host must not name itself.
-host_banned='ducktape-app ducktape-phone ducktape-host-jsc ducktape-updater updater tray-icon keyring commonware-cryptography keystore keyscheme ducktape-home cef gpui-pre-ios gpui-pre-mobile jni ndk objc2-web-kit'
+host_banned='ducktape-app ducktape-phone ducktape-host-jsc ducktape-updater updater tray-icon keyring commonware-cryptography keystore keyscheme ducktape-home cef ducktape-gpui-ios gpui-pre-mobile jni ndk objc2-web-kit'
 host_direct_banned='gpui-pre-linux gpui-pre-macos zbus'
 for target in x86_64-unknown-linux-gnu aarch64-apple-darwin aarch64-apple-ios aarch64-linux-android; do
     all=$(tree ducktape-host "$target") || { fail "cargo tree -p ducktape-host --target $target failed"; continue; }

@@ -31,14 +31,18 @@ mod owners;
 mod picker;
 mod roster;
 mod seat;
+mod secret;
 mod store;
+#[cfg(feature = "web")]
+pub(crate) use store::carried;
 mod view;
 pub mod web;
 
 #[cfg(feature = "call")]
 pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
-pub use kernel::{Answered, artifact, day, local_offset, set_in_front};
+pub use kernel::{Answered, artifact, day, local_offset, set_debug, set_in_front};
+#[cfg(feature = "ui")]
 pub(crate) use kernel::{Writes, writes};
 // a host with no screen runs each program's notifier per account (`crates/pushd`),
 // and the desktop every other listed network's (`follow`)
@@ -57,16 +61,15 @@ pub use kernel::shown_title;
 #[cfg(feature = "av")]
 pub use kernel::plain;
 pub use roster::{
-    Link, Prep, RailRow, connected, deployments_checked, deployments_due, disconnected, props,
-    valid_route,
+    Link, Prep, RailRow, connected, deployments_checked, disconnected, props, valid_route,
 };
-pub use roster::{Roster, changes_channel, roster};
+pub use roster::{Network, Roster, changes_channel, in_hand, named, roster, slug};
 pub use seat::{Back, Failure};
 #[cfg(feature = "ui")]
 pub use seat::{Backgrounded, Placed, Seat, serve_starts};
 
 pub(crate) use owners::owners as memory_owners;
-use roster::{Connection, code_digest, connection, rail_moved};
+use roster::{Connection, code_digest, connection, networks, rail_moved};
 use seat::{
     Load, LoadTiming, Loaded, Mounted, Registry, Slot, Unloaded, ViewCode, log_source, queue,
     registry, view_override,
@@ -173,7 +176,7 @@ fn loaders() -> usize {
     crate::contract::os().limits().loaders
 }
 
-type Routes = Mutex<std::collections::BTreeMap<(&'static str, u64), String>>;
+type Routes = Mutex<std::collections::BTreeMap<(u64, &'static str, u64), String>>;
 
 /// The route a link asked of one seat's view, by the seat's registry key
 /// (`program`, its pane's instance), waiting for that view's first
@@ -187,24 +190,24 @@ fn pending_routes() -> &'static Routes {
 /// Hold `route` for seat `instance` of `program` until its view asks, and
 /// wake that seat if it is open: its view reads the route in its next
 /// turn, and no other seat of the program hears of it.
-pub fn route_to(program: &'static str, instance: u64, route: String) {
+pub fn route_to(network: &Network, program: &'static str, instance: u64, route: String) {
     tracing::info!(target: "ducktape::app", program, instance, %route, "a link's route waits for its seat");
     pending_routes()
         .lock()
         .expect("pending routes")
-        .insert((program, instance), route);
+        .insert((network.id, program, instance), route);
     // registry, then seat: the order `retry` takes them in
-    if let Some(seat) = lock(registry()).get(&(program, instance)) {
+    if let Some(seat) = lock(&network.seats).get(&(program, instance)) {
         lock(seat).wake.send_replace(());
     }
 }
 
 /// The route waiting for seat `instance` of `program`, handed out once.
-pub fn take_route(program: &'static str, instance: u64) -> Option<String> {
+pub fn take_route(network: &Network, program: &'static str, instance: u64) -> Option<String> {
     pending_routes()
         .lock()
         .expect("pending routes")
-        .remove(&(program, instance))
+        .remove(&(network.id, program, instance))
 }
 
 /// The ids of a node and of its identified ancestors, root first: the key
@@ -262,6 +265,7 @@ pub struct Listing {
     pub min_width: u32,
     pub width: Option<u32>,
     pub capabilities: Vec<Capability>,
+    pub hosts: Vec<String>,
     pub wire: String,
 }
 
@@ -277,6 +281,7 @@ fn manifest_of(bytes: &[u8]) -> Listing {
             min_width: manifest.min_width,
             width: manifest.width,
             capabilities: manifest.capabilities,
+            hosts: view_wire::manifest::read_hosts(bytes),
             wire: manifest.wire_id,
         })
         .unwrap_or_default()
@@ -298,6 +303,7 @@ pub fn listing(program: &str) -> Option<Listing> {
                 min_width: $held.min_width,
                 width: $held.width,
                 capabilities: $held.capabilities.clone(),
+                hosts: $held.hosts.clone(),
                 wire: $held.wire.clone(),
             }
         };
@@ -343,6 +349,9 @@ pub fn allows(capability: Capability) -> &'static str {
         }
         Capability::File => {
             "lets you pick files on this device: it sees their names and sizes, never where they are"
+        }
+        Capability::Socket => {
+            "connects from this device to the hosts it names, once you said yes: nothing passes through the network"
         }
         Capability::Artifact => "shows pages kept on the network, which the app draws",
     }

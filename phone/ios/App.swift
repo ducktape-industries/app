@@ -648,6 +648,7 @@ final class Files: NSObject, PHPickerViewControllerDelegate, UIDocumentPickerDel
   func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { answer(nil) }
 
   func keep(path: String, ticket: UInt64) {
+    guard ducktape_phone_keep_shows(ticket) != 0 else { return }
     if keeping != nil { kept(false, nil) }
     let url = URL(fileURLWithPath: path)
     guard let top = Files.top() else {

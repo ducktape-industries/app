@@ -18,13 +18,14 @@ pub(crate) fn unlock(account: &mut Account, password: String, cx: &mut Context<A
     }
     let password = Secret::new(password);
     let keyring = account.keyring().to_owned();
+    let network = account.network().to_owned();
     let work = async move {
         let opened =
             tokio::task::spawn_blocking(move || backend::open_password_locked(&keyring, &password))
                 .await
                 .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
         match opened {
-            Ok(key) => Ok(backend::seat_key(std::sync::Arc::new(key)).await),
+            Ok(key) => Ok(backend::seat_key(&network, std::sync::Arc::new(key)).await),
             Err(error) => Err(backend::user_error(error)),
         }
     };

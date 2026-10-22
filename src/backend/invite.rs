@@ -11,7 +11,7 @@ use view_wire::methods::refusal;
 use noded_client::hex::{hex_decode, hex_encode};
 use noded_client::wire::Layer;
 
-use super::{RpcClient, query_frame, query_signer, refused};
+use super::{RpcClient, query_signer, refused, signed_query};
 
 const NODE_KEY: &str = "identity.key";
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
@@ -76,11 +76,15 @@ async fn validators(
     program: &str,
 ) -> Result<Vec<Vec<u8>>, view_wire::Error> {
     let validators = abi::encode(&valset::Query::Validators);
-    let frame = query_frame(&*query_signer(), network, program, validators).await?;
-    let reply = client
-        .query(Layer::Preconfirmed, frame)
-        .await
-        .map_err(refused)?;
+    let reply = signed_query(
+        client,
+        Layer::Preconfirmed,
+        &*query_signer(network),
+        network,
+        program,
+        validators,
+    )
+    .await?;
     match abi::decode(&reply) {
         Ok(valset::Reply::Validators(validators)) => Ok(validators),
         Ok(_) => Err(view_wire::Error::new(

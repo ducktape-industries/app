@@ -179,8 +179,8 @@ impl ViewRunner for DeferredRunner {
         &self,
         hash: [u8; 32],
         module: crate::contract::Code<'_>,
-        op: &[u8],
-    ) -> Option<view_wire::methods::Description> {
+        op: Vec<u8>,
+    ) -> rt::Fut<'static, Option<view_wire::methods::Description>> {
         self.inner.describe(hash, module, op)
     }
 }

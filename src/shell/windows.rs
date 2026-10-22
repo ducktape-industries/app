@@ -135,6 +135,10 @@ pub(in crate::shell) fn can_keep_above(cx: &gpui_kit::App) -> bool {
     cx.compositor_name() != "Wayland"
 }
 
+pub(in crate::shell) fn compositor_sizes(cx: &gpui_kit::App) -> bool {
+    cx.compositor_name() == "Wayland"
+}
+
 /// Tells the platform to keep `window` above other apps' windows, or to let
 /// it back among them. gpui sets a window's level only as it opens it
 /// (`WindowKind`), and nothing it does later (raising, activation, full
@@ -244,6 +248,8 @@ pub(in crate::shell) fn set_bounds(
         Ok(handle) => handle.as_raw(),
         #[cfg(test)]
         Err(raw_window_handle::HandleError::NotSupported) => {
+            let id = gpui_kit::Window::window_handle(window).window_id();
+            BOUNDED.with_borrow_mut(|told| told.push((id, bounds.size)));
             window.set_bounds(bounds);
             return Ok(());
         }
@@ -312,6 +318,12 @@ pub(in crate::shell) fn join_all_spaces(window: &gpui_kit::Window) {
 #[cfg(test)]
 thread_local! {
     pub(in crate::shell) static ACTIVATED: std::cell::RefCell<Vec<(gpui_kit::WindowId, Option<String>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(in crate::shell) static BOUNDED: std::cell::RefCell<Vec<(gpui_kit::WindowId, gpui_kit::Size<Pixels>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 

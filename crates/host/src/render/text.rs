@@ -7,21 +7,8 @@ use crate::render::native_id;
 
 pub(super) mod links;
 
-fn rich_tooltip_content(
-    tooltips: &HashMap<u32, TooltipContent>,
-    request: u32,
-    character_index: u32,
-) -> Option<Tree> {
-    let held = tooltips.get(&request)?;
-    (held.character_index == Some(character_index)).then(|| Tree {
-        root: (*held.content).clone(),
-        styles: held.styles.clone(),
-    })
-}
-
 thread_local! {
     static DRAG_CLIP: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
-    static PRESS: std::cell::Cell<Option<Point<Pixels>>> = const { std::cell::Cell::new(None) };
     static SETTLING: std::cell::Cell<Option<gpui_kit::WindowId>> = const { std::cell::Cell::new(None) };
 }
 
@@ -79,6 +66,7 @@ pub(super) struct RichParagraph {
     pub(super) selection: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
     pub(super) order: std::rc::Rc<std::cell::Cell<u64>>,
     pub(super) participant: Option<u64>,
+    pub(super) tip_spans: Vec<std::ops::Range<usize>>,
 }
 
 impl IntoElement for RichParagraph {
@@ -132,6 +120,10 @@ impl Element for RichParagraph {
         if self.participant.is_some() {
             return (hitbox, clip);
         }
+        let spans = (self.layout.clone(), std::mem::take(&mut self.tip_spans));
+        window.with_global_id(self.id.clone(), |_, window| {
+            super::pointer::holds_long_press(&hitbox, Some(spans), window, cx)
+        });
         let joins = joins_drag(DRAG_CLIP.get(), clip);
         let text = self.text.clone();
         let layout_bounds = self.layout.bounds();
@@ -186,7 +178,6 @@ impl Element for RichParagraph {
             }
             if hitbox.is_hovered(window) {
                 DRAG_CLIP.set(Some(clip));
-                PRESS.set(Some(event.position));
             }
         });
         window.on_mouse_event(|event: &MouseUpEvent, phase, window, _| {
@@ -356,6 +347,7 @@ impl ViewTree {
         if unselected {
             return element.into_any_element();
         }
+        let tip_spans = Vec::new();
         RichParagraph {
             id: native_id,
             content: element.into_any_element(),
@@ -365,6 +357,7 @@ impl ViewTree {
             selection: selection_range,
             order: self.selection_order.clone(),
             participant: None,
+            tip_spans,
         }
         .into_any_element()
     }
@@ -423,68 +416,32 @@ impl ViewTree {
         let mut interactive = InteractiveText::new(rich_id, styled);
         let linked = match on_click {
             Some(handler) if !clickable_ranges.is_empty() => {
-                let (element, linking) =
-                    self.linked_box(&native_id, text, clickable_ranges, *handler, window, cx);
-                let press = linking.press.clone();
-                interactive =
-                    interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
-                        let up = window.mouse_position();
-                        let down = PRESS.get().unwrap_or(up);
-                        if !dragged_over_words(down, up, window, cx) {
-                            press(index, cx)
-                        }
-                    });
-                Some((element, linking))
+                Some(self.linked_box(&native_id, text, clickable_ranges, *handler, window, cx))
             }
             _ => None,
         };
-        let hover_handler = *on_hover;
-        let tooltip_request = *tooltip;
-        if hover_handler.is_some() || tooltip_request.is_some() {
+        if let Some(handler) = *on_hover {
             let view = cx.entity().downgrade();
             interactive = interactive.on_hover(move |index, event, _, cx| {
-                let character_index = index.and_then(|index| u32::try_from(index).ok());
+                let index = index.and_then(|index| u32::try_from(index).ok());
                 let _ = view.update(cx, |_, cx| {
-                    if let Some(handler) = hover_handler {
-                        cx.emit(wire::Event::RichTextHover {
-                            handler,
-                            event: wire::RichTextHover {
-                                index: character_index,
-                                position: event.position,
-                                pressed_button: event.pressed_button.map(Into::into),
-                                modifiers: event.modifiers,
-                            },
-                        });
-                    }
-                    if let (Some(request), Some(character_index)) =
-                        (tooltip_request, character_index)
-                    {
-                        cx.emit(wire::Event::TooltipRequest {
-                            request,
-                            character_index: Some(character_index),
-                        });
-                    }
+                    cx.emit(wire::Event::RichTextHover {
+                        handler,
+                        event: wire::RichTextHover {
+                            index,
+                            position: event.position,
+                            pressed_button: event.pressed_button.map(Into::into),
+                            modifiers: event.modifiers,
+                        },
+                    });
                 });
             });
         }
         if let Some(request) = *tooltip {
-            let parent = cx.entity().downgrade();
-            interactive = interactive.tooltip(move |index, _, cx| {
-                let character_index = u32::try_from(index).ok()?;
-                let content = parent
-                    .update(cx, |this, cx| {
-                        let content =
-                            rich_tooltip_content(&this.tooltips, request, character_index);
-                        cx.emit(wire::Event::TooltipRequest {
-                            request,
-                            character_index: Some(character_index),
-                        });
-                        content
-                    })
-                    .ok()
-                    .flatten();
-                content
-                    .map(|content| super::tooltip_containment::build(parent.clone(), content, cx))
+            self.tip_source = Some(super::pointer::TipSpec {
+                request,
+                hoverable: false,
+                text: Some(layout.clone()),
             });
         }
         let picked = linked
@@ -496,7 +453,12 @@ impl ViewTree {
         let content = match linked {
             Some((mut boxed, linking)) => {
                 *boxed.style() = Arc::unwrap_or_clone(self.style(*style));
-                let interactive = links::Linked::new(interactive, linking, cx.entity().downgrade());
+                let interactive = links::Linked::new(
+                    interactive,
+                    layout.clone(),
+                    linking,
+                    cx.entity().downgrade(),
+                );
                 boxed.child(selection).child(interactive).into_any_element()
             }
             None => {
@@ -512,6 +474,10 @@ impl ViewTree {
         if self.unselected {
             return content;
         }
+        let tip_spans = match tooltip {
+            Some(_) => clickable_ranges.clone(),
+            None => Vec::new(),
+        };
         RichParagraph {
             id: native_id,
             content,
@@ -521,6 +487,7 @@ impl ViewTree {
             selection: selection_range,
             order: self.selection_order.clone(),
             participant: None,
+            tip_spans,
         }
         .into_any_element()
     }

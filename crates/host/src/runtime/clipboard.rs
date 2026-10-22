@@ -95,7 +95,7 @@ fn files(view: &mut View, id: u64, cx: &mut Context<Seat>) {
     }
     let held = view.picker.held();
     kernel::spawn_reply(view, id, async move {
-        let opened = tokio::task::spawn_blocking(move || {
+        let opened = rt::task::blocking(move || {
             let mut files = pictures
                 .into_iter()
                 .map(|(name, bytes)| picker::Picked::bytes(name, &bytes))

@@ -81,18 +81,13 @@ pub async fn join_from_device(
     let code = normalized(code).ok_or("That code is malformed.")?;
     let device = signer.public_key();
     let request = serde_json::json!({ "v": 1, "network": network, "key": hex_encode(&device) });
-    post(
-        client.http(),
-        &slot(relay, &code, "request")?,
-        request.to_string(),
-    )
-    .await?;
+    post(client, &slot(relay, &code, "request")?, request.to_string()).await?;
     let answer = slot(relay, &code, "consent")?;
     let json = loop {
-        if let Some(json) = take(client.http(), &answer).await? {
+        if let Some(json) = take(client, &answer).await? {
             break json;
         }
-        tokio::time::sleep(POLL).await;
+        rt::time::sleep(POLL).await;
     };
     let consent = parse_consent(&json)?;
     let add = Op::AddKey {
@@ -129,7 +124,7 @@ pub fn parse_consent(json: &str) -> Result<Consent, String> {
 /// one look.
 pub async fn find_request(client: &Client, relay: &str, code: &str) -> Result<Request, String> {
     let code = normalized(code).ok_or("A code is 8 letters and digits, like KQ4M-9XPT.")?;
-    let json = take(client.http(), &slot(relay, &code, "request")?)
+    let json = take(client, &slot(relay, &code, "request")?)
         .await?
         .ok_or("No device is waiting on that code. Check it, or start again on the new device.")?;
     let value: serde_json::Value =
@@ -175,6 +170,7 @@ pub async fn approve(
     .await?;
     let proof = signer
         .sign(CONSENT_NAMESPACE, &admission.preimage())
+        .await
         .map_err(|refused| refused.to_string())?;
     let consent = serde_json::json!({
         "v": 1,
@@ -183,12 +179,7 @@ pub async fn approve(
         "expires_at": admission.expires_at,
         "proof": hex_encode(&proof),
     });
-    post(
-        client.http(),
-        &slot(relay, &code, "consent")?,
-        consent.to_string(),
-    )
-    .await
+    post(client, &slot(relay, &code, "consent")?, consent.to_string()).await
 }
 
 #[cfg(test)]

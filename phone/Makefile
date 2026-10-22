@@ -4,7 +4,9 @@
 #
 #   make android            the APK, x86_64 (the emulator); ANDROID_ABI=arm64-v8a for a phone
 #   make android-run        installs it and starts it (adb's one device)
+#   make android-check      the Kotlin compile alone (compileDebugKotlin, no Rust, no NDK); GRADLE_FLAGS=--offline as the gate runs it
 #   make ios-sim            the simulator app (on a Mac)
+#   make ios-check          the Swift type-checked alone against Phone.h, the app and the driver (on a Mac; no Rust, no XcodeGen, no simulator)
 #   make ios-driver         the mac service's XCUITest driver, built for testing after ios-sim (on a Mac)
 #   make ios-archive        the App Store archive, ad-hoc signed with its entitlements (on a Mac); BUILD=<n> is its CFBundleVersion
 #
@@ -35,7 +37,9 @@ IOS_APP := $(ROOT)/phone/ios/build/derived/Build/Products/Debug-iphonesimulator/
 IOS_ARCHIVE := $(ROOT)/phone/ios/build/Ducktape.xcarchive
 BUILD ?= 1
 
-.PHONY: android android-run ios-sim ios-driver ios-archive
+IOS_SIM_PLATFORM = $$(xcrun --sdk iphonesimulator --show-sdk-platform-path)
+
+.PHONY: android android-run android-check ios-sim ios-check ios-driver ios-archive
 
 android:
 	cd $(ROOT) && cargo ndk -t $(ANDROID_ABI) -P 26 rustc -p ducktape-phone --lib --profile phone $(CARGO_FEATURES) --crate-type cdylib
@@ -47,6 +51,9 @@ android:
 	mkdir -p $(ANDROID_OUT)/res/raw
 	cp $(ROOT)/assets/sounds/quack.wav $(ANDROID_OUT)/res/raw/
 	cd $(ROOT)/phone/android && ./gradlew --quiet assembleDebug
+
+android-check:
+	cd $(ROOT)/phone/android && ./gradlew --quiet $(GRADLE_FLAGS) :app:compileDebugKotlin
 
 android-run: android
 	adb install -r $(APK)
@@ -66,6 +73,12 @@ ios-sim:
 	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphonesimulator \
 		-configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath build/derived -jobs 4 -quiet build
 	@echo $(IOS_APP)
+
+ios-check:
+	cd $(ROOT)/phone/ios && xcrun --sdk iphonesimulator swiftc -typecheck -swift-version 5 -target arm64-apple-ios15.0-simulator \
+		-import-objc-header Phone.h App.swift DeviceKeyStore.swift
+	cd $(ROOT)/phone/ios && xcrun --sdk iphonesimulator swiftc -typecheck -swift-version 5 -target arm64-apple-ios17.0-simulator \
+		-F "$(IOS_SIM_PLATFORM)/Developer/Library/Frameworks" -I "$(IOS_SIM_PLATFORM)/Developer/usr/lib" Driver/*.swift
 
 ios-driver:
 	cd $(ROOT)/phone/ios && xcodegen generate --quiet

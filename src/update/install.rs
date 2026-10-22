@@ -27,6 +27,7 @@ use tracing::info;
 use super::{APP_EXE, BUNDLE, Layout, Refusal, TARGET};
 
 const DESKTOP_TEMPLATE: &str = include_str!("../../packaging/dev.ducktape.app.desktop");
+const RELEASE_FILES: &str = "release.files";
 const ICON: &[u8] = include_bytes!("../../assets/icon.svg");
 
 /// `ducktape-app install`, from the command line: the exit status.
@@ -158,6 +159,7 @@ fn install_linux(layout: &Layout, own: &Path, sha: Sha) -> Result<(), Refusal> {
         let exe = seed.join(APP_EXE);
         std::fs::copy(own, &exe).map_err(|error| Refusal::io("seed_failed", &exe, &error))?;
         set_executable(&exe)?;
+        copy_listed(own, &seed)?;
         std::fs::rename(&seed, &release)
             .map_err(|error| Refusal::io("seed_failed", &release, &error))?;
     }
@@ -168,6 +170,63 @@ fn install_linux(layout: &Layout, own: &Path, sha: Sha) -> Result<(), Refusal> {
     let entry = desktop_entry(&layout.app_exe());
     super::persist(&layout.desktop_entry(), entry.as_bytes())?;
     super::persist(&layout.icon(), ICON)
+}
+
+fn copy_listed(own: &Path, seed: &Path) -> Result<(), Refusal> {
+    let Some(from) = own.parent() else {
+        return Ok(());
+    };
+    let list = from.join(RELEASE_FILES);
+    let names = match std::fs::read_to_string(&list) {
+        Ok(names) => names,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(Refusal::io("seed_failed", &list, &error)),
+    };
+    for name in names.lines().map(str::trim).filter(|name| !name.is_empty()) {
+        let listed = Path::new(name);
+        let plain = listed.components().count() == 1
+            && matches!(
+                listed.components().next(),
+                Some(std::path::Component::Normal(_))
+            );
+        if !plain {
+            return Err(Refusal::new(
+                "seed_failed",
+                format!(
+                    "{} names {name:?}, not a name in its directory",
+                    list.display()
+                ),
+            ));
+        }
+        if name != APP_EXE {
+            copy_tree(&from.join(name), &seed.join(name))?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<(), Refusal> {
+    let meta = std::fs::symlink_metadata(from)
+        .map_err(|error| Refusal::io("seed_failed", from, &error))?;
+    if meta.is_dir() {
+        std::fs::create_dir_all(to).map_err(|error| Refusal::io("seed_failed", to, &error))?;
+        let entries =
+            std::fs::read_dir(from).map_err(|error| Refusal::io("seed_failed", from, &error))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| Refusal::io("seed_failed", from, &error))?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    if !meta.is_file() {
+        return Err(Refusal::new(
+            "seed_failed",
+            format!("{} is neither a file nor a directory", from.display()),
+        ));
+    }
+    std::fs::copy(from, to)
+        .map(|_| ())
+        .map_err(|error| Refusal::io("seed_failed", to, &error))
 }
 
 fn install_macos(layout: &Layout, own: &Path, sha: Sha) -> Result<(), Refusal> {
@@ -297,6 +356,51 @@ mod tests {
             entry.contains("substitutes @EXEC@ with"),
             "the comment was rewritten"
         );
+    }
+
+    #[test]
+    fn a_seed_takes_what_the_release_lists_beside_the_binary_and_nothing_else() {
+        let from = tempfile::tempdir().unwrap();
+        let seed = tempfile::tempdir().unwrap();
+        let own = from.path().join(APP_EXE);
+        std::fs::write(&own, b"app").unwrap();
+        std::fs::write(from.path().join("libcef.so"), b"cef").unwrap();
+        std::fs::create_dir(from.path().join("locales")).unwrap();
+        std::fs::write(from.path().join("locales/en-US.pak"), b"en").unwrap();
+        std::fs::write(from.path().join("unlisted"), b"no").unwrap();
+        std::fs::write(
+            from.path().join(RELEASE_FILES),
+            format!("{APP_EXE}\nlibcef.so\nlocales\n"),
+        )
+        .unwrap();
+        copy_listed(&own, seed.path()).unwrap();
+        assert_eq!(
+            std::fs::read(seed.path().join("libcef.so")).unwrap(),
+            b"cef"
+        );
+        assert_eq!(
+            std::fs::read(seed.path().join("locales/en-US.pak")).unwrap(),
+            b"en"
+        );
+        assert!(!seed.path().join("unlisted").exists());
+        assert!(
+            !seed.path().join(APP_EXE).exists(),
+            "the binary is the caller's"
+        );
+        std::fs::write(from.path().join(RELEASE_FILES), "../outside\n").unwrap();
+        let refused = copy_listed(&own, seed.path()).unwrap_err();
+        assert_eq!(refused.reason, "seed_failed");
+    }
+
+    #[test]
+    fn a_seed_beside_no_list_takes_only_the_binary() {
+        let from = tempfile::tempdir().unwrap();
+        let seed = tempfile::tempdir().unwrap();
+        let own = from.path().join(APP_EXE);
+        std::fs::write(&own, b"app").unwrap();
+        std::fs::write(from.path().join("libcef.so"), b"cef").unwrap();
+        copy_listed(&own, seed.path()).unwrap();
+        assert_eq!(std::fs::read_dir(seed.path()).unwrap().count(), 0);
     }
 
     #[test]

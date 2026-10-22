@@ -1,0 +1,10 @@
+# ducktape-host-web
+
+The browser's view runner: `view_runner::ViewRunner` over the page's own `WebAssembly`, driven from Rust through js-sys. It keeps the contract in `crates/view-runner/README.md` as the wasmtime and JavaScriptCore runners do, with no glue file and no base64 between Rust and the page.
+
+- **prepare** takes the code through `view_meter::meter` (the page counts no fuel and bounds no memory, as JavaScriptCore does not), keeps it by hash and `memory.view_bytes` while the hold is held, and starts the page's `WebAssembly.compile` of the metered bytes, which compiles off the main thread. Nothing is kept across launches.
+- **instantiate** awaits that compile and the page's async `WebAssembly.instantiate` (so Chrome's bound on synchronous main-thread instantiation never applies), with the view's one import, `ducktape_view.panicked`; any other function import traps when called, as wasmtime's do. It lands `Seated` once the instance is up, or the fault: a missing export (`the view exports no tick`), a compile the page refused (`Fault::Runner`), or code nothing holds.
+- **Calls.** Each `begin_*` is a synchronous export call on the page's one thread. It arms `gas_left` with the view's fuel, as the JavaScriptCore page does, and lands its answer before it returns, as wasmtime does. A panic hook's words land `Panicked`; a trap with `gas_left` at `view_meter::GROW_REFUSED` lands `Memory`; any other trap lands `Trap` with the page's words. The seat's exports live in a thread-local map by id, so an instance stays `Send`.
+- **describe** meters the module at describe's own bounds (`describe::host`'s memory and fuel, checked natively by `a_describe_module_is_bounded_as_program_describe_bounds_it`), compiles it once per hash, and runs each call in a fresh, import-free instance; any failure is `None`.
+
+Tests: `src/page/tests.rs`, in headless Chrome through wasm-bindgen-test-runner, the same cases the wasmtime runner's tests pin (a tick's bytes both ways, a grow past `view_bytes`, a panic, a missing export, a module without snapshot and restore, an unknown import, code nothing holds, the meter's refusals, describe).

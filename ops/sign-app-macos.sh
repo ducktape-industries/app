@@ -43,7 +43,8 @@ trap 'rm -rf "$work"' EXIT
 sign=(--force --sign "$identity")
 if [[ "$identity" != - ]]; then sign+=(--timestamp --options runtime); fi
 if [[ -n "${DUCKTAPE_CODESIGN_KEYCHAIN:-}" ]]; then sign+=(--keychain "$DUCKTAPE_CODESIGN_KEYCHAIN"); fi
-entitlements="$repo/packaging/entitlements.plist"
+entitlements=${DUCKTAPE_ENTITLEMENTS:-$repo/packaging/entitlements.plist}
+helper_entitlements=${DUCKTAPE_HELPER_ENTITLEMENTS:-$repo/packaging/helper-entitlements.plist}
 bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$contents/Info.plist")
 if [[ -n "$profile" ]]; then
   cp "$profile" "$contents/embedded.provisionprofile"
@@ -58,6 +59,19 @@ if [[ -n "$profile" ]]; then
     -c "Add :keychain-access-groups array" \
     -c "Add :keychain-access-groups:0 string $app_id" \
     "$entitlements"
+fi
+frameworks="$contents/Frameworks"
+if [[ -d "$frameworks" ]]; then
+  framework="$frameworks/Chromium Embedded Framework.framework"
+  for library in "$framework"/Libraries/*.dylib; do
+    codesign "${sign[@]}" "$library"
+  done
+  codesign "${sign[@]}" "$framework"
+  for helper in "$frameworks"/*Helper*.app; do
+    helper_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$helper/Contents/Info.plist")
+    codesign "${sign[@]}" --identifier "$helper_id" \
+      --entitlements "$helper_entitlements" "$helper"
+  done
 fi
 codesign "${sign[@]}" --identifier "$bundle_id" --entitlements "$entitlements" "$contents/MacOS/ducktape-app"
 codesign "${sign[@]}" --entitlements "$entitlements" "$app"

@@ -19,11 +19,11 @@ pub const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 /// the account to consent, and joins with that consent; a code nobody
 /// approved in [`JOIN_WAIT`] has run out.
 pub async fn join_from_device(client: &RpcClient, network: &str, code: &str) -> Result<(), String> {
-    let key = seated_signer().map_err(|refusal| refusal.message)?;
+    let key = seated_signer(network).map_err(|refusal| refusal.message)?;
     let label = crate::contract::os().facts().device_label;
     let relay = auth_page();
     let joining = join::join_from_device(client, &relay, network, code, &key, label);
-    tokio::time::timeout(JOIN_WAIT, joining)
+    rt::time::timeout(JOIN_WAIT, joining)
         .await
         .unwrap_or_else(|_| Err("This code ran out. Make a new one.".into()))
 }
@@ -41,6 +41,6 @@ pub async fn approve(
     code: &str,
     request: &Request,
 ) -> Result<(), String> {
-    let key = seated_signer().map_err(|refusal| refusal.message)?;
+    let key = seated_signer(network).map_err(|refusal| refusal.message)?;
     join::approve(client, &auth_page(), network, account, code, request, &key).await
 }

@@ -262,9 +262,15 @@ mod tests {
             }
         });
         let source = Session::status_source(&origin);
-        assert_eq!(source().await, Ok(status));
+        assert_eq!(source().await.unwrap(), status);
         assert_eq!(paths.recv().await.unwrap(), "/v1/status");
         let gone = Session::status_source("http://127.0.0.1:1");
-        assert!(gone().await.unwrap_err().contains("error sending request"));
+        assert!(
+            gone()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("error sending request")
+        );
     }
 }

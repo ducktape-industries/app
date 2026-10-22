@@ -21,8 +21,6 @@ const SUBSCRIBED: Alias = 2;
 enum Answer {
     Welcome,
     Refuse,
-    /// No live route at all: the port's route answers 404.
-    Unserved,
     /// Welcomes, then answers a subscription as a node of another wire
     /// would: a `Subscribed` without the publisher's account.
     Garble,
@@ -155,7 +153,7 @@ async fn node_serving(
                 let body = if line.starts_with("GET /v1/status ") {
                     Some(status)
                 } else if line.starts_with(&format!("GET {} ", live_wire::PORT_ROUTE)) {
-                    (!matches!(answer, Answer::Unserved)).then(|| abi::encode(&Some(port)))
+                    Some(abi::encode(&Some(port)))
                 } else {
                     None
                 };
@@ -426,7 +424,7 @@ fn track(name: &str) -> Track {
 /// The seat held for the test, a key seated in it.
 async fn seated() -> impl Sized {
     let serial = crate::backend::seat_serial();
-    crate::backend::seat_key(Arc::new(ed25519::PrivateKey::from_seed(11))).await;
+    crate::backend::seat_key("loopback", Arc::new(ed25519::PrivateKey::from_seed(11))).await;
     serial
 }
 
@@ -656,26 +654,6 @@ async fn a_quic_handshake_that_stalls_after_tls_is_waited_for_no_longer_than_qui
         took < QUIC_ANSWER + QUIC_ANSWER / 2,
         "the session took {took:?}"
     );
-}
-
-/// A node that answers the port's route 404 serves no live tracks: the
-/// request is refused `live_unavailable`, not the node's failure, and
-/// nothing is dialed.
-#[tokio::test]
-async fn a_node_without_the_live_route_is_live_unavailable() {
-    let _seat = seated().await;
-    let node_key = ed25519::PrivateKey::from_seed(6);
-    let identity = node_key.public_key().as_ref().to_vec();
-    let client = Client::new(node(&node_key, identity, Answer::Unserved).await);
-    let refused = client
-        .open(Ask::Watch {
-            namespace: "loopback#1/echo/lobby".into(),
-        })
-        .await
-        .err()
-        .unwrap();
-    assert_eq!(refused.code, refusal::LIVE_UNAVAILABLE);
-    assert_eq!(refused.message, "this node serves no live tracks");
 }
 
 /// A control message that does not decode is a node of another wire, not

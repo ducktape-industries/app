@@ -33,11 +33,14 @@ pub use slice::{Observed, Slice, on_runtime, spawn_on_runtime};
 pub use toast::Toast;
 #[cfg(test)]
 mod node_tests;
+#[cfg(test)]
+mod shared_tests;
 
-use crate::runtime::Roster;
 use crate::runtime::notify::CenterHandle;
+use crate::runtime::{Network, Roster};
 use futures::channel::mpsc;
 use gpui_kit::{App, AppContext as _, Entity};
+use std::sync::Arc;
 
 /// Every app-wide entity: what a shell's windows are made over, and what
 /// every window's root reads.
@@ -59,6 +62,17 @@ impl Shared {
     /// device's prefs; the rail's rows read now and again on every message
     /// `changes` brings.
     pub fn new(
+        network: Arc<Network>,
+        center: CenterHandle,
+        changes: mpsc::UnboundedReceiver<()>,
+        cx: &mut App,
+    ) -> Self {
+        let roster = network.roster().clone();
+        Self::over(network, roster, center, changes, cx)
+    }
+
+    fn over(
+        network: Arc<Network>,
         roster: Roster,
         center: CenterHandle,
         changes: mpsc::UnboundedReceiver<()>,
@@ -73,13 +87,22 @@ impl Shared {
         let session = {
             let (chain, account, screen) = (chain.clone(), account.clone(), screen.clone());
             let roster = roster.clone();
-            cx.new(|_| Session::new(chain, account, screen, center.clone(), roster))
+            cx.new(|_| {
+                Session::new(
+                    chain,
+                    account,
+                    screen,
+                    center.clone(),
+                    network.clone(),
+                    roster,
+                )
+            })
         };
         let rail = cx.new(|cx| Rail::new(roster, changes, &session, cx));
         let notifications = cx.new(|_| Notifications::new(center));
         notifications.update(cx, |notifications, cx| notifications.follow(&session, cx));
         let toast = cx.new(|cx| Toast::new(&session, &account, cx));
-        let seats = cx.new(|cx| Seats::new(&session, &account, &rail, &notifications, cx));
+        let seats = cx.new(|cx| Seats::new(&session, &account, &rail, &notifications, network, cx));
         Self {
             session,
             chain,
@@ -96,7 +119,13 @@ impl Shared {
     /// As `new`, with a rail no loader thread wakes: a test refreshes it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(roster: Roster, center: CenterHandle, cx: &mut App) -> Self {
-        Self::new(roster, center, mpsc::unbounded().1, cx)
+        Self::over(
+            crate::runtime::in_hand().clone(),
+            roster,
+            center,
+            mpsc::unbounded().1,
+            cx,
+        )
     }
 }
 
@@ -119,6 +148,7 @@ pub mod tests {
                 account,
                 screen,
                 Default::default(),
+                crate::runtime::in_hand().clone(),
                 Roster::default(),
             );
             session.apart_from_runtime();
@@ -139,7 +169,7 @@ pub mod tests {
 
     /// A status source answering `answer(n)` to its `n`th ask, counting them.
     pub fn source(
-        answer: impl Fn(usize) -> Result<crate::backend::NodeStatus, String> + 'static,
+        answer: impl Fn(usize) -> Result<crate::backend::NodeStatus, noded_client::Error> + 'static,
     ) -> (StatusSource, std::rc::Rc<std::cell::Cell<usize>>) {
         use futures::FutureExt as _;
         let asked = std::rc::Rc::new(std::cell::Cell::new(0));

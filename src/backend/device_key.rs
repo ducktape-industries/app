@@ -43,7 +43,7 @@ const CANCELLED: i32 = -128;
 const AUTH_FAILED: i32 = -25293;
 const LOCKED: i32 = -25308;
 
-fn file_only() -> bool {
+pub(crate) fn file_only() -> bool {
     cfg!(test) || std::env::var("DUCKTAPE_DEVICE_KEY_STORE").is_ok_and(|store| store == "file")
 }
 
@@ -83,7 +83,7 @@ fn kept(entry: &keyring::Entry) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     }
 }
 
-fn refused(error: keyring::Error) -> String {
+pub(crate) fn refused(error: keyring::Error) -> String {
     tracing::info!(target: "ducktape::keys", %error, "OS key store refused");
     let no_keyring = match cfg!(target_os = "linux") {
         true => {
@@ -124,6 +124,8 @@ fn decode(seed: &[u8]) -> Result<ed25519::PrivateKey, String> {
 }
 
 pub(crate) fn open(keyring: &str, legacy: bool) -> Result<Option<ed25519::PrivateKey>, String> {
+    #[cfg(test)]
+    tests::opened_on(keyring);
     let stores = stores(keyring)?;
     let (keychain, entry) = split(&stores);
     open_in(keychain, entry, &file(keyring)?, legacy)
@@ -468,6 +470,38 @@ mod keychain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static OPENED: std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    pub(super) fn opened_on(keyring: &str) {
+        OPENED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((keyring.to_owned(), std::thread::current().id()));
+    }
+
+    #[test]
+    fn the_desktop_opens_its_key_off_the_thread_that_awaits_it() {
+        use ducktape_host::contract::OsServices as _;
+        let keyring = "opened-off-the-awaiting-thread";
+        let os = crate::os::DesktopOs::new().unwrap();
+        let caller = std::thread::current().id();
+        let opened = ducktape_host::runtime::handle().block_on(os.device_key(keyring));
+        assert!(matches!(opened, Ok(Some(_))), "no key opened");
+        let on: Vec<_> = OPENED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(ring, _)| ring == keyring)
+            .map(|(_, on)| *on)
+            .collect();
+        assert!(!on.is_empty(), "the store was never opened");
+        assert!(
+            !on.contains(&caller),
+            "the store was opened on the awaiting thread"
+        );
+    }
 
     #[test]
     fn a_kept_key_loads_back_the_same_and_only_its_owner_reads_it() {

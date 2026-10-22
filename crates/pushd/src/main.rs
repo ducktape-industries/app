@@ -47,6 +47,7 @@ use std::time::Duration;
 use ducktape_host::backend;
 use ducktape_host::contract::{
     self, Banners, Dirs, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices, Preload,
+    Secrets,
 };
 use ducktape_host::runtime::notify::{
     CenterHandle, Click, Notice, NoticeKind, Permission, Settings,
@@ -515,12 +516,21 @@ impl OsServices for Headless {
         &self.dirs
     }
 
-    fn device_key(&self, _: &str) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
-        Err(KeyRefusal::NoStore("pushd holds no keys".into()))
+    fn device_key(
+        &self,
+        _: &str,
+    ) -> rt::Fut<'static, Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>> {
+        Box::pin(std::future::ready(Err(KeyRefusal::NoStore(
+            "pushd holds no keys".into(),
+        ))))
     }
 
     fn key_storage(&self, _: &str) -> Result<KeyStorage, KeyRefusal> {
         Err(KeyRefusal::NoStore("pushd holds no keys".into()))
+    }
+
+    fn secrets(&self) -> Option<&dyn Secrets> {
+        None
     }
 
     fn reader(&self) -> Arc<dyn noded_client::Signer> {

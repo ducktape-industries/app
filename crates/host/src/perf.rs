@@ -392,22 +392,13 @@ pub fn sample_rss() {
     if !on() {
         return;
     }
-    // SAFETY: a plain libc call into a zeroed, stack-local rusage.
-    let usage = unsafe {
-        let mut usage: libc::rusage = std::mem::zeroed();
-        if libc::getrusage(libc::RUSAGE_SELF, &mut usage) != 0 {
-            return;
-        }
-        usage
+    let Some(peak) = rt::process::max_rss() else {
+        return;
     };
     let unit = crate::contract::os().facts().rss_unit;
-    gauge_flagging(Key::Shell, "rss.peak", usage.ru_maxrss as u64 * unit, false);
-    if let Some(current) = std::fs::read_to_string("/proc/self/statm")
-        .ok()
-        .and_then(|statm| statm.split_whitespace().nth(1)?.parse::<u64>().ok())
-    {
-        // SAFETY: sysconf reads a constant.
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(0) as u64;
+    gauge_flagging(Key::Shell, "rss.peak", peak * unit, false);
+    if let Some(current) = rt::process::resident_pages() {
+        let page = rt::process::page_size().unwrap_or(0) as u64;
         gauge_flagging(Key::Shell, "rss.current", current * page, false);
     }
 }

@@ -1,128 +1,6 @@
-//! The kernel contract: what EVERY view may ask of the app, with no
-//! per-program code on this side of the wire. A view that speaks only this
-//! contract is replaced by a program deployment alone — the app binary
-//! never changes for it.
-//!
-//! Every method, its request and its reply are the types in `wire::methods`,
-//! borsh on both sides; the host decodes a request by that type and nothing
-//! else, so there is no per-method parsing here to drift from a view.
-//! `methods::ALL` is the one list, and `tests::the_routed_kinds_are_exactly_the_methods`
-//! holds the arms in this directory to it. Where each kind is answered:
-//!
-//! Here, in [`answer`], from app state, on the window thread:
-//! - `host.visible` — a subscription to whether the person is looking at
-//!   the view: its pane is on a desk of the window in front.
-//! - `host.float` — the view's pane in a window of its own, kept above
-//!   other windows where the platform can (the shell does it), at a press
-//!   or key ([`View::take_activation`]); `host.unfloat` — back on the desk;
-//!   `host.placement` — a subscription to where the pane is (floating, kept
-//!   on top), as the seat places it.
-//! - `host.route` — a subscription that gets the route a `duck://` link
-//!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
-//!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
-//!   → `forge:web:3`), checked by `valid_route`. The view whose manifest
-//!   declares `web` gets an http(s) link the app opens as its whole
-//!   address instead, checked by the web piece's own rule
-//!   (`render/web.rs` `view_for`: https, or http on this machine, no user
-//!   name or password).
-//! - `host.showing` — the route the view shows, kept while it is on
-//!   screen; `host.screen` — a subscription to the routes the views of its
-//!   program show on screen, sorted, the first item at once (`screen`).
-//! - `host.badge` — the tab's unread count; `host.title` — the name of the
-//!   view's window, cleaned ([`shown_title`]); `host.id` — a minted id under a
-//!   prefix word; `link.open` — a `duck://` link, or an `https://` one
-//!   for the system browser; `link.window` — the same, a `duck://` link's
-//!   view in a window of its own where the shell has windows (the
-//!   shell does it); `clock.ticks` — a periodic empty item, at most one
-//!   per redraw ([`ticked`]).
-//! - `camera.devices`, `microphone.devices` — the devices the system lists
-//!   now (`render/av.rs`), listed on a blocking thread; `microphone.chime`
-//!   — the test chime on a speaker, at a press or key, answered once it
-//!   has sounded (on a blocking thread). A build without feature `av`
-//!   knows none of the three (`unknown_request`).
-//!
-//! On the node, as a task on [`handle`] (`node`), each answer waiting in
-//! [`Replies`] for the view's next redraw; each asked once, a transport
-//! failure being the answer:
-//! - `program.query` `Call{target, body}` — one query on the connected node:
-//!   `body` is the payload of a signed frame to `target`, and the bytes the
-//!   program `Respond`ed come back as they are. It reads the node's
-//!   confirmed layer, what blocks wrote, as `program.changes` reports it:
-//!   an op this view was just answered for shows once a block carries it.
-//! - `op.submit` `Call{target, body}` — one op, signed with the key
-//!   unlocked in this session and submitted;
-//!   answered with the receipt's output, or the program's refusal. The
-//!   receipt is the node's preconfirmation, not finality: the op ran over
-//!   the preconfirmed layer and waits for a block, and until one carries it
-//!   the node can still drop it (a block that lands first and makes it
-//!   fail, a node restart) with no word to anyone; a view shows what
-//!   `program.query` reads. A lost answer is reported
-//!   ([`refusal::NODE_FAILED`]), never followed by a second submission.
-//! - `op.put` `PutBlobs` — blobs put on the network as one bundle in the
-//!   person's name, through the node's blob upload: the host frames and
-//!   hashes each (a picked file's slice read where it is), signs the
-//!   blobs-role `Put` naming only ids, lengths and kinds, streams the bytes
-//!   after it. A subscription: `Sent` as the upload takes the bytes, then
-//!   the ids once the network holds the bundle (`Held`). No card asks: the
-//!   host builds the op itself.
-//! - `chain.status` — node status as `NodeStatus`.
-//! - `chain.blocks` `BlockPage` — finalized blocks, newest first, as the
-//!   node lists them (`/v1/blocks`): each transaction's size, its payload
-//!   when at most `most` bytes, and the lowest height the node lists;
-//!   `chain.block` `BlockAsk` — one by height or id (`/v1/block`), each
-//!   payload when at most `most` bytes; `chain.tx` `TxAsk` — one
-//!   transaction by its place or hash, its payload when at most `most`
-//!   bytes (`/v1/tx`).
-//! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
-//! - `program.describe` `(program, op)` — the op as the program's own
-//!   describe module reads it, or `None` (`describe`).
-//! - `invite.create` `CreateInvite{ttl_days}` — `Invite{invite, notes}`. Node refusals retain their tokens.
-//! - `program.changes` `<program>` — a subscription that gets one item per
-//!   block that wrote to `program` (`/v1/changes/<program>?keys`): the block's
-//!   height and the keys it wrote, as the node publishes them, so the view
-//!   re-reads what moved; `None` when the link was reopened, or the view
-//!   came back on screen or the app in front, or fell a block behind (it
-//!   holds one item untaken), and the view should re-read everything. Only
-//!   a view of an app in front holds the socket, and on a phone only one on
-//!   screen (a notifier: always); a desktop pane keeps it while it is
-//!   presented. Off screen on a phone or behind another app it lets go, and a
-//!   socket no view holds closes.
-//! - `chain.heads` — a subscription that gets one `Head` per finalized block,
-//!   oldest first: the host reads the node's status at half its block
-//!   time and fills each advance from the block archive, while the
-//!   socket above would be held; back, it goes on after the last head.
-//!
-//! A connect inside the network opens both again on the new node
-//! (`reconnected`): neither ends on it.
-//!
-//! In `live`, through the connection's one live session with the node's
-//! relay (`backend::live`), off consensus: `live.publish`, `live.send`,
-//! `live.subscribe`, `live.tracks`. Each item wakes its view at once,
-//! through [`Replies`] like any answer. A connect inside the network
-//! opens them again too.
-//!
-//! In a sibling module [`answer`] asks first:
-//! - `clipboard.read`, `clipboard.write`, `clipboard.files` — `clipboard`,
-//!   run on the window thread after the tick.
-//! - `file.pick`, `file.read`, `file.release`, `file.save` — `picker`: the
-//!   system's picker opened on the window thread after the tick, the files
-//!   picked held open for `op.put` and `file.read` until the view lets go
-//!   of them, each reading them a slice at a time on a blocking thread; the
-//!   save dialog, the blobs written from the node to the file chosen.
-//! - `notify.post`, `notify.seen` — `notify`, the notification centre.
-//! - `store.get`, `store.set`, `store.list` — `store`, the view's file on
-//!   this device for the key seated in its props; `store.changes` — a
-//!   subscription to the keys another instance of the program (a pane, its
-//!   notifier) set in that file.
-//!
-//! Not the kernel's — `View::answer` (`view/requests.rs`) takes them once
-//! [`answer`] says `false`, since they read the view's own state:
-//! - `host.widget` — a widget command; `host.session` — a subscription to
-//!   the session basics (`Session`: the account, theme, chain and read-only
-//!   endpoint); `host.log` — a line into app.log.
-//!
-//! A refusal's code is one of [`refusal`]'s, or the node's or the program's
-//! own, carried through.
+//! The kernel contract: what every view may ask of the app, with no per-program code on this
+//! side of the wire. Each kind of `methods::ALL` is answered here or in this directory, and
+//! `tests::the_routed_kinds_are_exactly_the_methods` holds the arms to that list.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -154,6 +32,7 @@ fn hosted(floats: bool) -> Vec<String> {
         .iter()
         .filter(|kind| floats || !floating.contains(kind))
         .filter(|kind| cfg!(feature = "av") || !captures.contains(kind))
+        .filter(|kind| **kind != methods::NotifyNeeds::KIND)
         .map(|kind| (*kind).to_owned())
         .collect()
 }
@@ -161,15 +40,19 @@ fn hosted(floats: bool) -> Vec<String> {
 mod describe;
 pub(super) mod live;
 mod node;
+pub(super) mod socket;
 pub use node::{Answered, artifact};
+#[cfg(feature = "ui")]
 pub(crate) use node::{Writes, writes};
 mod replies;
 pub(super) mod screen;
 
-pub(super) use node::{NodeTask, reconnected, spawn_host_subscription, spawn_reply};
+#[cfg(test)]
+pub(super) use node::hold_for_test;
+pub(super) use node::{Joints, NodeTask, reconnected, spawn_host_subscription, spawn_reply};
 use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
-    spawn_put, spawn_submit, status, tx,
+    spawn_put, spawn_submit, status, tx, watch,
 };
 #[cfg(feature = "ui")]
 pub(super) use node::{reaches_node, spawn_event, spawn_keep, spawn_save};
@@ -194,32 +77,20 @@ pub(super) fn in_front() -> tokio::sync::watch::Receiver<bool> {
     front().subscribe()
 }
 
-/// The one current-thread tokio runtime every async I/O in the app runs
-/// on — node HTTP and websockets here, the shell's task stream, the loader
-/// threads' fetches (`runtime::handle` hands it out) — on its own thread, so
-/// the window thread never blocks on the node. CPU or OS-blocking work goes
-/// to `spawn_blocking`.
-pub(super) fn handle() -> tokio::runtime::Handle {
-    static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
-    HANDLE
-        .get_or_init(|| {
-            let (send, recv) = std::sync::mpsc::channel();
-            std::thread::Builder::new()
-                .name("views-kernel".into())
-                .spawn(move || {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("the views kernel runtime");
-                    send.send(runtime.handle().clone())
-                        .expect("the kernel handle is taken");
-                    runtime.block_on(std::future::pending::<()>());
-                })
-                .expect("the views kernel thread");
-            recv.recv().expect("the kernel runtime came up")
-        })
-        .clone()
+fn debug_mode() -> &'static tokio::sync::watch::Sender<bool> {
+    static DEBUG: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+    DEBUG.get_or_init(|| tokio::sync::watch::channel(crate::backend::load_debug()).0)
 }
+
+pub fn set_debug(on: bool) {
+    debug_mode().send_if_modified(|was| std::mem::replace(was, on) != on);
+}
+
+pub(super) fn debug() -> tokio::sync::watch::Receiver<bool> {
+    debug_mode().subscribe()
+}
+
+pub(super) use rt::task::handle;
 
 /// Jobs under one name run one after another, in the order they were
 /// queued, each on the blocking pool (an OS call or a file): a view's
@@ -232,12 +103,11 @@ pub(super) fn in_order(name: &str, job: impl FnOnce() + Send + 'static) {
     let mut queues = queues();
     let queue = queues.entry(name.to_owned()).or_insert_with(|| {
         let (queue, mut jobs) = tokio::sync::mpsc::unbounded_channel::<Job>();
-        handle().spawn(async move {
+        drop(rt::task::spawn(async move {
             while let Some(job) = jobs.recv().await {
-                // a job that panicked is lost alone; the next goes on
-                let _ = tokio::task::spawn_blocking(job).await;
+                let _ = rt::task::blocking(job).await;
             }
-        });
+        }));
         queue
     });
     let _ = queue.send(Box::new(job));
@@ -287,11 +157,12 @@ pub(super) fn answer(
     payload: &[u8],
     props: &Option<Vec<u8>>,
 ) -> bool {
-    if super::clipboard::answer(view, capability, operation, id, payload)
+    let answered_by_its_module = super::clipboard::answer(view, capability, operation, id, payload)
         || super::picker::answer(view, capability, operation, id, payload)
         || super::notify::answer(view, capability, operation, id, payload)
         || super::store::answer(view, capability, operation, id, payload, props)
-    {
+        || super::secret::answer(view, capability, operation, id, payload, props);
+    if answered_by_its_module {
         return true;
     }
     match (capability, operation) {
@@ -314,6 +185,20 @@ pub(super) fn answer(
         // a host with no window to float a pane into (a phone's) knows
         // none of the three
         (Capability::Host, "float" | "unfloat" | "placement") if !view.floats => return false,
+        (Capability::Host, "debug") => {
+            if !payload.is_empty() {
+                view.refuse(
+                    id,
+                    refusal::MALFORMED_REQUEST,
+                    "debug subscription takes no payload",
+                );
+                return true;
+            }
+            view.debug_subscriptions.push(id);
+            let on = *view.debug_mode.borrow_and_update();
+            view.stream_item(id, methods::encode(&on));
+        }
+        (Capability::Notify, "needs") => return false,
         (Capability::Host, "methods") => {
             let hosted = methods::Hosted {
                 level: wire::WIRE_LEVEL,
@@ -424,7 +309,7 @@ pub(super) fn answer(
         // the node's key signs an invite: only a role's own view asks
         // for one (a view no vote reviewed could hand it to its program)
         (Capability::Invite, "create") => {
-            if !super::consent::bound(view.program, super::roster().roles().as_ref()) {
+            if !super::consent::bound(view.program, view.connection.on.roster().roles().as_ref()) {
                 view.refuse(
                     id,
                     refusal::UNDECLARED_CAPABILITY,
@@ -448,7 +333,7 @@ pub(super) fn answer(
                 .as_deref()
                 .and_then(|props| wire::methods::decode::<wire::methods::Session>(props).ok())
                 .and_then(|session| session.account);
-            let roles = super::roster().roles();
+            let roles = view.connection.on.roster().roles();
             match super::consent::needed(
                 view.program,
                 roles.as_ref(),
@@ -479,6 +364,7 @@ pub(super) fn answer(
             "host_call.program.describe",
         ),
         (Capability::Program, "changes") => changes(view, id, payload),
+        (Capability::Program, "watch") => watch(view, id, payload),
         (Capability::Chain, "heads") => heads(view, id, payload),
         (Capability::Link, "open") => {
             open_link(view, id, payload, methods::LinkOpen::KIND, Intent::OpenLink)
@@ -596,6 +482,9 @@ pub(super) fn answer(
         (Capability::Live, "send") => live::send(view, id, payload),
         (Capability::Live, "subscribe") => live::subscribe(view, id, payload),
         (Capability::Live, "tracks") => live::tracks(view, id, payload),
+        (Capability::Socket, "open") => socket::open(view, id, payload),
+        (Capability::Socket, "send") => socket::send(view, id, payload),
+        (Capability::Host, "random") => socket::random(view, id, payload),
         (Capability::Host, "id") => {
             let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();
@@ -670,19 +559,7 @@ fn openable(link: &str) -> bool {
     })
 }
 
-/// The UTC offset in seconds the OS keeps for the local time at unix
-/// second `wall`.
-pub fn local_offset(wall: i64) -> i64 {
-    let time = wall as libc::time_t;
-    // SAFETY: `localtime_r` writes only the `tm` it is handed.
-    unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        match libc::localtime_r(&time, &mut tm).is_null() {
-            true => 0,
-            false => tm.tm_gmtoff as i64,
-        }
-    }
-}
+pub use rt::process::local_offset;
 
 /// Unix second `seconds` as its UTC day: `27 Sep 2026`.
 pub fn day(seconds: u64) -> String {

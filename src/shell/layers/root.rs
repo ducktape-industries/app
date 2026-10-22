@@ -242,14 +242,21 @@ impl Render for WindowRoot {
         let layer = || StyleRefinement::default().absolute().inset_0();
         // the footer, over an open menu or dialog; all three in the host's
         // band, over anything a view defers
-        let toast = deferred(AnyView::from(self.toast.clone()).cached(layer()))
-            .with_priority(HOST_BAND + 3);
+        let toast = deferred(ducktape_host::a11y::cached(
+            AnyView::from(self.toast.clone()),
+            layer(),
+        ))
+        .with_priority(HOST_BAND + 3);
         let launcher = self.kind == WindowKind::Console && !self.on_desk(cx);
         // what opens over the window (Settings, ⌘K, a dialog): on the
         // launcher's screens too, where the menu's Settings… and an update
         // notice's click open Settings before any network is joined
         let overlays = self.overlay_layer.clone().map(|layer_view| {
-            deferred(AnyView::from(layer_view).cached(layer())).with_priority(HOST_BAND)
+            deferred(ducktape_host::a11y::cached(
+                AnyView::from(layer_view),
+                layer(),
+            ))
+            .with_priority(HOST_BAND)
         });
         let content = match (launcher, &self.launcher) {
             // The launcher (the sign-in and unlock screens) is drawn
@@ -272,10 +279,13 @@ impl Render for WindowRoot {
                     == crate::backend::Layout::Sidebar;
                 let chrome = self.chrome.clone().map(|chrome| {
                     let style = StyleRefinement::default().flex_shrink_0();
-                    AnyView::from(chrome).cached(match side {
-                        false => style.w_full().h(px(BAR)),
-                        true => style.w(px(SIDEBAR)).h_full(),
-                    })
+                    ducktape_host::a11y::cached(
+                        AnyView::from(chrome),
+                        match side {
+                            false => style.w_full().h(px(BAR)),
+                            true => style.w(px(SIDEBAR)).h_full(),
+                        },
+                    )
                 });
                 let console = div().id("console").size_full().flex().on_action(
                     |_: &gpui_kit::base::input::Copy, window, cx| {

@@ -1,8 +1,8 @@
-//! A view's layer and a desk window's. A view's deferred draws are drawn by
-//! its portal, the last child of its pane's clip, by priority: over the view,
-//! under the pane above it and under every host layer. Desk windows draw masked.
+//! A view's layer and a desk window's. A view's deferred draws are drawn by a
+//! portal by priority, its pane's or a dialog's own inside the dialog: over the
+//! view, under the pane above it and every host layer. Desk windows draw masked.
 use super::*;
-use gpui_kit::{AvailableSpace, TooltipLayer};
+use gpui_kit::AvailableSpace;
 use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -48,6 +48,21 @@ impl ViewTree {
             return self.node(content, window, cx);
         };
         deferred(self.node(content, window, cx), *priority, &portal).into_any_element()
+    }
+
+    pub(super) fn in_own_portal(
+        &mut self,
+        own: bool,
+        lower: impl FnOnce(&mut Self) -> AnyElement,
+    ) -> (AnyElement, Option<Portaled>) {
+        if !own {
+            return (lower(self), None);
+        }
+        let portal = Portal::default();
+        let around = self.portal.replace(portal.clone());
+        let lowered = lower(self);
+        self.portal = around;
+        (lowered, Some(Portaled(portal, None)))
     }
 }
 
@@ -155,7 +170,7 @@ impl Element for SlotDeferred {
     }
 }
 
-pub(super) struct Portaled(pub(super) Portal);
+pub(super) struct Portaled(pub(super) Portal, pub(super) Option<AnyElement>);
 
 impl IntoElement for Portaled {
     type Element = Self;
@@ -189,16 +204,17 @@ impl Element for Portaled {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _request_layout: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
+        let tip = self.1.take();
         let mut placed = std::mem::take(&mut *self.0.borrow_mut());
         placed.sort_by_key(|placed| placed.priority);
         let mut seen = std::collections::HashMap::<u64, u64>::new();
         inside(|| {
-            placed
+            let mut drawn: Vec<_> = placed
                 .into_iter()
                 .map(|placed| {
                     let nth = seen.entry(placed.key).or_default();
@@ -219,7 +235,17 @@ impl Element for Portaled {
                     );
                     element
                 })
-                .collect()
+                .collect();
+            drawn.extend(tip.map(|mut tip| {
+                tip.prepaint_as_root(
+                    bounds.origin,
+                    bounds.size.map(AvailableSpace::Definite),
+                    window,
+                    cx,
+                );
+                tip
+            }));
+            drawn
         })
     }
 
@@ -428,11 +454,7 @@ impl Element for Layer {
     ) {
         drop(solving.take());
         let _timed = self.time("prepaint");
-        let layer = TooltipLayer {
-            priority: VIEW_CEILING,
-            mask: window.content_mask(),
-        };
-        window.with_tooltip_layer(Some(layer), |window| self.0.prepaint(window, cx));
+        self.0.prepaint(window, cx);
     }
 
     fn paint(
@@ -540,7 +562,7 @@ mod tests {
                     deferred(overlay, usize::MAX, &self.0).into_any_element(),
                     None,
                 ))
-                .child(Portaled(self.0.clone()))
+                .child(Portaled(self.0.clone(), None))
         }
     }
 

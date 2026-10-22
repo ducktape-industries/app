@@ -14,6 +14,8 @@ use super::look::{self, Palette};
 use super::{Root, sheet};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::session::{AccountState, Shared};
+use ducktape_host::text_input::TextInput;
+use gpui_kit::base::input::InputMode;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
     App, AppContext as _, Autocapitalize, Context, Div, Entity, FontWeight,
@@ -23,8 +25,16 @@ use gpui_kit::{
 
 /// The code field and what its keys do: a keystroke takes the host's
 /// refusal down, return is Next, focus raises the keyboard.
-pub fn field(window: &mut Window, cx: &mut Context<Root>) -> (Entity<InputState>, Subscription) {
-    let code = cx.new(|cx| InputState::new(window, cx).text_input(keyboard()));
+pub fn field(
+    window: &mut Window,
+    cx: &mut Context<Root>,
+) -> (
+    Entity<InputState>,
+    Entity<TextInput<InputMode>>,
+    Subscription,
+) {
+    let code = cx.new(|cx| InputState::new(window, cx));
+    let keys = TextInput::new(&code, keyboard(), cx);
     let heard = cx.subscribe_in(
         &code,
         window,
@@ -34,11 +44,11 @@ pub fn field(window: &mut Window, cx: &mut Context<Root>) -> (Entity<InputState>
                 .account
                 .update(cx, |account, cx| account.clear_error(cx)),
             InputEvent::PressEnter { .. } => find(&root.shared, code, cx),
-            InputEvent::Focus => join::keyboard(window, Some(keyboard())),
+            InputEvent::Focus => join::keyboard(window, Some(Default::default())),
             InputEvent::Blur => join::keyboard(window, None),
         },
     );
-    (code, heard)
+    (code, keys, heard)
 }
 
 fn keyboard() -> TextInputConfiguration {

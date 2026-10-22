@@ -399,13 +399,13 @@ fn listen(spin: Entity<Spin>, bounds: Bounds<Pixels>, window: &mut Window) {
 pub(super) fn drawing(spin: &Entity<Spin>) -> AnyElement {
     // cached: the view it sits in redrawing (a caret, a hover) reuses the
     // last frame instead of stamping it again
-    AnyView::from(spin.clone())
-        .cached(
-            StyleRefinement::default()
-                .w(px(figure::COLS as f32 * figure::ADVANCE))
-                .h(px(figure::ROWS as f32 * figure::SIZE)),
-        )
-        .into_any_element()
+    ducktape_host::a11y::cached(
+        AnyView::from(spin.clone()),
+        StyleRefinement::default()
+            .w(px(figure::COLS as f32 * figure::ADVANCE))
+            .h(px(figure::ROWS as f32 * figure::SIZE)),
+    )
+    .into_any_element()
 }
 
 #[cfg(test)]

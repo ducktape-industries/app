@@ -1,6 +1,6 @@
 # ducktape-phone — the phone shell: the blind host core (`crates/host`) in one
-# full-screen window on iOS (zed's `gpui_ios`, the fork's
-# `vendor/gpui-pre-ios`) and Android (longbridge gpui-mobile's host-driven
+# full-screen window on iOS (zed's `gpui_ios`, our
+# `vendor/gpui-ios`) and Android (longbridge gpui-mobile's host-driven
 # path, the fork's `vendor/gpui-pre-mobile`). It gives the host its
 # `OsServices` (`src/os.rs`, one arm per OS), keeps this device's key in the
 # OS key store (`src/key`), and draws the phone's own chrome: the stack, Home
@@ -37,6 +37,7 @@ call = ["ducktape-host/call", "ducktape-av/call"]
 # JavaScriptCore on iOS, where no wasmtime is linked
 ducktape-host = { path = "../host", default-features = false }
 noded-client = { path = "../noded-client" }
+rt = { package = "ducktape-rt", path = "../rt" }
 # `abi::BlobId`, which `OsServices::bundled_view` names
 abi.workspace = true
 gpui-kit = "=0.7.3"
@@ -62,6 +63,7 @@ view-wire.workspace = true
 reqwest.workspace = true
 # debug mode reads the host's perf registry as `GET /perf` serves it
 serde_json.workspace = true
+serde.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # the camera and microphone pieces open the phone's own (AVFoundation and
@@ -71,10 +73,10 @@ ducktape-host = { path = "../host", default-features = false, features = ["av"] 
 # a call's voice I/O, whose life the launcher's CallKit call follows
 ducktape-av = { path = "../av" }
 ducktape-host-jsc = { path = "../host-jsc" }
-gpui-pre-ios.workspace = true
+ducktape-gpui-ios.workspace = true
 # the log on the simulator's console (Android's goes to logcat through gm's
 # `android_logger`, which tracing's `log` records reach)
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
 # the system's version App settings names (`os::phone`); gpui_ios's own
 # Foundation bindings
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
@@ -116,6 +118,7 @@ ndk-context = "0.1"
 [dev-dependencies]
 ducktape-host = { path = "../host", features = ["test-support"] }
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+ducktape-a11y-platform = { path = "../a11y-platform", features = ["test-support"] }
 tempfile.workspace = true
 
 [lints.rust]

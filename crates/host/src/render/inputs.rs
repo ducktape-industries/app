@@ -10,7 +10,9 @@
 
 use super::*;
 use crate::render::native_id;
+use crate::text_input::TextInput;
 use gpui_kit::base::input::{InlineToken, InputContent, Textarea, TextareaState};
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{Edges, EntityInputHandler as _, Keystroke};
 use std::ops::Range;
@@ -31,6 +33,28 @@ macro_rules! engine {
     };
 }
 
+#[derive(Clone)]
+pub(super) enum Contract {
+    Line(Entity<TextInput<gpui_kit::base::input::InputMode>>),
+    Area(Entity<TextInput<gpui_kit::base::input::TextareaMode>>),
+}
+
+impl Contract {
+    fn configure(&self, configuration: gpui_kit::TextInputConfiguration, cx: &mut App) {
+        match self {
+            Contract::Line(keys) => keys.update(cx, |keys, _| keys.configure(configuration)),
+            Contract::Area(keys) => keys.update(cx, |keys, _| keys.configure(configuration)),
+        }
+    }
+
+    fn element(&self) -> AnyElement {
+        match self {
+            Contract::Line(keys) => TextInput::element(keys).into_any_element(),
+            Contract::Area(keys) => TextInput::element(keys).into_any_element(),
+        }
+    }
+}
+
 enum Deferred {
     Replace(wire::WidgetCommand),
     Adopt(u64, String, Vec<wire::TextToken>, Range<usize>),
@@ -44,6 +68,7 @@ enum Made {
 
 pub(super) struct Field {
     pub(super) engine: Engine,
+    pub(super) contract: Contract,
     on_change: Option<u32>,
     on_key: Option<u32>,
     on_submit: Option<u32>,
@@ -61,6 +86,7 @@ pub(super) struct Field {
     text_input: wire::TextInput,
     fills: bool,
     cap: Option<usize>,
+    menu_wanted: std::rc::Rc<std::cell::Cell<bool>>,
     _observation: Subscription,
     _events: Subscription,
     _keyboard: Option<[Subscription; 2]>,
@@ -120,7 +146,6 @@ impl ViewTree {
                     InputState::new(window, cx)
                         .placeholder(placeholder.clone())
                         .masked(*secure)
-                        .text_input(configuration)
                 })),
                 true => Engine::Area(cx.new(|cx| {
                     let mut state = TextareaState::new(window, cx)
@@ -128,11 +153,14 @@ impl ViewTree {
                         .auto_grow(1, usize::MAX)
                         .soft_wrap(true)
                         .searchable(false)
-                        .context_menu(false)
-                        .text_input(configuration);
+                        .context_menu(false);
                     state.set_editor_paddings(Edges::all(px(0.)));
                     state
                 })),
+            };
+            let contract = match &engine {
+                Engine::Line(state) => Contract::Line(TextInput::new(state, configuration, cx)),
+                Engine::Area(state) => Contract::Area(TextInput::new(state, configuration, cx)),
             };
             let observed = path.clone();
             let observation = engine!(&engine, |state| cx.observe_in(
@@ -159,6 +187,7 @@ impl ViewTree {
                 .then(|| keyboard::follow(&engine, path.clone(), window, cx));
             let mut field = Field {
                 engine,
+                contract,
                 on_change: *on_change,
                 on_key: *on_key,
                 on_submit: *on_submit,
@@ -176,6 +205,7 @@ impl ViewTree {
                 text_input: options.text_input,
                 fills: true,
                 cap: None,
+                menu_wanted: Default::default(),
                 _observation: observation,
                 _events: events,
                 _keyboard: keyboard,
@@ -218,6 +248,7 @@ impl ViewTree {
                 state.set_placeholder(placeholder.clone(), window, cx)
             }));
         }
+        let asked = field.keyboard();
         let reconfigured = field.text_input != options.text_input || field.secure != *secure;
         if field.secure != *secure {
             field.secure = *secure;
@@ -228,18 +259,34 @@ impl ViewTree {
         if reconfigured {
             field.text_input = options.text_input;
             let configuration = field.configuration();
-            engine!(&field.engine, |state| state.update(cx, |state, cx| {
-                state.set_text_input(configuration, cx)
-            }));
+            field.contract.configure(configuration, cx);
+            let raised = field.keyboard() != asked
+                && crate::contract::os().facts().touch_first
+                && field.is_focused(window, cx);
+            if raised {
+                keyboard::raise(field, window);
+            }
         }
         if let Engine::Area(state) = field.engine.clone() {
             field.set_fills(style.size.height.is_some(), field_rows(&style), cx);
+            let selection = cx.theme().selection;
+            state.update(cx, |state, _| {
+                state.set_editor_style(gpui_base::input::InputEditorStyle {
+                    selection,
+                    ..Default::default()
+                })
+            });
             if state.read(cx).is_editable() != editable {
                 state.update(cx, |state, cx| state.set_readonly(!editable, cx));
             }
         }
         let engine = field.engine.clone();
+        let contract = field.contract.clone();
         let fills = field.fills;
+        let menu_layer = crate::contract::os()
+            .facts()
+            .touch_first
+            .then(|| edit_menu::layer(&engine, &field.menu_wanted));
         let accessible = Accessible {
             value: (!secure).then(|| field.text.clone()),
             ..accessible(node)
@@ -265,6 +312,12 @@ impl ViewTree {
                 });
             }
         };
+        let touched = {
+            let path = path.clone();
+            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                this.field_touched(&path, event, window, cx)
+            })
+        };
         match &engine {
             Engine::Line(state) => {
                 let (placed, drawn) = placed(&style);
@@ -286,6 +339,9 @@ impl ViewTree {
                     set_value,
                     input.role(gpui_kit::component::RoleOverride::Presentational),
                 )
+                .child(contract.element())
+                .children(menu_layer)
+                .capture_any_mouse_down(touched)
                 .refine_style(&placed);
                 announce(field, accessible).into_any_element()
             }
@@ -308,7 +364,10 @@ impl ViewTree {
                             set_value,
                             Textarea::new(state),
                         )
-                        .when(fills, |field| field.h_full()),
+                        .child(contract.element())
+                        .children(menu_layer)
+                        .when(fills, |field| field.h_full())
+                        .capture_any_mouse_down(touched),
                         accessible,
                     ));
                 let mut element = div().relative().id(host_id("field"));
@@ -329,6 +388,9 @@ impl ViewTree {
         let Some(field) = self.fields.get_mut(path) else {
             return;
         };
+        if crate::contract::os().facts().touch_first {
+            edit_menu::take_over(&field.engine, &field.menu_wanted, cx);
+        }
         let Some((event, typed)) = field.settle(Made::Observed, window, cx) else {
             return;
         };
@@ -401,11 +463,40 @@ impl ViewTree {
             state.focus(window, cx);
         });
     }
+
+    fn field_touched(
+        &mut self,
+        path: &AuthoredPath,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(field) = self.fields.get(path) else {
+            return;
+        };
+        let pressed_again_while_it_holds_the_keys = event.button == MouseButton::Left
+            && crate::contract::os().facts().touch_first
+            && field.is_focused(window, cx);
+        if pressed_again_while_it_holds_the_keys {
+            keyboard::raise(field, window);
+        }
+    }
 }
 
 impl Field {
     fn configuration(&self) -> gpui_kit::TextInputConfiguration {
         self.text_input.configuration(self.secure)
+    }
+
+    fn keyboard(&self) -> crate::contract::Keyboard {
+        crate::contract::Keyboard {
+            kind: self.text_input.virtual_keyboard,
+            secure: self.secure,
+        }
+    }
+
+    pub(super) fn left(&self, cx: &mut App) {
+        edit_menu::left(engine!(&self.engine, |state| state.entity_id()), cx);
     }
 
     pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {
@@ -453,7 +544,7 @@ impl Field {
             let cursor = wire::TextRange::from(state.selected_range());
             let preedit = state
                 .marked_text_range(window, cx)
-                .map(|range| utf16_bytes(&text, range));
+                .map(|range| wire::TextRange::from(crate::text_input::bytes(&text, range)));
             let tokens = state
                 .tokens()
                 .iter()
@@ -762,20 +853,6 @@ fn clamp(range: wire::TextRange, len: usize) -> Range<usize> {
     start.min(end)..start.max(end)
 }
 
-fn utf16_bytes(text: &str, range: Range<usize>) -> wire::TextRange {
-    let at = |units: usize| {
-        let mut counted = 0;
-        for (byte, character) in text.char_indices() {
-            if counted >= units {
-                return byte;
-            }
-            counted += character.len_utf16();
-        }
-        text.len()
-    };
-    wire::TextRange::from(at(range.start)..at(range.end))
-}
-
 const INDENT: &str = "  ";
 
 fn indent(
@@ -899,6 +976,8 @@ fn placed(
     (placed, drawn)
 }
 
+pub(super) mod edit_menu;
+
 mod keyboard {
     use super::*;
     use crate::contract::SoftKeyboard;
@@ -921,6 +1000,11 @@ mod keyboard {
         still
     }
 
+    pub(super) fn raise(field: &Field, window: &Window) {
+        shown(engine!(&field.engine, |state| state.entity_id()));
+        crate::contract::os().soft_keyboard(window, SoftKeyboard::Show(field.keyboard()));
+    }
+
     pub(super) fn follow(
         engine: &Engine,
         path: AuthoredPath,
@@ -930,11 +1014,9 @@ mod keyboard {
         let focus = engine!(engine, |state| state.read(cx).focus_handle(cx));
         let field = engine!(engine, |state| state.entity_id());
         let up = cx.on_focus(&focus, window, move |tree, window, _| {
-            let Some(configuration) = tree.fields.get(&path).map(Field::configuration) else {
-                return;
-            };
-            shown(field);
-            crate::contract::os().soft_keyboard(window, SoftKeyboard::Show(configuration));
+            if let Some(focused) = tree.fields.get(&path) {
+                raise(focused, window);
+            }
         });
         let down = cx.on_blur(&focus, window, move |_, window, cx| {
             window.defer(cx, move |window, _| {

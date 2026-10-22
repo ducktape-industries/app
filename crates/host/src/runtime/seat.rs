@@ -12,6 +12,7 @@ pub(super) struct Mounted {
     pub(super) to_start: Option<Box<Parked>>,
     pub(super) owned: bool,
     pub(super) replacing: Option<(u64, Prep)>,
+    pub(super) rekeyed_at: Option<u64>,
 }
 
 pub(super) struct Parked {
@@ -40,6 +41,7 @@ impl Mounted {
             to_start: None,
             owned: false,
             replacing: None,
+            rekeyed_at: None,
         }))
     }
 
@@ -142,6 +144,105 @@ impl Mounted {
         self.slot = Slot::Empty;
         self.wake.send_replace(());
     }
+
+    pub(super) fn rekey(&mut self, props: &[u8]) -> bool {
+        if !rekeyed(self.props.as_deref(), Some(props)) {
+            return false;
+        }
+        self.props = Some(props.to_vec());
+        let Slot::Ready(view) = &mut self.slot else {
+            return false;
+        };
+        let running = view.connection.clone();
+        let restart = match self.swap.take() {
+            Some(pending) => Some((pending.code, pending.shown, pending.asked_of)),
+            None => view
+                .restart_code()
+                .map(|(code, shown)| (code, shown, running)),
+        };
+        self.generation += 1;
+        self.rekeyed_at = Some(self.generation);
+        self.to_start = None;
+        self.wake.send_replace(());
+        let Some((code, shown, asked_of)) = restart else {
+            self.slot = Slot::Failed(Failure::Refused(
+                "the seated key changed, and this view has no code to start again".into(),
+            ));
+            return true;
+        };
+        self.slot = Slot::Compiled(code.clone());
+        self.to_start = Some(Box::new(Parked {
+            code,
+            shown,
+            generation: self.generation,
+            asked_of,
+            timing: LoadTiming::default(),
+        }));
+        true
+    }
+}
+
+fn signer(props: Option<&[u8]>) -> Option<String> {
+    props
+        .and_then(|props| wire::methods::decode::<wire::methods::Session>(props).ok())
+        .map(|session| session.signer)
+        .filter(|signer| !signer.is_empty())
+}
+
+pub(super) fn rekeyed(was: Option<&[u8]>, now: Option<&[u8]>) -> bool {
+    signer(was).is_some_and(|was| signer(now).as_deref() != Some(was.as_str()))
+}
+
+#[cfg(test)]
+mod rekey_tests {
+    use super::*;
+
+    fn session(signer: &str) -> Vec<u8> {
+        wire::methods::encode(&wire::methods::Session {
+            connected: true,
+            chain_id: "dev".into(),
+            signer: signer.into(),
+            account: None,
+            endpoint: String::new(),
+        })
+    }
+
+    #[test]
+    fn only_a_move_off_a_seated_key_restarts() {
+        let (a, b, none) = (session("aa"), session("bb"), session(""));
+        assert!(!rekeyed(None, Some(&a)));
+        assert!(!rekeyed(Some(&none), Some(&a)));
+        assert!(!rekeyed(Some(&a), Some(&a)));
+        assert!(rekeyed(Some(&a), Some(&b)));
+        assert!(rekeyed(Some(&a), Some(&none)));
+        assert!(rekeyed(Some(&a), None));
+    }
+
+    #[test]
+    fn a_key_change_restarts_from_the_update_waiting_to_swap_in() {
+        let mut view = crate::runtime::kernel::tests::view();
+        view.code = Some(ViewCode::for_test("Telegram", "", 480));
+        let asked_of = view.connection.clone();
+        let mut update = ViewCode::for_test("Telegram v2", "", 480);
+        update.hash = [2; 32];
+        let seat = Mounted::seat();
+        let mut locked = lock(&seat);
+        locked.props = Some(session("aa"));
+        locked.slot = Slot::Ready(Box::new(view));
+        locked.swap = Some(Box::new(Parked {
+            code: update,
+            shown: "telegram view @ 020202020202".into(),
+            generation: locked.generation,
+            asked_of,
+            timing: LoadTiming::default(),
+        }));
+        assert!(locked.rekey(&session("bb")));
+        assert!(locked.swap.is_none());
+        assert!(matches!(&locked.slot, Slot::Compiled(code) if code.hash == [2; 32]));
+        let parked = locked.to_start.as_ref().expect("its start is parked");
+        assert_eq!(parked.code.hash, [2; 32], "the old code started again");
+        assert_eq!(parked.generation, locked.generation);
+    }
 }
 
 pub(super) enum Slot {
@@ -168,6 +269,7 @@ pub(super) struct ViewCode {
     pub(super) min_width: u32,
     pub(super) width: Option<u32>,
     pub(super) capabilities: Vec<Capability>,
+    pub(super) hosts: Vec<String>,
     pub(super) wire: String,
 }
 
@@ -186,6 +288,7 @@ impl ViewCode {
             min_width,
             width: None,
             capabilities: Vec::new(),
+            hosts: Vec::new(),
             wire: view_wire::WIRE_LEVEL.to_string(),
         })
     }
@@ -269,12 +372,11 @@ impl fmt::Display for Failure {
 pub(super) type Registry = Mutex<HashMap<(&'static str, u64), Arc<Mutex<Mounted>>>>;
 
 pub(super) fn registry() -> &'static Registry {
-    static MOUNTED: OnceLock<Registry> = OnceLock::new();
-    MOUNTED.get_or_init(Mutex::default)
+    &in_hand().seats
 }
 
-pub(super) fn let_go(program: &'static str, instance: u64) {
-    let mut registry = lock(registry());
+pub(super) fn let_go(network: &Network, program: &'static str, instance: u64) {
+    let mut registry = lock(&network.seats);
     let Some(seat) = registry.remove(&(program, instance)) else {
         return;
     };
@@ -283,19 +385,23 @@ pub(super) fn let_go(program: &'static str, instance: u64) {
     }
 }
 
-pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted>> {
-    let code = roster().code(program);
-    let mut registry = lock(registry());
+pub(super) fn mounted(
+    network: &Network,
+    program: &'static str,
+    instance: u64,
+) -> Arc<Mutex<Mounted>> {
+    let code = network.roster.code(program);
+    let mut registry = lock(&network.seats);
     let seat = registry.remove(&(program, 0)).unwrap_or_else(Mounted::seat);
     registry.insert((program, instance), seat.clone());
-    let snapshot = connection().lock().expect("views rpc").clone();
+    let snapshot = lock(&network.connection).clone();
     let mut locked = lock(&seat);
     locked.instance = instance;
     if let Slot::Ready(view) = &mut locked.slot {
         view.instance = instance;
     }
     let first = locked.generation == 0;
-    let listed = !roster().lock().is_empty();
+    let listed = !network.roster.lock().is_empty();
     let asked = asks_now(snapshot.client.is_some(), code.is_some(), listed)
         || view_override(program).is_some();
     let compiled = matches!(locked.slot, Slot::Compiled(_));
@@ -332,13 +438,13 @@ fn asks_now(connected: bool, listed_here: bool, roster_read: bool) -> bool {
 /// again now, under a new generation, past any hold-off a block's retries
 /// left. A failure goes back to loading, and a stopped view gives up its
 /// seat, so what lands is a fresh instance rather than a swap against it.
-pub fn retry(program: &'static str, instance: u64) {
-    let code = roster().code(program);
-    let registry = lock(registry());
+pub fn retry(network: &Network, program: &'static str, instance: u64) {
+    let code = network.roster.code(program);
+    let registry = lock(&network.seats);
     let Some(seat) = registry.get(&(program, instance)).cloned() else {
         return;
     };
-    let snapshot = connection().lock().expect("views rpc").clone();
+    let snapshot = lock(&network.connection).clone();
     let mut locked = lock(&seat);
     let stopped = matches!(&locked.slot, Slot::Ready(view) if view.fault.is_some());
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
@@ -389,13 +495,11 @@ pub(super) fn queue(load: Load) {
     }
     loaders.running += 1;
     drop(loaders);
-    let spawned = std::thread::Builder::new()
-        .name("view-loader".into())
-        .spawn(|| {
-            while let Some(load) = next_load() {
-                load.run();
-            }
-        });
+    let spawned = rt::task::worker("view-loader", async {
+        while let Some(load) = next_load() {
+            load.run().await;
+        }
+    });
     let Err(error) = spawned else {
         return;
     };
@@ -450,7 +554,8 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
     if loads.is_empty() {
         return;
     }
-    handle().spawn(async move {
+    let network = loads[0].asked_of.on.get();
+    drop(rt::task::spawn(async move {
         let began = Instant::now();
         let read = read_every(loads).await;
         let (programs, from_node) = (
@@ -461,7 +566,7 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
         );
         let mut prepare = Vec::new();
         {
-            let _rail = lock(registry());
+            let _rail = network.as_ref().map(|network| lock(&network.seats));
             for (load, read, timing) in read {
                 if lock(&load.seat).generation != load.generation {
                     continue;
@@ -497,7 +602,7 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
         for load in prepare {
             queue(load);
         }
-    });
+    }));
 }
 
 enum Source {
@@ -653,17 +758,20 @@ fn read_listing(load: &Load, timing: &mut LoadTiming, bytes: ViewBytes) -> Read 
 }
 
 impl Load {
-    fn run(self) {
-        self.land(|load, timing| {
-            View::load(
-                load.program,
-                load.code,
-                &load.asked_of,
-                load.generation,
-                &load.seat,
-                timing,
-            )
-        });
+    async fn run(self) {
+        use futures::FutureExt as _;
+        use std::panic::AssertUnwindSafe;
+        let mut timing = LoadTiming::default();
+        let loading = View::load(
+            self.program,
+            self.code,
+            &self.asked_of,
+            self.generation,
+            &self.seat,
+            &mut timing,
+        );
+        let loaded = AssertUnwindSafe(loading).catch_unwind().await;
+        self.settle(loaded, timing);
     }
 
     pub(super) fn land(
@@ -671,21 +779,25 @@ impl Load {
         loading: impl FnOnce(&Load, &mut LoadTiming) -> Result<Loaded, Unloaded>,
     ) {
         use std::panic::{AssertUnwindSafe, catch_unwind};
+        let mut timing = LoadTiming::default();
+        let loaded = catch_unwind(AssertUnwindSafe(|| loading(&self, &mut timing)));
+        self.settle(loaded, timing);
+    }
+
+    fn settle(self, loaded: std::thread::Result<Result<Loaded, Unloaded>>, mut timing: LoadTiming) {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
         let Load {
             program,
             generation,
             ..
         } = self;
         let asked_for = self.code.map(|(code, _)| code_digest(&code));
-        let mut timing = LoadTiming::default();
-        let loaded = catch_unwind(AssertUnwindSafe(|| loading(&self, &mut timing))).unwrap_or_else(
-            |panic| {
-                Err(Unloaded {
-                    hash: asked_for,
-                    failure: loader_panic_with_stage("loading", &*panic),
-                })
-            },
-        );
+        let loaded = loaded.unwrap_or_else(|panic| {
+            Err(Unloaded {
+                hash: asked_for,
+                failure: loader_panic_with_stage("loading", &*panic),
+            })
+        });
         let waited = Instant::now();
         let mut locked = lock(&self.seat);
         timing.lock_wait = waited.elapsed();
@@ -768,9 +880,9 @@ fn install(
     if locked.generation != generation {
         return false;
     }
-    let current = connection().lock().expect("views rpc").clone();
+    let current = asked_of.current();
     let from_the_node = view_override(program).is_none();
-    let node_since_left = current.rev != asked_of.rev;
+    let node_since_left = asked_of.stale();
     if from_the_node && node_since_left {
         return false;
     }
@@ -878,9 +990,28 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
     timing.lock_wait = waited.elapsed();
     let installed = Instant::now();
     locked.owned = false;
-    let current = connection().lock().expect("views rpc").clone();
-    let stale = locked.generation != generation
-        || (view_override(program).is_none() && current.rev != asked_of.rev);
+    let left = view_override(program).is_none() && asked_of.stale();
+    let stale = locked.generation != generation || left;
+    if stale && !left && locked.rekeyed_at == Some(locked.generation) {
+        let current = locked.generation;
+        let mounted: &mut Mounted = &mut locked;
+        match mounted.to_start.as_mut() {
+            Some(start) => {
+                start.code = code.clone();
+                start.shown = shown.clone();
+                mounted.slot = Slot::Compiled(code.clone());
+            }
+            None => {
+                mounted.swap = Some(Box::new(Parked {
+                    code: code.clone(),
+                    shown: shown.clone(),
+                    generation: current,
+                    asked_of: asked_of.clone(),
+                    timing: LoadTiming::default(),
+                }));
+            }
+        }
+    }
     if !stale {
         let Mounted {
             slot,
@@ -942,7 +1073,9 @@ pub(super) async fn start_in(mounted: Arc<Mutex<Mounted>>, program: &'static str
         mut timing,
     } = *pending;
     let started = async {
-        let mut fresh = View::seated_from(program, instance, &code, &shown, &mut timing).await?;
+        let on = asked_of.current();
+        let mut fresh =
+            View::seated_from(program, instance, &code, &shown, &on, &mut timing).await?;
         fresh.timed_inited(&shown, &mut timing).await?;
         Ok::<View, Failure>(fresh)
     }
@@ -1158,7 +1291,7 @@ impl LoadTiming {
 
 pub(super) fn view_override(program: &str) -> Option<PathBuf> {
     let dir = crate::backend::dirs().views_override.as_ref()?;
-    let path = dir.join(format!("{program}_view.wasm"));
+    let path = dir.join(format!("{}_view.wasm", super::slug(program)));
     path.is_file().then_some(path)
 }
 

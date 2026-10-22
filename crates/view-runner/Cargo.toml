@@ -1,0 +1,16 @@
+# view-runner: the contract between the host and what runs a view's code (wasmtime, JavaScriptCore, the page's WebAssembly).
+# It names no runtime and no window, so a runner depends on it and not on the host; `test-support` lends a test the instance's memory.
+
+[package]
+name = "view-runner"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+async-channel = "2"
+describe.workspace = true
+rt = { package = "ducktape-rt", path = "../rt" }

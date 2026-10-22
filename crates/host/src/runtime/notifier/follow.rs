@@ -1,6 +1,6 @@
 //! The other listed networks' notifiers, run on the desktop beside the
 //! network in hand's: a FOLLOWED set per chain ([`follow`]), the person's
-//! recipient on a connection of its own ([`Apart`]: its own end, its own
+//! recipient on a connection of its own ([`Network`]: its own end, its own
 //! roster, its queries signed by the reader), polled as the network in hand
 //! is, never touched by a connect. One run per chain at a time: taking a
 //! chain up in hand ([`take_up`]) stops its set and hands its log to the
@@ -9,7 +9,7 @@
 //! the app's lock too ([`lock_followed`]), so a set starts as the app is.
 use super::*;
 use notify::Log;
-use roster::Apart;
+use roster::Network;
 
 /// How often a followed set's node is asked its status: as the network in
 /// hand's is, no faster.
@@ -134,12 +134,11 @@ pub(in crate::runtime) fn flush_sets() {
 
 struct Set {
     notifiers: Notifiers,
-    connection: Mutex<Connection>,
-    apart: Arc<Apart>,
+    network: Arc<Network>,
     url: String,
     key: String,
     account: Mutex<Option<u64>>,
-    poll: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    poll: Mutex<Option<rt::task::Task>>,
 }
 
 impl Set {
@@ -157,7 +156,7 @@ impl Set {
                 true => ("", None),
                 false => (&self.key[..], account),
             };
-            let chain = lock(&self.connection).chain.clone();
+            let chain = lock(&self.network.connection).chain.clone();
             let session = roster::props(true, &chain, key, account, &self.url);
             let moved = props.as_ref() != Some(&session);
             *props = Some(session);
@@ -167,17 +166,17 @@ impl Set {
 
     fn reconcile(&self) {
         let _center = self.recipient().center.lock();
-        if self.apart.left.load(std::sync::atomic::Ordering::SeqCst) {
+        if self.network.left.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        let asked_of = lock(&self.connection).clone();
-        let programs = self.apart.roster.lock().clone();
+        let asked_of = lock(&self.network.connection).clone();
+        let programs = self.network.roster.lock().clone();
         self.notifiers.reconcile(&asked_of, &programs);
     }
 
     async fn read(&self) {
         let (client, network) = {
-            let connection = lock(&self.connection);
+            let connection = lock(&self.network.connection);
             (connection.client.clone(), connection.network.clone())
         };
         let Some(client) = client else {
@@ -185,7 +184,7 @@ impl Set {
         };
         let reader = crate::contract::os().reader();
         match crate::backend::views::programs(&client, &network, &*reader).await {
-            Ok(programs) => *self.apart.roster.lock() = programs,
+            Ok(programs) => *self.network.roster.lock() = programs,
             Err(error) => {
                 tracing::debug!(target: "ducktape::app", %error, network, "a followed network's programs were not listed");
                 return;
@@ -201,7 +200,7 @@ impl Set {
 
     fn leave(&self) -> Log {
         let mut center = self.recipient().center.lock();
-        self.apart
+        self.network
             .left
             .store(true, std::sync::atomic::Ordering::SeqCst);
         self.notifiers.stop_all();
@@ -220,7 +219,7 @@ pub struct Followed(Arc<Set>);
 impl Followed {
     /// The chain it follows.
     pub fn chain(&self) -> String {
-        lock(&self.0.connection).chain.clone()
+        lock(&self.0.network.connection).chain.clone()
     }
 
     /// The key and account its notifiers are handed now.
@@ -260,7 +259,7 @@ impl Drop for Followed {
 /// asks each listed node, `crates/phone/src/push.rs`), this device's key
 /// there found by its public half alone (no key store asked: no Touch ID,
 /// no password) and its account by the reader; then a set on a connection
-/// of its own ([`Apart`]) runs its notifiers on its roster, read again at
+/// of its own ([`Network`]) runs its notifiers on its roster, read again at
 /// each of its blocks ([`STATUS_EVERY`]), into the person's store and its
 /// chain's own log, its banners the OS's, its badges dropped. `None` while
 /// its node does not answer within [`STATUS_EVERY`], for the chain in
@@ -269,7 +268,7 @@ impl Drop for Followed {
 /// It never blocks: its files are read on the blocking pool.
 pub async fn follow(url: String) -> Option<Followed> {
     let client = crate::backend::rpc_client(url.clone());
-    let status = tokio::time::timeout(STATUS_EVERY, client.status())
+    let status = rt::time::timeout(STATUS_EVERY, client.status())
         .await
         .ok()?
         .ok()?;
@@ -283,7 +282,7 @@ pub async fn follow(url: String) -> Option<Followed> {
     let remotes = crate::contract::os().dirs().remotes.clone();
     let (network, founded) = (status.network.clone(), status.time);
     let (of, file) = (chain.clone(), notify::log_file(&chain));
-    let (key, read) = tokio::task::spawn_blocking(move || {
+    let (key, read) = rt::task::blocking(move || {
         let key = noded_client::keyring::bind(&remotes, &network, founded)
             .ok()
             .and_then(|keyring| crate::backend::device_key_of(&keyring.dir));
@@ -307,7 +306,7 @@ pub async fn follow(url: String) -> Option<Followed> {
         height: status.height,
         lost: false,
     };
-    *lock(&set.poll) = Some(handle().spawn(poll(Arc::downgrade(&set), heard)));
+    *lock(&set.poll) = Some(rt::task::spawn(poll(Arc::downgrade(&set), heard)));
     Some(followed)
 }
 
@@ -341,7 +340,13 @@ impl Set {
         key: String,
         account: Option<u64>,
     ) -> Arc<Self> {
-        let apart = Arc::new(Apart::default());
+        let own = Network::new(true);
+        {
+            let mut connection = lock(&own.connection);
+            connection.client = client;
+            connection.network = network;
+            connection.chain = chain;
+        }
         let recipient = Recipient {
             session: tokio::sync::watch::channel(None).0,
             store: super::store::store_of(None),
@@ -355,15 +360,7 @@ impl Set {
                 running: Mutex::default(),
                 recipient: Some(Arc::new(recipient)),
             },
-            connection: Mutex::new(Connection {
-                client,
-                network,
-                chain,
-                rev: 0,
-                live: None,
-                apart: Some(apart.clone()),
-            }),
-            apart,
+            network: own,
             url,
             key,
             account: Mutex::new(account),
@@ -378,7 +375,7 @@ impl Set {
         };
         let back = std::mem::take(&mut heard.lost);
         if back {
-            lock(&self.connection).rev += 1;
+            lock(&self.network.connection).rev += 1;
         }
         std::mem::replace(&mut heard.height, height) != height || back
     }
@@ -390,7 +387,7 @@ struct Heard {
 }
 
 fn register(set: Arc<Set>, read: Log) -> Option<Followed> {
-    let chain = lock(&set.connection).chain.clone();
+    let chain = lock(&set.network.connection).chain.clone();
     let mut sets = sets();
     if sets.taken(&chain) {
         return None;
@@ -414,14 +411,14 @@ async fn account_of(client: &crate::backend::RpcClient, network: &str, key: &str
 
 async fn poll(set: std::sync::Weak<Set>, mut heard: Heard) {
     loop {
-        tokio::time::sleep(STATUS_EVERY).await;
+        rt::time::sleep(STATUS_EVERY).await;
         let Some(set) = set.upgrade() else {
             return;
         };
-        let Some(client) = lock(&set.connection).client.clone() else {
+        let Some(client) = lock(&set.network.connection).client.clone() else {
             return;
         };
-        let answer = tokio::time::timeout(STATUS_EVERY, client.status()).await;
+        let answer = rt::time::timeout(STATUS_EVERY, client.status()).await;
         let height = answer.ok().and_then(Result::ok).map(|status| status.height);
         if set.polled(&mut heard, height) {
             set.read().await;

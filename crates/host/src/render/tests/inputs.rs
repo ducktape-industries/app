@@ -1,7 +1,8 @@
 use super::*;
+use ducktape_a11y_platform::headless::Harness;
 use gpui_kit::Keystroke;
 
-fn line(tree: &Entity<ViewTree>, cx: &gpui_kit::VisualTestContext) -> Entity<InputState> {
+fn line(tree: &Entity<ViewTree>, cx: &impl gpui_kit::AppContext) -> Entity<InputState> {
     tree.read_with(cx, |tree, _| {
         tree.first_input_for_test().expect("a one-line field")
     })
@@ -216,10 +217,9 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
     );
 }
 
-#[gpui_kit::test]
-fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn a_read_only_field_takes_no_typing_and_no_set_value() {
     use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
-    cx.update(gpui_kit::init);
     for (read_only, disabled, changes) in [
         (true, false, false),
         (false, true, false),
@@ -231,12 +231,13 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
         };
         options.read_only = read_only;
         let root = container("form", [field]);
-        let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root));
-        let tree = window.root(cx).unwrap();
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let mut native = Harness::open_with(gpui_kit::init, size(px(400.), px(200.)), |_, _| {
+            ViewTree::new(root)
+        });
+        let tree = native.root();
         let (events, _subscription) = emitted(&tree, &mut native);
         let state = native.update(|window, cx| {
-            window.activate_a11y();
+            native.activate_in(window);
             crate::render::draw_frame(window, cx);
             crate::render::draw_frame(window, cx);
             let state = tree.read(cx).first_input_for_test().unwrap();
@@ -244,24 +245,18 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
             state
         });
         native.simulate_input(" typed");
-        native.update(|window, cx| {
-            crate::render::draw_frame(window, cx);
-            let update = window.a11y_tree().expect("an a11y tree once activated");
-            let (node, _) = update
-                .nodes
-                .iter()
-                .find(|(_, node)| node.role() == gpui_kit::Role::TextInput)
-                .expect("the field has a node");
-            let node = *node;
-            window.dispatch_a11y_action(
-                ActionRequest {
-                    action: Action::SetValue,
-                    target_tree: TreeId::ROOT,
-                    target_node: node,
-                    data: Some(ActionData::Value("set".into())),
-                },
-                cx,
-            );
+        native.update(crate::render::draw_frame);
+        let update = native.tree();
+        let (node, _) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == gpui_kit::Role::TextInput)
+            .expect("the field has a node");
+        native.act(ActionRequest {
+            action: Action::SetValue,
+            target_tree: TreeId::ROOT,
+            target_node: *node,
+            data: Some(ActionData::Value("set".into())),
         });
         native.run_until_parked();
         let value = state.read_with(&native, |state, _| state.value().to_string());
@@ -304,15 +299,15 @@ fn filter_row(width: impl Into<gpui_kit::Length> + Clone, border: gpui_kit::Hsla
     )
 }
 
-#[gpui_kit::test]
-fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
+#[test]
+fn a_focused_field_wears_one_ring_on_its_own_box() {
     let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let root = filter_row(px(260.), grey);
-    let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let drawn = |native: &mut gpui_kit::VisualTestContext| {
+    let mut native = Harness::open_with(gpui_kit::init, size(px(600.), px(200.)), |_, _| {
+        ViewTree::new(root)
+    });
+    let tree = native.root();
+    let drawn = |native: &mut Harness<ViewTree>| {
         native.update(|window, cx| {
             crate::render::draw_frame(window, cx);
             let scale = window.scale_factor();
@@ -328,7 +323,7 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
             let over = bordered()
                 .filter(|quad| quad.bounds != field.bounds && quad.bounds.intersects(&field.bounds))
                 .count();
-            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let update = &native.tree();
             let node = update
                 .nodes
                 .iter()
@@ -345,7 +340,7 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
             )
         })
     };
-    native.update(|window, _| window.activate_a11y());
+    native.update(|window, _| native.activate_in(window));
     let unfocused = drawn(&mut native);
     assert_eq!((unfocused.0, unfocused.1, unfocused.2), (16., grey, 0));
     let state = line(&tree, &native);
@@ -1409,4 +1404,152 @@ fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
         (2, None, "hello")
     );
     assert_eq!(text(&tree, &mut native), "hello");
+}
+
+#[gpui_kit::test]
+fn under_touch_a_press_on_the_field_that_holds_the_keys_asks_for_the_keyboard_again(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    crate::contract::testing::touch_first_for_test(true);
+    let filled = || crate::render::test_style(sized_style(Some(fill()), Some(fill())));
+    let mut line = input("Name", false, false);
+    if let wire::Node::Field { style, .. } = &mut line {
+        *style = filled();
+    }
+    let composer = area(
+        "c",
+        Some("Message"),
+        "hi",
+        sized_style(Some(fill()), Some(fill())),
+    );
+    for (field, id) in [(line, "i"), (composer, "c")] {
+        let root = sized("root", field, Some(fill()), Some(fill()));
+        let (tree, mut native) = mounted(root, cx);
+        native.update(|window, _| window.activate_window());
+        native.run_until_parked();
+        crate::contract::testing::soft_keyboard_asked_for_test();
+        focus(&tree, &mut native, &[named_id("root"), named_id(id)]);
+        native.run_until_parked();
+        assert_eq!(
+            crate::contract::testing::soft_keyboard_asked_for_test(),
+            ["show"],
+            "{id}: taking the keys raised the keyboard once"
+        );
+        native.simulate_click(
+            gpui_kit::point(px(200.), px(150.)),
+            gpui_kit::Modifiers::none(),
+        );
+        native.run_until_parked();
+        assert_eq!(
+            crate::contract::testing::soft_keyboard_asked_for_test(),
+            ["show"],
+            "{id}: the keyboard went down while the field kept the keys, and a press on it never asked for it again"
+        );
+    }
+    crate::contract::testing::touch_first_for_test(false);
+}
+
+#[gpui_kit::test]
+fn return_from_a_software_keyboard_submits_a_one_line_field_once(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let mut field = input("Message", false, false);
+    let wire::Node::Field { id, on_submit, .. } = &mut field else {
+        unreachable!()
+    };
+    *id = wire::ElementIdWire::Name("field".into());
+    *on_submit = Some(7);
+    let (tree, mut native) = mounted(container("form", [field]), cx);
+    focus(&tree, &mut native, &[named_id("form"), named_id("field")]);
+    let before = text(&tree, &mut native);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.simulate_input("\n");
+    native.run_until_parked();
+    let submits = events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(event, wire::Event::Message(7)))
+        .count();
+    assert_eq!(submits, 1, "Return is the field's submit, once");
+    assert_eq!(text(&tree, &mut native), before, "and it types nothing");
+    let on_the_field =
+        line(&tree, &native).read_with(&native, |state, _| state.input_bounds().center());
+    native.simulate_click(on_the_field, gpui_kit::Modifiers::none());
+    native.run_until_parked();
+    native.simulate_keystrokes("enter");
+    native.run_until_parked();
+    let submits = events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(event, wire::Event::Message(7)))
+        .count();
+    assert_eq!(submits, 2, "a hardware Enter is one more submit, never two");
+    assert_eq!(text(&tree, &mut native), before);
+}
+
+#[gpui_kit::test]
+fn a_field_raises_the_keyboard_it_asks_for_and_again_when_that_changes(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::contract::{Keyboard, SoftKeyboard};
+    crate::contract::testing::touch_first_for_test(true);
+    let form_acting = |secure, action| {
+        let mut field = input("Email", secure, false);
+        let wire::Node::Field { options, .. } = &mut field else {
+            unreachable!()
+        };
+        options.text_input.virtual_keyboard = wire::VirtualKeyboard::Email;
+        options.text_input.input_action = action;
+        container("form", [field])
+    };
+    let form = |secure| form_acting(secure, wire::TextInputAction::Unspecified);
+    let email = |secure| {
+        SoftKeyboard::Show(Keyboard {
+            kind: wire::VirtualKeyboard::Email,
+            secure,
+        })
+    };
+    let (tree, mut native) = mounted(form(false), cx);
+    native.update(|window, _| window.activate_window());
+    native.run_until_parked();
+    crate::contract::testing::keyboards_asked_for_test();
+    focus(&tree, &mut native, &[named_id("form"), named_id("i")]);
+    native.run_until_parked();
+    assert_eq!(
+        crate::contract::testing::keyboards_asked_for_test(),
+        [email(false)],
+        "taking the keys raised the field's own keyboard"
+    );
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| tree.replace(form(true), &[], cx));
+        crate::render::draw_frame(window, cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        crate::contract::testing::keyboards_asked_for_test(),
+        [email(true)],
+        "a field that turns secret while it holds the keys tells the keyboard again"
+    );
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| tree.replace(form(true), &[], cx));
+        crate::render::draw_frame(window, cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        crate::contract::testing::keyboards_asked_for_test(),
+        [],
+        "a frame that changes nothing asks nothing"
+    );
+    native.update(|window, cx| {
+        let sends = form_acting(true, wire::TextInputAction::Send);
+        tree.update(cx, |tree, cx| tree.replace(sends, &[], cx));
+        crate::render::draw_frame(window, cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        crate::contract::testing::keyboards_asked_for_test(),
+        [],
+        "a field that changes only its return key keeps the keyboard it has"
+    );
+    crate::contract::testing::touch_first_for_test(false);
 }

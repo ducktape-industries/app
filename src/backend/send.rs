@@ -1,50 +1,87 @@
-//! `ducktape-app send <network> <program> <hex>`: one transaction from the
+//! `ducktape-app send <network> <program> <op>`: one transaction from the
 //! terminal to a network this app has connected to, signed with this
 //! device's key for it. `main.rs` dispatches it; the README says how to use it.
 
 use std::fmt;
 use std::sync::Arc;
 
+use borsh_json::{Fault, Interface, SECTION, Unreadable};
 use noded_client::hex::{hex_decode, hex_encode};
 use noded_client::wire::{NODE_CONTRACT, Receipt, Status, TxAsk, TxRef};
+use serde_json::Value;
 
+use super::views::Fetch;
 use super::{RecentEndpoint, RpcClient};
 
-pub(crate) const USAGE: &str = "usage: ducktape-app send <network> <program> <hex>";
+pub(crate) const USAGE: &str =
+    "usage: ducktape-app send <network> <program> <op as JSON, hex or base64>";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Ask {
     pub(crate) network: String,
     pub(crate) program: String,
-    pub(crate) payload: Vec<u8>,
+    pub(crate) call: Call,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Call {
+    Json(Value),
+    Bytes(Vec<u8>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Wrong {
     Count,
-    Hex(String),
+    Json(String),
+    Unread,
 }
 
 impl fmt::Display for Wrong {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Wrong::Count => f.write_str("it takes three arguments"),
-            Wrong::Hex(error) => write!(f, "the call's bytes are not hex ({error})"),
+            Wrong::Json(error) => write!(f, "the op starts as JSON and does not parse ({error})"),
+            Wrong::Unread => f.write_str("the op is neither JSON, hex nor base64"),
         }
     }
 }
 
 impl Ask {
     pub(crate) fn parse(args: &[String]) -> Result<Ask, Wrong> {
-        let [network, program, hex] = args else {
+        let [network, program, op] = args else {
             return Err(Wrong::Count);
         };
         Ok(Ask {
             network: network.clone(),
             program: program.clone(),
-            payload: hex_decode(hex).map_err(Wrong::Hex)?,
+            call: Call::read(op)?,
         })
     }
+}
+
+impl Call {
+    pub(crate) fn read(given: &str) -> Result<Call, Wrong> {
+        let given = given.trim();
+        if given.starts_with(['{', '"']) {
+            let parsed = serde_json::from_str(given);
+            return parsed
+                .map(Call::Json)
+                .map_err(|error| Wrong::Json(error.to_string()));
+        }
+        let digits = given.strip_prefix("0x").unwrap_or(given);
+        if let Ok(bytes) = hex_decode(digits) {
+            return Ok(Call::Bytes(bytes));
+        }
+        base64_read(given).map(Call::Bytes).ok_or(Wrong::Unread)
+    }
+}
+
+fn base64_read(given: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
+    let bare = given.trim_end_matches('=');
+    let standard = STANDARD_NO_PAD.decode(bare);
+    standard.or_else(|_| URL_SAFE_NO_PAD.decode(bare)).ok()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +171,21 @@ pub(crate) enum Failure {
     },
     Key(String),
     Password(std::io::Error),
+    Unrostered(Fetch),
+    Unlisted(String),
+    Uncoded {
+        program: String,
+        fetch: Fetch,
+    },
+    Schemaless(String),
+    Unreadable {
+        program: String,
+        why: Unreadable,
+    },
+    Unencoded {
+        program: String,
+        fault: Fault,
+    },
     Unsigned(view_wire::Error),
     Unsent(noded_client::Error),
     Refused(abi::Refusal),
@@ -192,6 +244,25 @@ impl fmt::Display for Failure {
                 "tried {url}, which runs {chain}; this device holds no key for that chain"
             ),
             Failure::Password(error) => write!(f, "the password could not be read: {error}"),
+            Failure::Unrostered(fetch) => {
+                write!(f, "the programs role's roster could not be read: {fetch}")
+            }
+            Failure::Unlisted(program) => {
+                write!(f, "the network runs no program called {program}")
+            }
+            Failure::Uncoded { program, fetch } => {
+                write!(f, "the code of {program} could not be read: {fetch}")
+            }
+            Failure::Schemaless(program) => write!(
+                f,
+                "the code of {program} carries no {SECTION} section, so no JSON encodes for it; send its bytes as hex or base64"
+            ),
+            Failure::Unreadable { program, why } => {
+                write!(f, "the {SECTION} section of {program}'s code {why}")
+            }
+            Failure::Unencoded { program, fault } => {
+                write!(f, "the op does not fit {program}'s schema: {fault}")
+            }
             Failure::Unsigned(error) => write!(f, "{}: {}", error.code, error.message),
             Failure::Unsent(error) => write!(f, "the frame did not reach the node: {error}"),
             Failure::Refused(refusal) => {
@@ -313,13 +384,7 @@ pub(crate) fn send(ask: &Ask) -> Result<Sent, Failure> {
     let keyring = noded_client::keyring::bind(&super::dirs().remotes, &status.network, status.time)
         .map_err(Failure::Keyring)?;
     let key = open_key(&keyring.dir, &target.url, &status)?;
-    runtime.block_on(submit(
-        &client,
-        &status,
-        key,
-        &ask.program,
-        ask.payload.clone(),
-    ))
+    runtime.block_on(submit(&client, &status, key, &ask.program, &ask.call))
 }
 
 async fn reach(client: &RpcClient, target: &Target) -> Result<Status, Failure> {
@@ -368,14 +433,54 @@ fn unlock(keyring: &str) -> Result<Arc<dyn noded_client::Signer>, Failure> {
     Ok(Arc::new(key))
 }
 
+async fn encoded(
+    client: &RpcClient,
+    status: &Status,
+    signer: &dyn noded_client::Signer,
+    program: &str,
+    op: &Value,
+) -> Result<Vec<u8>, Failure> {
+    let roster = super::views::programs(client, &status.network, signer)
+        .await
+        .map_err(Failure::Unrostered)?;
+    let listed = roster
+        .iter()
+        .find(|entry| entry.name == program && !entry.bare)
+        .ok_or_else(|| Failure::Unlisted(program.to_owned()))?;
+    let (code, _) = super::views::program_bytes(client, &listed.code)
+        .await
+        .map_err(|fetch| Failure::Uncoded {
+            program: program.to_owned(),
+            fetch,
+        })?;
+    let interface = interface_of(program, &code)?;
+    interface.encode_op(op).map_err(|fault| Failure::Unencoded {
+        program: program.to_owned(),
+        fault,
+    })
+}
+
+pub(crate) fn interface_of(program: &str, code: &[u8]) -> Result<Interface, Failure> {
+    let section = super::views::section(code, SECTION)
+        .ok_or_else(|| Failure::Schemaless(program.to_owned()))?;
+    Interface::read(section).map_err(|why| Failure::Unreadable {
+        program: program.to_owned(),
+        why,
+    })
+}
+
 async fn submit(
     client: &RpcClient,
     status: &Status,
     key: Arc<dyn noded_client::Signer>,
     program: &str,
-    payload: Vec<u8>,
+    call: &Call,
 ) -> Result<Sent, Failure> {
-    super::seat_key(key).await;
+    super::seat_key(&status.network, key.clone()).await;
+    let payload = match call {
+        Call::Bytes(bytes) => bytes.clone(),
+        Call::Json(op) => encoded(client, status, &*key, program, op).await?,
+    };
     let frame = super::seated_frame(client, &status.network, program, payload)
         .await
         .map_err(Failure::Unsigned)?;

@@ -63,7 +63,7 @@ fn routed(
 ) -> Option<String> {
     let layout = desk_of(app, key, cx).read_with(cx, |desk, _| desk.get().clone());
     let pane = layout.panes.iter().find(|pane| pane.program == program)?;
-    crate::runtime::take_route(program, pane.instance)
+    crate::runtime::take_route(crate::runtime::in_hand(), program, pane.instance)
 }
 
 /// A view picked from ⌘K or a menu opens as a bar click does: the focused
@@ -375,11 +375,11 @@ fn an_outside_link_reaches_only_the_window_it_brings_forward(cx: &mut TestAppCon
         .expect("two windows of the program")
         .instance;
     assert_eq!(
-        crate::runtime::take_route(PROGRAM, forward).as_deref(),
+        crate::runtime::take_route(crate::runtime::in_hand(), PROGRAM, forward).as_deref(),
         Some("room/9")
     );
     assert_eq!(
-        crate::runtime::take_route(PROGRAM, other),
+        crate::runtime::take_route(crate::runtime::in_hand(), PROGRAM, other),
         None,
         "the window left behind was handed the route too"
     );
@@ -406,7 +406,7 @@ fn an_outside_link_reaches_only_the_window_it_brings_forward(cx: &mut TestAppCon
         "the desk opened it again"
     );
     assert_eq!(
-        crate::runtime::take_route(PROGRAM, forward).as_deref(),
+        crate::runtime::take_route(crate::runtime::in_hand(), PROGRAM, forward).as_deref(),
         Some("room/9"),
         "the pop-out was not handed the route"
     );
@@ -505,7 +505,7 @@ fn a_views_link_window_opens_its_target_in_a_window_of_its_own(cx: &mut TestAppC
     let pane =
         desk_of(&app, opened, &native).read_with(&native, |desk, _| desk.get().panes[0].instance);
     assert_eq!(
-        crate::runtime::take_route(LINKED, pane).as_deref(),
+        crate::runtime::take_route(crate::runtime::in_hand(), LINKED, pane).as_deref(),
         Some("room/7"),
         "the window's view was not handed its route"
     );
@@ -1616,7 +1616,7 @@ fn a_link_a_later_launch_hands_over_reaches_its_pane_whole(cx: &mut TestAppConte
     let pane = &layout.panes[layout.focused];
     assert_eq!(pane.program, PROGRAM);
     assert_eq!(
-        crate::runtime::take_route(PROGRAM, pane.instance).as_deref(),
+        crate::runtime::take_route(crate::runtime::in_hand(), PROGRAM, pane.instance).as_deref(),
         Some("channel-7/thread/42")
     );
 }
@@ -1655,7 +1655,7 @@ fn a_launch_that_becomes_the_app_opens_its_own_link_once_the_desk_is_up(cx: &mut
     let pane = &layout.panes[layout.focused];
     assert_eq!(pane.program, PROGRAM, "the launch's own link did not open");
     assert_eq!(
-        crate::runtime::take_route(PROGRAM, pane.instance).as_deref(),
+        crate::runtime::take_route(crate::runtime::in_hand(), PROGRAM, pane.instance).as_deref(),
         Some("channel-7/thread/42")
     );
 }

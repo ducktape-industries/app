@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 pub const POLL: Duration = Duration::from_millis(1500);
 
 fn slot_url(page: &str, id: &str) -> Result<String, String> {
-    let mut url = reqwest::Url::parse(page)
+    let mut url = url::Url::parse(page)
         .map_err(|error| format!("The auth host address is unusable: {error}"))?;
     url.set_path(&format!("/r/{id}"));
     url.set_query(None);
@@ -33,41 +33,39 @@ pub fn slot(page: &str, code: &str, side: &str) -> Result<String, String> {
 }
 
 /// `json` into the slot at `url`, over the connection's `http`.
-pub async fn post(http: &reqwest::Client, url: &str, json: String) -> Result<(), String> {
-    let reply = http
-        .post(url)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(format!("result={}", url_encode(&json)))
-        .send()
+pub async fn post(client: &crate::Client, url: &str, json: String) -> Result<(), String> {
+    let reply = client
+        .http()
+        .post_form(url, format!("result={}", url_encode(&json)))
         .await
         .map_err(|_| {
             "Can't reach the auth host. Check the connection and try again.".to_string()
         })?;
-    match reply.status().is_success() {
+    match (200..300).contains(&reply.status()) {
         true => Ok(()),
         false => Err(format!(
             "The auth host refused the message ({}).",
-            reply.status()
+            reply.said()
         )),
     }
 }
 
 /// One GET of a slot, over the connection's `http`: its message, or `None`
 /// while nothing has arrived.
-pub async fn take(http: &reqwest::Client, url: &str) -> Result<Option<String>, String> {
-    let reply = http
+pub async fn take(client: &crate::Client, url: &str) -> Result<Option<String>, String> {
+    let reply = client
+        .http()
         .get(url)
-        .send()
         .await
         .map_err(|_| "Can't reach the auth host.".to_string())?;
     match reply.status() {
-        reqwest::StatusCode::OK => reply
-            .text()
+        200 => reply
+            .bytes()
             .await
-            .map(Some)
+            .map(|bytes| Some(String::from_utf8_lossy(&bytes).into_owned()))
             .map_err(|_| "Lost the message on the way.".to_string()),
-        reqwest::StatusCode::NO_CONTENT => Ok(None),
-        status => Err(format!("The auth host refused ({status}).")),
+        204 => Ok(None),
+        _ => Err(format!("The auth host refused ({}).", reply.said())),
     }
 }
 

@@ -56,16 +56,6 @@ impl NativeInput {
         }
     }
 
-    pub(in crate::shell) fn secret(self, cx: &mut gpui_kit::App) -> Self {
-        let secure = gpui_kit::TextInputConfiguration {
-            secure: true,
-            ..Default::default()
-        };
-        self.state
-            .update(cx, |state, cx| state.set_text_input(secure, cx));
-        self
-    }
-
     pub(in crate::shell) fn wipe(&self, window: &mut Window, cx: &mut gpui_kit::App) {
         self.set(String::new(), window, cx);
     }

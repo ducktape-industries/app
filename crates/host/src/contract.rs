@@ -36,8 +36,8 @@ use crate::runtime::Answered;
 use crate::runtime::notify::Opened;
 use crate::runtime::notify::{Click, Notice};
 #[cfg(feature = "ui")]
-use gpui_kit::{AppLifecyclePhase, TextInputConfiguration, Window, WindowInsets};
-use std::path::{Path, PathBuf};
+use gpui_kit::{AppLifecyclePhase, Bounds, Pixels, Window, WindowInsets};
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 /// What a shell gives the host. One impl per shell.
@@ -45,19 +45,24 @@ pub trait OsServices: Send + Sync + 'static {
     /// Where files go.
     fn dirs(&self) -> &Dirs;
     /// This device's key for `keyring`, made on first ask; it signs and
-    /// never hands the key out. Called off the window thread (a store may
-    /// prompt). `Ok(None)`: no OS-kept key, but a key from before keys
+    /// never hands the key out. A store call that may block or prompt runs
+    /// on `rt::task::blocking`, never in this call or in its future itself:
+    /// the caller awaits it on the kernel's one thread. `Ok(None)`: no
+    /// OS-kept key, but a key from before keys
     /// moved into the OS is here under a password; the shell asks for it
     /// and seats it itself (the desktop's `shell::sign_in`). A phone never
     /// answers `None`.
     fn device_key(
         &self,
         keyring: &str,
-    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>;
+    ) -> rt::Fut<'static, Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>>;
     /// Where that key is kept, in the store's own words (the Settings row
     /// "Key storage").
     fn key_storage(&self, keyring: &str) -> Result<KeyStorage, KeyRefusal>;
-    /// What signs a query while no key is seated (`backend::query_frame`).
+    /// The OS's store of views' secrets (`store.secret_get`,
+    /// `store.secret_set`); `None` where this device has none, which a view
+    /// hears as `no_secret_store`.
+    fn secrets(&self) -> Option<&dyn Secrets>;
     /// Which key that is, and whether it is linkable to the device, is the
     /// shell's call: the desktop answers a throwaway key made per process.
     /// Not in SPEC §4.2's list: §4.8 leaves the throwaway in the desktop
@@ -80,6 +85,11 @@ pub trait OsServices: Send + Sync + 'static {
     /// Desktop: nothing.
     #[cfg(feature = "ui")]
     fn soft_keyboard(&self, _window: &Window, _want: SoftKeyboard) {}
+    /// Show the OS's own edit menu over a text field's touch selection, or
+    /// hide it. A pick closes it and comes back as [`Signal::Edit`].
+    /// Desktop: nothing.
+    #[cfg(feature = "ui")]
+    fn edit_menu(&self, _window: &Window, _menu: EditMenu) {}
     /// Facts that are constants per OS, read once.
     fn facts(&self) -> OsFacts;
     /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -122,6 +132,10 @@ pub type PickDone = Box<dyn FnOnce(Result<Option<Vec<PathBuf>>, String>) + Send>
 /// from any thread.
 pub type KeepDone = Box<dyn FnOnce(Result<bool, String>) + Send>;
 
+/// What a keep hands back ([`Files::keep`]): called once the host no longer wants the file shown;
+/// a keep the OS shows nothing of yet then never shows, and answers `false`.
+pub type Unkeep = Box<dyn FnOnce() + Send>;
+
 /// A shell's own file dialogs ([`OsServices::files`]). Each is called on
 /// the window thread or the kernel's and only hands on: the dialog opens on
 /// the OS's own thread, and `done` answers when the person is through.
@@ -137,7 +151,7 @@ pub trait Files: Send + Sync {
     /// share sheet; Android: a picture in the system's viewer, any other
     /// file through the create-document dialog). The host
     /// removes the folder once `done` answers.
-    fn keep(&self, path: &std::path::Path, done: KeepDone);
+    fn keep(&self, path: &std::path::Path, done: KeepDone) -> Unkeep;
 }
 
 /// Where the host keeps files. `cache` the OS may purge; `config` and
@@ -149,9 +163,6 @@ pub trait Files: Send + Sync {
 /// the AX door file's token, and anything else written there, is written
 /// plainly and relies on it. The host never creates that directory, so an
 /// impl that forgets gets an error, not a world-readable default.
-/// `views_override` is a VIEW DEVELOPER'S directory of
-/// `<program>_view.wasm` files that stand in for the network's (the
-/// desktop reads `DUCKTAPE_VIEWS_DIR`; a phone has none).
 #[derive(Clone, Debug)]
 pub struct Dirs {
     /// What the OS may purge: fetched blobs, compiled view code.
@@ -223,6 +234,16 @@ impl KeyRefusal {
     }
 }
 
+/// The OS's own store of secrets, which keeps a view's (`runtime::secret`):
+/// each call may block on the OS (a prompt, a daemon) and is made off the
+/// window thread, one after another per name.
+pub trait Secrets: Send + Sync {
+    /// The secret kept under `name`, or `None` where none is.
+    fn get(&self, name: &str) -> Result<Option<Vec<u8>>, KeyRefusal>;
+    /// Keeps `value` under `name`, or removes what is kept there with `None`.
+    fn set(&self, name: &str, value: Option<&[u8]>) -> Result<(), KeyRefusal>;
+}
+
 /// OS banners. Both calls block on the OS: a view's run through
 /// `notify::in_order` on the blocking pool, the host's own on a thread of
 /// their own.
@@ -236,16 +257,53 @@ pub trait Banners: Send + Sync {
     fn withdraw(&self, chain: &str, tag: &str);
 }
 
-/// The software keyboard a focused field wants. (The fork's
-/// `VirtualKeyboard`, the one field gpui lacks, joins `Show` with the fork
-/// pin that adds it.)
+/// The software keyboard a focused field wants.
 #[cfg(feature = "ui")]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoftKeyboard {
     /// Up, for a field configured so.
-    Show(TextInputConfiguration),
+    Show(Keyboard),
     /// Down.
     Hide,
+}
+
+/// The keyboard a field asks for: the keys it opens with, and whether what
+/// is typed is a secret, which a phone keeps from suggestions and other
+/// keyboards. The shell tells its OS both (iOS: `ducktape_gpui_ios::ios::set_keyboard`).
+#[cfg(feature = "ui")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Keyboard {
+    /// The keys: text, digits, an address.
+    pub kind: view_wire::VirtualKeyboard,
+    /// The field is masked.
+    pub secure: bool,
+}
+
+/// The edit menu a text field's touch selection wants: the OS's own, as its
+/// text views show it (iOS `UIEditMenuInteraction`, Android's floating
+/// `ActionMode`).
+#[cfg(feature = "ui")]
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditMenu {
+    /// Up beside the selection's box (window coordinates), offering these in order.
+    Show(Bounds<Pixels>, Vec<EditAction>),
+    /// Down.
+    Hide,
+}
+
+/// One item of the edit menu, and the pick a shell hands back as
+/// [`Signal::Edit`].
+#[cfg(feature = "ui")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditAction {
+    /// Cut the selection to the clipboard.
+    Cut,
+    /// Copy the selection to the clipboard.
+    Copy,
+    /// Paste the clipboard over the selection.
+    Paste,
+    /// Select the field's whole text.
+    SelectAll,
 }
 
 /// Constants per OS.
@@ -396,6 +454,9 @@ pub enum Signal {
     /// A banner the host raised was clicked: the centre opens what it
     /// names, through [`Boot::open`].
     BannerClick(Click, Option<String>),
+    /// The person picked an item of the edit menu the host showed
+    /// ([`OsServices::edit_menu`]): the host applies it to that field.
+    Edit(EditAction),
 }
 
 /// What a shell hands [`start`](crate::start::start).
@@ -444,303 +505,9 @@ pub fn runner() -> &'static Arc<dyn ViewRunner> {
     }
 }
 
-/// Runs view code. One per process; the shell picks it ([`Boot::runner`]).
-///
-/// Threads: `prepare` runs on a loader thread and may block it (wasmtime
-/// compiles; JSC runs the meter pass; neither touches a page). `describe`
-/// may be called from the kernel's blocking pool and may block it, NEVER
-/// from the window thread (a JSC impl posts to main and blocks the pool
-/// thread on a oneshot; main never waits on the pool). `instantiate` and
-/// every `begin_*` are called only on the seat's thread (the window
-/// thread), which awaits each answer as it lands on the seat's
-/// [`Landing`], at once or later: a first load, a pane claiming a compiled
-/// seat, the developer's override and `Preload::Seat`'s instance (a loader
-/// prepares the code and parks it; the window thread seats and inits it),
-/// a swap's replacement, a sibling after a restore trap, and a revive.
-pub trait ViewRunner: Send + Sync + 'static {
-    /// Compile (wasmtime) or validate + meter + cache (JSC) `code`, whose
-    /// sha256 is `hash`, for a view whose linear memory may reach
-    /// `view_bytes` (the `memory.view_bytes` setting). Nothing runs. The
-    /// code stays prepared while the answer's hold is held.
-    fn prepare(
-        &self,
-        hash: [u8; 32],
-        code: Code<'_>,
-        view_bytes: usize,
-    ) -> Result<Prepared, Failure>;
-    /// Seat the prepared code `hash` names: lands [`Landed::Seated`] (or a
-    /// `Fault`) on `land`, which the instance keeps for every later answer.
-    /// Code nothing holds any more lands a `Fault::Runner`. Right after a
-    /// page died it seats the view on a new page (see [`ViewInstance`]'s
-    /// dead-page rules).
-    fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
-    /// `program.describe`: run the import-free describe module `module`
-    /// (sha256 `hash`) on `op`, once `view_meter::accepts` takes it as it
-    /// would a view; `None` on any failure.
-    fn describe(
-        &self,
-        hash: [u8; 32],
-        module: Code<'_>,
-        op: &[u8],
-    ) -> Option<view_wire::methods::Description>;
-    /// The compiled code this runner holds: by hash, the bytes mapped and
-    /// how many of them are resident.
-    fn code_memory(&self) -> Vec<crate::memory::HeldCode> {
-        Vec::new()
-    }
-}
-
-/// Code a runner prepares (a view's, a notifier's, a describe module's):
-/// its bytes, and where they lie in a file when they are a file's, as a
-/// section of a program's blob the cache keeps is. A compile apart
-/// ([`RunnerConfig::compile_apart`]) reads them there itself, so they are
-/// never copied through this process's heap on their way to it.
-#[derive(Clone, Copy, Debug)]
-pub struct Code<'a> {
-    /// The code.
-    pub bytes: &'a [u8],
-    /// The file `bytes` are, from this offset on; `None` for code held in
-    /// memory only.
-    pub file: Option<(&'a Path, u64)>,
-}
-
-impl<'a> Code<'a> {
-    /// Code held in memory only.
-    pub fn of(bytes: &'a [u8]) -> Self {
-        Self { bytes, file: None }
-    }
-}
-
-/// Where prepared code came from, for the load's log and counters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CodeSource {
-    /// Prepared before, and still held: nothing compiled.
-    Memory,
-    /// The runner's disk cache.
-    Disk,
-    /// Compiled (wasmtime) or validated and metered (JSC) now.
-    Cold,
-}
-
-impl CodeSource {
-    /// How the load's log (`code=`) and its counter (`compile.*`) name it.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Memory => "memory",
-            Self::Disk => "disk",
-            Self::Cold => "cold",
-        }
-    }
-}
-
-/// [`ViewRunner::prepare`]'s answer: where the code came from, and the
-/// runner's hold on it. Whatever may still seat the code holds the hold (a
-/// seat's compiled view, a parked swap, a load about to seat it); a running
-/// instance holds its own code. A runner may free code nothing holds.
-#[derive(Clone)]
-pub struct Prepared {
-    /// Where the code came from.
-    pub source: CodeSource,
-    /// The runner's hold on the code: opaque to the host.
-    pub hold: Arc<dyn std::any::Any + Send + Sync>,
-}
-
-/// One running view: the five exports (`alloc` and `memory` internal to the
-/// impl). `Send` so the seat registry may hold it; every entry is called
-/// on the seat's thread and is completion-shaped: it returns at once and
-/// the answer lands on the seat's [`Landing`].
-///
-/// A program's NOTIFIER (`runtime::notifier`) is seated the same way, on
-/// the same code path and budget: a module that exports `alloc`,
-/// `init` and `tick` only (no state to hand over). Every runner seats a
-/// module without `snapshot` and `restore`, and a `begin_snapshot` or
-/// `begin_restore` on it lands `Fault::Trap("the view exports no …")`. Its
-/// seat's thread is the notifier's own thread, never the window thread;
-/// its tick's answer is a [`Landed::Frame`] whose bytes the host reads as
-/// a notifier's turn. Nothing else about a runner tells the two apart.
-///
-/// One call in flight per instance: the host begins a call only once the
-/// answer to the one before it landed (a tick in flight is `View::ticking`;
-/// a swap's or a kept snapshot's sequence owns the instance meanwhile,
-/// `Mounted::owned`), so each answer is the answer to the last call begun.
-/// Each call lands exactly one [`Landed`], once.
-///
-/// Dead pages (SPEC §6.5; the host relies on every rule here):
-/// - Every call into a dead page lands `Fault::Runner`, never nothing: the
-///   call in flight when the page died, and every call begun on the
-///   instance after, until it is dropped. A call that lands nothing leaves
-///   its seat waiting for good.
-/// - [`ViewRunner::instantiate`] right after a death seats the view on a
-///   new page: the host's revive asks at once, and a refusal there (a page
-///   still reloading) stops the view. A runner that needs time takes it
-///   before it lands `Seated`.
-/// - The host revives each seat itself (`View::revive`: a new instance,
-///   restored from the kept snapshot, the kept batches replayed): a runner
-///   never restores or replays a seat on its own. This replaces SPEC §6.5's
-///   runner-side restore.
-/// - A dead instance keeps holding its code until it is dropped: a revive
-///   seats the same code by hash while the dead instance is still the
-///   view's.
-///
-/// Ending: the host calls [`Self::stop`] on an instance it replaces while
-/// it lives (a revive's dead one). Every other instance is dropped, and
-/// dropping one stops it, as `stop` does. Drop runs on whichever thread
-/// drops it and must not wait on the seat's thread, which may be waiting
-/// on a lock the dropping thread holds: the seat's thread (a swap's
-/// install), a loader's (an install replacing the view, a `Loaded::Empty`
-/// install, both under the seat's lock), or the roster thread's (a
-/// program's `retire`, under the registry's and the seat's locks).
-/// dispatch2's `MainThreadBound` drops its value through `run_on_main`,
-/// which off the main thread is `exec_sync` on the main queue and waits on
-/// it: a page handle is posted to the main thread (`exec_async`) to be
-/// dropped there, not dropped through it.
-pub trait ViewInstance: Send {
-    /// The sha256 of the code this is an instance of.
-    fn code_hash(&self) -> [u8; 32];
-    /// The `init` export: lands `Inited` or a `Fault`.
-    fn begin_init(&mut self);
-    /// The `tick` export on `events` (an encoded event batch): lands
-    /// `Frame` or a `Fault`.
-    fn begin_tick(&mut self, events: Vec<u8>);
-    /// The `snapshot` export: lands `Snapshot`, `SnapshotRefused` or a
-    /// `Fault`.
-    fn begin_snapshot(&mut self);
-    /// The `restore` export: lands `Restored`, `RestoreRefused` or a
-    /// `Fault`.
-    fn begin_restore(&mut self, snapshot: Vec<u8>);
-    /// The fuel the last landed call used.
-    fn fuel_used(&self) -> u64;
-    /// The view's linear memory, in bytes.
-    fn memory_bytes(&self) -> usize;
-    /// How much of the view's linear memory is resident; `None` where the
-    /// runner cannot say.
-    fn memory_resident(&self) -> Option<u64> {
-        None
-    }
-    /// Ends the instance. Dropping it ends it too.
-    fn stop(self: Box<Self>);
-    /// The instance's linear memory, for the host's own tests that read
-    /// it; only the wasmtime instance lends one.
-    #[cfg(test)]
-    fn memory_for_test(&self) -> &[u8] {
-        unimplemented!("only the wasmtime instance lends its memory to a test")
-    }
-    /// [`Self::memory_for_test`], for the tests that script it.
-    #[cfg(test)]
-    fn memory_mut_for_test(&mut self) -> &mut [u8] {
-        unimplemented!("only the wasmtime instance lends its memory to a test")
-    }
-}
-
-/// Which seat an instance is for: (program, the pane's layout instance; 0
-/// for a seat no pane held when it was seated).
-/// During a swap or a revive two live instances share one id: it names a
-/// program's seat for a runner's own logs and bookkeeping, and is no key
-/// two instances may not share.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SeatId(pub &'static str, pub u64);
-
-/// A seat's answer channel: `Send + Clone`, made by the seat when it asks
-/// for an instance and kept by the instance; a runner `send`s each answer
-/// into it from wherever the answer appears.
-#[derive(Clone, Debug)]
-pub struct Landing(async_channel::Sender<Landed>);
-
-impl Landing {
-    /// A landing and the seat's end of it.
-    pub fn channel() -> (Self, async_channel::Receiver<Landed>) {
-        let (sender, receiver) = async_channel::unbounded();
-        (Self(sender), receiver)
-    }
-
-    /// Lands `landed`; one after the seat is gone is dropped.
-    pub fn send(&self, landed: Landed) {
-        let _ = self.0.try_send(landed);
-    }
-}
-
-/// One answer from a view.
-pub enum Landed {
-    /// `instantiate`'s: the running instance.
-    Seated(Box<dyn ViewInstance>),
-    /// `init` ran.
-    Inited,
-    /// A tick's answer, its bytes as the module wrote them: a view's
-    /// frame, or a notifier's turn (`view_wire::notifier::Turn`); the host
-    /// reads which, never the runner.
-    Frame(Vec<u8>),
-    /// The view's state.
-    Snapshot(Vec<u8>),
-    /// The view's own word that it cannot hand its state over now.
-    SnapshotRefused(String),
-    /// The state was taken up.
-    Restored,
-    /// The view's own word that the state is not its own.
-    RestoreRefused(String),
-    /// The call failed; the instance is not entered again.
-    Fault(Fault),
-}
-
-impl std::fmt::Debug for Landed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Seated(instance) => write!(f, "Seated({:02x?})", &instance.code_hash()[..4]),
-            Self::Inited => f.write_str("Inited"),
-            Self::Frame(bytes) => write!(f, "Frame({} bytes)", bytes.len()),
-            Self::Snapshot(bytes) => write!(f, "Snapshot({} bytes)", bytes.len()),
-            Self::SnapshotRefused(why) => write!(f, "SnapshotRefused({why})"),
-            Self::Restored => f.write_str("Restored"),
-            Self::RestoreRefused(why) => write!(f, "RestoreRefused({why})"),
-            Self::Fault(fault) => write!(f, "Fault({fault})"),
-        }
-    }
-}
-
-/// Why a call into a view failed. Every runner produces every variant but
-/// `Runner`, which is a runner's own failure (a refused script, a dead
-/// page before the answer).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Fault {
-    /// The view trapped: the trap's words.
-    Trap(String),
-    /// The view panicked: the words its panic hook
-    /// (`ducktape_view.panicked`) handed over before the trap.
-    Panicked(String),
-    /// A `memory.grow` or `table.grow` past the `memory.view_bytes`
-    /// setting.
-    Memory,
-    /// The runner failed, not the view.
-    Runner(String),
-}
-
-impl std::fmt::Display for Fault {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Trap(words) | Self::Panicked(words) | Self::Runner(words) => f.write_str(words),
-            Self::Memory => f.write_str("the view is past the device's view memory setting"),
-        }
-    }
-}
-
-/// `prepare`'s refusals: `Unsupported` names the operator or feature this
-/// runner does not run (the same answer on every runner); `Runner` the
-/// runner's own. A view built against another wire is not refused: it runs,
-/// and what fails names both wires.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Failure {
-    /// Code this runner does not run.
-    Unsupported(String),
-    /// The runner's own failure.
-    Runner(String),
-}
-
-impl std::fmt::Display for Failure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unsupported(words) | Self::Runner(words) => f.write_str(words),
-        }
-    }
-}
+pub use view_runner::{
+    Code, CodeSource, Failure, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
+};
 
 /// How a shell configures its runner.
 #[derive(Clone, Debug)]
@@ -866,8 +633,12 @@ pub mod testing {
             self.0
         }
 
-        fn sign(&self, _: &[u8], _: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
-            Ok([8; 64])
+        fn sign<'a>(
+            &'a self,
+            _: &'a [u8],
+            _: &'a [u8],
+        ) -> rt::Fut<'a, Result<[u8; 64], noded_client::SignError>> {
+            Box::pin(std::future::ready(Ok([8; 64])))
         }
     }
 
@@ -930,17 +701,62 @@ pub mod testing {
         }
     }
 
-    static OPENED: std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> =
+    static SECRETS: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+    static SECRET_REFUSALS: std::sync::Mutex<Vec<(String, KeyRefusal)>> =
         std::sync::Mutex::new(Vec::new());
 
-    /// Each keyring a device key was opened for so far, by every test, and
-    /// the thread it was opened on: a test tells a key opened off the
-    /// thread that asked from one opened on it.
-    pub fn keys_opened() -> Vec<(String, std::thread::ThreadId)> {
-        OPENED
+    /// Every secret the test key store keeps now, by name, from every test.
+    pub fn secrets_kept() -> std::collections::BTreeMap<String, Vec<u8>> {
+        SECRETS
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// From now on the test key store refuses every secret whose name holds
+    /// `part`, with `refusal`.
+    pub fn refuse_secrets(part: &str, refusal: KeyRefusal) {
+        SECRET_REFUSALS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((part.to_owned(), refusal));
+    }
+
+    /// The test services' key store: secrets in memory, shared by every test.
+    pub struct TestSecrets;
+
+    fn secret_refusal(name: &str) -> Result<(), KeyRefusal> {
+        let refusals = SECRET_REFUSALS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match refusals
+            .iter()
+            .find(|(part, _)| name.contains(part.as_str()))
+        {
+            Some((_, refusal)) => Err(refusal.clone()),
+            None => Ok(()),
+        }
+    }
+
+    impl Secrets for TestSecrets {
+        fn get(&self, name: &str) -> Result<Option<Vec<u8>>, KeyRefusal> {
+            secret_refusal(name)?;
+            Ok(secrets_kept().get(name).cloned())
+        }
+
+        fn set(&self, name: &str, value: Option<&[u8]>) -> Result<(), KeyRefusal> {
+            secret_refusal(name)?;
+            let mut kept = SECRETS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match value {
+                Some(value) => kept.insert(name.to_owned(), value.to_vec()),
+                None => kept.remove(name),
+            };
+            Ok(())
+        }
     }
 
     thread_local! {
@@ -965,6 +781,37 @@ pub mod testing {
     /// `OsFacts::touch_first` on this test thread from now on.
     pub fn touch_first_for_test(touch: bool) {
         TOUCH_FIRST.set(touch);
+    }
+
+    #[cfg(feature = "ui")]
+    thread_local! {
+        static SOFT_KEYBOARD: std::cell::RefCell<Vec<SoftKeyboard>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[cfg(all(test, feature = "ui"))]
+    pub(crate) fn soft_keyboard_asked_for_test() -> Vec<&'static str> {
+        keyboards_asked_for_test()
+            .into_iter()
+            .map(|asked| match asked {
+                SoftKeyboard::Show(_) => "show",
+                SoftKeyboard::Hide => "hide",
+            })
+            .collect()
+    }
+
+    #[cfg(all(test, feature = "ui"))]
+    pub(crate) fn keyboards_asked_for_test() -> Vec<SoftKeyboard> {
+        SOFT_KEYBOARD.take()
+    }
+
+    #[cfg(feature = "ui")]
+    thread_local! {
+        static EDIT_MENU: std::cell::RefCell<Vec<EditMenu>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[cfg(all(test, feature = "ui"))]
+    pub(crate) fn edit_menu_told_for_test() -> Vec<EditMenu> {
+        EDIT_MENU.take()
     }
 
     impl OsServices for TestOs {
@@ -1007,18 +854,13 @@ pub mod testing {
         fn device_key(
             &self,
             keyring: &str,
-        ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
-            OPENED
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push((keyring.to_owned(), std::thread::current().id()));
-            // a key of the keyring's name: the same device key every time a
-            // test meets the same network, none kept anywhere
+        ) -> rt::Fut<'static, Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>> {
             let mut seed = [0u8; 32];
             let name = keyring.as_bytes();
             let n = name.len().min(32);
             seed[..n].copy_from_slice(&name[..n]);
-            Ok(Some(Arc::new(FakeKey(seed))))
+            let key: Arc<dyn noded_client::Signer> = Arc::new(FakeKey(seed));
+            Box::pin(std::future::ready(Ok(Some(key))))
         }
 
         fn key_storage(&self, _: &str) -> Result<KeyStorage, KeyRefusal> {
@@ -1026,6 +868,10 @@ pub mod testing {
                 sealed: false,
                 level: KeyLevel::File,
             })
+        }
+
+        fn secrets(&self) -> Option<&dyn Secrets> {
+            Some(&TestSecrets)
         }
 
         fn reader(&self) -> Arc<dyn noded_client::Signer> {
@@ -1042,7 +888,14 @@ pub mod testing {
         }
 
         #[cfg(feature = "ui")]
-        fn soft_keyboard(&self, _: &Window, _: SoftKeyboard) {}
+        fn soft_keyboard(&self, _: &Window, want: SoftKeyboard) {
+            SOFT_KEYBOARD.with_borrow_mut(|asked| asked.push(want));
+        }
+
+        #[cfg(feature = "ui")]
+        fn edit_menu(&self, _: &Window, menu: EditMenu) {
+            EDIT_MENU.with_borrow_mut(|told| told.push(menu));
+        }
 
         fn facts(&self) -> OsFacts {
             OsFacts {

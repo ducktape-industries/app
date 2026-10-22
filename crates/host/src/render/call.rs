@@ -173,7 +173,7 @@ mod inner {
         speaking: Speaking,
         told: Option<wire::MediaState>,
         on_state: Option<u32>,
-        _stopper: Option<tokio::task::AbortHandle>,
+        _stopper: Option<rt::task::Stopper>,
     }
 
     impl Drop for Remote {
@@ -741,7 +741,7 @@ mod inner {
         let mut shown = ducktape_av::fake::tap("video.log");
         let mut got = ducktape_av::fake::tap("recv.log");
         let mut frames = Reassembler::default();
-        while let Some(item) = subscription.recv() {
+        while let Some(item) = futures::executor::block_on(subscription.recv()) {
             match &item {
                 Subscribed::Heard(heard) => tap(&mut got, format_args!("heard {heard:?}")),
                 Subscribed::Data(Data::Object { group, body, .. }) => {
@@ -794,7 +794,7 @@ mod inner {
         voice: Option<Arc<voice::Voice>>,
         standing: Arc<Mutex<Standing>>,
     ) {
-        while let Some(item) = subscription.recv() {
+        while let Some(item) = futures::executor::block_on(subscription.recv()) {
             match item {
                 Subscribed::Heard(heard) => {
                     let mut word = lock(&standing);

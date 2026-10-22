@@ -11,10 +11,59 @@
 
 #[cfg(target_os = "android")]
 pub mod android;
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+mod keeps;
 /// iOS: the launcher's C entry ([`ios::ffi`]); gpui_ios answers the rest.
 #[cfg(target_os = "ios")]
 pub mod ios {
     pub mod ffi;
+
+    /// Tells gpui_ios the keyboard a field asks for, which its text view
+    /// answers UIKit's `keyboardType` and `isSecureTextEntry` with.
+    pub fn keyboard(keyboard: ducktape_host::contract::Keyboard) {
+        use ducktape_gpui_ios::KeyboardKind as Kind;
+        use view_wire::VirtualKeyboard as Asked;
+        ducktape_gpui_ios::ios::set_keyboard(ducktape_gpui_ios::Keyboard {
+            kind: match keyboard.kind {
+                Asked::Text => Kind::Text,
+                Asked::Numeric => Kind::Numeric,
+                Asked::Decimal => Kind::Decimal,
+                Asked::Tel => Kind::Tel,
+                Asked::Email => Kind::Email,
+                Asked::Url => Kind::Url,
+                Asked::Search => Kind::Search,
+            },
+            secure: keyboard.secure,
+        });
+    }
+
+    pub(crate) fn edit_menu(menu: ducktape_host::contract::EditMenu) {
+        use ducktape_gpui_ios::EditItem;
+        use ducktape_host::contract::{EditAction, EditMenu, Signal};
+        fn picked(item: EditItem) {
+            super::send(Signal::Edit(match item {
+                EditItem::Cut => EditAction::Cut,
+                EditItem::Copy => EditAction::Copy,
+                EditItem::Paste => EditAction::Paste,
+                EditItem::SelectAll => EditAction::SelectAll,
+            }));
+        }
+        match menu {
+            EditMenu::Show(at, offers) => {
+                let items: Vec<EditItem> = offers
+                    .iter()
+                    .map(|offer| match offer {
+                        EditAction::Cut => EditItem::Cut,
+                        EditAction::Copy => EditItem::Copy,
+                        EditAction::Paste => EditItem::Paste,
+                        EditAction::SelectAll => EditItem::SelectAll,
+                    })
+                    .collect();
+                ducktape_gpui_ios::ios::show_edit_menu(at, &items, picked);
+            }
+            EditMenu::Hide => ducktape_gpui_ios::ios::hide_edit_menu(),
+        }
+    }
 
     /// Which of Apple's servers this build's APNs tokens belong to: the
     /// `aps-environment` of the provisioning profile the app was signed
@@ -51,8 +100,8 @@ pub mod ios {
 
 use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{
-    Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
-    Preload, RunnerConfig, Signal, SoftKeyboard, ViewRunner,
+    Banners, Dirs, EditMenu, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts,
+    OsServices, Preload, RunnerConfig, Secrets, Signal, SoftKeyboard, ViewRunner,
 };
 use ducktape_host::motion;
 use ducktape_host::runtime::Answered;
@@ -239,29 +288,50 @@ pub(crate) fn os_notices() -> async_channel::Receiver<OsNotice> {
     os_notice_channel().1.clone()
 }
 
-static PUSH_TOKENS: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
+type Tokens = std::collections::BTreeMap<String, String>;
+type Moved = (async_channel::Sender<()>, async_channel::Receiver<()>);
 
-static PUSH_MOVED: OnceLock<(async_channel::Sender<()>, async_channel::Receiver<()>)> =
-    OnceLock::new();
+#[cfg(not(test))]
+static PUSH_TOKENS: std::sync::Mutex<Tokens> = std::sync::Mutex::new(Tokens::new());
 
-fn push_moved() -> &'static (async_channel::Sender<()>, async_channel::Receiver<()>) {
-    PUSH_MOVED.get_or_init(|| async_channel::bounded(1))
+#[cfg(not(test))]
+static PUSH_MOVED: OnceLock<Moved> = OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static PUSH_TOKENS: std::sync::Mutex<Tokens> = const { std::sync::Mutex::new(Tokens::new()) };
+    static PUSH_MOVED: Moved = async_channel::bounded(1);
+}
+
+fn tokens<R>(change: impl FnOnce(&mut Tokens) -> R) -> R {
+    let held = |tokens: &std::sync::Mutex<Tokens>| {
+        change(
+            &mut tokens
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    };
+    #[cfg(not(test))]
+    return held(&PUSH_TOKENS);
+    #[cfg(test)]
+    PUSH_TOKENS.with(held)
+}
+
+fn push_moved() -> Moved {
+    #[cfg(not(test))]
+    return PUSH_MOVED.get_or_init(|| async_channel::bounded(1)).clone();
+    #[cfg(test)]
+    PUSH_MOVED.with(Clone::clone)
 }
 
 /// Keeps `token` as this device's push token of `kind`; an empty one is
 /// withdrawn. The registrar is woken when the kept one moved.
 pub fn push_token(kind: &str, token: String) {
     tracing::debug!(target: "ducktape::phone", kind, "this device's push token");
-    let moved = {
-        let mut tokens = PUSH_TOKENS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match token.is_empty() {
-            true => tokens.remove(kind).is_some(),
-            false => tokens.insert(kind.to_owned(), token.clone()) != Some(token),
-        }
-    };
+    let moved = tokens(|tokens| match token.is_empty() {
+        true => tokens.remove(kind).is_some(),
+        false => tokens.insert(kind.to_owned(), token.clone()) != Some(token),
+    });
     if moved {
         push_moved().0.try_send(()).ok();
     }
@@ -269,7 +339,7 @@ pub fn push_token(kind: &str, token: String) {
 
 /// Wakes once per move of the tokens ([`push_token`]).
 pub fn push_tokens_moved() -> async_channel::Receiver<()> {
-    push_moved().1.clone()
+    push_moved().1
 }
 
 /// Which of Apple's servers this build's APNs tokens belong to
@@ -288,10 +358,7 @@ pub fn push_environment() -> &'static str {
 
 /// This device's push tokens by kind ([`push_token`]).
 pub fn push_tokens() -> std::collections::BTreeMap<String, String> {
-    PUSH_TOKENS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+    tokens(|tokens| tokens.clone())
 }
 
 pub(crate) fn links_to_open() -> async_channel::Receiver<String> {
@@ -389,20 +456,44 @@ impl ducktape_host::contract::Files for PhoneFiles {
         }
     }
 
-    fn keep(&self, path: &Path, done: ducktape_host::contract::KeepDone) {
-        #[cfg(target_os = "ios")]
-        ios::ffi::keep(path, done);
-        #[cfg(target_os = "android")]
-        {
-            let path = path.to_path_buf();
-            std::thread::spawn(move || done(android::jni::keep_file(&path)));
-        }
-        #[cfg(not(any(target_os = "ios", target_os = "android")))]
-        {
-            let _ = path;
-            done(Err(NO_DIALOGS.into()));
-        }
+    fn keep(
+        &self,
+        path: &Path,
+        done: ducktape_host::contract::KeepDone,
+    ) -> ducktape_host::contract::Unkeep {
+        keep_with_the_os(path, done)
     }
+}
+
+#[cfg(target_os = "ios")]
+fn keep_with_the_os(
+    path: &Path,
+    done: ducktape_host::contract::KeepDone,
+) -> ducktape_host::contract::Unkeep {
+    ios::ffi::keep(path, done)
+}
+
+#[cfg(target_os = "android")]
+fn keep_with_the_os(
+    path: &Path,
+    done: ducktape_host::contract::KeepDone,
+) -> ducktape_host::contract::Unkeep {
+    let path = path.to_path_buf();
+    let ticket = keeps::KEEPS.hand(done);
+    std::thread::spawn(move || {
+        keeps::KEEPS.answer(ticket, android::jni::keep_file(&path, ticket));
+    });
+    Box::new(move || keeps::KEEPS.unkeep(ticket))
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn keep_with_the_os(
+    path: &Path,
+    done: ducktape_host::contract::KeepDone,
+) -> ducktape_host::contract::Unkeep {
+    let _ = path;
+    done(Err(NO_DIALOGS.into()));
+    Box::new(|| {})
 }
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -485,19 +576,32 @@ impl OsServices for PhoneOs {
     fn device_key(
         &self,
         keyring: &str,
-    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
+    ) -> rt::Fut<'static, Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         {
-            let key = crate::key::DeviceKey::open(keyring).map_err(KeyRefusal::Denied)?;
-            let public = noded_client::Signer::public_key(&key);
-            let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
-            tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
-            Ok(Some(Arc::new(key)))
+            let keyring = keyring.to_owned();
+            Box::pin(async move {
+                let opened = rt::task::blocking(move || {
+                    let key = crate::key::DeviceKey::open(&keyring).map_err(KeyRefusal::Denied)?;
+                    let public = noded_client::Signer::public_key(&key);
+                    let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
+                    let keyring = keyring.as_str();
+                    tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
+                    Ok(Some(Arc::new(key) as Arc<dyn noded_client::Signer>))
+                });
+                opened.await.unwrap_or_else(|_| {
+                    Err(KeyRefusal::Broken(
+                        "opening this device's key did not finish".into(),
+                    ))
+                })
+            })
         }
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
             let _ = keyring;
-            Err(KeyRefusal::NoStore(NO_STORE.into()))
+            Box::pin(std::future::ready(Err(KeyRefusal::NoStore(
+                NO_STORE.into(),
+            ))))
         }
     }
 
@@ -510,6 +614,17 @@ impl OsServices for PhoneOs {
         {
             let _ = keyring;
             Err(KeyRefusal::NoStore(NO_STORE.into()))
+        }
+    }
+
+    fn secrets(&self) -> Option<&dyn Secrets> {
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        {
+            Some(&crate::key::PhoneSecrets)
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
+            None
         }
     }
 
@@ -541,14 +656,33 @@ impl OsServices for PhoneOs {
         }
     }
 
-    /// gpui_ios raises and lowers the keyboard with the focused field (the
-    /// UIKit text contract); gm's host path is told.
     fn soft_keyboard(&self, window: &Window, want: SoftKeyboard) {
-        let _ = window;
         #[cfg(target_os = "android")]
-        android::soft_keyboard(want);
+        {
+            let _ = window;
+            android::soft_keyboard(want);
+        }
         #[cfg(not(target_os = "android"))]
-        let _ = want;
+        match want {
+            SoftKeyboard::Show(keyboard) => {
+                #[cfg(target_os = "ios")]
+                ios::keyboard(keyboard);
+                let _ = keyboard;
+                window.request_virtual_keyboard()
+            }
+            SoftKeyboard::Hide => window.dismiss_virtual_keyboard(),
+        }
+    }
+
+    fn edit_menu(&self, window: &Window, menu: EditMenu) {
+        #[cfg(target_os = "ios")]
+        ios::edit_menu(menu);
+        #[cfg(target_os = "android")]
+        android::edit_menu(window, menu);
+        #[cfg(not(target_os = "android"))]
+        let _ = window;
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        let _ = menu;
     }
 
     fn facts(&self) -> OsFacts {
@@ -622,6 +756,46 @@ fn retain_only_current_build_cache(dir: &Path, build: &str) -> PathBuf {
     dir.join(build)
 }
 
+#[cfg(any(target_os = "android", test))]
+mod edit_items {
+    use ducktape_host::contract::EditAction;
+    use gpui_kit::{Bounds, Pixels};
+
+    const ORDER: [EditAction; 4] = [
+        EditAction::Cut,
+        EditAction::Copy,
+        EditAction::Paste,
+        EditAction::SelectAll,
+    ];
+
+    pub(crate) fn codes(offers: &[EditAction]) -> Vec<i32> {
+        offers
+            .iter()
+            .filter_map(|offer| ORDER.iter().position(|item| item == offer))
+            .filter_map(|at| i32::try_from(at).ok())
+            .collect()
+    }
+
+    pub(crate) fn picked(code: i32) -> Option<EditAction> {
+        usize::try_from(code)
+            .ok()
+            .and_then(|at| ORDER.get(at))
+            .copied()
+    }
+
+    pub(crate) fn pixels(at: Bounds<Pixels>, scale: f32) -> [i32; 4] {
+        let edge = |points: Pixels, round: fn(f64) -> f64| {
+            round(f64::from(points) * f64::from(scale)) as i32
+        };
+        [
+            edge(at.left(), f64::floor),
+            edge(at.top(), f64::floor),
+            edge(at.right(), f64::ceil),
+            edge(at.bottom(), f64::ceil),
+        ]
+    }
+}
+
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const NO_STORE: &str = "This build runs on no phone, so it has no key store.";
 
@@ -630,6 +804,7 @@ const NO_STORE: &str = "This build runs on no phone, so it has no key store.";
     expect(dead_code, reason = "only a phone's launcher enters")
 )]
 pub(crate) fn start(documents: PathBuf, caches: PathBuf, cx: &mut App) {
+    name_client();
     match PhoneOs::open(documents, caches) {
         Ok(os) => crate::shell::launch(Arc::new(os), cx),
         Err(error) => {
@@ -637,6 +812,19 @@ pub(crate) fn start(documents: PathBuf, caches: PathBuf, cx: &mut App) {
             std::process::abort();
         }
     }
+}
+
+fn name_client() {
+    noded_client::wire::name_client(client());
+}
+
+fn client() -> String {
+    let build = option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown");
+    let version = env!("CARGO_PKG_VERSION");
+    format!(
+        "ducktape-app/{version}+{build} ({}; phone)",
+        std::env::consts::OS
+    )
 }
 
 /// Follows the app's place on screen into the host: iOS's own phases and
@@ -677,9 +865,9 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
 /// system only).
 pub fn system_bars(dark: bool) {
     #[cfg(target_os = "ios")]
-    gpui_ios::ios::set_status_bar_style(match dark {
-        true => gpui_ios::StatusBarContentStyle::Light,
-        false => gpui_ios::StatusBarContentStyle::Dark,
+    ducktape_gpui_ios::ios::set_status_bar_style(match dark {
+        true => ducktape_gpui_ios::StatusBarContentStyle::Light,
+        false => ducktape_gpui_ios::StatusBarContentStyle::Dark,
     });
     #[cfg(target_os = "android")]
     android::jni::system_bars(dark);
@@ -827,6 +1015,68 @@ pub fn back_at_root() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_the_phone_signs_names_the_phone_as_its_client() {
+        struct Key;
+        impl noded_client::Signer for Key {
+            fn public_key(&self) -> [u8; 32] {
+                [1; 32]
+            }
+            fn sign<'a>(
+                &'a self,
+                _: &'a [u8],
+                _: &'a [u8],
+            ) -> rt::Fut<'a, Result<[u8; 64], noded_client::SignError>> {
+                Box::pin(std::future::ready(Ok([0; 64])))
+            }
+        }
+        name_client();
+        let anchor = noded_client::wire::Tip {
+            height: 1,
+            id: [0; 32],
+        };
+        let frame = futures::executor::block_on(noded_client::wire::Frame::sign(
+            &Key,
+            b"testkit",
+            anchor,
+            None,
+            "chat",
+            vec![],
+        ))
+        .map_err(|refused| refused.0);
+        let client = frame
+            .ok()
+            .and_then(|frame| frame.body.client)
+            .unwrap_or_default();
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(
+            client.starts_with(&format!("ducktape-app/{version}+")),
+            "{client:?}"
+        );
+        assert!(client.ends_with("; phone)"), "{client:?}");
+    }
+
+    #[test]
+    fn the_activitys_edit_menu_gets_its_items_in_pixels_and_hands_back_each_pick() {
+        use ducktape_host::contract::EditAction;
+        let offers = [EditAction::Copy, EditAction::Paste, EditAction::SelectAll];
+        let codes = edit_items::codes(&offers);
+        assert_eq!(codes, [1, 2, 3], "not MainActivity's EDIT_ITEMS order");
+        let picks: Vec<_> = codes
+            .iter()
+            .filter_map(|code| edit_items::picked(*code))
+            .collect();
+        assert_eq!(picks, offers);
+        assert_eq!(edit_items::codes(&[EditAction::Cut]), [0]);
+        assert_eq!(edit_items::picked(4), None);
+        assert_eq!(edit_items::picked(-1), None);
+        let at = gpui_kit::Bounds::new(
+            gpui_kit::point(gpui_kit::px(10.5), gpui_kit::px(20.)),
+            gpui_kit::size(gpui_kit::px(30.), gpui_kit::px(8.25)),
+        );
+        assert_eq!(edit_items::pixels(at, 2.), [21, 40, 81, 57]);
+    }
 
     #[test]
     fn push_tokens_are_kept_by_kind() {

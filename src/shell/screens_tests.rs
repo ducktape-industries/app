@@ -524,7 +524,11 @@ fn the_address_field_shows_where_the_session_moved_it(cx: &mut TestAppContext) {
 fn the_reaching_line_names_the_address_the_connect_was_started_with(cx: &mut TestAppContext) {
     let (view, mut native) = open(Seed::boot(), cx);
     let session = entities(&view, &mut native).session.clone();
-    let (node, _) = super::entities::tests::source(|_| Err("error sending request".into()));
+    let (node, _) = super::entities::tests::source(|_| {
+        Err(noded_client::Error::Unreachable(
+            "error sending request".into(),
+        ))
+    });
     session.update(cx, |session, cx| {
         session.connect_through("http://127.0.0.1:1".into(), node, cx)
     });

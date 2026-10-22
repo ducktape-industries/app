@@ -1,50 +1,55 @@
+//! A rich text's tooltip: asked for the character under the pointer, drawn
+//! in the text's pane, and closed as the pointer leaves the text.
 use super::*;
 
-#[gpui_kit::test]
-fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    use std::time::Duration;
+const TIP_COLOR: u32 = 0xff00ff;
 
-    const TIP_COLOR: u32 = 0xff00ff;
+struct Host {
+    tree: Entity<ViewTree>,
+    pane: f32,
+}
 
-    struct Host {
-        tree: Entity<ViewTree>,
-    }
-    impl Render for Host {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+impl Render for Host {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        routed(
             div()
-                .size(px(40.))
+                .size(px(self.pane))
                 .overflow_hidden()
-                .child(self.tree.clone())
-        }
+                .child(self.tree.clone()),
+        )
     }
+}
 
+fn rich(tooltip: u32) -> wire::Node {
+    let mut style = div().size(px(40.)).text_color(rgb(0xffffff));
+    wire::Node::RichText {
+        id: Some(named_id("rich-tip-source")),
+        style: crate::render::test_style(style.style().clone()),
+        text: "A".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: Vec::new(),
+        on_click: None,
+        on_hover: None,
+        tooltip: Some(tooltip),
+    }
+}
+
+fn tip() -> wire::Node {
     let mut tip = div().size(px(120.)).bg(rgb(TIP_COLOR));
-    let tip = wire::Node::Container(view_wire::ContainerNode {
+    wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("rich-tip-content")),
         style: crate::render::test_style(tip.style().clone()),
         interactivity: Default::default(),
         children: Vec::new(),
-    });
-    fn rich(tooltip: u32) -> wire::Node {
-        let mut style = div().size(px(40.)).text_color(rgb(0xffffff));
-        wire::Node::RichText {
-            id: Some(named_id("rich-tip-source")),
-            style: crate::render::test_style(style.style().clone()),
-            text: "A".into(),
-            runs: wire::RichTextRuns::Highlights(Vec::new()),
-            font_family_overrides: Vec::new(),
-            clickable_ranges: Vec::new(),
-            on_click: None,
-            on_hover: None,
-            tooltip: Some(tooltip),
-        }
-    }
+    })
+}
 
+fn hovered(cx: &mut gpui_kit::TestAppContext, pane: f32) -> gpui_kit::VisualTestContext {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| Host {
         tree: cx.new(|_| ViewTree::new(rich(41))),
+        pane,
     });
     let host = window.root(cx).unwrap();
     let tree = cx.update(|cx| host.read(cx).tree.clone());
@@ -67,17 +72,31 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
                 answered([wire::TooltipResponse {
                     request: 41,
                     character_index,
-                    content: Some(Box::new(tip)),
+                    content: Some(Box::new(tip())),
                 }]),
                 cx,
             );
         });
     });
     native.update(crate::render::draw_frame);
-    native.executor().advance_clock(Duration::from_millis(501));
-    native.run_until_parked();
-    native.update(crate::render::draw_frame);
+    native
+}
 
+fn tip_painted(native: &mut gpui_kit::VisualTestContext) -> bool {
+    native.update(|window, cx| {
+        crate::render::draw_frame(window, cx);
+        window
+            .painted_quads()
+            .iter()
+            .any(|quad| quad.background.as_solid() == Some(rgb(TIP_COLOR).into()))
+    })
+}
+
+#[gpui_kit::test]
+fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let mut native = hovered(cx, 40.);
     native.update(|window, _| {
         let quads: Vec<_> = window
             .painted_quads()
@@ -92,4 +111,15 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
             assert!(mask.origin.y + mask.size.height <= bound, "{mask:?}");
         }
     });
+}
+
+#[gpui_kit::test]
+fn a_rich_text_tooltip_closes_when_the_pointer_leaves_the_text(cx: &mut gpui_kit::TestAppContext) {
+    let mut native = hovered(cx, 200.);
+    assert!(tip_painted(&mut native), "it opens over the text");
+    native.simulate_mouse_move(point(px(150.), px(150.)), None, Default::default());
+    assert!(
+        !tip_painted(&mut native),
+        "the pointer left the text, the tooltip stays open"
+    );
 }

@@ -40,14 +40,16 @@ pub(crate) async fn create_account(
     network: &str,
     name: &str,
 ) -> Result<(), String> {
-    let device = seated_key().await.map_err(|refusal| refusal.message)?;
+    let device = seated_key(network)
+        .await
+        .map_err(|refusal| refusal.message)?;
     let number = match ask(
         client,
         network,
         Query::OfKey {
             key: device.clone(),
         },
-        &*query_signer(),
+        &*query_signer(network),
     )
     .await?
     {
@@ -65,10 +67,10 @@ pub(crate) async fn create_account(
         abi::Scheme::Secp256r1,
         passkey.clone(),
         number,
-        &*query_signer(),
+        &*query_signer(network),
     )
     .await?;
-    let (device, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
+    let proof = seated_sign(&device, CONSENT_NAMESPACE, &admission.preimage())
         .await
         .map_err(|refusal| refusal.message)?;
     let add = Op::AddKey {
@@ -82,7 +84,11 @@ pub(crate) async fn create_account(
         },
     };
     let anchor = anchor(client).await.map_err(|refusal| refusal.message)?;
-    let body = passkey_body(&passkey, network, anchor, abi::encode(&add));
+    let target = client
+        .bound(abi::role::IDENTITY)
+        .await
+        .map_err(|error| error.to_string())?;
+    let body = passkey_body(&passkey, network, anchor, &target, abi::encode(&add));
     let assertion = asserted(
         keyscheme::webauthn_challenge(FRAME_NAMESPACE, &body.preimage()),
         "2/2",
@@ -96,15 +102,17 @@ pub(crate) async fn create_account(
 pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), String> {
     let hint = asserted(rand::random(), "1/2").await?;
     let number = account_of_handle(network, hint.user_handle.as_deref())?;
-    let account = account_by_number(client, network, number, &*query_signer()).await?;
-    let device = seated_key().await.map_err(|refusal| refusal.message)?;
+    let account = account_by_number(client, network, number, &*query_signer(network)).await?;
+    let device = seated_key(network)
+        .await
+        .map_err(|refusal| refusal.message)?;
     let admission = admission(
         client,
         network,
         abi::Scheme::Ed25519,
         device.clone(),
         number,
-        &*query_signer(),
+        &*query_signer(network),
     )
     .await?;
     let preimage = admission.preimage();
@@ -138,15 +146,22 @@ fn consenting_key(account: &identity::Account, preimage: &[u8], proof: &[u8]) ->
         .map(|held| held.key.clone())
 }
 
-pub(super) fn passkey_body(pubkey: &[u8], network: &str, anchor: Tip, payload: Vec<u8>) -> Body {
+pub(super) fn passkey_body(
+    pubkey: &[u8],
+    network: &str,
+    anchor: Tip,
+    target: &str,
+    payload: Vec<u8>,
+) -> Body {
     Body {
         scheme: abi::Scheme::Secp256r1,
         signer: pubkey.to_vec(),
         network: network.as_bytes().to_vec(),
         anchor,
         salt: Some(salt()),
-        target: identity::PROGRAM.to_owned(),
+        target: target.to_owned(),
         payload,
+        client: noded_client::wire::client(),
     }
 }
 
@@ -227,7 +242,11 @@ mod tests {
             height: 9,
             id: [1; 32],
         };
-        let body = passkey_body(&pubkey, "testkit", anchor, vec![1, 2, 3]);
+        let body = passkey_body(&pubkey, "testkit", anchor, "owner/identity", vec![1, 2, 3]);
+        assert_eq!(
+            body.target, "owner/identity",
+            "the frame goes where it was told"
+        );
         assert!(body.salt.is_some(), "a passkey's write carries a salt");
         let assertion = page_answer(&sk, FRAME_NAMESPACE, &body.preimage(), &[]);
         let frame = passkey_frame(body, &assertion).expect("its own signer");

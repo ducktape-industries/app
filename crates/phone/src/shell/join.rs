@@ -18,8 +18,10 @@ use super::look::{self, Palette};
 use super::{about, account};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::backend::join::JOIN_WAIT;
-use ducktape_host::contract::SoftKeyboard;
+use ducktape_host::contract::{Keyboard, SoftKeyboard};
 use ducktape_host::session::{AccountStep, Screen, SessionState, Shared};
+use ducktape_host::text_input::TextInput;
+use gpui_kit::base::input::InputMode;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Sizable as _, spinner::Spinner};
 use gpui_kit::{
@@ -27,7 +29,7 @@ use gpui_kit::{
     EventEmitter, Focusable as _, FontWeight, HighlightStyle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Role, ScrollHandle, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task,
-    TextInputConfiguration, VirtualKeyboard, Window, div, px, svg,
+    TextInputConfiguration, Window, div, px, svg,
 };
 use std::time::{Duration, SystemTime};
 
@@ -79,6 +81,8 @@ pub struct Join {
     pub(super) node: Entity<InputState>,
     pub(super) refused: Option<String>,
     name: Entity<InputState>,
+    node_keys: Entity<TextInput<InputMode>>,
+    name_keys: Entity<TextInput<InputMode>>,
     pub(super) scroll: ScrollHandle,
     code: Option<(String, SystemTime)>,
     tick: Option<Task<()>>,
@@ -99,13 +103,10 @@ impl Join {
             InputState::new(window, cx)
                 .placeholder("duckpond.ducktape.industries")
                 .default_value(last.clone().unwrap_or_default())
-                .text_input(url_keyboard())
         });
-        let name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Name the new account")
-                .text_input(name_keyboard())
-        });
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Name the new account"));
+        let node_keys = TextInput::new(&node, TextInputConfiguration::default(), cx);
+        let name_keys = TextInput::new(&name, name_keyboard(), cx);
         let subscriptions = vec![
             cx.subscribe_in(
                 &node,
@@ -132,7 +133,7 @@ impl Join {
                         .account
                         .update(cx, |account, cx| account.clear_error(cx)),
                     InputEvent::PressEnter { .. } => this.create(cx),
-                    InputEvent::Focus => keyboard(window, Some(name_keyboard())),
+                    InputEvent::Focus => keyboard(window, Some(Keyboard::default())),
                     InputEvent::Blur => keyboard(window, None),
                 },
             ),
@@ -147,6 +148,8 @@ impl Join {
             node,
             refused: None,
             name,
+            node_keys,
+            name_keys,
             scroll: ScrollHandle::new(),
             code: None,
             tick: None,
@@ -376,6 +379,7 @@ impl Join {
                     problem.is_some(),
                     palette,
                 )
+                .child(TextInput::element(&self.node_keys))
                 .child(under(problem, palette)),
             );
         let label = match &reaching {
@@ -583,15 +587,18 @@ impl Join {
                      others see.",
                 ),
             )
-            .child(field(
-                &self.name,
-                "join/name",
-                "Account name",
-                false,
-                focused,
-                false,
-                palette,
-            ))
+            .child(
+                field(
+                    &self.name,
+                    "join/name",
+                    "Account name",
+                    false,
+                    focused,
+                    false,
+                    palette,
+                )
+                .child(TextInput::element(&self.name_keys)),
+            )
             .children(problem.map(|problem| notice("join/problem", problem, palette)))
             .child(create.w_full());
         let add = account::row(
@@ -975,10 +982,10 @@ pub(super) fn button(
         .child(drawn)
 }
 
-fn url_keyboard() -> TextInputConfiguration {
-    TextInputConfiguration {
-        virtual_keyboard: VirtualKeyboard::Url,
-        ..TextInputConfiguration::default()
+fn url_keyboard() -> Keyboard {
+    Keyboard {
+        kind: view_wire::VirtualKeyboard::Url,
+        secure: false,
     }
 }
 
@@ -991,7 +998,7 @@ fn name_keyboard() -> TextInputConfiguration {
     }
 }
 
-pub(super) fn keyboard(window: &mut Window, want: Option<TextInputConfiguration>) {
+pub(super) fn keyboard(window: &mut Window, want: Option<Keyboard>) {
     let want = match want {
         Some(config) => SoftKeyboard::Show(config),
         None => SoftKeyboard::Hide,

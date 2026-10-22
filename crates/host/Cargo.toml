@@ -44,7 +44,7 @@ call = ["av", "ducktape-av/call"]
 # the test helpers the desktop shell's tests reach (`*_for_test`,
 # `test_style`, ...): on for every test build, never for a shipped one;
 # `wat` turns the test views' text into the wasm a runner takes
-test-support = ["ui", "gpui-kit/test-support", "wasmtime", "dep:wat"]
+test-support = ["ui", "gpui-kit/test-support", "wasmtime", "dep:wat", "dep:libc"]
 
 [dependencies]
 gpui-kit = { version = "=0.7.3", optional = true }
@@ -61,7 +61,7 @@ identity.workspace = true
 blob.workspace = true
 # a notifier's answers and turn (`view_wire::notifier`); the tests' borsh too
 borsh.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "6a2a21b4d259e3ecb8e7c4b46aa9bfcfde572cee", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -97,15 +97,17 @@ memmap2 = "0.9"
 view-meter = { path = "../view-meter" }
 # feature `test-support` only (wasmtime's own `wat` already in the graph)
 wat = { version = "1", optional = true }
-libc.workspace = true
+libc = { workspace = true, optional = true }
 # files of the host's own that nothing keeps (a save's landing file, a
 # pasted picture, a blob read for a view)
 tempfile.workspace = true
 # the node's client, shared with the phone; a signer is whatever the shell
 # seats (`noded_client::Signer`), so no key crate is named here
 noded-client = { path = "../noded-client" }
+rt = { package = "ducktape-rt", path = "../rt" }
+view-runner = { path = "../view-runner" }
 # an artifact's file read and followed (`runtime/kernel/node/artifact.rs`): the files program's own query and reply
-files = { git = "https://github.com/ducktape-industries/programs", rev = "6a2a21b4d259e3ecb8e7c4b46aa9bfcfde572cee", package = "files" }
+files = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "files" }
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "../web", optional = true }
 # feature `av` only: V4L2, AVFoundation, cpal and everything that names them
@@ -113,6 +115,8 @@ ducktape-av = { path = "../av", optional = true }
 
 [dev-dependencies]
 flate2 = "1"
+view-runner = { path = "../view-runner", features = ["test-support"] }
+libc.workspace = true
 # what the media pieces' tests read off a piece (empty without `av`)
 ducktape-av = { path = "../av", features = ["test-support"] }
 # paused time for the live session's keep-alive and idle tests
@@ -120,9 +124,9 @@ tokio = { version = "1", features = ["test-util"] }
 # `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # the live tests' node: its key's verifier, as the handshake pins it
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "facd3c32542a6dcd90f8320a81d1a6e5f534de5f", package = "keyscheme", features = ["testkit"] }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "58b5d91e97d2f0b0e22a5374b6e2a70037b98f14", package = "keyscheme", features = ["testkit"] }
 # the consent card's words for a validators' vote
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "6a2a21b4d259e3ecb8e7c4b46aa9bfcfde572cee", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "valset" }
 # the tests' keys: commonware's ed25519, through noded-client's impl
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -130,11 +134,12 @@ noded-client = { path = "../noded-client", features = ["commonware"] }
 # hand-written wasm for the describe method's hostile-section tests
 wat = "1"
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+ducktape-a11y-platform = { path = "../a11y-platform", features = ["test-support"] }
 # what a test reads back of the warnings a cache problem logs (`runner/wasmtime.rs`)
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "6a2a21b4d259e3ecb8e7c4b46aa9bfcfde572cee", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

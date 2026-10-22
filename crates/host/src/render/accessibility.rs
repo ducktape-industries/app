@@ -192,6 +192,48 @@ pub fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessi
     })
 }
 
+impl ViewTree {
+    pub(super) fn composite(
+        &mut self,
+        node: &wire::Node,
+        interactivity: &wire::Interactivity,
+        cx: &mut Context<Self>,
+    ) {
+        let named = interactivity.role.is_some() && node.identity().is_some();
+        if !named {
+            return;
+        }
+        let path = self.authored_path.clone();
+        let handle = match interactivity.focus_handle {
+            Some(id) => self
+                .view_focus_targets
+                .entry(id)
+                .or_insert_with(|| cx.focus_handle())
+                .clone(),
+            None if interactivity.focusable => {
+                let kind = std::mem::discriminant(node);
+                let (_, handle) = self
+                    .focus_targets
+                    .entry(path.clone())
+                    .or_insert_with(|| (kind, cx.focus_handle()));
+                handle.clone()
+            }
+            None => return,
+        };
+        self.composites.push((path, handle));
+    }
+
+    fn claim_counts(&self) -> bool {
+        let path = &self.authored_path;
+        let owner = self
+            .composites
+            .iter()
+            .filter(|(at, _)| path.starts_with(at))
+            .max_by_key(|(at, _)| at.len());
+        owner.is_none_or(|(_, handle)| self.focused.as_ref() == Some(handle))
+    }
+}
+
 pub(super) fn tabbed(handle: FocusHandle, interactivity: &wire::Interactivity) -> FocusHandle {
     handle
         .tab_stop(
@@ -293,7 +335,11 @@ impl ViewTree {
             element = element.aria_orientation(value);
         }
         if aria.active_descendant {
-            element = element.aria_active_descendant();
+            if self.claim_counts() {
+                element = element.aria_active_descendant();
+                #[cfg(test)]
+                self.claimed.push(self.authored_path.clone());
+            }
             if node.identity().is_some() {
                 self.claiming.insert(self.authored_path.clone());
             }
@@ -327,8 +373,13 @@ impl ViewTree {
                 .or_insert_with(|| cx.focus_handle());
             tabbed(handle.clone(), interactivity)
         });
-        let tooltip_held = (interactivity.tooltip.as_ref())
-            .is_some_and(|tooltip| self.tooltips.contains_key(&tooltip.request));
+        if let Some(tooltip) = &interactivity.tooltip {
+            self.tip_source = Some(super::pointer::TipSpec {
+                request: tooltip.request,
+                hoverable: tooltip.hoverable,
+                text: None,
+            });
+        }
         let path = node.identity().is_some().then_some(&self.authored_path);
         element = super::interactivity::apply(
             element,
@@ -336,7 +387,6 @@ impl ViewTree {
             &self.styles,
             focus_handle,
             path,
-            tooltip_held,
             cx,
         );
         if let Some(handler) = interactivity.on_click

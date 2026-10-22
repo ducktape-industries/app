@@ -172,7 +172,7 @@ fn a_roster_read_reads_every_program_before_it_prepares_any() {
     };
     let withheld = ::programs::View {
         name: "ahead-withheld".into(),
-        view: blob_id(b"never-served"),
+        view: unserved(),
     };
     let node = FakeNode::new(
         vec![none],
@@ -180,7 +180,7 @@ fn a_roster_read_reads_every_program_before_it_prepares_any() {
         vec![view, viewless],
     );
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     let seat = |program| lock(&registry)[&(program, 0)].clone();
     let (view, none, held) = (
         seat("ahead-view"),
@@ -239,11 +239,11 @@ fn a_seat_claimed_mid_read_is_loaded_while_another_read_hangs() {
     };
     let hangs = ::programs::View {
         name: "seat-tests-hangs".into(),
-        view: blob_id(b"never-served"),
+        view: unserved(),
     };
     let node = FakeNode::new(Vec::new(), vec![listed_view, hangs], vec![view]);
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     let seat = lock(&registry)[&(PROGRAM, 0)].clone();
     wait_for_seat(&seat, |seat| seat.prep() != Prep::Reading);
     assert_eq!(
@@ -254,7 +254,7 @@ fn a_seat_claimed_mid_read_is_loaded_while_another_read_hangs() {
     );
     node.wait_for_held(|held| held == 1);
     lock(super::registry()).insert((PROGRAM, 0), seat);
-    let opened = mounted(PROGRAM, 7401);
+    let opened = mounted(crate::runtime::in_hand(), PROGRAM, 7401);
     // with no node in a test, the pane's own load fails, offering Retry
     wait_for_seat(&opened, |seat| matches!(seat.slot, Slot::Failed(_)));
     assert_eq!(node.held().0, 1, "the other read stopped hanging");
@@ -277,7 +277,7 @@ fn a_read_that_panics_lands_failed_and_the_batch_flips() {
         vec![view],
     );
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     let seat = |program| lock(&registry)[&(program, 0)].clone();
     let (panics, beside) = (seat(PANICS_READING), seat("seat-tests-beside-a-panic"));
     for seat in [&panics, &beside] {
@@ -324,7 +324,7 @@ fn new_code_over_a_held_view_counts_as_being_prepared() {
         seat
     };
     let (moved_seat, same_seat) = (seat(moved), seat(same));
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     assert_ne!(
         lock(&moved_seat).prep(),
         Prep::Settled,
@@ -446,6 +446,10 @@ struct Held {
     released: bool,
     roles_asked: usize,
     scheduled_asked: usize,
+    renames_asked: usize,
+    renames_failing: usize,
+    renames_unknown: bool,
+    programs_at: Option<String>,
 }
 
 /// What a fake node answers.
@@ -535,7 +539,7 @@ impl FakeNode {
                 chain: format!("{network}#0"),
                 rev: connection().lock().unwrap().rev,
                 live: None,
-                apart: None,
+                on: Default::default(),
             },
             held,
             changed,
@@ -586,15 +590,34 @@ fn answer(
     use super::super::kernel::tests::{read_request, respond};
     let (line, body) = read_request(&mut stream);
     if line.starts_with("GET /v1/status ") {
+        let programs_at = held.lock().unwrap().programs_at.clone();
+        let roles = match programs_at {
+            Some(programs) => abi::Roles::from_iter([
+                (abi::role::PROGRAMS, programs.as_str()),
+                (abi::role::VALIDATORS, "valset"),
+                (abi::role::IDENTITY, "identity"),
+            ]),
+            None => crate::backend::test_roles(),
+        };
         let status = noded_client::wire::Status {
             network: answers.network.clone(),
+            roles,
             ..status(0)
         };
         return respond(&mut stream, "200 OK", &abi::encode(&status));
     }
     if line.starts_with("POST /v1/query ") {
         let query: noded_client::wire::Query = abi::decode(&body).unwrap();
-        let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
+        let noded_client::wire::Ask::Signed(frame) = query.ask else {
+            panic!("an unsigned query");
+        };
+        let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
+        let programs_at = held.lock().unwrap().programs_at.clone();
+        let elsewhere = programs_at.is_some_and(|programs| programs != frame.body.target);
+        if elsewhere {
+            let refused = abi::Refusal::new(abi::reason::UNKNOWN_PROGRAM, frame.body.target);
+            return respond(&mut stream, "400 Bad Request", &abi::encode(&refused));
+        }
         let reply = match abi::decode(&frame.body.payload).unwrap() {
             ::programs::Query::Roster => ::programs::Reply::Roster {
                 height: 1,
@@ -614,6 +637,22 @@ fn answer(
                         return respond(&mut stream, "200 OK", &abi::encode(&newer.concat()));
                     }
                 }
+            }
+            ::programs::Query::Renames(_) => {
+                let mut asked = held.lock().unwrap();
+                asked.renames_asked += 1;
+                let unknown = asked.renames_unknown;
+                let failing = asked.renames_failing > 0;
+                asked.renames_failing = asked.renames_failing.saturating_sub(1);
+                drop(asked);
+                if unknown {
+                    let refused = abi::Refusal::new("invalid_input", "Query did not decode");
+                    return respond(&mut stream, "400 Bad Request", &abi::encode(&refused));
+                }
+                if failing {
+                    return respond(&mut stream, "503 Service Unavailable", b"catching up");
+                }
+                renames_of(answers)
             }
             ::programs::Query::Scheduled { .. } => {
                 held.lock().unwrap().scheduled_asked += 1;
@@ -746,7 +785,7 @@ impl ProgramsNode {
                 chain: "fake-network#0".into(),
                 rev: connection().lock().unwrap().rev,
                 live: None,
-                apart: None,
+                on: Default::default(),
             },
             tip,
             running,
@@ -762,7 +801,7 @@ impl ProgramsNode {
         registry: &Registry,
     ) -> Option<abi::BlobId> {
         self.tip.store(tip, std::sync::atomic::Ordering::SeqCst);
-        read_roster(self.asked_of.clone(), roster, registry);
+        handle().block_on(read_roster(self.asked_of.clone(), roster, registry));
         let listed = roster.lock();
         listed
             .iter()
@@ -841,7 +880,10 @@ fn serve_programs(stream: &mut std::net::TcpStream, programs: &::program::MockHo
         return respond(stream, "200 OK", &abi::encode(&None::<Vec<u8>>));
     }
     let query: noded_client::wire::Query = abi::decode(&body).unwrap();
-    let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
+    let noded_client::wire::Ask::Signed(frame) = query.ask else {
+        panic!("an unsigned query");
+    };
+    let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
     let asked = abi::decode(&frame.body.payload).unwrap();
     let env = programs_env(tip + 1, ::program::Origin::Signed(frame.body.signer));
     let reply = ::programs::Programs::query(&programs.query(env), asked).unwrap();
@@ -923,9 +965,9 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
         Vec::new(),
     );
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     assert_eq!(roster.roles(), Some(roles.clone()));
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     let asked = node.held.lock().unwrap().roles_asked;
     assert_eq!(asked, 1, "not every block");
     assert_eq!(
@@ -939,7 +981,7 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
         RolesAnswer::Bound(roles.clone()),
         Vec::new(),
     );
-    read_roster(upgraded.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(upgraded.asked_of.clone(), &roster, &registry));
     let asked = upgraded.held.lock().unwrap().roles_asked;
     assert_eq!(asked, 1, "asked again once the roster moved");
 }
@@ -954,7 +996,7 @@ fn a_roles_answer_refused_or_unreadable_lists_no_program_and_is_asked_again() {
             Vec::new(),
         );
         let (roster, registry) = (Roster::default(), Registry::default());
-        read_roster(node.asked_of.clone(), &roster, &registry);
+        handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
         assert_eq!(roster.roles(), None);
         assert!(
             roster.due(0),
@@ -965,15 +1007,107 @@ fn a_roles_answer_refused_or_unreadable_lists_no_program_and_is_asked_again() {
             "no view loads while the role bindings are unknown"
         );
         assert!(lock(&registry).is_empty());
-        read_roster(node.asked_of.clone(), &roster, &registry);
+        handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
         assert_eq!(node.held.lock().unwrap().roles_asked, 2, "asked again");
     }
 }
 
-/// Claim: the roster takes a chain id only in its one spelling
-/// (`program::is_name`): a newline, a space or a capital in a program's or
-/// a view-only entry's id leaves it off the roster, the rail and the seats;
-/// a well-spelled one beside them is kept.
+fn renames_of(answers: &Answers) -> ::programs::Reply {
+    ::programs::Reply::Renames(
+        answers
+            .programs
+            .iter()
+            .filter_map(|entry| {
+                let (_, name) = entry.program.split_once('/')?;
+                Some((name.to_owned(), entry.program.clone()))
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn a_failed_renames_read_lands_nothing_and_is_asked_again() {
+    let node = FakeNode::new(
+        vec![listed("owner/renames-retried", "renames-retried")],
+        Vec::new(),
+        Vec::new(),
+    );
+    node.held.lock().unwrap().renames_failing = 1;
+    let (roster, registry) = (Roster::default(), Registry::default());
+    let first = handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert!(first.is_none(), "a read whose renames failed lands nothing");
+    assert!(roster.lock().is_empty(), "the roster keeps what it had");
+    let again = handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert!(again.is_some(), "the next read lands");
+    assert_eq!(node.held.lock().unwrap().renames_asked, 2, "asked again");
+    assert_eq!(roster.current("renames-retried"), "owner/renames-retried");
+}
+
+#[test]
+fn a_program_renamed_twice_names_its_newest_old_id_first() {
+    let roster = Roster::default();
+    roster.renamed(vec![
+        ("first".into(), "owner/third".into()),
+        ("owner/second".into(), "owner/third".into()),
+    ]);
+    assert_eq!(
+        roster.renamed_from("owner/third"),
+        ["owner/second", "first"]
+    );
+}
+
+#[test]
+fn a_renamed_programs_role_still_answers_renames() {
+    let node = FakeNode::new(
+        vec![listed("owner/role-renamed", "role-renamed")],
+        Vec::new(),
+        Vec::new(),
+    );
+    node.held.lock().unwrap().programs_at = Some("owner/programs".into());
+    let (roster, registry) = (Roster::default(), Registry::default());
+    let read = handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert!(read.is_some(), "the roster read did not land");
+    assert_eq!(roster.current("role-renamed"), "owner/role-renamed");
+}
+
+#[test]
+fn a_programs_role_that_knows_no_renames_reads_as_none() {
+    let node = FakeNode::new(
+        vec![listed("renames-unknown", "renames-unknown")],
+        Vec::new(),
+        Vec::new(),
+    );
+    node.held.lock().unwrap().renames_unknown = true;
+    let (roster, registry) = (Roster::default(), Registry::default());
+    let read = handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert!(
+        read.is_some(),
+        "an older programs role's refusal reads as no renames"
+    );
+    assert_eq!(roster.current("renames-unknown"), "renames-unknown");
+}
+
+#[test]
+fn a_roster_read_keeps_the_renames_its_programs_role_answers() {
+    let node = FakeNode::new(
+        vec![
+            listed("renames-kept", "renames-kept"),
+            listed("owner/renames-moved", "renames-moved"),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert_eq!(
+        roster.renamed_from("owner/renames-moved"),
+        ["renames-moved"]
+    );
+    assert!(roster.renamed_from("renames-kept").is_empty());
+    assert_eq!(roster.current("renames-moved"), "owner/renames-moved");
+    assert_eq!(roster.current("renames-kept"), "renames-kept");
+}
+
 #[test]
 fn a_misspelled_id_is_left_off_the_roster() {
     let node = FakeNode::new(
@@ -982,6 +1116,10 @@ fn a_misspelled_id_is_left_off_the_roster() {
             listed("a b", "misspelled-space"),
             listed("System", "misspelled-capital"),
             listed("spelled-ok", "spelled-ok"),
+            listed("owner/spelled-ok", "owner-spelled-ok"),
+            listed("a/b/c", "misspelled-two-owners"),
+            listed("/name", "misspelled-empty-owner"),
+            listed("Owner/name", "misspelled-capital-owner"),
         ],
         vec![::programs::View {
             name: "Misspelled View".into(),
@@ -990,15 +1128,16 @@ fn a_misspelled_id_is_left_off_the_roster() {
         Vec::new(),
     );
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     let names: Vec<String> = roster.lock().iter().map(|p| p.name.clone()).collect();
-    assert_eq!(names, ["spelled-ok"]);
-    assert_eq!(roster.rail().len(), 1, "the rail lists what was kept");
-    let seats: Vec<&str> = lock(&registry)
+    assert_eq!(names, ["spelled-ok", "owner/spelled-ok"]);
+    assert_eq!(roster.rail().len(), 2, "the rail lists what was kept");
+    let mut seats: Vec<&str> = lock(&registry)
         .keys()
         .map(|(program, _)| *program)
         .collect();
-    assert_eq!(seats, ["spelled-ok"]);
+    seats.sort_unstable();
+    assert_eq!(seats, ["owner/spelled-ok", "spelled-ok"]);
 }
 
 /// Claim: the consent card names the program whose view asks by the seat
@@ -1014,7 +1153,7 @@ fn a_newline_id_never_gets_a_seat_to_ask_from() {
         Vec::new(),
     );
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     assert!(lock(&registry).is_empty(), "seated: its view could ask");
     assert!(roster.lock().is_empty(), "listed");
 }
@@ -1026,7 +1165,7 @@ fn a_long_roster_is_taken_whole_and_read_in_one_request_a_blob_at_a_time() {
         .collect();
     let node = FakeNode::new(programs, Vec::new(), Vec::new());
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     let listed = 1000;
     assert_eq!(roster.lock().len(), listed, "the roster is taken whole");
     assert_eq!(roster.rail().len(), listed, "the rail lists every program");
@@ -1047,7 +1186,7 @@ fn a_roster_read_asks_its_preloads_in_the_rosters_order() {
     let programs = names.iter().map(|name| listed(name, name)).collect();
     let node = FakeNode::new(programs, Vec::new(), Vec::new());
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     node.wait_until(|held| held.now == 1);
     let asked = node.held.lock().unwrap().blobs_asked.clone();
     let in_order: Vec<abi::BlobId> = names.iter().map(|name| blob_id(name.as_bytes())).collect();
@@ -1097,13 +1236,22 @@ fn a_stalled_load_does_not_hold_the_roster_read() {
     let asked_of = node.asked_of.clone();
     let (read, returned) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        read_roster(asked_of, &Roster::default(), &Registry::default());
+        handle().block_on(read_roster(
+            asked_of,
+            &Roster::default(),
+            &Registry::default(),
+        ));
         let _ = read.send(());
     });
     returned
         .recv()
         .expect("the roster read waited on the load it queued");
     node.wait_for_held(|held| held == 1);
+}
+
+fn unserved() -> abi::BlobId {
+    let test = std::thread::current();
+    blob_id(format!("never served, asked by {}", test.name().unwrap_or("main")).as_bytes())
 }
 
 /// A view whose manifest says `name`, `icon` (none when empty), `tint`
@@ -1144,7 +1292,7 @@ fn an_unopened_program_runs_no_init() {
     };
     let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     let seat = lock(&registry)[&("lazy-view", 0)].clone();
     wait_for_seat(&seat, |seat| !seat.slot.loading());
     assert!(
@@ -1161,7 +1309,7 @@ fn an_unopened_program_runs_no_init() {
         locked.rev = locked.rev.wrapping_add(1);
         locked.wake.subscribe()
     };
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     futures::executor::block_on(landed.changed()).expect("the second preload landed");
     assert!(
         matches!(&lock(&seat).slot, Slot::Compiled(_)),
@@ -1216,7 +1364,7 @@ fn a_rail_row_carries_the_icon_and_tint_its_views_manifest_declares() {
     let blobs = views.iter().map(|(_, view)| view.clone()).collect();
     let node = FakeNode::new(Vec::new(), listed, blobs);
     let (roster, seats) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &seats);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &seats));
     // the rail reads the app's seats: these two are among them while it looks
     for (program, _) in &views {
         let seat = lock(&seats)[&(*program, 0)].clone();
@@ -1419,7 +1567,7 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
     };
     let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
     let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
     let seat = lock(&registry)[&("quick-view", 0)].clone();
     wait_for_seat(&seat, |seat| !seat.slot.loading());
     let _ = std::fs::remove_file(
@@ -1482,7 +1630,7 @@ fn a_pane_opens_its_compiled_view_at_once() {
     };
     let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
     let (roster, seats) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &seats);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &seats));
     let seat = lock(&seats)[&(PROGRAM, 0)].clone();
     wait_for_seat(&seat, |seat| !seat.slot.loading());
     drop(node);
@@ -1501,7 +1649,7 @@ fn a_pane_opens_its_compiled_view_at_once() {
             bare: true,
         });
     lock(registry()).insert((PROGRAM, 0), seat);
-    let opened = mounted(PROGRAM, 7101);
+    let opened = mounted(crate::runtime::in_hand(), PROGRAM, 7101);
     let polled = futures::FutureExt::now_or_never(start_in(opened.clone(), PROGRAM));
     let started = polled.is_some()
         && matches!(&lock(&opened).slot, Slot::Ready(view) if view.name == "At once");
@@ -1530,7 +1678,7 @@ fn a_seat_let_go_steps_back_to_its_code_and_stays_listed() {
     };
     let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
     let (roster, seats) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &seats);
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &seats));
     let seat = lock(&seats)[&(PROGRAM, 0)].clone();
     wait_for_seat(&seat, |seat| !seat.slot.loading());
     drop(node);
@@ -1542,11 +1690,11 @@ fn a_seat_let_go_steps_back_to_its_code_and_stays_listed() {
             bare: true,
         });
     lock(registry()).insert((PROGRAM, 0), seat);
-    let opened = mounted(PROGRAM, 7201);
+    let opened = mounted(crate::runtime::in_hand(), PROGRAM, 7201);
     let started = futures::FutureExt::now_or_never(start_in(opened.clone(), PROGRAM)).is_some()
         && matches!(&lock(&opened).slot, Slot::Ready(_));
 
-    let_go(PROGRAM, 7201);
+    let_go(crate::runtime::in_hand(), PROGRAM, 7201);
     let back = lock(registry()).get(&(PROGRAM, 0)).cloned();
     let stepped = back.as_ref().map(|seat| {
         let locked = lock(seat);
@@ -1613,7 +1761,7 @@ fn a_pane_starts_the_view_its_seat_compiled() {
     let preloaded = Mounted::seat();
     lock(&preloaded).slot = Slot::Compiled(ViewCode::for_test("Claimed", "", 320));
     lock(registry()).insert((PROGRAM, 0), preloaded);
-    let seat = mounted(PROGRAM, 7001);
+    let seat = mounted(crate::runtime::in_hand(), PROGRAM, 7001);
     wait_for_seat(&seat, |seat| matches!(seat.slot, Slot::Failed(_)));
     lock(registry()).remove(&(PROGRAM, 7001));
 }
@@ -1713,4 +1861,42 @@ fn a_pane_mounted_before_the_roster_is_read_waits_for_the_read() {
         super::asks_now(true, false, true),
         "a program the read roster leaves out is never said to be"
     );
+}
+
+#[test]
+fn a_view_started_on_another_networks_seat_is_on_that_network() {
+    let other = Network::new(false);
+    let client = crate::backend::rpc_client("http://127.0.0.1:9");
+    let asked_of = other.take(&client, "other", "other#1");
+    let frame = wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    };
+    let mut code = ViewCode::for_test("Other", "", 320);
+    code.hash = crate::runtime::frames_code(&frame, 1, &frame);
+    let seat = Mounted::seat();
+    {
+        let mut locked = lock(&seat);
+        locked.instance = 7;
+        let generation = locked.start();
+        locked.to_start = Some(Box::new(Parked {
+            code,
+            shown: "other".into(),
+            generation,
+            asked_of,
+            timing: LoadTiming::default(),
+        }));
+    }
+    futures::executor::block_on(start_in(seat.clone(), "other-network-view"));
+    let locked = lock(&seat);
+    let view = match &locked.slot {
+        Slot::Ready(view) => view,
+        Slot::Failed(failure) => panic!("the view did not start: {failure}"),
+        _ => panic!("the view did not start"),
+    };
+    assert_eq!(
+        view.connection.chain, "other#1",
+        "it is on the network in hand"
+    );
+    assert!(!view.connection.stale());
 }

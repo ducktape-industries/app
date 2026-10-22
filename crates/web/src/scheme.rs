@@ -1,6 +1,6 @@
 //! The `duck` scheme in every page: each `duck://` address answered from what
-//! the app reads of its network (`serve`), read-only, and the height a page
-//! loaded from one tells its browser.
+//! the app reads of its network (`serve`), read-only, loading nothing but `duck:`
+//! (scripts also from cdnjs), and the height a page loaded from one tells its browser.
 use cef::*;
 use std::os::raw::c_int;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -10,6 +10,8 @@ pub const SCHEME: &str = "duck";
 pub(crate) const HEIGHT: &str = "ducktape.height";
 
 const TELL: &str = "__ducktapeHeight";
+
+const POLICY: &str = "default-src duck: data: blob: 'unsafe-inline'; script-src duck: data: blob: 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; worker-src duck: data: blob:; object-src 'none'";
 
 const WATCH: &str = "(() => { const tell = globalThis.__ducktapeHeight; delete globalThis.__ducktapeHeight; const watch = () => new ResizeObserver(() => tell(Math.ceil(document.documentElement.getBoundingClientRect().height))).observe(document.documentElement); if (document.documentElement) { watch(); } else { document.addEventListener('readystatechange', watch, { once: true }); } })();";
 
@@ -37,6 +39,12 @@ pub(crate) fn leaves(address: &str) -> bool {
         && !NETWORK
             .get()
             .is_some_and(|network| (network.serves)(address))
+}
+
+pub(crate) fn ours(address: &str) -> bool {
+    address
+        .strip_prefix(SCHEME)
+        .is_some_and(|rest| rest.starts_with(':'))
 }
 
 pub(crate) fn register(registrar: &mut SchemeRegistrar) {
@@ -133,8 +141,17 @@ wrap_resource_handler! {
             };
             if let Some(response) = response {
                 response.set_status(c_int::from(served.status));
-                response.set_mime_type(Some(&served.mime.as_str().into()));
+                let (media, charset) = media_type(&served.mime);
+                response.set_mime_type(Some(&media.into()));
+                if let Some(charset) = charset {
+                    response.set_charset(Some(&charset.into()));
+                }
                 response.set_header_by_name(Some(&"Cache-Control".into()), Some(&"no-store".into()), 1);
+                response.set_header_by_name(
+                    Some(&"Content-Security-Policy".into()),
+                    Some(&POLICY.into()),
+                    1,
+                );
             }
             if let Some(length) = response_length {
                 *length = served.body.len() as i64;
@@ -167,6 +184,18 @@ wrap_resource_handler! {
     }
 }
 
+fn media_type(mime: &str) -> (&str, Option<&str>) {
+    let mut parts = mime.split(';');
+    let media = parts.next().unwrap_or_default().trim();
+    let charset = parts.find_map(|parameter| {
+        let (name, value) = parameter.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| value.trim().trim_matches('"'))
+    });
+    (media, charset)
+}
+
 wrap_render_process_handler! {
     struct PageScript;
 
@@ -192,7 +221,14 @@ wrap_render_process_handler! {
                 return;
             };
             global.set_value_bykey(Some(&TELL.into()), Some(&mut tell), V8Propertyattribute::default());
-            context.eval(Some(&WATCH.into()), Some(&address.as_str().into()), 0, None, None);
+            let (mut value, mut thrown) = (None, None);
+            context.eval(
+                Some(&WATCH.into()),
+                Some(&address.as_str().into()),
+                0,
+                Some(&mut value),
+                Some(&mut thrown),
+            );
         }
     }
 }
@@ -223,5 +259,27 @@ wrap_v8_handler! {
             self.frame.send_process_message(ProcessId::BROWSER, Some(&mut message));
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::media_type;
+
+    #[test]
+    fn a_mime_type_reaches_cef_as_its_media_type_and_charset() {
+        assert_eq!(
+            media_type("text/html; charset=utf-8"),
+            ("text/html", Some("utf-8"))
+        );
+        assert_eq!(
+            media_type("text/plain;Charset=\"UTF-8\""),
+            ("text/plain", Some("UTF-8"))
+        );
+        assert_eq!(media_type("image/png"), ("image/png", None));
+        assert_eq!(
+            media_type("application/json; q=1"),
+            ("application/json", None)
+        );
     }
 }

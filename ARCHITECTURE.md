@@ -46,10 +46,13 @@ What the app deliberately does not know:
 
 - **No user program by name.** Panes, tabs and labels come from the roster
   (`Roster::rail`), a tab's name and the icon it draws on a folded menu bar
-  from the view's manifest. Two *system* programs are named by id and
-  nothing else: `identity` (`backend/passkey.rs`, `backend/join.rs`:
-  accounts and keys) and `programs` (`backend/views.rs`: the roster
-  query; `shell/layers/chrome/menus.rs`: the Account menu opens it).
+  from the view's manifest. Two *system* programs are named, by role and
+  nothing else: the identity role (`backend/passkey.rs`, `backend/join.rs`:
+  accounts and keys) and the programs role (`backend/views.rs`: the roster
+  query; `shell/layers/chrome/menus.rs` and the phone's Account tab open
+  its view), each at the id the node's `/v1/status` binds to the role
+  (`noded_client::Client::bound`, `role_query`), so a renamed role program
+  is followed with no app release.
 - **No payload.** `program.query` and `op.submit` carry `Call{target, body}`;
   the app signs and forwards `body` and returns the program's bytes as
   they are. `program.describe` renders an op readable by running the
@@ -124,7 +127,7 @@ quit) are `Windows`' methods.
 | Thread | What runs there | Where it is made |
 |---|---|---|
 | **window / main** (GPUI foreground) | every entity method and the timers the entities and layers own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages in `layers::Chrome`, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
-| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_asked`/`spawn_consented`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `program.describe`, OS banners and device-key opening | `kernel::handle` |
+| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_asked`/`spawn_consented`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `program.describe`, OS banners and device-key opening | `rt::task::handle` |
 | **`view-loader` threads** (at most `loaders()`, the parallelism the OS reports) | each takes the next queued load: fetch, verify, compile, instantiate, snapshot/restore (`View::load`), then the install; a pane's load goes ahead of the preloads | `seat::queue` |
 | **`roster` thread** | `/v1/programs` and the seat reconciliation on connect and on each new block; it queues the loads and returns, never waiting on one | `roster::spawn_roster_read` |
 | **`ax-door`** | TCP accept, then each connection read and parsed on a thread of its own, one request per connection (a caller that stalls or trickles holds up no other); each request is forwarded to the window thread, which answers them in turn (a long `/wait` holds the next caller's answer) | `ax/http.rs` |
@@ -374,13 +377,17 @@ its meaning; the host and the views name the const, never the string.
    missing, so a submit is never signed again. A node's own refusal is the
    answer too. The view decides whether to ask again. The client sets no
    deadline on the connect or the answer, and reads an answer whole.
-4. **Sign.** A read: `backend::query_frame` signs a `Frame` with the
-   seated key, or with the process's throwaway `reader_key` while nobody
-   is signed in. Its anchor is the zero `Tip` and it carries no salt: the
-   program hears who asks, and the node checks neither on a query. It
-   reads the confirmed layer (`Layer::Confirmed`): what blocks wrote, the
-   state `program.changes` reports, so a frame the preconfirmed layer ran
-   and a block then ran otherwise never shows.
+4. **Sign.** A read: `backend::signed_query` signs a `Frame` under
+   `QUERY_NAMESPACE` (`ducktape:query`) with the seated key, or with the
+   process's throwaway `reader_key` while nobody is signed in. It carries
+   no salt, and its anchor is the newest head the node's client heard
+   (`Client::heard`, from its `/v1/heads` follow and every `/v1/status`;
+   a status read first when it heard none). The node answers a query only
+   while its anchor is one of the last 256 blocks: on an `anchor` refusal
+   the client reads the status and asks once more on that tip. It reads
+   the confirmed layer (`Layer::Confirmed`): what blocks wrote, the state
+   `program.changes` reports, so a frame the preconfirmed layer ran and a
+   block then ran otherwise never shows.
    A write (`op.submit`): `backend::seated_frame` reads `/v1/status` and
    anchors the frame at the tip it reports (`backend::anchor`:
    `Tip{height, id: tip}`), then `Frame::sign` builds `Body{scheme: Ed25519,
@@ -400,13 +407,22 @@ its meaning; the host and the views name the const, never the string.
    and turns; `View::redraw` drains the queue into
    `view.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
-6. **Subscriptions.** `program.changes <program>` (`follow_changes`: one WebSocket
-   `/v1/changes/<program>?keys` (the keys alone) per node and program, held while a follower's view
-   is on screen (a desktop pane: presented, its window not hidden nor under a pane filling the
-   desk), a notifier's always, and the app in front; a follower back
-   is told to re-read first), `chain.heads` (`heads`: polls
-   status at half the node's block time and reads the advance from
-   `/v1/blocks`, on the same terms), `live.publish`/`live.subscribe`/
+6. **Subscriptions.** `program.changes <program>` and `program.watch` (`kernel/node/standing.rs`:
+   one WebSocket `/v1/watch/<program>?keys` (the keys alone) per node and program, held while a
+   follower's view is on screen (a desktop pane: presented, its window not hidden nor under a pane
+   filling the desk), a notifier's always, and the app in front; a follower back is told to
+   re-read first; a node with no such route answers 404, and the feed opens
+   `/v1/changes/<program>?keys` instead and ends every `program.watch` `unsupported`, deciding
+   again at each reopen). A `program.watch` is a standing query (`Call{target, body}`): one per
+   node, target, body and signing key, asked (`Watch::Ask`, a signed query frame) by its first
+   follower, answered at once to a later one from the last answer, asked again on every reopened
+   socket (that answer is the item, never a re-read), and dropped (`Watch::Drop`) with its last
+   follower. Its items are `Some(answer)`, `None` (ask it yourself: the node could not run it)
+   and a refused re-run as a refusal with `done: false`; a refused ask ends it. A view hears
+   every request it has on one feed through one joint, so one block's change and answers land in
+   one redraw. `chain.heads` (`heads`: one WebSocket
+   `/v1/heads` per node, each follower holding the newest head, on the
+   same terms), `live.publish`/`live.subscribe`/
    `live.tracks` (`kernel/live.rs`: a request on the connection's live
    session, opened again on a lost session or a reconnect, its items the
    node's objects and announces), `clock.ticks`, `host.session`,
@@ -630,7 +646,9 @@ Connect ─► /v1/status ─► contract check ─► keyring::bind ─► devi
    executor's timer, one unanswered poll reads reconnecting, one
    answer recovers.
 2. **Device key** (`backend/device_key.rs`, `Account::open_device_key`).
-   On the blocking pool: `device_key::open(keyring, legacy)` reads the OS
+   `DesktopOs::device_key` runs `device_key::open(keyring, legacy)` on the
+   blocking pool (`rt::task::blocking`; the phone's `PhoneOs` opens its
+   store the same way): it reads the OS
    store (Keychain, Credential Manager, Secret Service via the `keyring`
    crate; a 0600 file with `DUCKTAPE_DEVICE_KEY_STORE=file`) and makes an
    ed25519 key only when the store answers that it holds none — unless a
@@ -638,12 +656,13 @@ Connect ─► /v1/status ─► contract check ─► keyring::bind ─► devi
    which case nothing is made and the key screen asks for its password. A
    store that errors is never taken for an empty one: its sentence lands on
    the failed-key screen, and nothing is made or kept over its key.
-   `backend::seat_key` puts the key in the process-wide `SIGNER` and
-   answers the public key (`signer_key`). No password, no phrase for a
+   `backend::seat_key` seats the key for its network (`SIGNERS`, one key
+   per network) and answers the public key (`signer_key`). No password, no phrase for a
    device key. The legacy file is opened once by `Account::unlock(password)`
    (`key_dir::open_password_locked`) and moved into the OS store (`device_key::save`, which keeps a key only
-   where none is kept yet). `Account::lock` calls `lock_signer` and returns to
-   `Screen::Unlock`; `browse_without_key` opens the desk read-only.
+   where none is kept yet). `Account::lock` calls `lock_signer`, which unseats
+   every network's key, and returns to `Screen::Unlock` (leaving a network
+   unseats its key alone, `unseat`); `browse_without_key` opens the desk read-only.
 3. **Account** (`backend/identity.rs` `account_of_key` →
    `Account::resolved`). A key with an account goes to `Screen::Desk`; one
    without goes to `Screen::Account`, which offers:
@@ -708,6 +727,19 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `with_presentation` (the `NativePresentation` copy across view
   instances) also live in this file for now; the struct itself is in
   `render.rs`.
+- **The platform wrapper** (`crates/a11y-platform`): `A11yPlatform` wraps any gpui
+  `Platform`. Each window it opens keeps the `A11yCallbacks` gpui gives it and the last
+  tree gpui sends, hands both on to the wrapped window, and answers `activate`, `tree`
+  and `act` (`A11yPlatform::window(handle)`), the way an OS adapter reaches
+  gpui. Its `headless` module (feature `test-support`) runs it over a headless platform on
+  gpui's `TestDispatcher` (`Harness`), and its tests pin the host's accessibility rules
+  (aria-disabled, one tab stop per handle, the claim gate, uncached panes under AT, AT
+  Click, a dialog's node, keyed ids) on the tree it reads. `Harness` draws its window while it
+  is dirty once the dispatcher parks (the window's `frame_waker` and `prepare_frame`),
+  keystrokes go through `Window::dispatch_keystroke` and other input through the window's
+  input callback, and an AT action runs once the dispatcher parks. The host's and the web crate's a11y tests that read the tree
+  directly open, activate, read and act through it; the door, and the tests that read
+  through the door, still read gpui-pre's own `Window::a11y_tree`.
 - **The door** (`crates/host/src/ax.rs`, `crates/host/src/ax/{http,tree,actions}.rs`). Built only
   with the `ax-door` cargo feature (the kit and qa builds); a default build
   has no door and no `ax` client. Off unless
@@ -842,7 +874,7 @@ House words, and where one word means several things.
 - **seat** — four meanings. (1) `seat::Mounted`: the per-`(program,
   instance)` slot a view is loaded into, in `runtime/seat.rs`.
   (2) the **seated key**: the signing key in `backend/session.rs`'s
-  `SIGNER` (`seat_key`, `seated_frame`; `AccountState::seating` while it
+  `SIGNERS`, one per network (`seat_key`, `seated_frame`; `AccountState::seating` while it
   opens). (3) "unseated": a pane that left the desk for its own window
   (`shell/windows.rs`). (4) the element id `seat` of the pane area
   (`shell/layers/root.rs`). Also `runtime::Seat` (`seat/entity.rs`): the
@@ -850,8 +882,11 @@ House words, and where one word means several things.
   its view from its wakes (`turn`).
 - **slot** — `seat::Slot`, what a seat holds (Loading … Ready … Failed).
   Also the **pane layer** in `render/`: the pane box a view's tree, its
-  tooltips and its deferred draws are clipped to (`deferred::Layer`, a gpui
-  `TooltipLayer` at `VIEW_CEILING`).
+  tooltips and its deferred draws are clipped to (`deferred::Layer`). Its
+  deferred draws, by priority up to `VIEW_CEILING`, and its tooltip are drawn
+  by the pane's portal (`deferred::Portaled`, the clip's last child); a named
+  dialog drawn in place draws its own deferred draws in a portal of its own,
+  its layer's last child, so they sit under its node and inside its focus trap.
 - **generation** — the seat's load counter; a finished load installs only
   if it is still current, and `Seat.generation` names the
   view instance it drew. Unrelated: the `generation` the identity program
@@ -862,7 +897,7 @@ House words, and where one word means several things.
   (`Seat::turn`) is the seat's step, run on a wake and never by a draw.
 - **frame** — three meanings. (1) `wire::Frame`: what a tick returns.
   (2) the signed node **frame** (`noded::Frame`, `seated_frame`,
-  `query_frame`). (3) a GPUI frame.
+  `signed_query`). (3) a GPUI frame.
 - **snapshot** — three meanings. (1) the wasm `snapshot`/`restore` export
   pair a swap uses. (2) `ax::snapshot`: a read of a window's AccessKit
   tree. (3) `tray`'s rendered-menu snapshot.
@@ -975,7 +1010,7 @@ House words, and where one word means several things.
   network's keys (`<network>` or `<network>+<founded>`). (2) the `keyring`
   crate: the OS credential store `backend/device_key.rs` uses.
 - **device key / seated key / reader key / legacy key** — this device's
-  per-network ed25519 key in the OS store; the one loaded into `SIGNER`;
+  per-network ed25519 key in the OS store; the one seated for its network in `SIGNERS`;
   the throwaway key that signs queries while locked; a password-locked
   keystore file from before keys moved into the OS.
 - **passkey / touch / ceremony / auth page / relay slot** — an account

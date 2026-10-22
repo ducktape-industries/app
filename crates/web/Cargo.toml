@@ -15,9 +15,9 @@
 #   cargo clippy --locked --workspace --all-targets --no-deps --features web -- -D warnings
 #   cargo test --locked --workspace --features web
 #   cargo build --locked --features web
-# The first build downloads CEF (about 300 MiB). Without the setuid sandbox
-# helper beside the binary, run with DUCKTAPE_WEB_NO_SANDBOX=1 (Linux; macOS
-# needs no helper, its framework is linked beside the binary at build).
+# The first build downloads CEF (about 300 MiB). On Linux CEF runs without
+# its sandbox unless a root-owned setuid `chrome-sandbox` sits beside the
+# binary; a macOS bundle's children are the helper apps of `ducktape-web-helper`.
 
 [package]
 name = "ducktape-web"
@@ -39,6 +39,16 @@ cef = [
     "dep:cef-dll-sys",
 ]
 
+[[bin]]
+name = "ducktape-web-helper"
+path = "src/bin/helper.rs"
+required-features = ["cef"]
+
+[[test]]
+name = "live"
+harness = false
+required-features = ["cef"]
+
 [dependencies]
 gpui-kit = { version = "=0.7.3", optional = true }
 futures = { workspace = true, optional = true }
@@ -58,10 +68,9 @@ accesskit = { version = "0.25", features = ["serde"], optional = true }
 cef = { version = "=154.5.0", default-features = false, features = ["sandbox"], optional = true }
 
 # Linux: gpui's X11 and Wayland clipboard reads turn glib while they wait
-# (`glib.rs`); the workspace's `[patch.crates-io]` gives the fork that has
-# the hook
+# (`glib.rs`), through our platform crate's hook
 [target.'cfg(target_os = "linux")'.dependencies]
-gpui_linux = { package = "gpui-pre-linux", version = "=0.3.9", default-features = false, optional = true }
+gpui_linux = { package = "ducktape-gpui-linux", path = "../../vendor/gpui-linux", default-features = false, optional = true }
 
 # macOS: CEF is a framework loaded at run time, not linked; `build.rs` reads
 # where cef-dll-sys unpacked it (only a direct dependent sees that)
@@ -71,3 +80,4 @@ cef-dll-sys = { version = "=154.5.0", default-features = false, optional = true 
 [dev-dependencies]
 # a page's tree built into a test window
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+ducktape-a11y-platform = { path = "../a11y-platform", features = ["test-support"] }

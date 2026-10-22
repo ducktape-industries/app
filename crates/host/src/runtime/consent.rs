@@ -37,6 +37,7 @@ pub use sheet::{counts, sheet};
 /// The card's title for an op to the person's account (identity's).
 pub const ACCOUNT: &str = "Confirm a change to your account";
 pub const NETWORK: &str = "Confirm a change to the network";
+pub const CONNECT: &str = "Allow a connection from this device";
 
 /// What the dialog says for one op: its title ([`ACCOUNT`] or
 /// [`NETWORK`]), the sentence, the asking program's id in it (its bytes,
@@ -198,38 +199,60 @@ pub struct Ask {
     tell: tokio::sync::oneshot::Sender<bool>,
 }
 
+#[derive(Default)]
+pub struct Queue {
+    asks: Mutex<VecDeque<Ask>>,
+    #[cfg(any(test, feature = "test-support"))]
+    queued: std::sync::Condvar,
+}
+
 /// The asks waiting for the person, oldest first; the shell shows the front.
 /// One queue for the process, as there is one person. On the test services
 /// (`contract::testing`), one per test thread: the tests share the process,
 /// and a card one test asks for would open in another test's window as its
 /// dialog closed.
-pub fn waiting() -> &'static Mutex<VecDeque<Ask>> {
+pub fn waiting() -> &'static Queue {
     #[cfg(any(test, feature = "test-support"))]
     {
         crate::contract::os();
         if crate::contract::testing::active() {
             thread_local! {
-                static WAITING: &'static Mutex<VecDeque<Ask>> = Box::leak(Box::default());
+                static WAITING: &'static Queue = Box::leak(Box::default());
             }
             return WAITING.with(|waiting| *waiting);
         }
     }
-    static WAITING: OnceLock<Mutex<VecDeque<Ask>>> = OnceLock::new();
-    WAITING.get_or_init(Mutex::default)
+    static WAITING: OnceLock<Queue> = OnceLock::new();
+    WAITING.get_or_init(Queue::default)
 }
 
 fn lock() -> std::sync::MutexGuard<'static, VecDeque<Ask>> {
     lock_in(waiting())
 }
 
-fn lock_in(
-    waiting: &'static Mutex<VecDeque<Ask>>,
-) -> std::sync::MutexGuard<'static, VecDeque<Ask>> {
-    let mut waiting = waiting
+fn lock_in(waiting: &'static Queue) -> std::sync::MutexGuard<'static, VecDeque<Ask>> {
+    let mut asks = waiting
+        .asks
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    waiting.retain(|ask| !ask.tell.is_closed());
-    waiting
+    asks.retain(|ask| !ask.tell.is_closed());
+    asks
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn queued_front() -> (u64, Words) {
+    let queue = waiting();
+    let mut asks = lock_in(queue);
+    loop {
+        if let Some(ask) = asks.front() {
+            return (ask.id, ask.words.clone());
+        }
+        asks = queue
+            .queued
+            .wait(asks)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        asks.retain(|ask| !ask.tell.is_closed());
+    }
 }
 
 /// The front ask, as the dialog draws it: its id and its words. `None`
@@ -316,7 +339,10 @@ pub fn needed(
         verb: APPROVE,
         danger: false,
     };
-    if target == identity::PROGRAM {
+    let identity_role = roles
+        .and_then(|roles| roles.bound(abi::role::IDENTITY).ok())
+        .map_or(identity::PROGRAM, String::as_str);
+    if target == identity_role {
         let Ok(op) = abi::decode::<identity::Op>(body) else {
             return Some(Words {
                 described: true,
@@ -415,6 +441,8 @@ pub fn needed(
                 ),
             )),
             identity::Op::RegisterProgram { .. }
+            | identity::Op::RenameProgram { .. }
+            | identity::Op::Migrate { .. }
             | identity::Op::Create { .. }
             | identity::Op::CreateAgent { .. }
             | identity::Op::AddKey { .. }
@@ -536,27 +564,29 @@ fn date(millis: u64) -> String {
 }
 
 pub(super) fn queue_in(
-    waiting: &'static Mutex<VecDeque<Ask>>,
+    waiting: &'static Queue,
     program: &'static str,
     instance: u64,
     words: Words,
 ) -> Option<Told> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let mut waiting = lock_in(waiting);
-    if waiting
+    let mut asks = lock_in(waiting);
+    if asks
         .iter()
         .any(|ask| ask.program == program && ask.instance == instance)
     {
         return None;
     }
     let (tell, told) = tokio::sync::oneshot::channel();
-    waiting.push_back(Ask {
+    asks.push_back(Ask {
         id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         program,
         instance,
         words,
         tell,
     });
+    #[cfg(any(test, feature = "test-support"))]
+    waiting.queued.notify_all();
     Some(Told(told))
 }
 
@@ -564,6 +594,29 @@ pub(super) fn queue_in(
 #[cfg(any(test, feature = "test-support"))]
 pub fn queue(program: &'static str, instance: u64, words: Words) -> Option<Told> {
     queue_in(waiting(), program, instance, words)
+}
+
+pub(super) fn connect(program: &str, hosts: &[String]) -> Words {
+    let lead = "Program ";
+    Words {
+        title: CONNECT,
+        said: format!(
+            "{lead}{program} asks to connect from this device to the hosts below. What it sends goes from this device straight to them, never through the network."
+        ),
+        id: Some(lead.len()..lead.len() + program.len()),
+        shown: Some(hosts.join("\n")),
+        described: false,
+        card: Card {
+            title: format!("Connect: {program}"),
+            facts: vec![
+                Fact::new("Program", program, true),
+                Fact::new("Hosts", hosts.join(", "), true),
+            ],
+            warning: "It sends and hears what it likes on these hosts whenever it runs, from this device.".into(),
+            verb: "Allow",
+            danger: false,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -652,7 +705,10 @@ mod tests {
     fn a_role_program_asks_as_system_and_any_other_by_its_id() {
         let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
         let said = |program: &str, roles: Option<&abi::Roles>| {
-            needed(program, roles, identity::PROGRAM, &suspend, Some(7))
+            let target = roles.map_or(identity::PROGRAM, |roles| {
+                roles.bound(abi::role::IDENTITY).unwrap().as_str()
+            });
+            needed(program, roles, target, &suspend, Some(7))
                 .unwrap()
                 .said
         };

@@ -215,6 +215,8 @@ pub(super) struct View {
     pub placement: wire::methods::Placement,
     pub placement_change: Option<wire::methods::Placement>,
     pub placement_subscriptions: Vec<u64>,
+    pub debug_mode: tokio::sync::watch::Receiver<bool>,
+    pub debug_subscriptions: Vec<u64>,
     /// Whether this platform keeps a window above others: what a
     /// `host.float` reply says it could do (the seat places it).
     pub keeps_above: bool,
@@ -229,8 +231,11 @@ pub(super) struct View {
     /// The view's `program.changes` subscriptions and the program each one
     /// watches: told on every block that wrote to that program.
     pub live_subscriptions: Vec<(u64, String)>,
+    pub(in crate::runtime) joints: kernel::Joints,
     /// The tracks this view publishes, where its `live.send`s go.
     pub tracks: kernel::live::Tracks,
+    pub sockets: kernel::socket::Sockets,
+    pub hosts: Vec<String>,
     /// Pending host requests and subscriptions, each owned by this view
     /// the kernel opened for it: retired with the cancel, and with the view.
     pub tasks: Vec<(u64, kernel::NodeTask)>,
@@ -246,6 +251,7 @@ pub(super) struct View {
     pub clocks: Vec<kernel::Clock>,
     /// The trap that ended the view, if one did. A faulted view never ticks again.
     pub fault: Option<String>,
+    pub(crate) past_memory: bool,
     /// sha256 of the view bytes this instance was built from; none for a
     /// file the developer's override supplies.
     pub hash: Option<[u8; 32]>,
@@ -295,7 +301,9 @@ impl View {
     /// returned on the wasmtime runner, later on one that answers across a
     /// process boundary.
     async fn landed(&mut self) -> Landed {
-        next(&self.landing).await
+        let landed = next(&self.landing).await;
+        self.past_memory |= matches!(landed, Landed::Fault(Fault::Memory));
+        landed
     }
 
     /// The answer to the call just begun, taken at once, as a test takes it

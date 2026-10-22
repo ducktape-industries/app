@@ -467,11 +467,11 @@ fn the_quit_drain_waits_for_a_queued_set() {
 #[test]
 fn a_left_set_writes_no_store() {
     let mut view = crate::runtime::kernel::tests::view();
-    let apart = std::sync::Arc::new(super::super::roster::Apart::default());
+    let apart = super::super::roster::Network::new(true);
     view.connection = super::super::Connection {
         chain: "other-network#1".into(),
         rev: view.connection.rev.wrapping_sub(1),
-        apart: Some(apart.clone()),
+        on: super::super::roster::On::of(&apart),
         ..Default::default()
     };
     assert!(file(&view, &None).is_ok(), "{:?}", file(&view, &None));
@@ -496,4 +496,76 @@ fn a_cut_store_file_reads_as_empty_and_is_set_aside() {
     put(&file, "a", Some(b"2")).unwrap();
     assert_eq!(read(&file, "a").as_deref(), Some(&b"2"[..]));
     let _ = std::fs::remove_dir_all(config);
+}
+
+#[test]
+fn a_renamed_programs_files_move_to_its_new_id_once() {
+    let config = scratch();
+    let old = located(&config, "dev#01", "abcd", "renamed");
+    put(&old.device, "reads/abcd", Some(b"1")).unwrap();
+    put(&old.path, "draft", Some(b"2")).unwrap();
+    let mut new = located(&config, "dev#01", "abcd", "owner/renamed");
+    moved(&new).unwrap();
+    assert_eq!(
+        read(&new.path, "draft"),
+        None,
+        "nothing moves without a rename"
+    );
+    new.was = vec![old.clone()];
+    moved(&new).unwrap();
+    assert_eq!(read(&new.device, "reads/abcd"), Some(b"1".to_vec()));
+    assert_eq!(read(&new.path, "draft"), Some(b"2".to_vec()));
+    assert!(!old.device.exists(), "the old device file is gone");
+    assert!(!old.path.exists(), "the old key's file is gone");
+    put(&old.path, "draft", Some(b"stale")).unwrap();
+    moved(&new).unwrap();
+    assert_eq!(
+        read(&new.path, "draft"),
+        Some(b"2".to_vec()),
+        "a file the new id holds is kept"
+    );
+    let _ = std::fs::remove_dir_all(&config);
+}
+
+#[test]
+fn a_program_renamed_twice_takes_its_newest_old_ids_files() {
+    let config = scratch();
+    let oldest = located(&config, "dev#01", "", "first");
+    let newer = located(&config, "dev#01", "", "owner/second");
+    put(&oldest.device, "draft", Some(b"oldest")).unwrap();
+    put(&newer.device, "draft", Some(b"newer")).unwrap();
+    let mut now = located(&config, "dev#01", "", "owner/third");
+    now.was = vec![newer.clone(), oldest.clone()];
+    moved(&now).unwrap();
+    assert_eq!(read(&now.device, "draft"), Some(b"newer".to_vec()));
+    assert!(!newer.device.exists(), "the newest old file moved");
+    assert!(oldest.device.exists(), "an older one is left where it was");
+    let _ = std::fs::remove_dir_all(&config);
+}
+
+#[test]
+fn a_renamed_programs_folder_is_carried_to_its_new_id_once() {
+    let root = scratch();
+    let old = root.join(escaped("first"));
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("Local Storage"), b"kept").unwrap();
+    let renamed = ["first".to_owned()];
+    assert_eq!(
+        carried_from(&root, &[], "owner/first"),
+        root.join("owner_2ffirst"),
+        "no rename, nothing carried"
+    );
+    assert!(old.exists());
+    let to = carried_from(&root, &renamed, "owner/first");
+    assert_eq!(std::fs::read(to.join("Local Storage")).unwrap(), b"kept");
+    assert!(!old.exists(), "the old folder is gone");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("Local Storage"), b"stale").unwrap();
+    carried_from(&root, &renamed, "owner/first");
+    assert_eq!(
+        std::fs::read(to.join("Local Storage")).unwrap(),
+        b"kept",
+        "a folder the new id holds is kept"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

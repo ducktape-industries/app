@@ -4,6 +4,7 @@
 //! (which drops half of them).
 use super::*;
 use crate::render::tests::emitted;
+use ducktape_a11y_platform::headless::Harness;
 use gpui_kit::accesskit::{self, Action, NodeId, Toggled, TreeUpdate};
 use gpui_kit::{Role, size};
 
@@ -293,13 +294,14 @@ fn expected(name: &str, focusable: bool) -> Heard {
     }
 }
 
-fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Heard>, bool) {
+fn announce(root: wire::Node) -> (Option<Heard>, bool) {
     let root = sanitized(root);
-    let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(root)
+    });
+    let tree = native.root();
     native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
         let parent = tree
@@ -311,7 +313,7 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
         parent.focus(window, cx);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let update = &native.tree();
         let (parent_id, _) = heard(update, "parent").expect("the parent has a node");
         let Some((child_id, child)) = heard(update, "child") else {
             assert_eq!(update.focus, parent_id);
@@ -326,12 +328,11 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
     })
 }
 
-#[gpui_kit::test]
-fn view_aria_announces_what_each_renderer_did(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
+#[test]
+fn view_aria_announces_what_each_renderer_did() {
     for site in [Site::Container, Site::Image, Site::UniformListRow] {
         for (label, name) in [(None, WORDS), (Some("Labelled"), "Labelled")] {
-            let (heard, focus_on_child) = announce(cx, root(&site, every_aria("child", label)));
+            let (heard, focus_on_child) = announce(root(&site, every_aria("child", label)));
             assert_eq!(heard, Some(expected(name, true)));
             assert!(
                 !focus_on_child,
@@ -341,30 +342,26 @@ fn view_aria_announces_what_each_renderer_did(cx: &mut gpui_kit::TestAppContext)
     }
     for label in [None, Some("Labelled")] {
         let list = root(&Site::UniformList, every_aria("child", label));
-        assert_eq!(announce(cx, list), (None, false));
+        assert_eq!(announce(list), (None, false));
     }
 }
 
-#[gpui_kit::test]
-fn a_uniform_list_row_and_an_image_get_the_aria_a_container_gets(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    cx.update(gpui_kit::init);
+#[test]
+fn a_uniform_list_row_and_an_image_get_the_aria_a_container_gets() {
     for label in [None, Some("Labelled")] {
-        let container = announce(cx, root(&Site::Container, unfocusable(label)));
+        let container = announce(root(&Site::Container, unfocusable(label)));
         assert_eq!(
             container,
             (Some(expected(label.unwrap_or(WORDS), false)), true)
         );
         for site in [Site::UniformListRow, Site::Image] {
-            assert_eq!(announce(cx, root(&site, unfocusable(label))), container);
+            assert_eq!(announce(root(&site, unfocusable(label))), container);
         }
     }
 }
 
-#[gpui_kit::test]
-fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
+#[test]
+fn a_labelled_picture_without_a_role_is_an_image_in_the_tree() {
     for label in [Some("Ada's avatar"), None] {
         let aria = wire::Interactivity {
             aria: wire::Aria {
@@ -402,13 +399,14 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
             interactivity: Some(Box::new(aria)),
         };
         for picture in [image, vector] {
-            let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(picture));
-            let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            let native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
+                ViewTree::new(picture)
+            });
             let heard = native.update(|window, cx| {
-                window.activate_a11y();
+                native.activate_in(window);
                 crate::render::draw_frame(window, cx);
                 crate::render::draw_frame(window, cx);
-                let update = window.a11y_tree().expect("an a11y tree once activated");
+                let update = &native.tree();
                 heard(update, "picture").map(|(_, heard)| (heard.role, heard.name))
             });
             let want = label.map(|label| (Role::Image, Some(label.to_owned())));
@@ -417,9 +415,8 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
     }
 }
 
-#[gpui_kit::test]
-fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
+#[test]
+fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab() {
     let button = |key_name: &str, focus: u64, tab_stop: Option<bool>| {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(key_name)),
@@ -445,24 +442,22 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
         interactivity: Default::default(),
         children: vec![button("skipped", 1, None), button("stop", 2, Some(true))],
     });
-    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+    let native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
         ViewTree::new(sanitized(root))
     });
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         window.focus_next(cx);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let update = &native.tree();
         let (stop, _) = heard(update, "stop").expect("the stop has a node");
         assert_eq!(update.focus, stop, "Tab reaches the view's tab stop");
     });
 }
 
-fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>) -> (bool, bool) {
-    cx.update(gpui_kit::init);
+fn pressable_after_tab(tab_stop: Option<bool>) -> (bool, bool) {
     let button = wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("press")),
         style: crate::render::test_style(div().w(px(80.)).h(px(40.)).style().clone()),
@@ -486,39 +481,35 @@ fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>
         interactivity: Default::default(),
         children: vec![button],
     });
-    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+    let native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
         ViewTree::new(sanitized(root))
     });
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         window.focus_next(cx);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let update = &native.tree();
         let (press, heard) = heard(update, "press").expect("the button has a node");
         (heard.focus_action, update.focus == press)
     })
 }
 
-#[gpui_kit::test]
-fn a_lowered_focusable_with_tab_stop_takes_tab(cx: &mut gpui_kit::TestAppContext) {
-    assert_eq!(pressable_after_tab(cx, Some(true)), (true, true));
+#[test]
+fn a_lowered_focusable_with_tab_stop_takes_tab() {
+    assert_eq!(pressable_after_tab(Some(true)), (true, true));
 }
 
-#[gpui_kit::test]
-fn a_raw_focusable_without_tab_stop_offers_focus_but_tab_skips_it(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    let (offers, reached) = pressable_after_tab(cx, None);
+#[test]
+fn a_raw_focusable_without_tab_stop_offers_focus_but_tab_skips_it() {
+    let (offers, reached) = pressable_after_tab(None);
     assert!(offers, "the door reads it as offering focus");
     assert!(!reached, "Tab skips a focusable the wire left out");
 }
 
-#[gpui_kit::test]
-fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
+#[test]
+fn a_container_the_view_focuses_by_id_stays_a_tab_stop() {
     let stop = |key_name: &str, role: Role| {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(key_name)),
@@ -543,22 +534,21 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
         interactivity: Default::default(),
         children: vec![stop("menu", Role::Menu), stop("next", Role::Button)],
     });
-    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+    let mut native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
         ViewTree::new(sanitized(root))
     });
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let focused = |native: &mut gpui_kit::VisualTestContext| {
+    let tree = native.root();
+    let focused = |native: &mut Harness<ViewTree>| {
         native.update(|window, cx| {
             crate::render::draw_frame(window, cx);
-            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let update = &native.tree();
             ["menu", "next"]
                 .into_iter()
                 .find(|name| heard(update, name).is_some_and(|(id, _)| id == update.focus))
         })
     };
     native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         tree.update(cx, |tree, cx| {
             let target = vec![key("row"), key("menu")];
@@ -619,10 +609,8 @@ fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
     })
 }
 
-#[gpui_kit::test]
-fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+#[test]
+fn a_held_pane_over_two_claiming_composites_reports_the_pane_box() {
     struct Pane {
         view: Entity<ViewTree>,
         own: gpui_kit::FocusHandle,
@@ -638,7 +626,6 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
                 .child(self.view.clone())
         }
     }
-    cx.update(gpui_kit::init);
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("screen")),
         style: crate::render::test_style(
@@ -671,19 +658,18 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
         claims
     };
     let kept = claims(&root);
-    let window = cx.open_window(size(px(300.), px(200.)), |_, cx| Pane {
+    let native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, cx| Pane {
         view: cx.new(|_| ViewTree::new(root)),
         own: cx.focus_handle(),
     });
-    let pane = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let pane = native.root();
     native.update(|window, cx| {
-        window.activate_a11y();
+        native.activate_in(window);
         let own = pane.read(cx).own.clone();
         own.focus(window, cx);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let update = &native.tree();
         let focused = update
             .nodes
             .iter()
@@ -691,7 +677,238 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
             .map(|(_, node)| (node.role(), node.label().map(str::to_owned)));
         assert_eq!(focused, Some((Role::Group, Some("Held window".into()))));
     });
+    let claimed = pane.read_with(&native, |pane, cx| pane.view.read(cx).claimed.clone());
+    assert_eq!(
+        claimed,
+        Vec::<AuthoredPath>::new(),
+        "no composite holds the keys"
+    );
     assert_eq!(kept, 2, "the sanitizer keeps a claim per composite");
+}
+
+fn two_composites(around: Option<&str>) -> wire::Node {
+    let composites = vec![
+        claiming_composite("tabs", Role::TabList, Role::Tab),
+        claiming_composite("files", Role::ListBox, Role::ListBoxOption),
+    ];
+    let interactivity = around.map(|name| {
+        Box::new(wire::Interactivity {
+            role: Some(Role::Group),
+            focusable: true,
+            tab_stop: Some(true),
+            aria: wire::Aria {
+                author_id: Some(name.into()),
+                label: Some(name.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    });
+    sanitized(wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("screen")),
+        style: crate::render::test_style(
+            div()
+                .flex()
+                .flex_col()
+                .w(px(280.))
+                .h(px(80.))
+                .style()
+                .clone(),
+        ),
+        interactivity,
+        children: composites,
+    }))
+}
+
+fn focus_on(
+    tree: &Entity<ViewTree>,
+    native: &mut impl gpui_kit::AppContext,
+    target: Vec<wire::ElementIdWire>,
+) {
+    native
+        .with_window(tree.entity_id(), |window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.execute_widget_command(wire::WidgetCommand::Focus { target }, window, cx)
+                    .unwrap();
+            });
+            crate::render::draw_frame(window, cx);
+        })
+        .expect("the tree is drawn in a window");
+}
+
+fn claimed(tree: &Entity<ViewTree>, native: &impl gpui_kit::AppContext) -> Vec<AuthoredPath> {
+    tree.read_with(native, |tree, _| tree.claimed.clone())
+}
+
+fn row(composite: &str, n: usize) -> AuthoredPath {
+    vec![
+        key("screen"),
+        key(composite),
+        key(&format!("{composite}-{n}")),
+    ]
+}
+
+#[test]
+fn a_claim_counts_only_while_its_own_composite_holds_the_keys() {
+    let mut native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(two_composites(None))
+    });
+    let tree = native.root();
+    native.update(|window, cx| {
+        native.activate_in(window);
+        crate::render::draw_frame(window, cx);
+    });
+    assert_eq!(
+        claimed(&tree, &native),
+        Vec::<AuthoredPath>::new(),
+        "with the keys nowhere, no row claims"
+    );
+    for composite in ["files", "tabs"] {
+        focus_on(&tree, &mut native, vec![key("screen"), key(composite)]);
+        assert_eq!(
+            claimed(&tree, &native),
+            vec![row(composite, 1)],
+            "{composite} holds the keys: its row alone claims"
+        );
+        let update = native.tree();
+        let focused =
+            heard(&update, &format!("{composite}-1")).is_some_and(|(id, _)| id == update.focus);
+        assert!(focused, "assistive technology hears {composite}-1 focused");
+    }
+}
+
+#[gpui_kit::test]
+fn a_composite_named_by_a_view_focus_handle_gates_its_rows(cx: &mut gpui_kit::TestAppContext) {
+    const FILES: u64 = 5;
+    cx.update(gpui_kit::init);
+    let mut root = two_composites(None);
+    let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut root else {
+        unreachable!()
+    };
+    let Some(wire::Node::Container(view_wire::ContainerNode {
+        interactivity: Some(files),
+        ..
+    })) = children.get_mut(1)
+    else {
+        unreachable!()
+    };
+    files.focusable = false;
+    files.focus_handle = Some(FILES);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(crate::render::draw_frame);
+    assert_eq!(
+        claimed(&tree, &native),
+        Vec::<AuthoredPath>::new(),
+        "with the keys nowhere, no row claims"
+    );
+    let files = tree.read_with(&native, |tree, _| tree.view_focus_targets[&FILES].clone());
+    native.update(|window, cx| {
+        window.focus(&files, cx);
+        crate::render::draw_frame(window, cx);
+    });
+    assert_eq!(claimed(&tree, &native), vec![row("files", 1)]);
+}
+
+#[gpui_kit::test]
+fn a_composite_focused_again_in_a_new_tree_claims_on_its_first_frame(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    struct Host(Entity<ViewTree>);
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, cx| {
+        Host(cx.new(|_| ViewTree::new(two_composites(None))))
+    });
+    let host = window.root(cx).unwrap();
+    let tree = host.read_with(cx, |host, _| host.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(crate::render::draw_frame);
+    focus_on(&tree, &mut native, vec![key("screen"), key("files")]);
+    let fresh = native.update(|window, cx| {
+        let saved = tree.read_with(cx, |tree, cx| tree.presentation(window, cx));
+        let fresh = cx.new(|_| ViewTree::new(two_composites(None)).with_presentation(saved));
+        host.update(cx, |host, cx| {
+            host.0 = fresh.clone();
+            cx.notify();
+        });
+        crate::render::draw_frame(window, cx);
+        fresh
+    });
+    assert_eq!(
+        claimed(&fresh, &native),
+        vec![row("files", 1)],
+        "the new tree's first frame gives files the keys back and lowers its claim"
+    );
+}
+
+#[test]
+fn a_focused_box_around_two_composites_lets_neither_claim() {
+    let mut native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(two_composites(Some("Board")))
+    });
+    let tree = native.root();
+    native.update(|window, cx| {
+        native.activate_in(window);
+        crate::render::draw_frame(window, cx);
+    });
+    focus_on(&tree, &mut native, vec![key("screen")]);
+    assert_eq!(
+        claimed(&tree, &native),
+        Vec::<AuthoredPath>::new(),
+        "the box holds the keys, not a composite inside it"
+    );
+    focus_on(&tree, &mut native, vec![key("screen"), key("files")]);
+    assert_eq!(claimed(&tree, &native), vec![row("files", 1)]);
+}
+
+#[gpui_kit::test]
+fn a_cached_view_lowers_its_claim_again_as_the_keys_move_between_composites(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    struct Cached(Entity<ViewTree>);
+    impl Render for Cached {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                gpui_kit::AnyView::from(self.0.clone())
+                    .cached(gpui_kit::StyleRefinement::default().size_full()),
+            )
+        }
+    }
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, cx| {
+        Cached(cx.new(|_| ViewTree::new(two_composites(None))))
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |cached, _| cached.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(crate::render::draw_frame);
+    focus_on(&tree, &mut native, vec![key("screen"), key("files")]);
+    native.run_until_parked();
+    assert_eq!(claimed(&tree, &native), vec![row("files", 1)]);
+    let tabs = tree.read_with(&native, |tree, _| {
+        tree.focus_targets[&vec![key("screen"), key("tabs")]]
+            .1
+            .clone()
+    });
+    native.update(|window, cx| {
+        window.focus(&tabs, cx);
+        crate::render::draw_frame(window, cx);
+    });
+    native.run_until_parked();
+    native.update(crate::render::draw_frame);
+    assert_eq!(
+        claimed(&tree, &native),
+        vec![row("tabs", 1)],
+        "the keys moved to tabs with no write from the view: the claim moved with them"
+    );
 }
 
 mod phase_two {
@@ -717,15 +934,16 @@ mod phase_two {
         }
     }
 
-    fn built(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Option<accesskit::Node> {
+    fn built(root: wire::Node) -> Option<accesskit::Node> {
         let root = sanitized(root);
-        let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
+            ViewTree::new(root)
+        });
         native.update(|window, cx| {
-            window.activate_a11y();
+            native.activate_in(window);
             crate::render::draw_frame(window, cx);
             crate::render::draw_frame(window, cx);
-            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let update = &native.tree();
             update
                 .nodes
                 .iter()
@@ -734,9 +952,8 @@ mod phase_two {
         })
     }
 
-    #[gpui_kit::test]
-    fn every_renderer_puts_the_phase_two_aria_on_its_node(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
+    #[test]
+    fn every_renderer_puts_the_phase_two_aria_on_its_node() {
         for site in [
             Site::Container,
             Site::Image,
@@ -744,7 +961,7 @@ mod phase_two {
             Site::ResizeHandle,
             Site::List,
         ] {
-            let node = built(cx, child(&site, phase_two(Role::Button)))
+            let node = built(child(&site, phase_two(Role::Button)))
                 .unwrap_or_else(|| panic!("{site:?} has a node"));
             assert_eq!(node.role(), Role::Button);
             assert_eq!(node.label(), Some("Phase two"));
@@ -765,23 +982,21 @@ mod phase_two {
         }
     }
 
-    #[gpui_kit::test]
-    fn a_plain_list_has_no_node(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
+    #[test]
+    fn a_plain_list_has_no_node() {
         let mut plain = wire::Interactivity::default();
-        let node = built(cx, child(&Site::List, plain.clone()));
+        let node = built(child(&Site::List, plain.clone()));
         assert!(node.is_none());
         plain.aria.author_id = Some("child".into());
         plain.role = Some(Role::List);
         assert_eq!(
-            built(cx, child(&Site::List, plain)).map(|node| node.role()),
+            built(child(&Site::List, plain)).map(|node| node.role()),
             Some(Role::List)
         );
     }
 
-    #[gpui_kit::test]
-    fn a_status_speaks_its_drawn_words_as_its_value(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
+    #[test]
+    fn a_status_speaks_its_drawn_words_as_its_value() {
         for role in [Role::Status, Role::Alert] {
             let status = wire::Interactivity {
                 role: Some(role),
@@ -792,15 +1007,14 @@ mod phase_two {
                 },
                 ..Default::default()
             };
-            let node = built(cx, child(&Site::Container, status)).expect("the status has a node");
+            let node = built(child(&Site::Container, status)).expect("the status has a node");
             assert_eq!(node.label(), Some(WORDS));
             assert_eq!(node.value(), Some(WORDS));
         }
     }
 
-    #[gpui_kit::test]
-    fn a_resize_handle_takes_focus_and_keys(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
+    #[test]
+    fn a_resize_handle_takes_focus_and_keys() {
         let divider = wire::Interactivity {
             role: Some(Role::Splitter),
             focusable: true,
@@ -815,19 +1029,20 @@ mod phase_two {
             ..Default::default()
         };
         let root = child(&Site::ResizeHandle, divider);
-        let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
-        let tree = window.root(cx).unwrap();
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let mut native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
+            ViewTree::new(root)
+        });
+        let tree = native.root();
         let (events, _subscription) = emitted(&tree, &mut native);
         native.update(|window, cx| {
-            window.activate_a11y();
+            native.activate_in(window);
             crate::render::draw_frame(window, cx);
             window.focus_next(cx);
         });
         native.simulate_keystrokes("left");
         native.update(|window, cx| {
             crate::render::draw_frame(window, cx);
-            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let update = &native.tree();
             let (id, node) = update
                 .nodes
                 .iter()
@@ -1022,18 +1237,16 @@ mod phase_two {
         })
     }
 
-    fn set_places(
-        cx: &mut gpui_kit::TestAppContext,
-        root: wire::Node,
-    ) -> Vec<(String, Option<usize>, Option<usize>)> {
+    fn set_places(root: wire::Node) -> Vec<(String, Option<usize>, Option<usize>)> {
         let root = sanitized(root);
-        let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let native = Harness::open_with(gpui_kit::init, size(px(300.), px(200.)), |_, _| {
+            ViewTree::new(root)
+        });
         native.update(|window, cx| {
-            window.activate_a11y();
+            native.activate_in(window);
             crate::render::draw_frame(window, cx);
             crate::render::draw_frame(window, cx);
-            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let update = &native.tree();
             let mut places: Vec<_> = update
                 .nodes
                 .iter()
@@ -1048,9 +1261,8 @@ mod phase_two {
         })
     }
 
-    #[gpui_kit::test]
-    fn a_list_row_says_where_it_is_in_the_list(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
+    #[test]
+    fn a_list_row_says_where_it_is_in_the_list() {
         let mut told = row(2, Some(Role::ListBoxOption));
         if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut told {
             let interactivity = interactivity.get_or_insert_default();
@@ -1075,7 +1287,7 @@ mod phase_two {
         let none = || (None, None);
         let place = |id: &str, (at, of): (Option<usize>, Option<usize>)| (id.to_owned(), at, of);
         assert_eq!(
-            set_places(cx, uniform),
+            set_places(uniform),
             [
                 place("inner-0", none()),
                 place("inner-1", none()),
@@ -1105,7 +1317,7 @@ mod phase_two {
             ],
         };
         assert_eq!(
-            set_places(cx, variable),
+            set_places(variable),
             [
                 place("inner-0", none()),
                 place("inner-1", none()),

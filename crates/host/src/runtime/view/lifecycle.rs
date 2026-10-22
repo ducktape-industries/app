@@ -47,7 +47,7 @@ impl View {
     /// that got past the roster fills `timing`, which is logged as one
     /// `view_load` line once the load is installed. Each stage is also a
     /// sample under the seat's perf key.
-    pub fn load(
+    pub async fn load(
         program: &'static str,
         code: Option<(::abi::BlobId, bool)>,
         asked_of: &Connection,
@@ -108,13 +108,13 @@ impl View {
         if startable {
             return Self::start(program, code, mounted, timing);
         }
-        let runtime = handle();
         timing.started = Some(Instant::now());
         timing.path = "first";
         let key = crate::perf::Key::View { program, instance };
         let show = |stage: Slot| lock(mounted).show(generation, stage);
         let fetched = Instant::now();
-        let bytes = match crate::contract::os().bundled_view(&blob) {
+        let bundled = crate::contract::os().bundled_view(&blob);
+        let bytes = match bundled {
             // the app ships the view section this blob holds: no fetch
             Some(view_bytes) => Ok(Some((view_bytes.into(), "bundle"))),
             None => {
@@ -122,7 +122,7 @@ impl View {
                     received: 0,
                     total: None,
                 });
-                runtime.block_on(crate::backend::views::view_of(client, &blob, bare))
+                crate::backend::views::view_of(client, &blob, bare).await
             }
         };
         timing.fetch = fetched.elapsed();
@@ -290,12 +290,20 @@ impl View {
         instance: u64,
         view: &ViewCode,
         shown: &str,
+        connection: &Connection,
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
         let instantiated = Instant::now();
-        let mut fresh = Self::seated(program, instance, &view.runner, view.hash, shown)
-            .await
-            .map_err(Failure::Refused)?;
+        let mut fresh = Self::seated(
+            program,
+            instance,
+            &view.runner,
+            view.hash,
+            shown,
+            connection.clone(),
+        )
+        .await
+        .map_err(Failure::Refused)?;
         timing.instantiate = instantiated.elapsed();
         let key = fresh.perf_key();
         crate::perf::record(key, "instantiate", timing.instantiate.as_micros() as u64);
@@ -305,6 +313,7 @@ impl View {
         fresh.tint = view.tint;
         fresh.description = view.description.clone();
         fresh.capabilities = view.capabilities.clone();
+        fresh.hosts = view.hosts.clone();
         fresh.min_width = view.min_width;
         fresh.width = view.width;
         fresh.wire = view.wire.clone();
@@ -330,10 +339,11 @@ impl View {
         shown: &str,
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
-        let (asked, ambient) = {
+        let (asked, ambient, connection) = {
             let mut locked = lock(mounted);
             let old = drawn(&mut locked, alive)?;
-            (old.handover(&code.hash)?, old.ambient())
+            let connection = old.connection.current();
+            (old.handover(&code.hash)?, old.ambient(), connection)
         };
         let state = match asked {
             None => None,
@@ -355,7 +365,7 @@ impl View {
                 old.handed_over(landed, instance, &code.hash, taken, timing)?
             }
         };
-        let fresh = Self::seated_from(program, instance, code, shown, timing).await?;
+        let fresh = Self::seated_from(program, instance, code, shown, &connection, timing).await?;
         Self::prepared(fresh, (state, ambient), shown, timing).await
     }
 
@@ -645,7 +655,7 @@ impl View {
     /// to `View` is a compile error until it says whether a sibling
     /// carries it: what `load` set (the seat, the manifest, the deployment)
     /// is carried, and what the instance ran into starts fresh.
-    async fn sibling(&self, shown: &str) -> Result<Self, String> {
+    fn sibling<'s>(&self, shown: &'s str) -> impl Future<Output = Result<Self, String>> + use<'s> {
         let Self {
             program,
             instance,
@@ -654,12 +664,13 @@ impl View {
             tint,
             description,
             capabilities,
+            hosts,
             min_width,
             width,
             wire,
             code,
             hash,
-            connection: _,
+            connection,
             activation: _,
             undeclared_logged: _,
             unknown_logged: _,
@@ -699,39 +710,54 @@ impl View {
             placement: _,
             placement_change: _,
             placement_subscriptions: _,
+            debug_mode: _,
+            debug_subscriptions: _,
             keeps_above: _,
             floats: _,
             route_subscriptions: _,
             intents: _,
             replies: _,
             live_subscriptions: _,
+            joints: _,
             tracks: _,
+            sockets: _,
             tasks: _,
             clipboard: _,
             picker: _,
             clocks: _,
             fault: _,
+            past_memory: _,
             alive: _,
             staged: _,
             notifier,
             showing: _,
             recipient,
         } = self;
-        let mut sibling =
-            Self::seated(program, *instance, runner, running.code_hash(), shown).await?;
-        sibling.name = name.clone();
-        sibling.icon = icon.clone();
-        sibling.tint = *tint;
-        sibling.description = description.clone();
-        sibling.capabilities = capabilities.clone();
-        sibling.min_width = *min_width;
-        sibling.width = *width;
-        sibling.wire = wire.clone();
-        sibling.code = code.clone();
-        sibling.hash = *hash;
-        sibling.notifier = *notifier;
-        sibling.recipient = recipient.clone();
-        Ok(sibling)
+        let (program, instance, runner) = (*program, *instance, runner.clone());
+        let (code_hash, connection) = (running.code_hash(), connection.clone());
+        let (name, icon, tint, description) =
+            (name.clone(), icon.clone(), *tint, description.clone());
+        let (capabilities, hosts) = (capabilities.clone(), hosts.clone());
+        let (min_width, width, wire) = (*min_width, *width, wire.clone());
+        let (code, hash, notifier, recipient) = (code.clone(), *hash, *notifier, recipient.clone());
+        async move {
+            let mut sibling =
+                Self::seated(program, instance, &runner, code_hash, shown, connection).await?;
+            sibling.name = name;
+            sibling.icon = icon;
+            sibling.tint = tint;
+            sibling.description = description;
+            sibling.capabilities = capabilities;
+            sibling.hosts = hosts;
+            sibling.min_width = min_width;
+            sibling.width = width;
+            sibling.wire = wire;
+            sibling.code = code;
+            sibling.hash = hash;
+            sibling.notifier = notifier;
+            sibling.recipient = recipient;
+            Ok(sibling)
+        }
     }
 
     /// `init`, timed into `timing` and the registry, as a load runs it, its
@@ -752,10 +778,33 @@ impl View {
     /// Why the view stopped, as its seat shows it: one built against
     /// another wire than this app's says so beside the reason.
     pub fn failure(&self, reason: String) -> Failure {
-        match foreign_wire(&self.wire) {
+        match foreign_wire(&self.wire).filter(|_| !self.past_memory) {
             Some(wire) => Failure::Wire(format!("{reason} ({wire})")),
             None => Failure::Trapped(reason),
         }
+    }
+
+    pub(in crate::runtime) fn restart_code(&mut self) -> Option<(Box<ViewCode>, String)> {
+        let code = self.code.take()?;
+        let shown = shown_as(self.program, &code.hash);
+        Some((code, shown))
+    }
+
+    pub(in crate::runtime) fn restarted<'s>(
+        &self,
+        shown: &'s str,
+    ) -> impl Future<Output = Result<Self, String>> + use<'s> {
+        let sibling = self.sibling(shown);
+        async move {
+            let mut fresh = sibling.await?;
+            fresh.inited(shown).await?;
+            Ok(fresh)
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime) fn code_hash_for_test(&self) -> [u8; 32] {
+        self.running.code_hash()
     }
 
     pub fn deployed(&mut self, hash: [u8; 32]) {
@@ -883,6 +932,7 @@ impl View {
         view.tint = listing.tint;
         view.description = listing.description;
         view.capabilities = listing.capabilities;
+        view.hosts = listing.hosts;
         view.min_width = listing.min_width;
         view.width = listing.width;
         view.wire = listing.wire;
@@ -939,7 +989,8 @@ impl View {
         code: [u8; 32],
         shown: &str,
     ) -> Result<Self, String> {
-        now(Self::seated(program, 0, runner, code, shown))
+        let connection = connection().lock().expect("views rpc").clone();
+        now(Self::seated(program, 0, runner, code, shown, connection))
     }
 
     /// An instance of the prepared `code` seated by `runner`, its exports
@@ -951,6 +1002,7 @@ impl View {
         runner: &Arc<dyn ViewRunner>,
         code: [u8; 32],
         shown: &str,
+        connection: Connection,
     ) -> Result<Self, String> {
         let (land, landing) = Landing::channel();
         runner.instantiate(code, SeatId(program, instance), land);
@@ -964,7 +1016,7 @@ impl View {
             }
         };
         Ok(Self {
-            connection: connection().lock().expect("views rpc").clone(),
+            connection,
             activation: None,
             program,
             instance,
@@ -973,6 +1025,7 @@ impl View {
             tint: Tint::None,
             description: String::new(),
             capabilities: Vec::new(),
+            hosts: Vec::new(),
             min_width: 0,
             width: None,
             // the manifest's, once `load` reads it
@@ -1016,18 +1069,23 @@ impl View {
             placement: Default::default(),
             placement_change: None,
             placement_subscriptions: Vec::new(),
+            debug_mode: kernel::debug(),
+            debug_subscriptions: Vec::new(),
             keeps_above: false,
             floats: crate::contract::os().facts().floats,
             route_subscriptions: Vec::new(),
             intents: Vec::new(),
             replies: Arc::default(),
             live_subscriptions: Vec::new(),
+            joints: Default::default(),
             tracks: Default::default(),
+            sockets: Default::default(),
             tasks: Vec::new(),
             clipboard: Default::default(),
             picker: Default::default(),
             clocks: Vec::new(),
             fault: None,
+            past_memory: false,
             hash: None,
             alive: Arc::new(()),
             staged: false,
@@ -1098,7 +1156,10 @@ impl View {
         let Some(&id) = self.route_subscriptions.first() else {
             return;
         };
-        if let Some(route) = crate::runtime::take_route(self.program, self.instance) {
+        let Some(network) = self.connection.on.get() else {
+            return;
+        };
+        if let Some(route) = crate::runtime::take_route(&network, self.program, self.instance) {
             tracing::info!(target: "ducktape::app", program = self.program, instance = self.instance, %route, "a seat's view is handed its route");
             self.stream_item(id, wire::methods::encode(&route));
         }
@@ -1119,6 +1180,16 @@ impl View {
         };
         for id in self.placement_subscriptions.clone() {
             self.stream_item(id, wire::methods::encode(&placement));
+        }
+    }
+
+    pub fn sync_debug(&mut self) {
+        if !self.debug_mode.has_changed().unwrap_or(false) {
+            return;
+        }
+        let on = *self.debug_mode.borrow_and_update();
+        for id in self.debug_subscriptions.clone() {
+            self.stream_item(id, wire::methods::encode(&on));
         }
     }
 }
@@ -1155,6 +1226,7 @@ fn view_code(
         min_width: listing.min_width,
         width: listing.width,
         capabilities: listing.capabilities,
+        hosts: listing.hosts,
         wire: listing.wire,
     }
 }

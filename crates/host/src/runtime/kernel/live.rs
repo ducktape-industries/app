@@ -127,15 +127,17 @@ impl Tracks {
 }
 
 pub(in crate::runtime) fn quit() -> impl Future<Output = ()> {
-    let held = super::super::connection()
-        .lock()
-        .expect("views rpc")
-        .live
-        .take();
-    let closed = super::handle().spawn(async move {
-        if let Some(session) = held {
-            session.quit().await;
-        }
+    close(&super::super::networks())
+}
+
+fn close(networks: &[Arc<crate::runtime::Network>]) -> impl Future<Output = ()> + use<> {
+    let held: Vec<_> = networks
+        .iter()
+        .filter(|network| !network.followed)
+        .filter_map(|network| network.connection.lock().expect("views rpc").live.take())
+        .collect();
+    let closed = rt::task::spawn(async move {
+        futures::future::join_all(held.iter().map(|session| session.quit())).await;
     });
     async move {
         let _ = closed.await;
@@ -549,8 +551,8 @@ const CONSUMED_BACKLOG: usize = 64;
 /// The live session a piece the host runs for a view reaches
 /// (`render/call.rs`: a publishing camera or microphone piece, a remote
 /// piece), stamped `<chain>/<program>/<room>` and granted by the room's
-/// program exactly as the view's own `live.*` requests are, on the app's
-/// connection as it is now: a reconnect moves the connection, and each
+/// program exactly as the view's own `live.*` requests are, on its seat's
+/// network's connection as it is now: a reconnect moves the connection, and each
 /// track opens again on the new session as a view's request does
 /// (`reopen`). Nothing of it reaches [`Replies`]: a piece hears its
 /// track through its own channel and reads its objects on its own
@@ -558,6 +560,7 @@ const CONSUMED_BACKLOG: usize = 64;
 #[derive(Clone)]
 pub struct HostLive {
     program: &'static str,
+    on: super::super::roster::On,
     fixed: Option<(Arc<dyn Session>, String)>,
 }
 
@@ -572,7 +575,7 @@ pub type TrackHeard = wire::TrackState;
 pub struct HostPublication {
     outbox: Arc<Outbox>,
     heard: mpsc::UnboundedReceiver<TrackHeard>,
-    task: tokio::task::JoinHandle<()>,
+    task: rt::task::Task,
 }
 
 impl HostPublication {
@@ -599,7 +602,7 @@ impl Drop for HostPublication {
 #[cfg_attr(not(feature = "call"), allow(dead_code))]
 pub struct HostSubscription {
     items: mpsc::Receiver<Subscribed>,
-    task: tokio::task::JoinHandle<()>,
+    task: rt::task::Task,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -610,14 +613,14 @@ pub(crate) enum Subscribed {
 
 impl HostSubscription {
     #[cfg_attr(not(feature = "call"), allow(dead_code))]
-    pub(crate) fn recv(&mut self) -> Option<Subscribed> {
-        self.items.blocking_recv()
+    pub(crate) async fn recv(&mut self) -> Option<Subscribed> {
+        self.items.recv().await
     }
 
     /// What ends the subscription from another thread than the one that
     /// reads it: aborted, the reader's `recv` answers `None`.
-    pub fn stopper(&self) -> tokio::task::AbortHandle {
-        self.task.abort_handle()
+    pub fn stopper(&self) -> rt::task::Stopper {
+        self.task.stopper()
     }
 }
 
@@ -628,10 +631,11 @@ impl Drop for HostSubscription {
 }
 
 impl HostLive {
-    /// The tracks of `program`'s pieces, on the app's connection.
-    pub fn new(program: &'static str) -> Self {
+    /// The tracks of `program`'s pieces, on `network`'s connection.
+    pub fn new(program: &'static str, network: &Arc<crate::runtime::Network>) -> Self {
         Self {
             program,
+            on: super::super::roster::On::of(network),
             fixed: None,
         }
     }
@@ -640,6 +644,7 @@ impl HostLive {
     pub(crate) fn on(session: Arc<dyn Session>, chain: &str, program: &'static str) -> Self {
         Self {
             program,
+            on: Default::default(),
             fixed: Some((session, chain.to_owned())),
         }
     }
@@ -648,7 +653,8 @@ impl HostLive {
         if let Some(fixed) = &self.fixed {
             return Some(fixed.clone());
         }
-        let connection = super::super::connection().lock().expect("views rpc");
+        let network = self.on.get()?;
+        let connection = network.connection.lock().expect("views rpc");
         let session = connection.live.clone()?;
         Some((session, connection.chain.clone()))
     }
@@ -661,7 +667,7 @@ impl HostLive {
         let live = self.clone();
         let track = track.clone();
         let objects = outbox.clone();
-        let task = super::handle().spawn(async move {
+        let task = rt::task::spawn(async move {
             live.publishing(track, mode, priority, objects, tell).await;
         });
         HostPublication {
@@ -685,7 +691,7 @@ impl HostLive {
         loop {
             let Some((session, chain)) = self.current() else {
                 let _ = tell.send(ended(refusal::NOT_CONNECTED));
-                tokio::time::sleep(HOLD).await;
+                rt::time::sleep(HOLD).await;
                 continue;
             };
             let stamped = match stamp(&chain, self.program, &track) {
@@ -701,12 +707,12 @@ impl HostLive {
             let mut request = match session.open(open).await {
                 Ok(request) => request,
                 Err(refusal) if refusal.code == refusal::DUPLICATE_TRACK => {
-                    tokio::time::sleep(REOPEN).await;
+                    rt::time::sleep(REOPEN).await;
                     continue;
                 }
                 Err(refusal) => {
                     let _ = tell.send(ended(&refusal.code));
-                    tokio::time::sleep(HOLD).await;
+                    rt::time::sleep(HOLD).await;
                     continue;
                 }
             };
@@ -719,7 +725,7 @@ impl HostLive {
                     Heard::Closed(refusal) => {
                         closed = true;
                         let _ = tell.send(ended(&refusal.code));
-                        tokio::time::sleep(HOLD).await;
+                        rt::time::sleep(HOLD).await;
                         break;
                     }
                     Heard::Dropped(_) | Heard::Subscribed { .. } | Heard::Announce { .. } => {
@@ -745,7 +751,7 @@ impl HostLive {
         let (give, items) = mpsc::channel(CONSUMED_BACKLOG);
         let live = self.clone();
         let track = track.clone();
-        let task = super::handle().spawn(async move {
+        let task = rt::task::spawn(async move {
             live.subscribing(track, from, give).await;
         });
         HostSubscription { items, task }
@@ -763,7 +769,7 @@ impl HostLive {
                 if give.send(ended(refusal::NOT_CONNECTED)).await.is_err() {
                     return;
                 }
-                tokio::time::sleep(HOLD).await;
+                rt::time::sleep(HOLD).await;
                 continue;
             };
             let stamped = match stamp(&chain, self.program, &track) {
@@ -808,7 +814,7 @@ impl HostLive {
                     announced(&session, &stamped).await;
                 }
                 refusal::NOT_CONNECTED => {}
-                _ => tokio::time::sleep(HOLD).await,
+                _ => rt::time::sleep(HOLD).await,
             }
         }
     }
@@ -819,7 +825,7 @@ async fn announced(session: &Arc<dyn Session>, track: &Track) {
         namespace: track.namespace.clone(),
     };
     let Ok(mut request) = session.open(open).await else {
-        return tokio::time::sleep(HOLD).await;
+        return rt::time::sleep(HOLD).await;
     };
     while let Some(heard) = request.heard.recv().await {
         match heard {
@@ -832,7 +838,7 @@ async fn announced(session: &Arc<dyn Session>, track: &Track) {
             _ => {}
         }
     }
-    tokio::time::sleep(HOLD).await;
+    rt::time::sleep(HOLD).await;
 }
 
 #[cfg(test)]

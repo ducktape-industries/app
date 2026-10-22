@@ -59,12 +59,19 @@ impl noded_client::Signer for DeviceKey {
         self.public
     }
 
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
-        store::sign(
-            &self.alias,
-            &commonware_utils::union_unique(namespace, message),
-        )
-        .map_err(noded_client::SignError)
+    fn sign<'a>(
+        &'a self,
+        namespace: &'a [u8],
+        message: &'a [u8],
+    ) -> rt::Fut<'a, Result<[u8; 64], noded_client::SignError>> {
+        let alias = self.alias.clone();
+        let message = commonware_utils::union_unique(namespace, message);
+        Box::pin(async move {
+            rt::task::blocking(move || store::sign(&alias, &message))
+                .await
+                .map_err(|_| noded_client::SignError("the key store's work did not finish".into()))?
+                .map_err(noded_client::SignError)
+        })
     }
 }
 
@@ -76,6 +83,20 @@ pub fn storage(keyring: &str) -> KeyResult<KeyStorage> {
         sealed,
         level: level_of(&level)?,
     })
+}
+
+/// What a Java exception from the key store says to a person: its message,
+/// or, where it carries none (AndroidKeyStore's `AEADBadTagException`), its
+/// class.
+pub fn java_refusal(class: &str, message: &str) -> String {
+    let unsaid = message.is_empty() || message == "<NULL>";
+    match unsaid {
+        true => {
+            let short = class.rsplit(['.', '/']).next().unwrap_or(class);
+            format!("The key store refused ({short}).")
+        }
+        false => message.to_owned(),
+    }
 }
 
 /// A store's level word as the host names it. The Swift store answers
@@ -93,6 +114,31 @@ pub fn level_of(word: &str) -> KeyResult<KeyLevel> {
         other => Err(format!(
             "The key store names where this key is kept as `{other}`, which this app does not read yet."
         )),
+    }
+}
+
+/// A view's secrets (`contract::Secrets`) in the store that keeps this
+/// device's key: the Keychain on iOS, a file sealed by a Keystore key on
+/// Android.
+#[cfg(any(target_os = "ios", target_os = "android"))]
+pub struct PhoneSecrets;
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
+impl ducktape_host::contract::Secrets for PhoneSecrets {
+    fn get(&self, name: &str) -> Result<Option<Vec<u8>>, ducktape_host::contract::KeyRefusal> {
+        store::secret_get(name).map_err(ducktape_host::contract::KeyRefusal::Denied)
+    }
+
+    fn set(
+        &self,
+        name: &str,
+        value: Option<&[u8]>,
+    ) -> Result<(), ducktape_host::contract::KeyRefusal> {
+        let done = match value {
+            Some(value) => store::secret_set(name, value),
+            None => store::secret_remove(name),
+        };
+        done.map_err(ducktape_host::contract::KeyRefusal::Denied)
     }
 }
 
@@ -120,13 +166,19 @@ impl noded_client::Signer for Reader {
         public
     }
 
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
+    fn sign<'a>(
+        &'a self,
+        namespace: &'a [u8],
+        message: &'a [u8],
+    ) -> rt::Fut<'a, Result<[u8; 64], noded_client::SignError>> {
         let signature = self
             .0
             .sign(&commonware_utils::union_unique(namespace, message));
-        signature.as_ref().try_into().map_err(|_| {
-            noded_client::SignError("Ed25519 answered a signature that is not 64 bytes.".into())
-        })
+        Box::pin(std::future::ready(signature.as_ref().try_into().map_err(
+            |_| {
+                noded_client::SignError("Ed25519 answered a signature that is not 64 bytes.".into())
+            },
+        )))
     }
 }
 
@@ -163,9 +215,28 @@ mod tests {
     }
 
     #[test]
+    fn a_java_refusal_with_no_message_names_its_class() {
+        assert_eq!(
+            java_refusal("javax.crypto.AEADBadTagException", "<NULL>"),
+            "The key store refused (AEADBadTagException)."
+        );
+        assert_eq!(
+            java_refusal("javax/crypto/AEADBadTagException", ""),
+            "The key store refused (AEADBadTagException)."
+        );
+        assert_eq!(
+            java_refusal(
+                "java.lang.IllegalStateException",
+                "could not open the secret (AEADBadTagException)"
+            ),
+            "could not open the secret (AEADBadTagException)"
+        );
+    }
+
+    #[test]
     fn the_reader_signs_the_namespaced_message() {
         let reader = Reader::new().unwrap();
-        let signature = reader.sign(b"ducktape", b"query").unwrap();
+        let signature = futures::executor::block_on(reader.sign(b"ducktape", b"query")).unwrap();
         let public =
             ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, reader.public_key());
         public

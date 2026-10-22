@@ -52,6 +52,8 @@ pub mod contract;
 pub mod fonts;
 #[cfg(feature = "ui")]
 pub mod frames;
+#[cfg(feature = "ui")]
+pub mod kept;
 pub mod memory;
 pub mod motion;
 pub mod perf;
@@ -64,5 +66,7 @@ pub mod runtime;
 pub mod session;
 #[cfg(feature = "ui")]
 pub mod start;
+#[cfg(feature = "ui")]
+pub mod text_input;
 #[cfg(feature = "ui")]
 pub mod theme;

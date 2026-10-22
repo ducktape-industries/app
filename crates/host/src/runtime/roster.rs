@@ -1,8 +1,6 @@
-//! The node in hand and what it runs: the global [`Connection`], the roster
-//! (the node's program list and each one's code; the app keeps one, reached
-//! through [`roster`], and a test builds its own), the rail rows the shell
-//! draws from it, the loads a connect or a new block starts, and the reading
-//! of a `duck://` link against the views this connection lists.
+//! The networks the app holds, each a [`Network`]: its node [`Connection`], its roster and
+//! its seats; the one in hand ([`in_hand`]); the rail rows drawn from a roster, the loads a
+//! connect or a new block starts, and the reading of a `duck://` link against a roster.
 use super::*;
 
 /// The session facts every view is handed as its props: the signing key
@@ -31,27 +29,189 @@ pub(super) struct Connection {
     pub(super) chain: String,
     pub(super) rev: u64,
     pub(super) live: Option<Arc<dyn crate::backend::live::Session>>,
-    pub(super) apart: Option<Arc<Apart>>,
+    pub(super) on: On,
 }
 
-#[derive(Default)]
-pub(super) struct Apart {
-    pub(super) left: std::sync::atomic::AtomicBool,
+#[derive(Clone)]
+pub(super) struct On(std::sync::Weak<Network>);
+
+impl Default for On {
+    fn default() -> Self {
+        Self::of(in_hand())
+    }
+}
+
+impl On {
+    pub(super) fn of(network: &Arc<Network>) -> Self {
+        Self(Arc::downgrade(network))
+    }
+
+    pub(super) fn get(&self) -> Option<Arc<Network>> {
+        self.0.upgrade()
+    }
+
+    pub(super) fn followed(&self) -> bool {
+        self.get().is_some_and(|network| network.followed)
+    }
+
+    pub(super) fn roster(&self) -> Roster {
+        self.get()
+            .map(|network| network.roster.clone())
+            .unwrap_or_default()
+    }
+}
+
+pub struct Network {
+    pub(super) id: u64,
+    pub(super) connection: Mutex<Connection>,
     pub(super) roster: Roster,
+    pub(super) seats: Registry,
+    pub(super) followed: bool,
+    pub(super) left: std::sync::atomic::AtomicBool,
+    reading: std::sync::atomic::AtomicBool,
+}
+
+impl Network {
+    pub(super) fn new(followed: bool) -> Arc<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let network = Arc::new(Self {
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            connection: Mutex::new(Connection {
+                client: None,
+                network: String::new(),
+                chain: String::new(),
+                rev: 0,
+                live: None,
+                on: On(std::sync::Weak::new()),
+            }),
+            roster: Roster::default(),
+            seats: Registry::default(),
+            followed,
+            left: Default::default(),
+            reading: Default::default(),
+        });
+        lock(&network.connection).on = On::of(&network);
+        let mut every = lock(every());
+        every.retain(|held| held.strong_count() > 0);
+        every.push(Arc::downgrade(&network));
+        drop(every);
+        network
+    }
+
+    pub(super) fn take(
+        &self,
+        client: &crate::backend::RpcClient,
+        network: &str,
+        chain: &str,
+    ) -> Connection {
+        let mut connection = lock(&self.connection);
+        connection.rev += 1;
+        connection.client = Some(client.clone());
+        connection.network = network.to_owned();
+        connection.chain = chain.to_owned();
+        connection.live = Some(Arc::new(crate::backend::live::Client::new(client.clone())));
+        connection.clone()
+    }
+
+    pub fn connected(
+        self: &Arc<Self>,
+        client: &crate::backend::RpcClient,
+        network: &str,
+        chain: &str,
+    ) {
+        super::notifier::stop_every();
+        let snapshot = self.take(client, network, chain);
+        spawn_roster_read(self.clone(), snapshot, || {});
+    }
+
+    pub fn disconnected(&self) {
+        let mut connection = lock(&self.connection);
+        if connection.client.is_some() {
+            *connection = Connection {
+                rev: connection.rev + 1,
+                on: connection.on.clone(),
+                ..Connection::default()
+            };
+        }
+    }
+
+    pub fn deployments_checked(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.reading.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let snapshot = lock(&self.connection).clone();
+        let reading = self.clone();
+        let done = move || reading.reading.store(false, Ordering::SeqCst);
+        if snapshot.client.is_none() || !spawn_roster_read(self.clone(), snapshot, done) {
+            self.reading.store(false, Ordering::SeqCst);
+        }
+    }
+
+    pub fn roster(&self) -> &Roster {
+        &self.roster
+    }
+
+    pub fn deployments_due(&self, height: u64) -> bool {
+        self.roster.due(height)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn apart() -> Arc<Self> {
+        Self::new(false)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn reached(&self) -> Option<(String, String)> {
+        let connection = lock(&self.connection);
+        let named = (connection.network.clone(), connection.chain.clone());
+        connection.client.as_ref().map(|_| named)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seated(&self, program: &str, instance: u64) -> bool {
+        lock(&self.seats)
+            .keys()
+            .any(|(name, at)| *name == program && *at == instance)
+    }
 }
 
 impl Connection {
     pub(super) fn stale(&self) -> bool {
-        match &self.apart {
-            Some(apart) => apart.left.load(std::sync::atomic::Ordering::SeqCst),
-            None => connection().lock().expect("views rpc").rev != self.rev,
+        let Some(network) = self.on.get() else {
+            return true;
+        };
+        match network.followed {
+            true => network.left.load(std::sync::atomic::Ordering::SeqCst),
+            false => lock(&network.connection).rev != self.rev,
         }
+    }
+
+    pub(super) fn current(&self) -> Connection {
+        self.on
+            .get()
+            .map_or_else(|| self.clone(), |network| lock(&network.connection).clone())
     }
 }
 
+fn every() -> &'static Mutex<Vec<std::sync::Weak<Network>>> {
+    static EVERY: OnceLock<Mutex<Vec<std::sync::Weak<Network>>>> = OnceLock::new();
+    EVERY.get_or_init(Mutex::default)
+}
+
+pub(super) fn networks() -> Vec<Arc<Network>> {
+    let mut every = lock(every());
+    every.retain(|held| held.strong_count() > 0);
+    every.iter().filter_map(std::sync::Weak::upgrade).collect()
+}
+
+pub fn in_hand() -> &'static Arc<Network> {
+    static IN_HAND: OnceLock<Arc<Network>> = OnceLock::new();
+    IN_HAND.get_or_init(|| Network::new(false))
+}
+
 pub(super) fn connection() -> &'static Mutex<Connection> {
-    static CONNECTION: OnceLock<Mutex<Connection>> = OnceLock::new();
-    CONNECTION.get_or_init(Mutex::default)
+    &in_hand().connection
 }
 
 /// A roster as a node last listed it, every program and its code, and
@@ -69,6 +229,7 @@ pub struct Roster {
 struct Bound {
     asked_of: Option<u64>,
     roles: Option<abi::Roles>,
+    renames: Vec<(String, String)>,
     due: Due,
 }
 
@@ -98,6 +259,29 @@ impl Roster {
     /// answers them: `None` until read.
     pub fn roles(&self) -> Option<abi::Roles> {
         self.bound().roles.clone()
+    }
+
+    pub(super) fn renamed_from(&self, program: &str) -> Vec<String> {
+        self.bound()
+            .renames
+            .iter()
+            .rev()
+            .filter(|(_, to)| to == program)
+            .map(|(from, _)| from.clone())
+            .collect()
+    }
+
+    pub(super) fn current(&self, program: &str) -> String {
+        self.bound()
+            .renames
+            .iter()
+            .find(|(from, _)| from == program)
+            .map_or_else(|| program.to_owned(), |(_, to)| to.clone())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn renamed(&self, renames: Vec<(String, String)>) {
+        self.bound().renames = renames;
     }
 
     /// The role bindings as if the programs role had answered `roles`.
@@ -160,10 +344,17 @@ impl Roster {
     }
 }
 
+pub fn slug(program: &str) -> String {
+    super::store::escaped(program)
+}
+
+pub fn named(program: &str) -> &str {
+    program.rsplit_once('/').map_or(program, |(_, name)| name)
+}
+
 /// The app's one roster.
 pub fn roster() -> &'static Roster {
-    static ROSTER: OnceLock<Roster> = OnceLock::new();
-    ROSTER.get_or_init(Roster::default)
+    &in_hand().roster
 }
 
 type Changes = futures::channel::mpsc::UnboundedSender<()>;
@@ -307,15 +498,17 @@ impl Roster {
                     Some(Slot::Compiled(view)) if !view.name.is_empty() => {
                         (view.name.clone(), None, false)
                     }
-                    Some(Slot::Ready(_) | Slot::Compiled(_)) => (program.to_owned(), None, false),
+                    Some(Slot::Ready(_) | Slot::Compiled(_)) => {
+                        (named(program).to_owned(), None, false)
+                    }
                     Some(Slot::Listed(listing) | Slot::Compiling(listing))
                         if !listing.name.is_empty() =>
                     {
                         (listing.name.clone(), Some("Loading"), false)
                     }
-                    Some(Slot::Empty) => (program.to_owned(), None, true),
-                    Some(Slot::Failed(_)) => (program.to_owned(), Some("Failed"), false),
-                    Some(_) | None => (program.to_owned(), Some("Loading"), false),
+                    Some(Slot::Empty) => (named(program).to_owned(), None, true),
+                    Some(Slot::Failed(_)) => (named(program).to_owned(), Some("Failed"), false),
+                    Some(_) | None => (named(program).to_owned(), Some("Loading"), false),
                 };
                 let pending = matches!(
                     seat.as_ref().map(|seat| &seat.slot),
@@ -360,17 +553,7 @@ impl Roster {
 /// A node was connected: every seat is asked again of it, and the roster
 /// is read so the rail lists what the network runs.
 pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str) {
-    super::notifier::stop_every();
-    let snapshot = {
-        let mut connection = connection().lock().expect("views rpc");
-        connection.rev += 1;
-        connection.client = Some(client.clone());
-        connection.network = network.to_owned();
-        connection.chain = chain.to_owned();
-        connection.live = Some(Arc::new(crate::backend::live::Client::new(client.clone())));
-        connection.clone()
-    };
-    spawn_roster_read(snapshot, || {});
+    in_hand().connected(client, network, chain);
 }
 
 /// The node in hand was let go (its network left): a read, a load or a
@@ -378,13 +561,7 @@ pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str)
 /// lands its answers after it, and the views are asked of no node until
 /// the next connect. Nothing to let go when no node was connected.
 pub fn disconnected() {
-    let mut connection = connection().lock().expect("views rpc");
-    if connection.client.is_some() {
-        *connection = Connection {
-            rev: connection.rev + 1,
-            ..Connection::default()
-        };
-    }
+    in_hand().disconnected();
 }
 
 /// The roster is read again, and a
@@ -393,35 +570,26 @@ pub fn disconnected() {
 /// lands during one is covered by the next. The read alone holds that
 /// latch: the loads it queues land on their own. Cheap when nothing moved.
 pub fn deployments_checked() {
-    static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    use std::sync::atomic::Ordering;
-    if IN_FLIGHT.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let snapshot = connection().lock().expect("views rpc").clone();
-    if snapshot.client.is_none()
-        || !spawn_roster_read(snapshot, || IN_FLIGHT.store(false, Ordering::SeqCst))
-    {
-        IN_FLIGHT.store(false, Ordering::SeqCst);
-    }
+    in_hand().deployments_checked();
 }
 
-pub fn deployments_due(height: u64) -> bool {
-    roster().due(height)
-}
-
-fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static) -> bool {
-    let spawned = std::thread::Builder::new()
-        .name("roster".into())
-        .spawn(move || {
-            let read = std::panic::AssertUnwindSafe(|| {
-                if let Some(programs) = read_roster(asked_of.clone(), roster(), registry()) {
-                    super::notifier::reconcile_all(&asked_of, &programs);
-                }
-            });
-            let _ = std::panic::catch_unwind(read);
-            then();
+fn spawn_roster_read(
+    network: Arc<Network>,
+    asked_of: Connection,
+    then: impl FnOnce() + Send + 'static,
+) -> bool {
+    let spawned = rt::task::worker("roster", async move {
+        use futures::FutureExt as _;
+        let read = std::panic::AssertUnwindSafe(async {
+            if let Some(programs) =
+                read_roster(asked_of.clone(), &network.roster, &network.seats).await
+            {
+                super::notifier::reconcile_all(&asked_of, &programs);
+            }
         });
+        let _ = read.catch_unwind().await;
+        then();
+    });
     if let Err(error) = &spawned {
         tracing::warn!(
             target: "ducktape::app",
@@ -433,21 +601,22 @@ fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static)
     spawned.is_ok()
 }
 
-pub(super) fn read_roster(
+pub(super) async fn read_roster(
     asked_of: Connection,
     roster: &Roster,
     registry: &Registry,
 ) -> Option<Vec<crate::backend::views::Program>> {
     let client = asked_of.client.as_ref()?;
     let read = crate::perf::time(crate::perf::Key::Shell, "roster");
-    let programs = handle().block_on(crate::backend::views::programs(
+    let listed = crate::backend::views::listed(
         client,
         &asked_of.network,
-        &*crate::backend::query_signer(),
-    ));
+        &*crate::backend::query_signer(&asked_of.network),
+    )
+    .await;
     drop(read);
-    let programs = match programs {
-        Ok(programs) => programs,
+    let (height, programs) = match listed {
+        Ok(listed) => listed,
         Err(error) => {
             tracing::warn!(
                 target: "ducktape::app",
@@ -459,11 +628,13 @@ pub(super) fn read_roster(
             return None;
         }
     };
-    let due = match handle().block_on(crate::backend::views::next_scheduled(
+    let scheduled = crate::backend::views::next_scheduled(
         client,
         &asked_of.network,
-        &*crate::backend::query_signer(),
-    )) {
+        &*crate::backend::query_signer(&asked_of.network),
+    )
+    .await;
+    let due = match scheduled {
         Ok(Some(height)) => Due::At(height),
         Ok(None) => Due::Never,
         Err(error) => {
@@ -478,11 +649,13 @@ pub(super) fn read_roster(
     };
     let roles_due = roster.bound().asked_of != Some(asked_of.rev) || *roster.lock() != programs;
     let roles = if roles_due {
-        match handle().block_on(crate::backend::views::roles(
+        let roles = crate::backend::views::roles(
             client,
             &asked_of.network,
-            &*crate::backend::query_signer(),
-        )) {
+            &*crate::backend::query_signer(&asked_of.network),
+        )
+        .await;
+        match roles {
             Ok(roles) => Some(roles),
             Err(error) => {
                 tracing::warn!(
@@ -498,8 +671,33 @@ pub(super) fn read_roster(
     } else {
         None
     };
+    let renames = match roles_due {
+        true => {
+            let read = crate::backend::views::renames(
+                client,
+                &asked_of.network,
+                &*crate::backend::query_signer(&asked_of.network),
+                height,
+            )
+            .await;
+            match read {
+                Ok(renames) => Some(renames),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "ducktape::app",
+                        reason = "renames_unreadable",
+                        error = %error,
+                        "the node's program renames were not read"
+                    );
+                    roster.bound().due = Due::Unknown;
+                    return None;
+                }
+            }
+        }
+        false => None,
+    };
     let loads = {
-        let node_since_left = connection().lock().expect("views rpc").rev != asked_of.rev;
+        let node_since_left = asked_of.stale();
         if node_since_left {
             return None;
         }
@@ -507,6 +705,13 @@ pub(super) fn read_roster(
         if let Some(roles) = roles {
             bound.asked_of = Some(asked_of.rev);
             bound.roles = Some(roles);
+        }
+        if let Some(renames) = renames {
+            let moved = bound.renames != renames;
+            if moved {
+                super::notify::carry_permissions(&renames);
+            }
+            bound.renames = renames;
         }
         bound.due = due;
         drop(bound);
@@ -531,7 +736,7 @@ pub(super) fn read_roster(
         }
         let previous = {
             let mut listed = roster.lock();
-            if connection().lock().expect("views rpc").rev != asked_of.rev {
+            if asked_of.stale() {
                 return None;
             }
             std::mem::replace(&mut *listed, programs.clone())
@@ -657,6 +862,15 @@ fn local_seat(link: &str, rows: &[RailRow]) -> Option<&'static str> {
     if let Some(row) = rows.iter().find(|row| row.program == name && !row.empty) {
         return Some(row.program);
     }
+    let mut owned = rows
+        .iter()
+        .filter(|row| !row.empty && named(row.program) == name);
+    if let Some(first) = owned.next() {
+        let alone = owned.next().is_none();
+        if alone {
+            return Some(first.program);
+        }
+    }
     let mut matches = rows
         .iter()
         .filter(|row| !row.empty && row.note.is_none() && row.label.to_lowercase() == name);
@@ -727,6 +941,52 @@ mod local_link_tests {
         assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
         rows[0].note = Some("Loading");
         assert_eq!(local_seat("duck://preferences", &rows), None);
+    }
+
+    #[test]
+    fn a_short_link_names_an_owner_name_program_by_its_name_while_it_is_the_one() {
+        let shown = |program: &'static str| RailRow {
+            program,
+            label: "Shown".into(),
+            icon: String::new(),
+            tint: Tint::None,
+            description: String::new(),
+            note: Some("Loading"),
+            empty: false,
+            pending: false,
+            prep: Prep::Reading,
+        };
+        let mut rows = vec![shown("owner/named")];
+        assert_eq!(local_seat("duck://named", &rows), Some("owner/named"));
+        assert_eq!(
+            local_seat_route("duck://named/room/1", &rows),
+            Some(("owner/named", "room/1".into()))
+        );
+        rows.push(shown("named"));
+        assert_eq!(
+            local_seat("duck://named", &rows),
+            Some("named"),
+            "its own id first"
+        );
+        rows[1] = shown("other/named");
+        assert_eq!(
+            local_seat("duck://named", &rows),
+            None,
+            "two owners name it"
+        );
+        assert_eq!(named("owner/named"), "named");
+        assert_eq!(named("named"), "named");
+        assert_ne!(
+            slug("alice/b-c"),
+            slug("alice-b/c"),
+            "a hyphen keeps them apart"
+        );
+        assert_ne!(
+            slug("alice/b-c"),
+            slug("alice-b-c"),
+            "an owner keeps them apart"
+        );
+        assert_eq!(slug("named"), "named", "a bare id is itself");
     }
 
     #[test]
@@ -836,6 +1096,18 @@ mod rail_tests {
         assert!(!row.empty);
         assert!(row.pending, "whether it ships a view is not known yet");
         assert_eq!(row.prep, Prep::Reading, "no seat yet: its bytes not read");
+    }
+
+    #[test]
+    fn an_owner_name_program_is_named_by_its_name_until_its_manifest_names_it() {
+        let program = "rail-tests/owner-named";
+        let row = Roster::listing(&[program])
+            .rail()
+            .into_iter()
+            .find(|row| row.program == program)
+            .expect("listed program appears in the rail");
+        assert_eq!(row.label, "owner-named");
+        assert_eq!(row.note, Some("Loading"));
     }
 
     #[test]
@@ -972,5 +1244,80 @@ mod rail_tests {
             }
         );
         assert_eq!(roster.code("explorer"), Some((view, true)));
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn leaving_one_network_stales_only_its_own_work() {
+        let (a, b) = (Network::new(false), Network::new(false));
+        let client = crate::backend::rpc_client("http://127.0.0.1:9");
+        let on_a = a.take(&client, "a", "a#1");
+        let on_b = b.take(&client, "b", "b#1");
+        assert!(!on_a.stale() && !on_b.stale());
+        a.disconnected();
+        assert!(on_a.stale(), "a's own work is refused once it left");
+        assert!(!on_b.stale(), "b's is not");
+        assert_eq!(on_b.current().chain, "b#1");
+        drop(b);
+        assert!(on_b.stale(), "a network let go stales its work");
+    }
+
+    #[test]
+    fn each_network_holds_its_own_seats() {
+        let program = "network-tests-seats";
+        let network = Network::new(false);
+        let seat = crate::runtime::seat::mounted(&network, program, 7);
+        assert!(lock(&network.seats).contains_key(&(program, 7)));
+        assert!(
+            !lock(registry()).keys().any(|(name, _)| *name == program),
+            "the network in hand holds no seat of it"
+        );
+        drop(seat);
+        crate::runtime::seat::let_go(&network, program, 7);
+        assert!(lock(&network.seats).is_empty());
+    }
+
+    #[test]
+    fn a_route_reaches_only_its_own_networks_seat() {
+        let program = "network-tests-route";
+        let (a, b) = (Network::new(false), Network::new(false));
+        let on_a = crate::runtime::seat::mounted(&a, program, 8);
+        let on_b = crate::runtime::seat::mounted(&b, program, 8);
+        let woken_a = lock(&on_a).wake.subscribe();
+        let woken_b = lock(&on_b).wake.subscribe();
+        crate::runtime::route_to(&b, program, 8, "room/1".into());
+        assert!(woken_b.has_changed().unwrap(), "the route woke no seat");
+        assert!(
+            !woken_a.has_changed().unwrap(),
+            "the route woke the other network's seat"
+        );
+        assert_eq!(crate::runtime::take_route(&a, program, 8), None);
+        let routed = crate::runtime::take_route(&b, program, 8);
+        assert_eq!(routed.as_deref(), Some("room/1"));
+        crate::runtime::seat::let_go(&a, program, 8);
+        crate::runtime::seat::let_go(&b, program, 8);
+    }
+
+    #[test]
+    fn a_retry_reloads_only_its_own_networks_seat() {
+        let program = "network-tests-retry";
+        let (a, b) = (Network::new(false), Network::new(false));
+        let on_a = crate::runtime::seat::mounted(&a, program, 9);
+        let on_b = crate::runtime::seat::mounted(&b, program, 9);
+        let generation = |seat: &Arc<Mutex<Mounted>>| lock(seat).generation;
+        let (was_a, was_b) = (generation(&on_a), generation(&on_b));
+        crate::runtime::seat::retry(&b, program, 9);
+        assert!(generation(&on_b) > was_b, "the retry reloaded nothing");
+        assert_eq!(
+            generation(&on_a),
+            was_a,
+            "the retry reloaded the other network's seat"
+        );
+        crate::runtime::seat::let_go(&a, program, 9);
+        crate::runtime::seat::let_go(&b, program, 9);
     }
 }

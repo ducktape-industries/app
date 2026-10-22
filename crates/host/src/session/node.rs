@@ -92,8 +92,10 @@ pub enum SessionEvent {
 }
 
 /// Where a status comes from: the node's `/v1/status`, or a test's answer.
+/// A `Decode` error is a node that answered in a shape this app does not
+/// read (another contract: its sentence names both), not a node away.
 pub type StatusSource =
-    Rc<dyn Fn() -> LocalBoxFuture<'static, Result<backend::NodeStatus, String>>>;
+    Rc<dyn Fn() -> LocalBoxFuture<'static, Result<backend::NodeStatus, noded_client::Error>>>;
 
 pub struct Session {
     state: SessionState,
@@ -101,11 +103,15 @@ pub struct Session {
     account: Entity<Account>,
     screen: Entity<Slice<Screen>>,
     center: notify::CenterHandle,
+    network: std::sync::Arc<crate::runtime::Network>,
     roster: Roster,
     source: Option<StatusSource>,
     connect: Option<Task<()>>,
     poll: Option<Task<()>>,
     heard: Vec<Task<()>>,
+    client: Option<backend::RpcClient>,
+    armed: Option<abi::Roles>,
+    watch: fn(&backend::RpcClient, &str) -> crate::runtime::Writes,
     confirming: bool,
     hands_runtime: bool,
 }
@@ -122,6 +128,7 @@ impl Session {
         account: Entity<Account>,
         screen: Entity<Slice<Screen>>,
         center: notify::CenterHandle,
+        network: std::sync::Arc<crate::runtime::Network>,
         roster: Roster,
     ) -> Self {
         Self {
@@ -130,14 +137,28 @@ impl Session {
             account,
             screen,
             center,
+            network,
             roster,
             source: None,
             connect: None,
             poll: None,
             heard: Vec::new(),
+            client: None,
+            armed: None,
+            watch: crate::runtime::writes,
             confirming: false,
             hands_runtime: true,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watching_with(
+        &mut self,
+        client: backend::RpcClient,
+        watch: fn(&backend::RpcClient, &str) -> crate::runtime::Writes,
+    ) {
+        self.client = Some(client);
+        self.watch = watch;
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -154,20 +175,51 @@ impl Session {
     ) {
         if self.hands_runtime {
             crate::runtime::take_up(&self.center, chain);
-            crate::runtime::connected(client, network, chain);
-            self.hear_writes(client, cx);
+            self.network.connected(client, network, chain);
+            self.client = Some(client.clone());
+            self.armed = None;
+            self.heard.clear();
+            let roles = self
+                .chain
+                .read(cx)
+                .node
+                .as_ref()
+                .map(|node| node.roles.clone());
+            if let Some(roles) = roles {
+                self.follow_roles(&roles, cx);
+            }
         }
     }
 
-    fn hear_writes(&mut self, client: &backend::RpcClient, cx: &mut Context<Self>) {
-        let programs = crate::runtime::writes(client, ::programs::PROGRAM);
-        let identity = crate::runtime::writes(client, identity::PROGRAM);
-        self.heard = vec![
-            Self::hear(programs, cx, |_, _| crate::runtime::deployments_checked()),
-            Self::hear(identity, cx, |this, cx| {
+    fn follow_roles(&mut self, roles: &abi::Roles, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        client.heard_roles(roles);
+        if self.armed.as_ref() == Some(roles) {
+            return;
+        }
+        self.armed = Some(roles.clone());
+        self.hear_writes(&client, roles, cx);
+    }
+
+    fn hear_writes(
+        &mut self,
+        client: &backend::RpcClient,
+        roles: &abi::Roles,
+        cx: &mut Context<Self>,
+    ) {
+        let watch = self.watch;
+        let writes = |role| roles.bound(role).ok().map(|program| watch(client, program));
+        let (programs, identity) = (writes(abi::role::PROGRAMS), writes(abi::role::IDENTITY));
+        let programs = programs
+            .map(|heard| Self::hear(heard, cx, |this, _| this.network.deployments_checked()));
+        let identity = identity.map(|heard| {
+            Self::hear(heard, cx, |this, cx| {
                 this.account.update(cx, |account, cx| account.resolve(cx))
-            }),
-        ];
+            })
+        });
+        self.heard = programs.into_iter().chain(identity).collect();
     }
 
     fn hear(
@@ -212,7 +264,7 @@ impl Session {
         let client = backend::rpc_client(origin);
         Rc::new(move || {
             let client = client.clone();
-            async move { client.status().await.map_err(|error| error.to_string()) }.boxed_local()
+            async move { client.status().await }.boxed_local()
         })
     }
 
@@ -358,6 +410,7 @@ impl Session {
             cx,
         );
         self.apply_status(status, cx);
+        self.follow_roles(&status.roles, cx);
         if self.poll.is_none() {
             self.source = Some(source);
             self.start_poll(STATUS_EVERY, cx);
@@ -368,7 +421,7 @@ impl Session {
         &mut self,
         origin: String,
         source: StatusSource,
-        answer: Result<backend::NodeStatus, String>,
+        answer: Result<backend::NodeStatus, noded_client::Error>,
         cx: &mut Context<Self>,
     ) {
         let _timed = timed();
@@ -382,21 +435,15 @@ impl Session {
         );
         let status = match answer {
             Ok(status) => status,
-            Err(error) if self.confirming => return self.unconfirmed(source, error, cx),
-            Err(error) => return self.connect_failed(origin, error, cx),
+            Err(noded_client::Error::Decode(refusal)) if self.confirming => {
+                return self.unreadable(origin, refusal.sentence, cx);
+            }
+            Err(error) if self.confirming => {
+                return self.unconfirmed(source, error.to_string(), cx);
+            }
+            Err(error) => return self.connect_failed(origin, error.to_string(), cx),
         };
         crate::perf::mark("connected");
-        if status.contract != noded_client::wire::NODE_CONTRACT {
-            let error = format!(
-                "this node speaks contract {}; this app speaks {}",
-                status.contract,
-                noded_client::wire::NODE_CONTRACT
-            );
-            if self.confirming {
-                self.disconnect(cx);
-            }
-            return self.connect_failed(origin, error, cx);
-        }
         let presumed = std::mem::take(&mut self.confirming);
         if presumed
             && crate::runtime::chain_of(&status) == self.state.chain
@@ -453,21 +500,29 @@ impl Session {
         self.start_poll(STATUS_EVERY, cx);
     }
 
-    fn connect_failed(&mut self, origin: String, error: String, cx: &mut Context<Self>) {
+    fn unreadable(&mut self, origin: String, sentence: String, cx: &mut Context<Self>) {
+        self.disconnect(cx);
+        let who = self.who(&origin);
+        self.connect_failed(origin, format!("{who}: {sentence}"), cx);
+    }
+
+    fn who(&self, origin: &str) -> String {
         let host = origin
             .strip_prefix("https://")
             .or_else(|| origin.strip_prefix("http://"))
-            .unwrap_or(&origin);
-        let who = self
-            .state
+            .unwrap_or(origin);
+        self.state
             .recent_endpoints
             .iter()
             .find(|entry| entry.url == origin && !entry.network.is_empty())
             .map_or_else(
                 || host.to_owned(),
                 |entry| format!("{} ({host})", entry.network),
-            );
-        let error = backend::connect_error(&who, error);
+            )
+    }
+
+    fn connect_failed(&mut self, origin: String, error: String, cx: &mut Context<Self>) {
+        let error = backend::connect_error(&self.who(&origin), error);
         if self.state.connected {
             self.edit(|state| state.endpoint = state.connected_rpc.clone(), cx);
             cx.emit(SessionEvent::Toast(error));
@@ -479,7 +534,7 @@ impl Session {
     /// The poll's answer: a status, or none.
     pub fn status_answered(
         &mut self,
-        answer: Result<backend::NodeStatus, String>,
+        answer: Result<backend::NodeStatus, noded_client::Error>,
         cx: &mut Context<Self>,
     ) {
         let _timed = timed();
@@ -495,13 +550,20 @@ impl Session {
                 let moved =
                     i64::try_from(status.height).unwrap_or(-1) != self.chain.read(cx).height;
                 self.apply_status(&status, cx);
-                if moved && self.hands_runtime && crate::runtime::deployments_due(status.height) {
-                    crate::runtime::deployments_checked();
+                self.follow_roles(&status.roles, cx);
+                let due =
+                    moved && self.hands_runtime && self.network.deployments_due(status.height);
+                if due {
+                    self.network.deployments_checked();
                 }
                 if moved {
                     self.account
                         .update(cx, |account, cx| account.resolve_unanswered(cx));
                 }
+            }
+            Err(noded_client::Error::Decode(refusal)) => {
+                let origin = self.state.connected_rpc.clone();
+                self.unreadable(origin, refusal.sentence, cx);
             }
             Err(error) => {
                 tracing::debug!(target: "ducktape::app", %error, "status not answered");
@@ -542,9 +604,11 @@ impl Session {
                 wait = STATUS_EVERY;
                 let ask = source.clone();
                 let answer = on_runtime(async move {
-                    match tokio::time::timeout(STATUS_EVERY, ask()).await {
+                    match rt::time::timeout(STATUS_EVERY, ask()).await {
                         Ok(answer) => answer,
-                        Err(_) => Err("the node did not answer in time".into()),
+                        Err(_) => Err(noded_client::Error::Transport(
+                            "the node did not answer in time".into(),
+                        )),
                     }
                 })
                 .await;
@@ -570,10 +634,13 @@ impl Session {
             }
             Foreground if self.state.connected && self.poll.is_none() => {
                 self.start_poll(Duration::ZERO, cx);
-                if self.hands_runtime {
+                if let Some(roles) = self.armed.clone() {
                     let client = backend::rpc_client(self.state.connected_rpc.clone());
-                    self.hear_writes(&client, cx);
-                    crate::runtime::deployments_checked();
+                    client.heard_roles(&roles);
+                    self.hear_writes(&client, &roles, cx);
+                }
+                if self.hands_runtime {
+                    self.network.deployments_checked();
                     self.account.update(cx, |account, cx| account.resolve(cx));
                 }
             }
@@ -630,10 +697,12 @@ impl Session {
 
     fn left_network(&mut self, cx: &mut Context<Self>) {
         if self.hands_runtime {
-            crate::runtime::disconnected();
+            self.network.disconnected();
             crate::runtime::notifier::disconnected();
         }
         self.heard.clear();
+        self.client = None;
+        self.armed = None;
         self.roster.clear();
         cx.emit(SessionEvent::LeftNetwork);
     }

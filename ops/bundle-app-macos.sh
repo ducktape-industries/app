@@ -46,7 +46,8 @@ esac
 cd "$repo"
 # release.yml ships the `dist` profile; a local bundle stays on `release`.
 profile=${DUCKTAPE_CARGO_PROFILE:-release}
-"${CARGO:-cargo}" build --locked --profile "$profile" -p ducktape-app
+"${CARGO:-cargo}" build --locked --profile "$profile" -p ducktape-app --features web
+"${CARGO:-cargo}" build --locked --profile "$profile" -p ducktape-web --features cef --bin ducktape-web-helper
 version=$(awk '/^\[workspace.package\]/{ package=1; next } /^\[/{ package=0 } package && /^version *=/{ gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
 [[ -n "$version" ]] || { echo "workspace package version missing" >&2; exit 1; }
 release_bin="${CARGO_TARGET_DIR:-$repo/target}/$profile"
@@ -61,6 +62,29 @@ install -m 0644 "$repo/packaging/Info.plist" "$contents/Info.plist"
 install -m 0644 "$repo/assets/sounds/quack.wav" "$contents/Resources/quack.wav"
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $version" "$contents/Info.plist"
+framework="Chromium Embedded Framework.framework"
+mkdir -p "$contents/Frameworks"
+ditto "$(cd "$release_bin/$framework" && pwd -P)" "$contents/Frameworks/$framework"
+bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$contents/Info.plist")
+for variant in "" " (GPU)" " (Renderer)" " (Plugin)" " (Alerts)"; do
+  name="ducktape-app Helper$variant"
+  suffix=$(printf '%s' "$variant" | tr -dc '[:alpha:]' | tr '[:upper:]' '[:lower:]')
+  helper="$contents/Frameworks/$name.app/Contents"
+  mkdir -p "$helper/MacOS"
+  install -m 0755 "$release_bin/ducktape-web-helper" "$helper/MacOS/$name"
+  plist="$helper/Info.plist"
+  /usr/libexec/PlistBuddy \
+    -c "Add :CFBundleInfoDictionaryVersion string 6.0" \
+    -c "Add :CFBundlePackageType string APPL" \
+    -c "Add :CFBundleName string $name" \
+    -c "Add :CFBundleExecutable string $name" \
+    -c "Add :CFBundleIdentifier string $bundle_id.helper${suffix:+.$suffix}" \
+    -c "Add :CFBundleShortVersionString string $version" \
+    -c "Add :CFBundleVersion string $version" \
+    -c "Add :LSMinimumSystemVersion string 11.0" \
+    -c "Add :LSUIElement bool true" \
+    "$plist"
+done
 swift "$repo/ops/macos-icon.swift" "$repo/assets/icon.svg" "$stage/Ducktape.iconset"
 iconutil -c icns "$stage/Ducktape.iconset" -o "$contents/Resources/Ducktape.icns"
 sign_locally() {

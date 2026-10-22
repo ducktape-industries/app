@@ -37,7 +37,7 @@ pub(crate) fn render_tree_fixture() {
         px(height.parse().expect("height")),
     );
     let dark = option("--theme").as_deref() == Some("dark");
-    gpui_kit::application()
+    super::launch::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);

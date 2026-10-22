@@ -35,12 +35,7 @@ use wasmtime::{Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store, 
 /// The one engine, the compiled code kept across launches, and the code it
 /// compiled.
 pub struct WasmtimeRunner {
-    engine: Engine,
-    /// Where compiled code is kept across launches ([`code_file`]); none
-    /// keeps it in memory only.
-    dir: Option<PathBuf>,
-    /// The engine's settings, as [`code_file`] names them.
-    settings: u64,
+    compiler: Arc<Compiler>,
     /// Compiled view code by the sha256 of its bytes, with the
     /// `view_bytes` it was last prepared for, while anything holds it
     /// (`Prepared::hold`, a running instance): code nothing holds is freed,
@@ -48,9 +43,15 @@ pub struct WasmtimeRunner {
     code: Mutex<HashMap<[u8; 32], Compiled>>,
     /// Describe modules by the sha256 of their bytes; `None` for bytes that
     /// do not compile.
-    described: Mutex<HashMap<[u8; 32], Option<Arc<Module>>>>,
-    /// This binary and its compile child's arguments, when compiles run
-    /// apart ([`RunnerConfig::compile_apart`]) and there is a cache dir.
+    described: Arc<Described>,
+}
+
+type Described = Mutex<HashMap<[u8; 32], Option<Arc<Module>>>>;
+
+struct Compiler {
+    engine: Engine,
+    dir: Option<PathBuf>,
+    settings: u64,
     apart: Option<(PathBuf, [OsString; 3])>,
 }
 
@@ -189,15 +190,19 @@ impl WasmtimeRunner {
                 .spawn(move || prune(&dir, CACHE_BYTES));
         }
         Self {
-            settings: settings(&engine),
-            engine,
-            dir: config.cache_dir,
+            compiler: Arc::new(Compiler {
+                settings: settings(&engine),
+                engine,
+                dir: config.cache_dir,
+                apart,
+            }),
             code: Mutex::default(),
-            described: Mutex::default(),
-            apart,
+            described: Arc::default(),
         }
     }
+}
 
+impl Compiler {
     /// Compiles `code` (`hash`) into its file in a child of this binary,
     /// which reads the code out of the file it lies in, and says whether it
     /// found the compile there (`Disk`) or compiled it (`Cold`). Code held
@@ -274,11 +279,13 @@ impl WasmtimeRunner {
         };
         Ok((module, CodeSource::Cold))
     }
+}
 
+impl WasmtimeRunner {
     /// The engine, for the tests that build a module by hand.
     #[cfg(any(test, feature = "test-support"))]
     pub fn engine(&self) -> &Engine {
-        &self.engine
+        &self.compiler.engine
     }
 
     fn instance(&self, hash: [u8; 32], land: &Landing) -> Result<WasmtimeInstance, Fault> {
@@ -291,7 +298,7 @@ impl WasmtimeRunner {
             ));
         };
         let mut store = Store::new(
-            &self.engine,
+            &self.compiler.engine,
             HostState {
                 limits: ViewLimits::new(view_bytes),
                 panic: None,
@@ -300,7 +307,7 @@ impl WasmtimeRunner {
         store.limiter(|state| &mut state.limits);
         // A view's one import is the panic hook's (`wire::abi`); anything
         // else the module asks for traps if it is ever called.
-        let mut linker = Linker::<HostState>::new(&self.engine);
+        let mut linker = Linker::<HostState>::new(&self.compiler.engine);
         linker
             .func_wrap(
                 wire::abi::IMPORT_MODULE,
@@ -361,7 +368,7 @@ impl ViewRunner for WasmtimeRunner {
         // competing compile of the same code adopts the one kept first
         view_meter::accepts(code.bytes)
             .map_err(|refusal| Failure::Unsupported(refusal.to_string()))?;
-        let (module, source) = self.compiled(hash, code)?;
+        let (module, source) = self.compiler.compiled(hash, code)?;
         let mut kept = lock(&self.code);
         kept.retain(|_, (module, _)| module.strong_count() > 0);
         let module = match kept.get(&hash).and_then(|(module, _)| module.upgrade()) {
@@ -387,28 +394,38 @@ impl ViewRunner for WasmtimeRunner {
         &self,
         hash: [u8; 32],
         module: Code<'_>,
-        op: &[u8],
-    ) -> Option<view_wire::methods::Description> {
-        let compiled = lock(&self.described).get(&hash).cloned();
-        let compiled = match compiled {
-            Some(compiled) => compiled,
-            None => {
-                // the rule a view is taken by, as on iOS (`accepts`), kept
-                // as a view's code is; and the rule `describe::host::compile`
-                // takes a module by, that it imports nothing
-                let compiled = view_meter::accepts(module.bytes)
-                    .ok()
-                    .and_then(|()| self.compiled(hash, module).ok())
-                    .map(|(compiled, _)| compiled)
-                    .filter(|compiled| compiled.imports().len() == 0)
-                    .map(Arc::new);
-                lock(&self.described)
-                    .entry(hash)
-                    .or_insert(compiled)
-                    .clone()
-            }
-        };
-        ::describe::host::run(&self.engine, &*compiled?, op)
+        op: Vec<u8>,
+    ) -> rt::Fut<'static, Option<view_wire::methods::Description>> {
+        let kept = lock(&self.described).get(&hash).cloned();
+        let module = kept.is_none().then(|| {
+            let file = module.file.map(|(path, at)| (path.to_owned(), at));
+            (Arc::<[u8]>::from(module.bytes), file)
+        });
+        let (compiler, described) = (self.compiler.clone(), self.described.clone());
+        Box::pin(async move {
+            rt::task::blocking(move || {
+                let compiled = match kept {
+                    Some(compiled) => compiled,
+                    None => {
+                        let compiled = module.and_then(|(bytes, file)| {
+                            let code = Code {
+                                bytes: &bytes,
+                                file: file.as_ref().map(|(path, at)| (path.as_path(), *at)),
+                            };
+                            view_meter::accepts(code.bytes).ok()?;
+                            let (compiled, _) = compiler.compiled(hash, code).ok()?;
+                            let bare = compiled.imports().len() == 0;
+                            bare.then(|| Arc::new(compiled))
+                        });
+                        lock(&described).entry(hash).or_insert(compiled).clone()
+                    }
+                };
+                ::describe::host::run(&compiler.engine, &*compiled?, &op)
+            })
+            .await
+            .ok()
+            .flatten()
+        })
     }
 
     fn code_memory(&self) -> Vec<crate::memory::HeldCode> {
@@ -962,7 +979,7 @@ mod tests {
             })
         };
         let (here, other) = (runner(true), runner(false));
-        let file = code_file(dir.path(), &hash, here.settings);
+        let file = code_file(dir.path(), &hash, here.compiler.settings);
         assert_eq!(
             here.prepare(hash, Code::of(&code), PAGE)
                 .expect("compiles")
@@ -979,18 +996,22 @@ mod tests {
             CodeSource::Disk
         );
         // another engine's code under this engine's name
-        assert_ne!(here.settings, other.settings);
+        assert_ne!(here.compiler.settings, other.compiler.settings);
         let _ = other
             .prepare(hash, Code::of(&code), PAGE)
             .expect("compiles");
-        std::fs::copy(code_file(dir.path(), &hash, other.settings), &file).expect("copies");
-        assert!(mapped(&here.engine, &file).is_none(), "refused, not run");
+        std::fs::copy(code_file(dir.path(), &hash, other.compiler.settings), &file)
+            .expect("copies");
+        assert!(
+            mapped(&here.compiler.engine, &file).is_none(),
+            "refused, not run"
+        );
         let again = runner(true)
             .prepare(hash, Code::of(&code), PAGE)
             .expect("compiles");
         assert_eq!(again.source, CodeSource::Cold);
         assert!(
-            mapped(&here.engine, &file).is_some(),
+            mapped(&here.compiler.engine, &file).is_some(),
             "compiled again over it"
         );
     }
@@ -1222,9 +1243,12 @@ mod tests {
         ] {
             // an empty answer decodes to no description either way
             assert!(
-                runner
-                    .describe(hash, Code::of(&module(more)), b"op")
-                    .is_none()
+                futures::executor::block_on(runner.describe(
+                    hash,
+                    Code::of(&module(more)),
+                    b"op".to_vec()
+                ))
+                .is_none()
             );
             assert_eq!(lock(&runner.described)[&hash].is_some(), compiled, "{more}");
         }

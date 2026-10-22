@@ -36,9 +36,17 @@ pub fn body(
         return opening(row, palette);
     };
     match (seat.standin(), seat.tree()) {
-        (Some(standin), _) => standin.element(seat.program(), seat.instance(), seat.ax_mark()),
+        (Some(standin), _) => standin.element(
+            seat.network(),
+            seat.program(),
+            seat.instance(),
+            seat.ax_mark(),
+        ),
         (None, Some(tree)) => {
-            let view = AnyView::from(tree).cached(StyleRefinement::default().size_full());
+            let view = ducktape_host::a11y::cached(
+                AnyView::from(tree),
+                StyleRefinement::default().size_full(),
+            );
             let mut context = KeyContext::default();
             context.set("ducktape_view", format!("view{}", seat.instance()));
             div()

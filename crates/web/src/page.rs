@@ -27,6 +27,13 @@ pub struct PageState {
 
 pub struct Leave(pub String);
 
+#[derive(Clone, Copy)]
+pub(crate) enum Refusal {
+    Private,
+    Unclicked,
+    Unloadable,
+}
+
 /// What a page's CEF callbacks (main thread, inside `do_message_loop_work`)
 /// leave for the gpui side, and what the gpui side tells them back.
 pub(crate) struct Shared {
@@ -55,12 +62,13 @@ pub(crate) struct Shared {
     pub(crate) menu: RefCell<Option<crate::menu::Asked>>,
     pub(crate) state: RefCell<PageState>,
     /// An address the rule refused: the page says so until it moves.
-    pub(crate) refused: RefCell<Option<String>>,
+    pub(crate) refused: RefCell<Option<(String, Refusal)>>,
     /// A popup's or a new tab's address, opened here instead.
     pub(crate) redirect: RefCell<Option<String>>,
     pub(crate) leave: RefCell<Option<String>>,
     /// The page's accessibility tree, while the app's accessibility is on.
     pub(crate) a11y: crate::a11y::Accessibility,
+    pub(crate) fenced: bool,
 }
 
 impl Shared {
@@ -99,7 +107,7 @@ impl Shared {
     /// `on_before_browse`.
     pub(crate) fn create(
         self: &Rc<Self>,
-        context: impl FnOnce(&Path) -> Option<cef::RequestContext>,
+        context: impl FnOnce(&Path, bool) -> Option<cef::RequestContext>,
     ) {
         let pending = || {
             self.pending
@@ -119,8 +127,11 @@ impl Shared {
         let Some(url) = pending() else {
             return;
         };
-        self.made
-            .set(crate::handlers::create(self, &url, context(&self.profile)));
+        self.made.set(crate::handlers::create(
+            self,
+            &url,
+            context(&self.profile, self.fenced),
+        ));
     }
 }
 
@@ -176,6 +187,7 @@ impl Page {
             redirect: RefCell::default(),
             leave: RefCell::default(),
             a11y: Default::default(),
+            fenced: crate::scheme::ours(url),
         });
         if unavailable.is_none() {
             crate::register(cx.weak_entity(), shared.clone());
@@ -222,7 +234,7 @@ impl Page {
     /// refused and stays where it is.
     pub fn load(&mut self, url: &str, cx: &mut Context<Self>) {
         if !crate::loadable(url) {
-            *self.shared.refused.borrow_mut() = Some(url.to_owned());
+            *self.shared.refused.borrow_mut() = Some((url.to_owned(), Refusal::Unloadable));
             cx.notify();
             return;
         }
@@ -616,9 +628,21 @@ impl Render for Page {
                 )
                 .size_full(),
             )
-            .when_some(refused, |page, url| {
+            .when_some(refused, |page, (url, refusal)| {
+                let notice = match refusal {
+                    Refusal::Private => {
+                        format!("An artifact reaches no address of this machine or a private network; not {url}")
+                    }
+                    Refusal::Unclicked => {
+                        format!("An artifact opens another address only when you click a link to it; not {url}")
+                    }
+                    Refusal::Unloadable => format!("Only https:// pages open here; not {url}"),
+                };
                 page.child(
                     div()
+                        .id("web-refused")
+                        .role(Role::Status)
+                        .aria_label(notice.clone())
                         .absolute()
                         .top_0()
                         .left_0()
@@ -627,7 +651,7 @@ impl Render for Page {
                         .py_1()
                         .bg(rgb(0xfff4d6))
                         .text_color(rgb(0x5c4400))
-                        .child(format!("Only https:// pages open here; not {url}")),
+                        .child(notice),
                 )
             });
         div()

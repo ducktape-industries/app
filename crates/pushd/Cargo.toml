@@ -20,6 +20,7 @@ ducktape-host = { path = "../host", default-features = false, features = ["wasmt
 # the throwaway key queries are signed with, as the desktop's reader, and
 # the identity query a registration is checked by
 noded-client = { path = "../noded-client", features = ["commonware"] }
+rt = { package = "ducktape-rt", path = "../rt" }
 abi.workspace = true
 # a registration's Ed25519 signature checked (src/registry.rs)
 commonware-cryptography.workspace = true

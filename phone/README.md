@@ -3,6 +3,11 @@
 `crates/phone` (the shell) in the iOS launcher (`ios/`, XcodeGen) and the Android one (`android/`). How to build each:
 the head of `Makefile`.
 
+## The checks a change gets
+
+- **Kotlin:** `make -C phone android-check` (`compileDebugKotlin` alone, no Rust and no NDK) is the gate `android` of build.sh's lane, on a change that touches `android/`; the lane fills the JDK, SDK and gradle home it compiles with on the builds machine.
+- **Swift:** `make -C phone ios-check` type-checks `App.swift` and `DeviceKeyStore.swift` against `Phone.h`, and the driver, with `swiftc -typecheck` (seconds; no Rust, XcodeGen or simulator). `.forge/workflows/phone.toml` runs it on the mac relay for every change into `dev` and every push to `dev`. It is reported, never required: a Mac that sleeps holds no merge. It doesn't link, so an `@_cdecl` or `Phone.h` name Rust lacks shows only at `ios-sim` or the TestFlight archive.
+
 ## The mac service's driver
 
 `ios/Driver/Driver.swift` is an XCUITest bundle (`DucktapeDriver`, the `Ducktape` scheme's test target, so never in the
@@ -27,6 +32,11 @@ commands from the Mac at `TEST_RUNNER_DUCKTAPE_DRIVER`, tapping the first elemen
    -exportArchive` signs the archive with a cloud-managed distribution certificate through the App Store Connect API
    key (`-allowProvisioningUpdates`) and uploads it, then tags the commit `testflight-<build>`. App Store Connect
    processes the build (minutes) and offers it to the internal testers.
+
+An upload waits on **contract** (GitHub's Ubuntu, after archive): `ops/contract-gate.py` on the commit, which stops
+the run unless duckpond's `/v1/status` answers the contract its `NODE_CONTRACT` speaks. An upload is the release to
+the testers, so no phone is offered an app on another contract. A build for the next contract is signed and exported
+before the roll with `upload` off, which skips the check, and is uploaded by a run after the roll.
 
 Version `0.1.0` (`ios/Info.plist`), bundle id `industries.ducktape.mobile`, team `8464KRUNQG`: the Expo app's App Store
 Connect record, so this build replaces it for testers.

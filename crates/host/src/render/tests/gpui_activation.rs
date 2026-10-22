@@ -92,6 +92,63 @@ fn native_rich_text_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppC
 }
 
 #[gpui_kit::test]
+fn a_link_pressed_and_released_before_the_next_frame_is_pressed(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = wire::Node::RichText {
+        id: Some(named_id("link")),
+        style: crate::render::plain_style(),
+        text: "Open link".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: std::iter::once(0..9).collect(),
+        on_click: Some(72),
+        on_hover: None,
+        tooltip: None,
+    };
+    let window = cx.open_window(size(px(120.), px(80.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(crate::render::draw_frame);
+    native.simulate_mouse_move(point(px(5.), px(5.)), None, Default::default());
+    native.update(|window, cx| {
+        let position = point(px(5.), px(5.));
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    });
+    assert!(
+        events.borrow().iter().any(|event| matches!(
+            event,
+            wire::Event::Select {
+                handler: 72,
+                index: 0
+            }
+        )),
+        "a tap whose down and up arrive before a frame is drawn presses the link"
+    );
+    tree.read_with(&native, |tree, _| {
+        assert!(tree.take_activation().is_some());
+    });
+}
+
+#[gpui_kit::test]
 fn a_key_activates_the_view_and_escape_does_not(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let mut root = container_with_style("keys", div().size_full().style().clone(), []);

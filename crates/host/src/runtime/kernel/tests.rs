@@ -1,4 +1,5 @@
 use super::*;
+use ducktape_a11y_platform::headless::Harness;
 use std::time::{Duration, Instant};
 
 mod node_methods;
@@ -114,7 +115,7 @@ pub(super) fn fake_node(routes: Vec<(&'static str, Mode)>) -> FakeNode {
     let node = node::Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = accepted.clone();
@@ -229,6 +230,14 @@ fn a_method_is_reached_only_through_its_declared_capability() {
                 refused_with(&[family], kind).as_deref(),
                 Some(refusal::UNKNOWN_REQUEST),
                 "{kind} without av"
+            );
+            continue;
+        }
+        if *kind == methods::NotifyNeeds::KIND {
+            assert_eq!(
+                refused_with(&[family], kind).as_deref(),
+                Some(refusal::UNKNOWN_REQUEST),
+                "{kind} is not hosted yet"
             );
             continue;
         }
@@ -579,7 +588,12 @@ fn link_open_needs_an_activation_and_takes_it() {
     assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
     // a route the OS handed the view (`Windows::open_seat`) activates nothing
     view.route_subscriptions.push(2);
-    crate::runtime::route_to("request-test", view.instance, "tx/1".into());
+    crate::runtime::route_to(
+        crate::runtime::in_hand(),
+        "request-test",
+        view.instance,
+        "tx/1".into(),
+    );
     view.sync_route();
     view.answer(link_request(3, "duck://request-test/tx/1"), &None);
     assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
@@ -927,11 +941,10 @@ fn the_placement_is_told_at_subscribe_and_on_each_change() {
 /// with the one activation the host stamps for it, and the view's
 /// `link.open` on that click goes out. No stamp refuses it `needs_gesture`;
 /// a second click on the same press asks twice and the second is refused.
-#[gpui_kit::test]
-fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn a_readers_press_on_a_link_opens_it_once() {
     use gpui_kit::Styled as _;
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
-    cx.update(gpui_kit::init);
     let link = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("docs".into())),
         style: crate::render::test_style(gpui_kit::div().size_full().style().clone()),
@@ -946,12 +959,12 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
         })),
         children: Vec::new(),
     });
-    let window = cx.open_window(
+    let native = Harness::open_with(
+        gpui_kit::init,
         gpui_kit::size(gpui_kit::px(200.), gpui_kit::px(40.)),
         |_, _| crate::render::ViewTree::new(link),
     );
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let tree = native.root();
     let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let seen = events.clone();
     let _subscription = native.update(|_, cx| {
@@ -959,27 +972,23 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
             seen.borrow_mut().push(event.clone());
         })
     });
-    native.update(|window, cx| {
-        window.activate_a11y();
+    let target = native.update(|window, cx| {
+        native.activate_in(window);
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        let target = window
-            .a11y_tree()
-            .unwrap()
+        native
+            .tree()
             .nodes
             .iter()
             .find(|(_, node)| node.label() == Some("the docs"))
             .map(|(id, _)| *id)
-            .expect("the link is in the tree");
-        window.dispatch_a11y_action(
-            ActionRequest {
-                action: Action::Click,
-                target_tree: TreeId::ROOT,
-                target_node: target,
-                data: None,
-            },
-            cx,
-        );
+            .expect("the link is in the tree")
+    });
+    native.act(ActionRequest {
+        action: Action::Click,
+        target_tree: TreeId::ROOT,
+        target_node: target,
+        data: None,
     });
     // the seat hands the tree's stamp to the view at its next turn
     // (`a_trees_activation_reaches_its_view_on_the_next_turn`), and the
@@ -1409,29 +1418,20 @@ fn a_node_method_reaches_any_program() {
     }
 }
 
-/// The reply a task delivered, waited for; `None` after two seconds.
 fn awaited(view: &mut View) -> Option<wire::Event> {
-    for _ in 0..200 {
+    let mut changes = view.replies.changes();
+    loop {
         let mut events = Vec::new();
         view.replies.drain_into(&mut events);
         if let Some(event) = events.pop() {
             return Some(event);
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        handle().block_on(changes.changed()).ok()?;
     }
-    None
 }
 
-/// The front ask, waited for (the request's task queues it); `None` after
-/// two seconds.
-fn asked() -> Option<(u64, super::super::consent::Words)> {
-    (0..200).find_map(|_| {
-        let front = super::super::consent::front();
-        if front.is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        front
-    })
+fn asked() -> (u64, super::super::consent::Words) {
+    super::super::consent::queued_front()
 }
 
 /// An `op.submit` of an identity op that removes a key waits for the
@@ -1477,7 +1477,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     assert!(consent::front().is_none());
     // seated and connected: the ask waits, nothing reaches the node
     let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
-    handle().block_on(backend::seat_key(std::sync::Arc::new(key)));
+    handle().block_on(backend::seat_key("test-network", std::sync::Arc::new(key)));
     // garbage for the frame's anchor read, on this view's own connection
     let node = fake_node(vec![(
         noded_client::wire::route::STATUS,
@@ -1489,14 +1489,14 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         chain: "test-network#1".into(),
         rev: view.connection.rev,
         live: None,
-        apart: None,
+        on: Default::default(),
     };
     // the props say the seated key holds account 7, the one the op names
     let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
     view.activation = Some(Instant::now());
     view.answer(request(2), &props);
     assert_eq!(refusal_code(&mut view), None, "the request waits");
-    let (first, words) = asked().expect("an ask waits");
+    let (first, words) = asked();
     assert!(
         words
             .said
@@ -1534,7 +1534,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     // with no account resolved the card does not call it the person's own
     view.activation = Some(Instant::now());
     view.answer(request(4), &None);
-    let (second, words) = asked().expect("an ask waits");
+    let (second, words) = asked();
     assert_ne!(first, second);
     assert!(
         words
@@ -1563,7 +1563,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     // task, aborted, lets go of the ask on the runtime's next turn)
     view.activation = Some(Instant::now());
     view.answer(request(7), &None);
-    assert!(asked().is_some(), "an ask waits");
+    asked();
     drop(view);
     let gone = (0..200).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1592,7 +1592,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
     // listed, its code carrying no describe module
     list_program("acl-programs", 0xa2, false, None);
     let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
-    handle().block_on(backend::seat_key(std::sync::Arc::new(key)));
+    handle().block_on(backend::seat_key("test-network", std::sync::Arc::new(key)));
     let mut view = view();
     // a manifest name that reads as a role's: the card asks all the same,
     // naming the roster's program
@@ -1607,7 +1607,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         chain: "test-network#1".into(),
         rev: view.connection.rev,
         live: None,
-        apart: None,
+        on: Default::default(),
     };
     let submit = |view: &mut View, id: u64, target: &str| {
         view.activation = Some(Instant::now());
@@ -1641,7 +1641,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         ),
     ] {
         submit(&mut view, id, target);
-        let (ask, words) = asked().expect("an ask waits");
+        let (ask, words) = asked();
         assert_eq!(words.title, title);
         assert_eq!(
             words.said,
@@ -1663,7 +1663,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
     }
     // Approve: the op goes on to be signed, its frame's anchor read first
     submit(&mut view, 3, "acl-valset");
-    let (ask, _) = asked().expect("an ask waits");
+    let (ask, _) = asked();
     assert!(!consent::answer(ask, true));
     match awaited(&mut view) {
         Some(wire::Event::Response {
@@ -1690,4 +1690,63 @@ fn what_a_view_shows_goes_to_its_pane() {
     );
     assert_eq!(refusal_code(&mut view), None);
     assert_eq!(view.intents, [Intent::Showing("general".into())]);
+}
+
+#[test]
+fn debug_mode_is_told_at_subscribe_and_on_each_change() {
+    let mut view = view();
+    let (debug, heard) = tokio::sync::watch::channel(false);
+    view.debug_mode = heard;
+    view.answer(
+        wire::Request {
+            id: 9,
+            kind: "host.debug".into(),
+            payload: Vec::new(),
+        },
+        &None,
+    );
+    assert!(!answered::<bool>(&mut view));
+    let told = |view: &mut View| -> Vec<bool> {
+        view.sync_debug();
+        std::mem::take(&mut view.pending)
+            .into_iter()
+            .map(|event| match event {
+                wire::Event::Response {
+                    id: 9,
+                    result: Ok(bytes),
+                    done: false,
+                } => methods::decode(&bytes).unwrap(),
+                other => panic!("not a debug item: {other:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(told(&mut view), Vec::<bool>::new());
+    debug.send_replace(true);
+    assert_eq!(told(&mut view), [true]);
+    assert_eq!(told(&mut view), Vec::<bool>::new(), "told once");
+    debug.send_replace(false);
+    view.debug_subscriptions.clear();
+    assert_eq!(told(&mut view), Vec::<bool>::new(), "cancelled");
+}
+
+#[test]
+fn notify_needs_is_refused_as_unknown_and_not_listed_as_hosted() {
+    let mut view = view();
+    view.answer(
+        wire::Request {
+            id: 1,
+            kind: methods::NotifyNeeds::KIND.into(),
+            payload: methods::encode(&methods::Needs { items: Vec::new() }),
+        },
+        &None,
+    );
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some(refusal::UNKNOWN_REQUEST)
+    );
+    assert!(
+        !hosted(true)
+            .iter()
+            .any(|kind| kind == methods::NotifyNeeds::KIND)
+    );
 }

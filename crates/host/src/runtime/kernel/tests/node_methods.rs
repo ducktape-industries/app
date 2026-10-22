@@ -17,7 +17,7 @@ pub(super) fn node_server(
     let node = node::Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
     let responses: Vec<(String, Vec<u8>)> = responses
         .into_iter()
@@ -53,6 +53,11 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
             ),
         ],
     );
+    let anchor = noded_client::wire::Tip {
+        height: 1,
+        id: [1; 32],
+    };
+    node.client.heard(anchor);
     let ask = call("programs", &payload);
     assert_eq!(
         query(node.clone(), ask.clone()).await.unwrap(),
@@ -66,7 +71,11 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
     for body in bodies {
         let query: noded_client::wire::Query = abi::decode(&body).unwrap();
         assert_eq!(query.layer, backend::Layer::Confirmed);
-        let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
+        let noded_client::wire::Ask::Signed(frame) = query.ask else {
+            panic!("an unsigned query");
+        };
+        let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
+        assert_eq!(frame.body.anchor, anchor);
         assert_eq!(frame.body.target, "programs");
         assert_eq!(frame.body.network, b"test-network");
         assert_eq!(frame.body.payload, payload);
@@ -92,8 +101,12 @@ async fn a_view_query_reads_what_blocks_wrote_not_the_preconfirmed_overlay() {
     let node = node::Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
-        apart: None,
+        on: Default::default(),
     };
+    node.client.heard(noded_client::wire::Tip {
+        height: 1,
+        id: [0; 32],
+    });
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         let (_, received) = read_request(&mut stream);
@@ -572,15 +585,15 @@ async fn blob_manifest_keeps_only_code_the_network_runs() {
     }
     assert_eq!(held.accepted.load(SeqCst), 2, "each ask read the node");
 
-    let apart = crate::runtime::roster::Apart::default();
-    apart.roster.lock().push(crate::backend::views::Program {
+    let network = crate::runtime::roster::Network::new(true);
+    network.roster.lock().push(crate::backend::views::Program {
         name: "listed".into(),
         code: id,
         bare: false,
     });
-    let apart = Some(std::sync::Arc::new(apart));
+    let apart = crate::runtime::roster::On::of(&network);
     let listed = node::Node {
-        apart: apart.clone(),
+        on: apart.clone(),
         ..held.node.clone()
     };
     let answer = blob_manifest(listed, ask.clone()).await.unwrap();
@@ -588,7 +601,7 @@ async fn blob_manifest_keeps_only_code_the_network_runs() {
     assert!(kept.exists(), "code a program runs was not kept");
     let empty = fake_node(Vec::new());
     let from_disk = node::Node {
-        apart,
+        on: apart,
         ..empty.node.clone()
     };
     let answer = blob_manifest(from_disk, ask).await;
@@ -640,7 +653,20 @@ fn an_old_manifest_naming_targets_still_loads() {
             min_width: 480,
             width: None,
             capabilities: vec![methods::Capability::Op, methods::Capability::Program],
+            hosts: Vec::new(),
             wire: "0123abcd".into(),
         }
+    );
+}
+
+#[test]
+fn a_manifest_lists_the_hosts_its_sockets_reach() {
+    let text = "ducktape.view.manifest\nTelegram\n\nsocket,\n480\n4\n\n\nblue\n\nvenus.web.telegram.org,flora.web.telegram.org,";
+    let view = module(&[("ducktape.view.manifest", text.as_bytes())]);
+    let listing = crate::runtime::manifest_of(&view);
+    assert_eq!(listing.capabilities, [methods::Capability::Socket]);
+    assert_eq!(
+        listing.hosts,
+        ["venus.web.telegram.org", "flora.web.telegram.org"]
     );
 }

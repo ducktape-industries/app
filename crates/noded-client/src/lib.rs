@@ -18,6 +18,7 @@ pub mod identity;
 pub mod ids;
 pub mod join;
 pub mod keyring;
+mod net;
 pub mod relay;
 pub mod wire;
 pub mod words;
@@ -26,14 +27,11 @@ use abi::{BlobId, Refusal};
 use borsh::{BorshDeserialize, BorshSerialize};
 use bytes::Bytes;
 use futures::{Stream, StreamExt as _};
-use reqwest::StatusCode;
 use std::time::Duration;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use wire::{
-    BlockAsk, Blocks, Change, Finalized, Layer, Located, Network, Page, Preconfirm, Query, Receipt,
-    Status, Submit, Submitted, TxAsk, route,
+    Ask, BlockAsk, Blocks, Change, Finalized, Frame, Head, Layer, Located, Network, Page,
+    Preconfirm, Pushed, Query, Receipt, Status, Submit, Submitted, Tip, TxAsk, Watch, route,
 };
 
 /// What signs a frame or a consent: an ed25519 key, wherever it is kept.
@@ -45,7 +43,11 @@ use wire::{
 /// names one key and carries another's proof.
 pub trait Signer: Send + Sync {
     fn public_key(&self) -> [u8; 32];
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> std::result::Result<[u8; 64], SignError>;
+    fn sign<'a>(
+        &'a self,
+        namespace: &'a [u8],
+        message: &'a [u8],
+    ) -> rt::Fut<'a, std::result::Result<[u8; 64], SignError>>;
 }
 
 /// Why a [`Signer`] did not sign, in words for the person.
@@ -73,38 +75,17 @@ impl Signer for commonware_cryptography::ed25519::PrivateKey {
     }
 
     /// Never refuses: the key is in memory.
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> std::result::Result<[u8; 64], SignError> {
+    fn sign<'a>(
+        &'a self,
+        namespace: &'a [u8],
+        message: &'a [u8],
+    ) -> rt::Fut<'a, std::result::Result<[u8; 64], SignError>> {
         let signature = commonware_cryptography::Signer::sign(self, namespace, message);
-        Ok(signature
+        Box::pin(std::future::ready(Ok(signature
             .as_ref()
             .try_into()
-            .expect("an ed25519 signature is 64 bytes"))
+            .expect("an ed25519 signature is 64 bytes"))))
     }
-}
-
-/// Every HTTP client this crate builds: no redirect followed. A redirect
-/// would send the same signed frame on to whatever host the answer names;
-/// it is the answer instead, a status this client does not read
-/// ([`Error::Failed`]).
-fn http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("the HTTP client")
-}
-
-/// A blob read's client ([`Client::blob`]): [`http`]'s, with deadlines a
-/// read gives up on, which only a read has. An upload (`put_blobs`) streams
-/// for as long as its blobs take, and a query is answered when the node has
-/// it. A deadline passed is the read's failure, said as any transport
-/// failure is; nothing here asks again.
-fn reads(connect: Duration, idle: Duration) -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(connect)
-        .read_timeout(idle)
-        .build()
-        .expect("the HTTP client")
 }
 
 /// A blob read's connect deadline: a node that has not taken the
@@ -147,48 +128,41 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl From<reqwest::Error> for Error {
-    fn from(error: reqwest::Error) -> Self {
-        match error.is_connect() {
-            true => Error::Unreachable(error.to_string()),
-            false => Error::Transport(with_causes(&error)),
-        }
-    }
-}
-
-// reqwest's own words name only the step that failed ("error decoding
-// response body" for any failure reading a body); the causes under them say
-// why (a reset, an early close, a deadline), each once.
-fn with_causes(error: &reqwest::Error) -> String {
-    let mut sentence = error.to_string();
-    let mut cause = std::error::Error::source(error);
-    while let Some(inner) = cause {
-        let said = inner.to_string();
-        if !said.is_empty() && !sentence.ends_with(&said) {
-            sentence = format!("{sentence}: {said}");
-        }
-        cause = inner.source();
-    }
-    sentence
-}
-
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub enum Asked {
+    Unsigned(SignError),
+    Node(Error),
+}
+
+impl std::fmt::Display for Asked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Asked::Unsigned(refused) => refused.fmt(f),
+            Asked::Node(error) => error.fmt(f),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Client {
-    http: reqwest::Client,
-    /// The blob reads' own, with their deadlines ([`reads`]).
-    reads: reqwest::Client,
+    http: net::Net,
+    reads: net::Net,
     base: String,
+    newest: std::sync::Arc<std::sync::Mutex<Option<Tip>>>,
+    roles: std::sync::Arc<std::sync::Mutex<Option<abi::Roles>>>,
 }
 
 impl Client {
     pub fn new(base: impl Into<String>) -> Client {
         let base = base.into().trim_end_matches('/').to_owned();
         Client {
-            http: http(),
-            reads: reads(READ_CONNECT, READ_IDLE),
+            http: net::Net::new(None),
+            reads: net::Net::new(Some((READ_CONNECT, READ_IDLE))),
             base,
+            newest: Default::default(),
+            roles: Default::default(),
         }
     }
 
@@ -196,15 +170,75 @@ impl Client {
         &self.base
     }
 
-    /// The connection's HTTP client, for a call to another host on its
-    /// behalf (the auth host's relay): one pool per connection, not one per
-    /// call.
-    pub(crate) fn http(&self) -> &reqwest::Client {
+    pub(crate) fn http(&self) -> &net::Net {
         &self.http
     }
 
     pub async fn status(&self) -> Result<Status> {
-        self.fetch(route::STATUS).await
+        let status: Status = self.fetch(route::STATUS).await?;
+        self.heard(status.anchor());
+        self.heard_roles(&status.roles);
+        Ok(status)
+    }
+
+    pub fn heard(&self, tip: Tip) {
+        let mut newest = self
+            .newest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if newest.is_none_or(|newest| newest.height < tip.height) {
+            *newest = Some(tip);
+        }
+    }
+
+    pub fn heard_roles(&self, roles: &abi::Roles) {
+        *self
+            .roles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(roles.clone());
+    }
+
+    pub async fn bound(&self, role: &str) -> Result<String> {
+        let known = self
+            .roles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let roles = match known {
+            Some(roles) => roles,
+            None => self.status().await?.roles,
+        };
+        roles.bound(role).cloned().map_err(Error::Refused)
+    }
+
+    pub async fn role_query(
+        &self,
+        layer: Layer,
+        signer: &dyn Signer,
+        network: &[u8],
+        role: &str,
+        payload: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, Asked> {
+        let target = self.bound(role).await.map_err(Asked::Node)?;
+        match self
+            .query(layer, signer, network, &target, payload.clone())
+            .await
+        {
+            Err(Asked::Node(Error::Refused(refusal)))
+                if refusal.reason == abi::reason::UNKNOWN_PROGRAM =>
+            {
+                let roles = self.status().await.map_err(Asked::Node)?.roles;
+                let now = roles
+                    .bound(role)
+                    .cloned()
+                    .map_err(|unbound| Asked::Node(Error::Refused(unbound)))?;
+                match now == target {
+                    true => Err(Asked::Node(Error::Refused(refusal))),
+                    false => self.query(layer, signer, network, &now, payload).await,
+                }
+            }
+            answer => answer,
+        }
     }
 
     /// Every member's sync state as the node sees it.
@@ -212,10 +246,6 @@ impl Client {
         self.fetch(route::NETWORK).await
     }
 
-    /// The UDP port the node takes live sessions on (QUIC, ALPN
-    /// `ducktape-live`), at the host of its `/v1` address; `None` when it
-    /// bound no UDP, and a client takes the websocket at `/v1/live`. A node
-    /// that serves no live tracks answers 404.
     pub async fn live_port(&self) -> Result<Option<u16>> {
         self.fetch(route::LIVE_PORT).await
     }
@@ -234,10 +264,61 @@ impl Client {
         }
     }
 
-    /// A signed frame whose target answers a query; the reply is whatever
-    /// bytes the program `Respond`ed.
-    pub async fn query(&self, layer: Layer, frame: Vec<u8>) -> Result<Vec<u8>> {
-        self.post(route::QUERY, &Query { layer, frame }).await
+    pub async fn query(
+        &self,
+        layer: Layer,
+        signer: &dyn Signer,
+        network: &[u8],
+        target: &str,
+        payload: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, Asked> {
+        let anchor = self.anchor().await.map_err(Asked::Node)?;
+        let frame = Frame::query(signer, network, anchor, target, payload.clone())
+            .await
+            .map_err(Asked::Unsigned)?;
+        match self.signed_query(layer, frame).await {
+            Err(Error::Refused(refusal)) if refusal.reason == abi::reason::ANCHOR => {
+                let fresh = self.status().await.map_err(Asked::Node)?.anchor();
+                if fresh == anchor {
+                    return Err(Asked::Node(Error::Refused(refusal)));
+                }
+                let frame = Frame::query(signer, network, fresh, target, payload)
+                    .await
+                    .map_err(Asked::Unsigned)?;
+                self.signed_query(layer, frame).await.map_err(Asked::Node)
+            }
+            answer => answer.map_err(Asked::Node),
+        }
+    }
+
+    pub async fn ask_frame(
+        &self,
+        signer: &dyn Signer,
+        network: &[u8],
+        target: &str,
+        payload: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, Asked> {
+        let anchor = self.anchor().await.map_err(Asked::Node)?;
+        Frame::query(signer, network, anchor, target, payload)
+            .await
+            .map(|frame| frame.encode())
+            .map_err(Asked::Unsigned)
+    }
+
+    async fn anchor(&self) -> Result<Tip> {
+        let known = *self
+            .newest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match known {
+            Some(anchor) => Ok(anchor),
+            None => Ok(self.status().await?.anchor()),
+        }
+    }
+
+    async fn signed_query(&self, layer: Layer, frame: Frame) -> Result<Vec<u8>> {
+        let ask = Ask::Signed(frame.encode());
+        self.post(route::QUERY, &Query { layer, ask }).await
     }
 
     /// The framed bytes (`kind len\0body`) of a blob the node holds, read
@@ -245,8 +326,7 @@ impl Client {
     pub async fn blob(&self, id: BlobId) -> Result<Option<Vec<u8>>> {
         answered(
             self.reads
-                .post(self.url(route::BLOB_GET))
-                .body(abi::encode(&id)),
+                .post(&self.url(route::BLOB_GET), abi::encode(&id)),
         )
         .await
     }
@@ -255,12 +335,9 @@ impl Client {
     /// ([`BlobStream::next`]), never held whole; `None` when the node holds
     /// no such blob.
     pub async fn blob_stream(&self, id: BlobId) -> Result<Option<BlobStream>> {
-        let mut response = sent(
-            self.reads
-                .post(self.url(route::BLOB_GET))
-                .body(abi::encode(&id)),
-        )
-        .await?;
+        let url = self.url(route::BLOB_GET);
+        let asked = self.reads.post(&url, abi::encode(&id));
+        let mut response = accepted(asked.await?).await?;
         // borsh's `Option<Vec<u8>>`: a tag, the length (u32 LE), the bytes;
         // the head is cut off the first pieces, what follows it kept as it came
         let mut head = Vec::new();
@@ -288,16 +365,9 @@ impl Client {
     }
 
     pub async fn blobs_stream(&self, ids: &[BlobId]) -> Result<BlobsStream> {
-        let response = sent(
-            self.reads
-                .post(self.url(route::BLOBS))
-                .body(abi::encode(&ids.to_vec())),
-        )
-        .await?;
-        let chunks = response
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(Error::from));
-        BlobsStream::of(chunks.boxed()).await
+        let url = self.url(route::BLOBS);
+        let asked = self.reads.post(&url, abi::encode(&ids.to_vec()));
+        BlobsStream::of(accepted(asked.await?).await?.pieces()).await
     }
 
     /// A blob upload: `frame`, a signed blobs-role `Put` naming each blob's
@@ -309,16 +379,11 @@ impl Client {
     pub async fn put_blobs(
         &self,
         frame: Vec<u8>,
-        blobs: impl Stream<Item = std::io::Result<Vec<u8>>> + Send + 'static,
+        blobs: impl Stream<Item = std::io::Result<Vec<u8>>> + rt::MaybeSend + 'static,
     ) -> Result<Submitted> {
         let opening = [&(frame.len() as u32).to_le_bytes()[..], &frame].concat();
         let body = futures::stream::once(async { Ok(opening) }).chain(blobs);
-        answered(
-            self.http
-                .post(self.url(route::BLOB_PUT))
-                .body(reqwest::Body::wrap_stream(body)),
-        )
-        .await
+        answered(self.http.post_stream(&self.url(route::BLOB_PUT), body)).await
     }
 
     pub async fn blocks(&self, page: &Blocks) -> Result<Page> {
@@ -338,7 +403,8 @@ impl Client {
         &self,
         program: &str,
     ) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
-        self.follow(format!("{}/{program}", route::CHANGES)).await
+        self.follow::<Change>(format!("{}/{program}", route::CHANGES))
+            .await
     }
 
     /// Each block's writes to `program`, the keys alone (`?keys`): every
@@ -347,32 +413,43 @@ impl Client {
         &self,
         program: &str,
     ) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
-        self.follow(format!("{}/{program}?keys", route::CHANGES))
+        self.follow::<Change>(format!("{}/{program}?keys", route::CHANGES))
             .await
     }
 
-    /// The changes socket at `path`; the node's ping (for a block that wrote
-    /// nothing there, and for each epoch's last block) is answered as the
-    /// stream is read and skipped. A socket left unread for a whole epoch
-    /// answers none, and the node cuts it.
-    async fn follow(&self, path: String) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
-        let url = format!("{}{path}", self.base.replacen("http", "ws", 1));
-        let unbounded = WebSocketConfig {
-            max_message_size: None,
-            max_frame_size: None,
-            ..WebSocketConfig::default()
-        };
-        let (socket, _) = tokio_tungstenite::connect_async_with_config(url, Some(unbounded), false)
-            .await
-            .map_err(not_opened)?;
-        Ok(socket.filter_map(|message| {
-            let change = match message {
-                Ok(Message::Binary(bytes)) => Some(abi::decode(&bytes).map_err(Error::Decode)),
-                Ok(_) => None,
-                Err(error) => Some(Err(Error::Transport(error.to_string()))),
-            };
-            futures::future::ready(change)
+    pub async fn watch(
+        &self,
+        program: &str,
+    ) -> Result<(Watching, impl Stream<Item = Result<Pushed>> + Unpin)> {
+        let base = self.base.replacen("http", "ws", 1);
+        let url = format!("{base}{}/{program}?keys", route::WATCH);
+        let (sending, socket) = self.http.duplex(&url).await?;
+        let pushed = socket
+            .map(|message| message.and_then(|bytes| abi::decode(&bytes).map_err(Error::Decode)));
+        Ok((Watching(sending), pushed))
+    }
+
+    pub async fn heads(&self) -> Result<impl Stream<Item = Result<Head>> + Unpin> {
+        let heard = self.clone();
+        let heads = self.follow::<Head>(route::HEADS.to_owned()).await?;
+        Ok(heads.inspect(move |head| {
+            if let Ok(head) = head {
+                heard.heard(Tip {
+                    height: head.height,
+                    id: head.id,
+                });
+            }
         }))
+    }
+
+    async fn follow<T: BorshDeserialize>(
+        &self,
+        path: String,
+    ) -> Result<impl Stream<Item = Result<T>> + Unpin> {
+        let url = format!("{}{path}", self.base.replacen("http", "ws", 1));
+        let socket = self.http.socket(&url).await?;
+        Ok(socket
+            .map(|message| message.and_then(|bytes| abi::decode(&bytes).map_err(Error::Decode))))
     }
 
     fn url(&self, route: &str) -> String {
@@ -380,7 +457,7 @@ impl Client {
     }
 
     async fn fetch<T: BorshDeserialize>(&self, route: &str) -> Result<T> {
-        answered(self.http.get(self.url(route))).await
+        answered(self.http.get(&self.url(route))).await
     }
 
     async fn post<B: BorshSerialize, T: BorshDeserialize>(
@@ -392,13 +469,21 @@ impl Client {
     }
 
     async fn post_raw<T: BorshDeserialize>(&self, route: &str, body: Vec<u8>) -> Result<T> {
-        answered(self.http.post(self.url(route)).body(body)).await
+        answered(self.http.post(&self.url(route), body)).await
+    }
+}
+
+pub struct Watching(futures::channel::mpsc::UnboundedSender<Vec<u8>>);
+
+impl Watching {
+    pub fn send(&self, watch: &Watch) -> bool {
+        self.0.unbounded_send(abi::encode(watch)).is_ok()
     }
 }
 
 /// A blob read in pieces ([`Client::blob_stream`]).
 pub struct BlobStream {
-    response: reqwest::Response,
+    response: net::Answer,
     /// The bytes still to come, as the answer said.
     left: usize,
     /// What came with the answer's head.
@@ -429,14 +514,14 @@ impl BlobStream {
 }
 
 pub struct BlobsStream {
-    chunks: futures::stream::BoxStream<'static, Result<Bytes>>,
+    chunks: rt::BoxStream<'static, Result<Bytes>>,
     buffered: Bytes,
     blobs: usize,
     left: usize,
 }
 
 impl BlobsStream {
-    async fn of(chunks: futures::stream::BoxStream<'static, Result<Bytes>>) -> Result<Self> {
+    async fn of(chunks: rt::BoxStream<'static, Result<Bytes>>) -> Result<Self> {
         let mut blobs = BlobsStream {
             chunks,
             buffered: Bytes::new(),
@@ -507,66 +592,36 @@ fn undecoded(sentence: &str) -> Error {
     Error::Decode(Refusal::new(abi::reason::PROTOCOL, sentence))
 }
 
-/// `request`'s answer, read whole.
-async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder) -> Result<T> {
-    let body = sent(request).await?.bytes().await?;
+async fn answered<T: BorshDeserialize>(
+    sent: impl std::future::Future<Output = Result<net::Answer>>,
+) -> Result<T> {
+    let body = accepted(sent.await?).await?.bytes().await?;
     abi::decode(&body).map_err(Error::Decode)
 }
 
-/// `request` sent: the answer, its body unread, when the node answered 200;
-/// else the node's refusal or failure.
-async fn sent(request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
-    let response = request.send().await?;
-    let status = response.status();
-    if status == StatusCode::OK {
-        return Ok(response);
+async fn accepted(answer: net::Answer) -> Result<net::Answer> {
+    let status = answer.status();
+    if status == 200 {
+        return Ok(answer);
     }
-    // A node's failure is its own sentence in plain text (noded answers `(status, sentence)`); whatever else answers
-    // (a proxy's page, a redirect to https) is not a node's word, and its body never reaches a sentence.
-    let plain = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/plain"));
-    let body = response.bytes().await?;
-    match status {
-        StatusCode::BAD_REQUEST => Err(Error::Refused(abi::decode(&body).map_err(Error::Decode)?)),
-        status => Err(Error::Failed {
-            status: status.as_u16(),
-            sentence: match plain || body.is_empty() {
-                true => String::from_utf8_lossy(&body).into_owned(),
-                false => NOT_A_NODE.into(),
-            },
-        }),
-    }
+    let plain = answer.plain();
+    let body = answer.bytes().await?;
+    Err(refusal(status, plain, &body))
 }
 
-/// Why a changes socket did not open, read as [`sent`] reads an answer: an
-/// upgrade the node answered with a status is its refusal or failure.
-fn not_opened(error: tokio_tungstenite::tungstenite::Error) -> Error {
-    match error {
-        tokio_tungstenite::tungstenite::Error::Http(answer) => {
-            let body = answer.body().as_deref().unwrap_or_default();
-            let plain = answer
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.starts_with("text/plain"));
-            match answer.status() {
-                StatusCode::BAD_REQUEST => match abi::decode(body) {
-                    Ok(refusal) => Error::Refused(refusal),
-                    Err(refusal) => Error::Decode(refusal),
-                },
-                status => Error::Failed {
-                    status: status.as_u16(),
-                    sentence: match plain || body.is_empty() {
-                        true => String::from_utf8_lossy(body).into_owned(),
-                        false => NOT_A_NODE.into(),
-                    },
-                },
-            }
-        }
-        error => Error::Transport(error.to_string()),
+pub(crate) fn refusal(status: u16, plain: bool, body: &[u8]) -> Error {
+    match status {
+        400 => match abi::decode(body) {
+            Ok(refusal) => Error::Refused(refusal),
+            Err(refusal) => Error::Decode(refusal),
+        },
+        status => Error::Failed {
+            status,
+            sentence: match plain || body.is_empty() {
+                true => String::from_utf8_lossy(body).into_owned(),
+                false => NOT_A_NODE.into(),
+            },
+        },
     }
 }
 
@@ -581,12 +636,16 @@ impl Signer for FixedSigner {
         [1; 32]
     }
 
-    fn sign(&self, _: &[u8], _: &[u8]) -> std::result::Result<[u8; 64], SignError> {
-        Ok([2; 64])
+    fn sign<'a>(
+        &'a self,
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> rt::Fut<'a, std::result::Result<[u8; 64], SignError>> {
+        Box::pin(std::future::ready(Ok([2; 64])))
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
 
@@ -661,7 +720,7 @@ mod tests {
     ) -> Client {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client = Client {
-            reads: reads(Duration::from_secs(5), idle),
+            reads: net::Net::new(Some((Duration::from_secs(5), idle))),
             ..Client::new(format!("http://{}", listener.local_addr().unwrap()))
         };
         tokio::spawn(async move { answer(listener.accept().await.unwrap().0).await });
@@ -826,6 +885,75 @@ mod tests {
             longer.next_blob().await.unwrap();
         }
         assert!(matches!(longer.next_blob().await, Err(Error::Decode(_))));
+    }
+
+    #[tokio::test]
+    async fn a_watch_carries_asks_out_and_pushes_in_and_a_node_without_it_answers_404() {
+        tokio::time::timeout(LIBTEST_SLOW_MARK, a_watch_carries_both_ways())
+            .await
+            .expect("the watch test was still waiting at libtest's slow-test mark");
+    }
+
+    const LIBTEST_SLOW_MARK: Duration = Duration::from_secs(60);
+
+    async fn a_watch_carries_both_ways() {
+        use futures::SinkExt as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Client::new(format!("http://{}", listener.local_addr().unwrap()));
+        let pushed = Pushed::Answer {
+            id: 1,
+            height: 4,
+            outcome: wire::Outcome::Answered(vec![7]),
+        };
+        let sent = pushed.clone();
+        let served = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut peeked = [0; 512];
+            let line = loop {
+                let read = stream.peek(&mut peeked).await.unwrap();
+                let head = String::from_utf8_lossy(&peeked[..read]).into_owned();
+                if let Some((line, _)) = head.split_once("\r\n") {
+                    break line.to_owned();
+                }
+            };
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let asked = socket.next().await.unwrap().unwrap().into_data();
+            socket
+                .send(Message::Binary(abi::encode(&sent)))
+                .await
+                .unwrap();
+            socket.close(None).await.unwrap();
+            while socket.next().await.is_some() {}
+            drop(socket);
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).await.unwrap();
+                head.push(byte[0]);
+            }
+            let refused = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+            stream.write_all(refused).await.unwrap();
+            (line, asked)
+        });
+        let (watching, mut heard) = client.watch("chat").await.unwrap();
+        let ask = Watch::Ask {
+            id: 1,
+            frame: vec![9],
+        };
+        assert!(watching.send(&ask));
+        assert_eq!(heard.next().await.unwrap().unwrap(), pushed);
+        assert!(heard.next().await.is_none(), "the node's close ends it");
+        let refused = client.watch("chat").await.err();
+        assert!(
+            matches!(refused, Some(Error::Failed { status: 404, .. })),
+            "{refused:?}"
+        );
+        let (path, asked) = served.await.unwrap();
+        assert_eq!(path, "GET /v1/watch/chat?keys HTTP/1.1");
+        assert_eq!(asked, abi::encode(&ask));
     }
 
     #[tokio::test]

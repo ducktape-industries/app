@@ -523,13 +523,11 @@ async fn reach(url: String) -> Result<Network, String> {
         .map_or_else(|| status.network.clone(), |chain| chain.to_string());
     let keyring =
         noded_client::keyring::bind(&os.dirs().remotes, &status.network, status.time)?.dir;
-    let opened = keyring.clone();
-    let public = off_window(move || match os.device_key(&opened) {
-        Ok(Some(key)) => Ok(key.public_key()),
-        Ok(None) => Err(NO_KEY.to_owned()),
-        Err(refused) => Err(refused.sentence()),
-    })
-    .await??;
+    let public = match os.device_key(&keyring).await {
+        Ok(Some(key)) => key.public_key(),
+        Ok(None) => return Err(NO_KEY.to_owned()),
+        Err(refused) => return Err(refused.sentence()),
+    };
     let account = noded_client::identity::account_of_key(
         &client,
         &status.network,
@@ -547,16 +545,7 @@ async fn reach(url: String) -> Result<Network, String> {
 
 const NO_KEY: &str = "this phone keeps no key for that network";
 
-async fn off_window<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, String> {
-    ducktape_host::runtime::handle()
-        .spawn_blocking(work)
-        .await
-        .map_err(|_| "the key store's work did not finish".to_owned())
-}
-
-fn signed(
+async fn signed(
     opened: Result<
         Option<std::sync::Arc<dyn noded_client::Signer>>,
         ducktape_host::contract::KeyRefusal,
@@ -574,6 +563,7 @@ fn signed(
     }
     let signature = signer
         .sign(push::NAMESPACE, preimage)
+        .await
         .map_err(|refused| Failed::Again(refused.0))?;
     Ok(noded_client::hex::hex_encode(&signature))
 }
@@ -596,15 +586,8 @@ async fn send(http: &reqwest::Client, server: &str, want: &Wanted) -> Result<(),
         want.key.clone(),
         registration.preimage(),
     );
-    let signature = off_window(move || {
-        signed(
-            ducktape_host::contract::os().device_key(&keyring),
-            &key,
-            &preimage,
-        )
-    })
-    .await
-    .map_err(Failed::Again)??;
+    let opened = ducktape_host::contract::os().device_key(&keyring).await;
+    let signature = signed(opened, &key, &preimage).await?;
     registration.sig = signature;
     let body =
         serde_json::to_string(&registration).map_err(|error| Failed::Stopped(error.to_string()))?;
@@ -853,57 +836,6 @@ mod tests {
     }
 
     #[test]
-    fn a_key_is_opened_off_the_window_thread() {
-        use std::io::{BufRead as _, Write as _};
-        let caller = std::thread::current().id();
-        let opened_on = |keyring: &str| -> Vec<std::thread::ThreadId> {
-            let opened = ducktape_host::contract::testing::keys_opened();
-            let opened = opened.into_iter().filter(|(ring, _)| ring == keyring);
-            opened.map(|(_, on)| on).collect()
-        };
-        let runtime = ducktape_host::runtime::handle();
-
-        let to_send = Wanted {
-            keyring: "send-off-window".into(),
-            ..want("away#0b0b0b0b", "a1")
-        };
-        let http = reqwest::Client::new();
-        runtime
-            .block_on(send(&http, "http://127.0.0.1:1", &to_send))
-            .unwrap_err();
-        let sent = opened_on("send-off-window");
-        assert!(!sent.is_empty(), "the send opened no key");
-        assert!(!sent.contains(&caller), "the send opened its key here");
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let status = ducktape_host::backend::NodeStatus {
-            network: "reach-off-window".into(),
-            ..ducktape_host::session::tests::status(1)
-        };
-        let body = abi::encode(&status);
-        let node = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = std::io::BufReader::new(&stream);
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap_or(0) > 2 {
-                line.clear();
-            }
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            (&stream).write_all(head.as_bytes()).unwrap();
-            (&stream).write_all(&body).unwrap();
-        });
-        runtime.block_on(reach(url)).unwrap_err();
-        node.join().unwrap();
-        let reached = opened_on("reach-off-window");
-        assert!(!reached.is_empty(), "the reach opened no key");
-        assert!(!reached.contains(&caller), "the reach opened its key here");
-    }
-
-    #[test]
     fn a_key_that_will_not_open_or_sign_is_tried_again() {
         use ducktape_host::contract::KeyRefusal;
         struct Locked;
@@ -911,35 +843,41 @@ mod tests {
             fn public_key(&self) -> [u8; 32] {
                 [1; 32]
             }
-            fn sign(&self, _: &[u8], _: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
-                Err(noded_client::SignError("the phone is locked".into()))
+            fn sign<'a>(
+                &'a self,
+                _: &'a [u8],
+                _: &'a [u8],
+            ) -> rt::Fut<'a, Result<[u8; 64], noded_client::SignError>> {
+                Box::pin(std::future::ready(Err(noded_client::SignError(
+                    "the phone is locked".into(),
+                ))))
             }
         }
+        use futures::executor::block_on;
         let again = |said: &str| Err(Failed::Again(said.into()));
         let locked = KeyRefusal::Denied("the phone is locked".into());
         assert_eq!(
-            signed(Err(locked), "ab", b"x"),
+            block_on(signed(Err(locked), "ab", b"x")),
             again("the phone is locked")
         );
-        assert_eq!(signed(Ok(None), "ab", b"x"), again(NO_KEY));
+        assert_eq!(block_on(signed(Ok(None), "ab", b"x")), again(NO_KEY));
         let one = hex_encode(&[1; 32]);
         let refused: std::sync::Arc<dyn noded_client::Signer> = std::sync::Arc::new(Locked);
         assert_eq!(
-            signed(Ok(Some(refused.clone())), &one, b"x"),
+            block_on(signed(Ok(Some(refused.clone())), &one, b"x")),
             again("the phone is locked")
         );
         assert_eq!(
-            signed(Ok(Some(refused)), "ab", b"x"),
+            block_on(signed(Ok(Some(refused)), "ab", b"x")),
             Err(Failed::Stopped(
                 "another key is kept for that network now".into()
             ))
         );
-        let key = ducktape_host::contract::os()
-            .device_key("testkit")
+        let key = block_on(ducktape_host::contract::os().device_key("testkit"))
             .unwrap()
             .unwrap();
         let public = hex_encode(&key.public_key());
-        assert!(signed(Ok(Some(key)), &public, b"x").is_ok());
+        assert!(block_on(signed(Ok(Some(key)), &public, b"x")).is_ok());
     }
 
     fn hex_encode(bytes: &[u8]) -> String {

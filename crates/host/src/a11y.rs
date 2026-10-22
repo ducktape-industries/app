@@ -1,11 +1,6 @@
-//! Accessibility helpers for the native screens and the tree presenter: role
-//! with name (`Control`), keyboard reach (`keyboard`, `focus_shown`, and a
-//! tab list or radio group as one Tab stop, `roving`), states
-//! set on the element's own node after a kit widget has built it (`aria`),
-//! what gpui has no setter for (`Patch`: `modal`, `live`, the view's
-//! phase-2 aria, and the class names the AX test door masks, `private`, or
-//! leaves untruncated, `whole`), and one AT node for a kit text input
-//! (`text_field`), or for it and the list it picks from (`combo_box`).
+//! Accessibility helpers for the native screens and the tree presenter: role and name, keyboard
+//! reach, states gpui has no setter for, one AT node for a kit field, and a view cached only
+//! while no assistive technology reads it (`cached`): gpui replays no node from a reused cache.
 
 use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live, Orientation};
 use gpui_kit::{
@@ -456,9 +451,94 @@ impl HeldKeys {
     }
 }
 
+pub fn cached(view: gpui_kit::AnyView, style: gpui_kit::StyleRefinement) -> Cached {
+    Cached {
+        view,
+        style,
+        drawn: None,
+    }
+}
+
+pub struct Cached {
+    view: gpui_kit::AnyView,
+    style: gpui_kit::StyleRefinement,
+    drawn: Option<gpui_kit::AnyElement>,
+}
+
+impl IntoElement for Cached {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui_kit::Element for Cached {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&gpui_kit::GlobalElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui_kit::LayoutId, ()) {
+        let view = self.view.clone();
+        let mut drawn = match window.is_a11y_active() {
+            true => {
+                let mut held = div();
+                *held.style() = self.style.clone();
+                held.child(view).into_any_element()
+            }
+            false => view.cached(self.style.clone()).into_any_element(),
+        };
+        let layout = drawn.request_layout(window, cx);
+        self.drawn = Some(drawn);
+        (layout, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui_kit::GlobalElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
+        _bounds: gpui_kit::Bounds<gpui_kit::Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(drawn) = &mut self.drawn {
+            drawn.prepaint(window, cx);
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui_kit::GlobalElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
+        _bounds: gpui_kit::Bounds<gpui_kit::Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(drawn) = &mut self.drawn {
+            drawn.paint(window, cx);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ducktape_a11y_platform::headless::Harness;
     use gpui_kit::{Context, Render, TestAppContext, VisualTestContext, px, size};
 
     struct Patched(FocusHandle);
@@ -480,16 +560,16 @@ mod tests {
 
     /// Everything one element needs lands on its node: a live region set
     /// beside a modal does not replace it.
-    #[gpui_kit::test]
-    fn one_patch_writes_every_property_it_collects(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(200.), px(200.)), |_, cx| Patched(cx.focus_handle()));
-        let mut native = VisualTestContext::from_window(window.into(), cx);
+    #[test]
+    fn one_patch_writes_every_property_it_collects() {
+        let native = Harness::open_with(gpui_kit::init, size(px(200.), px(200.)), |_, cx| {
+            Patched(cx.focus_handle())
+        });
         native.update(|window, cx| {
-            window.activate_a11y();
+            native.activate_in(window);
             crate::render::draw_frame(window, cx);
             crate::render::draw_frame(window, cx);
-            let update = window.a11y_tree().unwrap();
+            let update = &native.tree();
             let (_, node) = update
                 .nodes
                 .iter()

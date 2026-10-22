@@ -203,8 +203,8 @@ fn views(door: &Door<'_>, cx: &App) -> Vec<(String, AnyWindowHandle, Entity<View
         let count = seen.entry((window.clone(), program)).or_default();
         *count += 1;
         let view = match *count {
-            1 => program.to_owned(),
-            n => format!("{program}~{n}"),
+            1 => crate::runtime::slug(program),
+            n => format!("{}~{n}", crate::runtime::slug(program)),
         };
         named.push((format!("{window}:{view}"), handle, tree));
     }

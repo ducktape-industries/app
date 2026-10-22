@@ -56,16 +56,11 @@ pub(super) async fn described(
     let Some((hash, module, file)) = module(node, code).await? else {
         return Ok(None);
     };
-    let described = tokio::task::spawn_blocking(move || {
-        let module = crate::contract::Code {
-            bytes: &module,
-            file: file.as_ref().map(|(path, at)| (path.as_path(), *at)),
-        };
-        crate::contract::runner().describe(hash, module, &op)
-    })
-    .await
-    .ok()
-    .flatten();
+    let module = crate::contract::Code {
+        bytes: &module,
+        file: file.as_ref().map(|(path, at)| (path.as_path(), *at)),
+    };
+    let described = crate::contract::runner().describe(hash, module, op).await;
     answers()
         .lock()
         .expect("describe answers")
@@ -89,7 +84,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Module, wire::Error> {
                 }
                 Err(_) => return Err(None),
             };
-            Ok(tokio::task::spawn_blocking(move || {
+            Ok(rt::task::blocking(move || {
                 let section = blob.part(::describe::section)?;
                 let code = section.code();
                 let hash: [u8; 32] = sha2::Sha256::digest(code.bytes).into();
@@ -116,7 +111,7 @@ pub(super) mod tests {
         Node {
             client: RpcClient::new("http://127.0.0.1:9"),
             network: "test#1".into(),
-            apart: None,
+            on: Default::default(),
         }
     }
 
@@ -232,14 +227,14 @@ pub(super) mod tests {
             .lock()
             .unwrap()
             .insert(code, kept(Some((hash, Arc::from(module), None))));
-        let apart = super::super::super::roster::Apart::default();
+        let apart = super::super::super::roster::Network::new(true);
         apart.roster.lock().push(crate::backend::views::Program {
             name: program.into(),
             code,
             bare: false,
         });
         let followed = Node {
-            apart: Some(Arc::new(apart)),
+            on: super::super::super::roster::On::of(&apart),
             ..node()
         };
         let read = described(&followed, program, vec![5]).await.unwrap();
@@ -275,14 +270,14 @@ mod stage {
         let endpoint = std::env::var("DESCRIBE_STAGE").expect("DESCRIBE_STAGE names the node");
         let client = RpcClient::new(endpoint);
         let network = client.status().await.expect("the stage answers").network;
-        let programs = views::programs(&client, &network, &*crate::backend::query_signer())
+        let programs = views::programs(&client, &network, &*crate::backend::query_signer(&network))
             .await
             .expect("its roster");
         *super::super::super::roster::roster().lock() = programs;
         let node = Node {
             client,
             network,
-            apart: None,
+            on: Default::default(),
         };
         let mut counts: std::collections::BTreeMap<String, (u64, u64)> = Default::default();
         let every = Blocks {

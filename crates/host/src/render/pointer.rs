@@ -1,11 +1,11 @@
-//! The window's pointer router: one capture listener per pointer event, and
-//! the text a left drag selects in the scope it began in: the nearest
-//! scroller or overlay, else the view's pane.
+//! The window's pointer router: one listener per pointer event, and what it
+//! decides: the text a left drag selects in the scope it began in (the nearest
+//! scroller or overlay, else the view's pane), and which view tooltip is open.
 use super::*;
 use gpui_kit::{
-    DispatchPhase, EntityId, Global, Hitbox, HitboxBehavior, InputEvent as _, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, TextLayout,
-    WindowId,
+    DispatchPhase, EntityId, Global, Hitbox, HitboxBehavior, InputEvent as _, LongPressEvent,
+    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta,
+    ScrollWheelEvent, TextLayout, TouchPhase, WeakEntity, WindowId,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -81,6 +81,60 @@ impl ViewTree {
     }
 }
 
+impl ViewTree {
+    pub(super) fn tipped(
+        &self,
+        spec: TipSpec,
+        entered: bool,
+        place: u64,
+        child: AnyElement,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let key = NodeKey {
+            tree: cx.entity_id(),
+            path: self.authored_path.clone(),
+            place: if entered { 0 } else { place },
+        };
+        Tipped {
+            key,
+            tree: cx.entity().downgrade(),
+            spec,
+            child,
+        }
+        .into_any_element()
+    }
+}
+
+pub(super) fn holds_long_press(
+    hitbox: &Hitbox,
+    spans: Option<(TextLayout, Vec<Range<usize>>)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(router) = router(window, cx).filter(|router| !router.borrow().covering) else {
+        return;
+    };
+    let order = {
+        let mut router = router.borrow_mut();
+        router.tip_order += 1;
+        router.tip_order
+    };
+    let fresh = || Hold {
+        order,
+        hitbox: hitbox.clone(),
+        spans: spans.clone(),
+    };
+    let (hold, new) = kept("long-press-hold".into(), window, fresh);
+    *hold.borrow_mut() = fresh();
+    if new {
+        router.borrow_mut().holds.push(Rc::downgrade(&hold));
+    }
+}
+
+pub(super) fn surface(tree: EntityId, child: AnyElement) -> AnyElement {
+    TipSurface { tree, child }.into_any_element()
+}
+
 pub(super) fn pane(tree: EntityId, child: AnyElement) -> AnyElement {
     Marked {
         mark: Mark::Scope,
@@ -95,6 +149,46 @@ struct Region {
     key: ScopeKey,
     depth: usize,
     hitbox: Hitbox,
+}
+
+#[derive(Clone)]
+pub(super) struct TipSpec {
+    pub(super) request: u32,
+    pub(super) hoverable: bool,
+    pub(super) text: Option<TextLayout>,
+}
+
+struct TipSource {
+    tree: WeakEntity<ViewTree>,
+    spec: TipSpec,
+    order: u64,
+    hitbox: Hitbox,
+}
+
+struct Surface {
+    tree: EntityId,
+    hitbox: Hitbox,
+}
+
+struct Hold {
+    order: u64,
+    hitbox: Hitbox,
+    spans: Option<(TextLayout, Vec<Range<usize>>)>,
+}
+
+#[derive(Clone)]
+struct OpenTip {
+    tree: WeakEntity<ViewTree>,
+    request: u32,
+    character: Option<u32>,
+    hoverable: bool,
+}
+
+impl OpenTip {
+    fn same(&self, other: &Self) -> bool {
+        (self.tree.entity_id(), self.request, self.character)
+            == (other.tree.entity_id(), other.request, other.character)
+    }
 }
 
 pub(super) struct Participant {
@@ -136,6 +230,9 @@ enum Input<'a> {
     Release,
     Wheel,
     Frame,
+    Exit,
+    Drawn,
+    LongPress(&'a LongPressEvent, DispatchPhase),
 }
 
 #[derive(Default)]
@@ -143,9 +240,13 @@ struct Effects {
     notify: Vec<EntityId>,
     scroll: Option<(Point<Pixels>, Point<Pixels>)>,
     arm: bool,
+    tip: TipChange,
+    claim: bool,
 }
 
 type Rows = Vec<Rc<RefCell<Participant>>>;
+
+type TipChange = Option<(Option<OpenTip>, Option<OpenTip>)>;
 
 #[derive(Default)]
 pub struct Router {
@@ -157,16 +258,48 @@ pub struct Router {
     selection: Option<Selection>,
     took: bool,
     armed: bool,
+    selects: bool,
+    tips: Vec<Weak<RefCell<TipSource>>>,
+    surfaces: Vec<Weak<RefCell<Surface>>>,
+    holds: Vec<Weak<RefCell<Hold>>>,
+    tip_order: u64,
+    covering: bool,
+    open: Option<OpenTip>,
+    held: bool,
 }
 
 impl Router {
     fn step(&mut self, input: Input, window: &Window) -> Effects {
         match input {
-            Input::Press(event) => self.press(event, window),
-            Input::Move(event) => self.moved(event),
+            Input::Press(event) => {
+                let effects = self.press(event, window);
+                Effects {
+                    tip: self.pressed_off(window),
+                    ..effects
+                }
+            }
+            Input::Move(event) => {
+                let effects = self.moved(event);
+                Effects {
+                    tip: self.hovered(window),
+                    ..effects
+                }
+            }
             Input::Release => self.release(),
             Input::Wheel => self.wheeled(),
             Input::Frame => self.frame(),
+            Input::Exit => Effects {
+                tip: self.left_window(),
+                ..Effects::default()
+            },
+            Input::Drawn => Effects {
+                tip: match self.open.is_some() {
+                    true => self.hovered(window),
+                    false => None,
+                },
+                ..Effects::default()
+            },
+            Input::LongPress(event, phase) => self.long_pressed(event, phase, window),
         }
     }
 
@@ -336,6 +469,156 @@ impl Router {
         Effects {
             arm: self.gesture != Gesture::Idle,
             ..Effects::default()
+        }
+    }
+
+    fn tip_at(&mut self, window: &Window) -> Option<OpenTip> {
+        self.source_at(window).map(|(_, tip)| tip)
+    }
+
+    fn source_at(&mut self, window: &Window) -> Option<(u64, OpenTip)> {
+        self.tips.retain(|source| source.strong_count() > 0);
+        let at = window.mouse_position();
+        let hovered = self
+            .tips
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter_map(|source| {
+                let source = source.borrow();
+                if !source.hitbox.is_hovered(window) {
+                    return None;
+                }
+                let character = match &source.spec.text {
+                    Some(layout) => Some(u32::try_from(layout.index_for_position(at).ok()?).ok()?),
+                    None => None,
+                };
+                let tip = OpenTip {
+                    tree: source.tree.clone(),
+                    request: source.spec.request,
+                    character,
+                    hoverable: source.spec.hoverable,
+                };
+                Some((source.order, tip))
+            });
+        hovered.max_by_key(|(order, _)| *order)
+    }
+
+    fn held_at(&mut self, window: &Window) -> Option<u64> {
+        self.holds.retain(|hold| hold.strong_count() > 0);
+        self.holds
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter_map(|hold| {
+                let hold = hold.borrow();
+                let on_tip_span = hold.spans.as_ref().is_some_and(|(layout, spans)| {
+                    let index = layout.index_for_position(window.mouse_position());
+                    index.is_ok_and(|index| spans.iter().any(|span| span.contains(&index)))
+                });
+                let holds = hold.hitbox.is_hovered(window) && !on_tip_span;
+                holds.then_some(hold.order)
+            })
+            .max()
+    }
+
+    fn over_surface(&mut self, window: &Window) -> bool {
+        let Some(tree) = self.open.as_ref().map(|open| open.tree.entity_id()) else {
+            return false;
+        };
+        self.surfaces.retain(|surface| surface.strong_count() > 0);
+        self.surfaces
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|surface| {
+                let surface = surface.borrow();
+                surface.tree == tree && surface.hitbox.is_hovered(window)
+            })
+    }
+
+    fn over_open(&mut self, window: &Window) -> bool {
+        self.open.as_ref().is_some_and(|open| open.hoverable) && self.over_surface(window)
+    }
+
+    fn under_its_tip(&mut self, window: &Window) -> bool {
+        let Some(open) = self.open.clone() else {
+            return false;
+        };
+        if !self.over_surface(window) {
+            return false;
+        }
+        let at = window.mouse_position();
+        self.tips.retain(|source| source.strong_count() > 0);
+        self.tips.iter().filter_map(Weak::upgrade).any(|source| {
+            let source = source.borrow();
+            let its_own = source.tree.entity_id() == open.tree.entity_id()
+                && source.spec.request == open.request;
+            its_own && visible(&source.hitbox).contains(&at)
+        })
+    }
+
+    fn tip_to(&mut self, wanted: Option<OpenTip>) -> TipChange {
+        let same = match (&self.open, &wanted) {
+            (Some(open), Some(wanted)) => open.same(wanted),
+            (open, wanted) => open.is_none() && wanted.is_none(),
+        };
+        let closed = std::mem::replace(&mut self.open, wanted.clone());
+        (!same).then_some((closed, wanted))
+    }
+
+    fn hovered(&mut self, window: &Window) -> TipChange {
+        let kept_open = self.held || self.over_open(window) || self.under_its_tip(window);
+        if kept_open {
+            return None;
+        }
+        let wanted = self.tip_at(window);
+        self.tip_to(wanted)
+    }
+
+    fn pressed_off(&mut self, window: &Window) -> TipChange {
+        let plain = self.open.as_ref().is_some_and(|open| !open.hoverable);
+        let closes = plain && !self.held && !self.over_surface(window);
+        match closes {
+            true => self.tip_to(None),
+            false => None,
+        }
+    }
+
+    fn left_window(&mut self) -> TipChange {
+        match self.held {
+            true => None,
+            false => self.tip_to(None),
+        }
+    }
+
+    fn long_pressed(
+        &mut self,
+        event: &LongPressEvent,
+        phase: DispatchPhase,
+        window: &Window,
+    ) -> Effects {
+        match (&event.phase, phase) {
+            (TouchPhase::Started, DispatchPhase::Capture) => {
+                let Some((order, wanted)) = self.source_at(window) else {
+                    return Effects::default();
+                };
+                let aux_inside = self.held_at(window).is_some_and(|held| held > order);
+                if aux_inside {
+                    return Effects::default();
+                }
+                self.held = true;
+                Effects {
+                    tip: self.tip_to(Some(wanted)),
+                    claim: true,
+                    ..Effects::default()
+                }
+            }
+            (TouchPhase::Ended | TouchPhase::Cancelled, DispatchPhase::Capture) if self.held => {
+                self.held = false;
+                Effects {
+                    tip: self.tip_to(None),
+                    ..Effects::default()
+                }
+            }
+            _ => Effects::default(),
         }
     }
 
@@ -600,7 +883,7 @@ pub(super) fn register(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<u64> {
-    let router = router(window, cx)?;
+    let router = router(window, cx).filter(|router| router.borrow().selects)?;
     let scope = router.borrow().stack.last().cloned();
     let made = || Participant {
         id: 0,
@@ -650,7 +933,9 @@ pub(super) fn range_of(participant: u64, window: &Window, cx: &App) -> Option<Ra
 }
 
 pub(super) fn took(window: &Window, cx: &App) -> Option<bool> {
-    router(window, cx).map(|router| router.borrow().took)
+    router(window, cx)
+        .filter(|router| router.borrow().selects)
+        .map(|router| router.borrow().took)
 }
 
 pub fn selected_text(window: &mut Window, cx: &mut App) -> String {
@@ -690,6 +975,21 @@ fn apply(router: &Rc<RefCell<Router>>, effects: Effects, window: &mut Window, cx
         let router = router.clone();
         window.on_next_frame(move |window, cx| route(&router, Input::Frame, window, cx));
     }
+    if let Some((closed, opened)) = effects.tip {
+        if let Some(closed) = closed {
+            let _ = closed.tree.update(cx, |tree, cx| tree.tip_hide(cx));
+        }
+        if let Some(opened) = opened {
+            let at = window.mouse_position();
+            let _ = opened.tree.update(cx, |tree, cx| {
+                tree.tip_show(opened.request, opened.character, at, cx)
+            });
+        }
+    }
+    if effects.claim {
+        window.prevent_default();
+        cx.stop_propagation();
+    }
 }
 
 fn route(router: &Rc<RefCell<Router>>, input: Input, window: &mut Window, cx: &mut App) {
@@ -721,6 +1021,16 @@ fn listen(router: &Rc<RefCell<Router>>, window: &mut Window) {
         if phase == DispatchPhase::Capture {
             route(&wheeled, Input::Wheel, window, cx);
         }
+    });
+    let exited = router.clone();
+    window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+        if phase == DispatchPhase::Capture {
+            route(&exited, Input::Exit, window, cx);
+        }
+    });
+    let held = router.clone();
+    window.on_mouse_event(move |event: &LongPressEvent, phase, window, cx| {
+        route(&held, Input::LongPress(event, phase), window, cx);
     });
 }
 
@@ -814,16 +1124,200 @@ impl Element for Marked {
     }
 }
 
-pub struct Layer;
+struct Tipped {
+    key: NodeKey,
+    tree: WeakEntity<ViewTree>,
+    spec: TipSpec,
+    child: AnyElement,
+}
 
-impl IntoElement for Layer {
+impl IntoElement for Tipped {
     type Element = Self;
     fn into_element(self) -> Self {
         self
     }
 }
 
-impl Element for Layer {
+impl Element for Tipped {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let router = router(window, cx).filter(|router| !router.borrow().covering);
+        let order = router.as_ref().map(|router| {
+            let mut router = router.borrow_mut();
+            router.tip_order += 1;
+            router.tip_order
+        });
+        self.child.prepaint(window, cx);
+        let (Some(router), Some(order)) = (router, order) else {
+            return;
+        };
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let fresh = || TipSource {
+            tree: self.tree.clone(),
+            spec: self.spec.clone(),
+            order,
+            hitbox: hitbox.clone(),
+        };
+        let (source, new) = kept(tip_id(&self.key), window, fresh);
+        *source.borrow_mut() = fresh();
+        if new {
+            router.borrow_mut().tips.push(Rc::downgrade(&source));
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
+fn tip_id(key: &NodeKey) -> ElementId {
+    let mut hasher = std::hash::DefaultHasher::new();
+    key.hash(&mut hasher);
+    ElementId::NamedInteger("tip-source".into(), hasher.finish())
+}
+
+struct TipSurface {
+    tree: EntityId,
+    child: AnyElement,
+}
+
+impl IntoElement for TipSurface {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for TipSurface {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(router) = router(window, cx) else {
+            self.child.prepaint(window, cx);
+            return;
+        };
+        let outer = std::mem::replace(&mut router.borrow_mut().covering, true);
+        self.child.prepaint(window, cx);
+        router.borrow_mut().covering = outer;
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let tree = self.tree;
+        let fresh = || Surface {
+            tree,
+            hitbox: hitbox.clone(),
+        };
+        let (surface, new) = kept("tip-surface".into(), window, fresh);
+        *surface.borrow_mut() = fresh();
+        if new {
+            router.borrow_mut().surfaces.push(Rc::downgrade(&surface));
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
+pub struct Layer;
+
+pub struct TipLayer;
+
+impl IntoElement for Layer {
+    type Element = Routing;
+    fn into_element(self) -> Routing {
+        Routing { selects: true }
+    }
+}
+
+impl IntoElement for TipLayer {
+    type Element = Routing;
+    fn into_element(self) -> Routing {
+        Routing { selects: false }
+    }
+}
+
+pub struct Routing {
+    selects: bool,
+}
+
+impl IntoElement for Routing {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Routing {
     type RequestLayoutState = ();
     type PrepaintState = Rc<RefCell<Router>>;
 
@@ -872,6 +1366,7 @@ impl Element for Layer {
             routers.retain(|_, held| held.strong_count() > 0);
             routers.insert(window_id, Rc::downgrade(&router));
         }
+        router.borrow_mut().selects = self.selects;
         router
     }
 
@@ -883,8 +1378,14 @@ impl Element for Layer {
         _: &mut (),
         router: &mut Rc<RefCell<Router>>,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) {
         listen(router, window);
+        if router.borrow().open.is_some() {
+            let router = router.clone();
+            window.defer(cx, move |window, cx| {
+                route(&router, Input::Drawn, window, cx)
+            });
+        }
     }
 }

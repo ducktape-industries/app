@@ -120,6 +120,7 @@ pub struct Seat {
     program: &'static str,
     instance: u64,
     mounted: Arc<Mutex<Mounted>>,
+    network: Arc<crate::runtime::Network>,
     /// The window the pane is placed in now; set by `Seats::reconcile`
     /// through `place`. Widget commands and the carried presentation need it.
     window: Option<AnyWindowHandle>,
@@ -223,9 +224,18 @@ impl Seat {
     /// The seat of the pane with this layout `instance`, which is its key
     /// in the registry: a link's route waits for it by that key.
     pub fn new(program: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
+        Self::on(crate::runtime::in_hand().clone(), program, instance, cx)
+    }
+
+    pub fn on(
+        network: Arc<crate::runtime::Network>,
+        program: &'static str,
+        instance: u64,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
         let phase = cx.observe_global::<Backgrounded>(|this, cx| this.turn(cx));
-        let mounted = mounted(program, instance);
+        let mounted = mounted(&network, program, instance);
         // a seat claimed with its code compiled starts here and now
         start_here(&mounted, program, cx);
         let mut woken = lock(&mounted).wake.subscribe();
@@ -240,6 +250,7 @@ impl Seat {
             program,
             instance,
             mounted,
+            network,
             window: None,
             body: None,
             in_front: false,
@@ -275,6 +286,10 @@ impl Seat {
         self.program
     }
 
+    pub fn network(&self) -> Arc<crate::runtime::Network> {
+        self.network.clone()
+    }
+
     /// Its pane's layout instance (its perf key).
     pub fn instance(&self) -> u64 {
         self.instance
@@ -284,7 +299,11 @@ impl Seat {
     /// (`ax::tree`) reads the program off it. A host id, so no id a view
     /// sends is one.
     pub fn ax_mark(&self) -> gpui_kit::ElementId {
-        crate::render::host_id(format!("{}{}", crate::render::VIEW_MARK, self.program))
+        crate::render::host_id(format!(
+            "{}{}",
+            crate::render::VIEW_MARK,
+            super::super::slug(self.program)
+        ))
     }
 
     pub fn tree(&self) -> Option<Entity<crate::render::ViewTree>> {
@@ -378,6 +397,11 @@ impl Seat {
     pub fn set_props(&mut self, props: Vec<u8>, cx: &mut Context<Self>) {
         if self.props.as_ref() == Some(&props) {
             return;
+        }
+        if lock(&self.mounted).rekey(&props) {
+            self.in_flight = None;
+            self._landing = None;
+            self.owed = true;
         }
         self.props = Some(props);
         self.wake(cx);
@@ -998,7 +1022,8 @@ impl Seat {
             crate::render::ViewTree::new(root)
                 .with_presentation(presentation)
                 .with_perf_key(key)
-                .with_live(crate::runtime::HostLive::new(self.program))
+                .with_live(crate::runtime::HostLive::new(self.program, &self.network))
+                .with_reader(crate::runtime::pictures::PictureReader::on(&self.network))
                 .with_keys_grant(self.keys_free)
         });
         tree.update(cx, |tree, _| tree.set_pictures(pictures));
@@ -1132,9 +1157,9 @@ impl Seat {
 impl Drop for Seat {
     fn drop(&mut self) {
         // back as the program's preloaded seat, its code kept (`let_go`)
-        let_go(self.program, self.instance);
+        let_go(&self.network, self.program, self.instance);
         // a route its view never read goes with it: no seat takes its key again
-        _ = take_route(self.program, self.instance);
+        _ = take_route(&self.network, self.program, self.instance);
         // the program's row is read off the seat put back, or another
         rail_moved();
     }

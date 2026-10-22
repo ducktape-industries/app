@@ -156,6 +156,63 @@ struct File {
     path: PathBuf,
     device: PathBuf,
     signer: String,
+    was: Vec<File>,
+}
+
+fn moved(file: &File) -> Result<(), wire::Error> {
+    for was in &file.was {
+        for (from, to) in [(&was.device, &file.device), (&was.path, &file.path)] {
+            let due = from.exists() && !to.exists();
+            if due {
+                rename(from, to)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "web")]
+pub(crate) fn carried(root: &Path, program: &str) -> PathBuf {
+    let renamed = super::in_hand().roster.renamed_from(program);
+    carried_from(root, &renamed, program)
+}
+
+#[cfg(any(test, feature = "web"))]
+fn carried_from(root: &Path, renamed: &[String], program: &str) -> PathBuf {
+    let to = root.join(escaped(program));
+    for from in renamed {
+        let from = root.join(escaped(from));
+        let due = from.exists() && !to.exists();
+        if !due {
+            continue;
+        }
+        if let Err(refused) = rename(&from, &to) {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "carry_refused",
+                from = %from.display(),
+                to = %to.display(),
+                error = %refused.message,
+                "a renamed program's folder stayed under its old id"
+            );
+        }
+    }
+    to
+}
+
+fn rename(from: &Path, to: &Path) -> Result<(), wire::Error> {
+    let renamed = || -> std::io::Result<()> {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(from, to)
+    };
+    match renamed() {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(refusal(methods::refusal::HOST_FAULT, error))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn instance(view: &View) -> usize {
@@ -232,7 +289,9 @@ fn ask(view: &mut View, id: u64, file: File, request: Request) {
     let name = file.path.to_string_lossy().into_owned();
     in_order(&name, move || {
         let _timed = crate::perf::time(crate::perf::Key::Shell, request.stage());
-        let answered = adopt(&file).and_then(|()| run(&file.path, &request));
+        let answered = moved(&file)
+            .and_then(|()| adopt(&file))
+            .and_then(|()| run(&file.path, &request));
         if let (Ok(_), Request::Set(key, _)) = (&answered, request) {
             told(&file, key, writer);
         }
@@ -256,10 +315,20 @@ fn file(view: &View, props: &Option<Vec<u8>>) -> Result<File, wire::Error> {
     }
     let store = store_of(view.recipient.as_deref());
     let signer = props.as_deref().and_then(signer_of).unwrap_or_default();
-    Ok(located(&store, &connection.chain, &signer, view.program))
+    let was = connection
+        .on
+        .roster()
+        .renamed_from(view.program)
+        .iter()
+        .map(|from| located(&store, &connection.chain, &signer, from))
+        .collect();
+    Ok(File {
+        was,
+        ..located(&store, &connection.chain, &signer, view.program)
+    })
 }
 
-fn signer_of(props: &[u8]) -> Option<String> {
+pub(super) fn signer_of(props: &[u8]) -> Option<String> {
     methods::decode::<methods::Session>(props)
         .ok()
         .map(|session| session.signer)
@@ -272,7 +341,7 @@ pub(super) fn store_of(recipient: Option<&super::notifier::Recipient>) -> PathBu
     }
 }
 
-fn path(store: &Path, chain: &str, program: &str) -> PathBuf {
+pub(super) fn path(store: &Path, chain: &str, program: &str) -> PathBuf {
     store
         .join(escaped(chain))
         .join(format!("{}.borsh", escaped(program)))
@@ -288,10 +357,11 @@ fn located(store: &Path, chain: &str, signer: &str, program: &str) -> File {
         path: keyed,
         device,
         signer: signer.to_owned(),
+        was: Vec::new(),
     }
 }
 
-fn escaped(name: &str) -> String {
+pub(super) fn escaped(name: &str) -> String {
     name.bytes()
         .map(|byte| match byte.is_ascii_alphanumeric() || byte == b'-' {
             true => char::from(byte).to_string(),

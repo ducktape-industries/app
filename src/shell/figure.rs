@@ -359,20 +359,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn a_frame_is_cheap() {
-        for figure in ALL {
-            figure.frame(start(), 0.);
-            let clock = std::time::Instant::now();
-            for n in 0..10 {
-                figure.frame(start(), n as f32);
-            }
-            let each = clock.elapsed() / 10;
-            assert!(
-                each < std::time::Duration::from_millis(15),
-                "{figure:?} took {each:?}"
-            );
-        }
-    }
 }

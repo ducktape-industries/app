@@ -1,21 +1,30 @@
-//! macOS: CEF is not linked. Every CEF call goes through a pointer that
-//! loading its framework fills in, so the framework is loaded first, in
-//! the app and in every child, else the first call jumps to nothing. The
-//! framework sits beside the binary (`build.rs`), and the children are this
-//! same binary, unbundled (`browser_subprocess_path`), so one place serves
-//! both.
+//! macOS: CEF is not linked. Its framework is loaded first, in the app and in
+//! every child: beside an unbundled binary, whose children are itself, or in
+//! the bundle's `Frameworks/`, whose children are its helper apps.
 
 use std::ffi::{CString, c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+const FRAMEWORK: &str = "Chromium Embedded Framework.framework";
+
 pub(crate) fn framework() -> Option<PathBuf> {
-    let path = std::env::current_exe()
-        .ok()?
-        .parent()?
-        .join("Chromium Embedded Framework.framework");
-    path.is_dir().then_some(path)
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    [
+        dir.to_path_buf(),
+        dir.join("../Frameworks"),
+        dir.join("../../.."),
+    ]
+    .into_iter()
+    .map(|at| at.join(FRAMEWORK))
+    .find(|path| path.is_dir())
+}
+
+pub(crate) fn subprocess() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.parent()?.join(FRAMEWORK).is_dir().then_some(exe)
 }
 
 pub(crate) fn load() -> bool {

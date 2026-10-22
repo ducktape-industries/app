@@ -24,7 +24,7 @@
 //! window thread comes over the `Posted` channel (`posted`); a banner of
 //! another listed network's switches to it first and opens its row there
 //! (`switching`).
-use super::arrangement::{self, Arrangement, Keeper};
+use super::arrangement::{self, Arrangement};
 use super::{
     AccountEvent, Desk, DeskSeats, Entities, Front, Listed, Overlay, Overlays, Popped, Screen,
     SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
@@ -106,11 +106,13 @@ pub(crate) struct Windows {
     /// waits (a cold start). Set once at launch (`launch::run`); a test's
     /// windows have none unless it gives them one.
     follower: Option<Entity<crate::shell::follow::Follower>>,
-    kept: Keeper,
+    kept: ducktape_host::kept::Keeper<Arrangement>,
     keeping: Option<String>,
     placed: BTreeMap<WindowKey, WindowBounds>,
     moves: BTreeMap<WindowKey, Subscription>,
     hidden: BTreeSet<WindowKey>,
+    asked: Option<Size<Pixels>>,
+    compositor_sizes: bool,
 }
 
 /// A window a view floated its pane into: the program, whose next float
@@ -228,12 +230,19 @@ impl Windows {
             held: Vec::new(),
             starting: None,
             follower: None,
-            kept: Keeper::load(),
+            kept: ducktape_host::kept::Keeper::load("windows.json"),
             keeping: None,
             placed: BTreeMap::new(),
             moves: BTreeMap::new(),
             hidden: BTreeSet::new(),
+            asked: None,
+            compositor_sizes: windows::compositor_sizes(cx),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compositor_sizes_for_test(&mut self) {
+        self.compositor_sizes = true;
     }
 
     /// The other listed networks' notifiers are started by `follower`:
@@ -483,6 +492,12 @@ impl Windows {
         };
         if let Some(at) = at {
             self.placed.insert(key, at);
+        }
+        if kind == WindowKind::Console {
+            self.asked = options
+                .window_bounds
+                .as_ref()
+                .map(|at| at.get_bounds().size);
         }
         let entities = self.entities(cx);
         let this = cx.entity();
@@ -1332,7 +1347,7 @@ impl Windows {
             }
         };
         if let Some(route) = route {
-            crate::runtime::route_to(program, instance, route);
+            crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
         }
     }
 
@@ -1349,7 +1364,7 @@ impl Windows {
     ) {
         if let Some((_, instance)) = from.filter(|(from, _)| *from == program) {
             if let Some(route) = route {
-                crate::runtime::route_to(program, instance, route);
+                crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
             }
             return;
         }
@@ -1361,7 +1376,7 @@ impl Windows {
             .console
             .and_then(|console| self.open_program(console, program, cx));
         if let Some((route, instance)) = route.zip(seat) {
-            crate::runtime::route_to(program, instance, route);
+            crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
         }
     }
 
@@ -1521,6 +1536,7 @@ impl Windows {
         };
         let launcher = self.launcher;
         let desk = self.desk_bounds;
+        let (asked, compositor_sizes) = (self.asked, self.compositor_sizes);
         // deferred: the crossing is often heard from inside this very
         // window's update (a click on Lock), where it can't be updated again
         cx.spawn(async move |this, cx| {
@@ -1581,7 +1597,9 @@ impl Windows {
                     });
                 }
             }
-            let _ = handle.update(cx, |_, window, cx| {
+            let resized = handle.update(cx, |_, window, cx| {
+                let given = compositor_sizes
+                    && asked.is_some_and(|asked| asked != window.window_bounds().get_bounds().size);
                 let display = window.display(cx).map(|display| display.visible_bounds());
                 let centred = |extent: gpui_kit::Size<Pixels>| match display {
                     Some(display) => windows::centered(extent, display),
@@ -1604,7 +1622,7 @@ impl Windows {
                 if let Err(error) = windows::set_resizable(window, !launcher, lights) {
                     tracing::warn!(target: "ducktape::app", reason = "set_resizable_failed", %error, launcher, "the console's resizing was not switched");
                 }
-                if let Err(error) = windows::set_bounds(window, to, cx) {
+                if !given && let Err(error) = windows::set_bounds(window, to, cx) {
                     tracing::warn!(target: "ducktape::app", reason = "set_bounds_failed", %error, launcher, "the console was not moved");
                 }
                 match (launcher, desk) {
@@ -1614,7 +1632,11 @@ impl Windows {
                     }
                     _ => {}
                 }
+                (!given).then_some(to.size)
             });
+            if let Ok(Some(size)) = resized {
+                let _ = this.update(cx, |this, _| this.asked = Some(size));
+            }
             if launcher {
                 let _ = this.update(cx, |this, _| this.desk_bounds = left);
             }
@@ -1685,7 +1707,7 @@ impl Windows {
             if let Some(desk) = desk {
                 desk.update(cx, |desk, cx| desk.take_up(layout, cx));
                 for (program, instance, route) in routes {
-                    crate::runtime::route_to(program, instance, route);
+                    crate::runtime::route_to(crate::runtime::in_hand(), program, instance, route);
                 }
             }
         }

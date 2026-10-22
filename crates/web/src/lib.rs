@@ -6,14 +6,13 @@
 //! Shape:
 //! - subprocesses are the app's own binary: [`child`] is the first thing in
 //!   `main`, before anything of the app starts.
-//! - CEF starts on the first page, not at app start, and only with its
-//!   sandbox: the Linux helper (`chrome-sandbox` beside the binary) must be
-//!   root's and setuid, else every page says the helper is not installed.
-//!   `DUCKTAPE_WEB_NO_SANDBOX=1` runs without it (development boxes).
-//!   macOS has no helper: CEF's framework sits beside the binary (`build.rs`
-//!   links it there), the app loads it before any CEF call (`mac.rs`), and
-//!   each child, this binary unbundled, enters its seatbelt sandbox first.
-//!   No app bundle yet.
+//! - CEF starts on the first page, not at app start. On Linux it runs in its
+//!   setuid sandbox when `chrome-sandbox` beside the binary is root's and
+//!   setuid, and without one otherwise: releases ship no helper.
+//!   macOS: CEF's framework sits beside the binary (`build.rs` links it
+//!   there) or in the bundle's `Frameworks/` beside its helper apps, the app
+//!   loads it before any CEF call (`mac.rs`), and each child enters its
+//!   seatbelt sandbox first.
 //!   CEF's signal handlers are off: a SIGTERM is the app's to handle.
 //! - the message loop is CEF's external pump: `on_schedule_message_pump_work`
 //!   (any CEF thread) sends its delay down a channel; one gpui foreground
@@ -43,10 +42,29 @@ mod page;
 mod scheme;
 
 pub use page::{Leave, Page, PageState};
+
+pub fn color_scheme(dark: bool) {
+    ENGINE.with_borrow_mut(|engine| {
+        if engine.dark == Some(dark) {
+            return;
+        }
+        engine.dark = Some(dark);
+        for (_, shared) in &engine.pages {
+            if let Some(host) = shared.host() {
+                handlers::scheme(&host, dark);
+            }
+        }
+    });
+}
+
+fn dark() -> Option<bool> {
+    ENGINE.with_borrow(|engine| engine.dark)
+}
 pub use scheme::{Answer, Network, SCHEME, Served, serve};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -98,6 +116,169 @@ pub fn loadable(address: &str) -> bool {
         ("http", Some(url::Host::Ipv6(ip))) => ip.is_loopback(),
         _ => false,
     }
+}
+
+pub fn private(address: &str) -> bool {
+    let Ok(url) = url::Url::parse(address) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https" | "ws" | "wss") {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain(name)) => {
+            let name = name.trim_end_matches('.');
+            name == "localhost" || name.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(ip)) => !reachable_v4(ip),
+        Some(url::Host::Ipv6(ip)) => !reachable_v6(ip),
+        None => false,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GloballyReachable {
+    Yes,
+    No,
+}
+
+const IANA_IPV4_SPECIAL_PURPOSE_ADDRESS_REGISTRY: &[(Ipv4Addr, u32, GloballyReachable)] = &[
+    (Ipv4Addr::new(0, 0, 0, 0), 8, GloballyReachable::No),
+    (Ipv4Addr::new(10, 0, 0, 0), 8, GloballyReachable::No),
+    (Ipv4Addr::new(100, 64, 0, 0), 10, GloballyReachable::No),
+    (Ipv4Addr::new(127, 0, 0, 0), 8, GloballyReachable::No),
+    (Ipv4Addr::new(169, 254, 0, 0), 16, GloballyReachable::No),
+    (Ipv4Addr::new(172, 16, 0, 0), 12, GloballyReachable::No),
+    (Ipv4Addr::new(192, 0, 0, 0), 24, GloballyReachable::No),
+    (Ipv4Addr::new(192, 0, 0, 9), 32, GloballyReachable::Yes),
+    (Ipv4Addr::new(192, 0, 0, 10), 32, GloballyReachable::Yes),
+    (Ipv4Addr::new(192, 0, 2, 0), 24, GloballyReachable::No),
+    (Ipv4Addr::new(192, 88, 99, 2), 32, GloballyReachable::No),
+    (Ipv4Addr::new(192, 168, 0, 0), 16, GloballyReachable::No),
+    (Ipv4Addr::new(198, 18, 0, 0), 15, GloballyReachable::No),
+    (Ipv4Addr::new(198, 51, 100, 0), 24, GloballyReachable::No),
+    (Ipv4Addr::new(203, 0, 113, 0), 24, GloballyReachable::No),
+    (Ipv4Addr::new(240, 0, 0, 0), 4, GloballyReachable::No),
+    (Ipv4Addr::new(255, 255, 255, 255), 32, GloballyReachable::No),
+];
+
+const IANA_IPV6_SPECIAL_PURPOSE_ADDRESS_REGISTRY: &[(Ipv6Addr, u32, GloballyReachable)] = &[
+    (
+        Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0),
+        128,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+        128,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0x64, 0xff9b, 1, 0, 0, 0, 0, 0),
+        48,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0x100, 0, 0, 0, 0, 0, 0, 0),
+        64,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0x100, 0, 0, 1, 0, 0, 0, 0),
+        64,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0),
+        23,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0x2001, 1, 0, 0, 0, 0, 0, 1),
+        128,
+        GloballyReachable::Yes,
+    ),
+    (
+        Ipv6Addr::new(0x2001, 1, 0, 0, 0, 0, 0, 2),
+        128,
+        GloballyReachable::Yes,
+    ),
+    (
+        Ipv6Addr::new(0x2001, 1, 0, 0, 0, 0, 0, 3),
+        128,
+        GloballyReachable::Yes,
+    ),
+    (
+        Ipv6Addr::new(0x2001, 3, 0, 0, 0, 0, 0, 0),
+        32,
+        GloballyReachable::Yes,
+    ),
+    (
+        Ipv6Addr::new(0x2001, 4, 0x112, 0, 0, 0, 0, 0),
+        48,
+        GloballyReachable::Yes,
+    ),
+    (
+        Ipv6Addr::new(0x2001, 0x20, 0, 0, 0, 0, 0, 0),
+        28,
+        GloballyReachable::Yes,
+    ),
+    (
+        Ipv6Addr::new(0x2001, 0x30, 0, 0, 0, 0, 0, 0),
+        28,
+        GloballyReachable::Yes,
+    ),
+    (
+        Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0),
+        32,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0x3fff, 0, 0, 0, 0, 0, 0, 0),
+        20,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0x5f00, 0, 0, 0, 0, 0, 0, 0),
+        16,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0),
+        7,
+        GloballyReachable::No,
+    ),
+    (
+        Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0),
+        10,
+        GloballyReachable::No,
+    ),
+];
+
+const RFC_6052_WELL_KNOWN_PREFIX: Ipv6Addr = Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0, 0);
+
+fn reachable_v4(ip: Ipv4Addr) -> bool {
+    let bits = u32::from(ip);
+    IANA_IPV4_SPECIAL_PURPOSE_ADDRESS_REGISTRY
+        .iter()
+        .filter(|(net, len, _)| bits >> (32 - len) == u32::from(*net) >> (32 - len))
+        .max_by_key(|(_, len, _)| *len)
+        .is_none_or(|(_, _, reachable)| *reachable == GloballyReachable::Yes)
+}
+
+fn reachable_v6(ip: Ipv6Addr) -> bool {
+    if let Some(ip) = ip.to_ipv4_mapped() {
+        return reachable_v4(ip);
+    }
+    let bits = u128::from(ip);
+    if bits >> 32 == u128::from(RFC_6052_WELL_KNOWN_PREFIX) >> 32 {
+        return reachable_v4(Ipv4Addr::from(bits as u32));
+    }
+    IANA_IPV6_SPECIAL_PURPOSE_ADDRESS_REGISTRY
+        .iter()
+        .filter(|(net, len, _)| bits >> (128 - len) == u128::from(*net) >> (128 - len))
+        .max_by_key(|(_, len, _)| *len)
+        .is_none_or(|(_, _, reachable)| *reachable == GloballyReachable::Yes)
 }
 
 /// A CEF child process (zygote, renderer, GPU, utility: this binary started
@@ -163,6 +344,7 @@ struct Engine {
     status: Status,
     pages: Vec<(WeakEntity<Page>, Rc<page::Shared>)>,
     contexts: HashMap<PathBuf, cef::RequestContext>,
+    dark: Option<bool>,
 }
 
 thread_local! {
@@ -202,10 +384,7 @@ fn start(root: &Path, cx: &mut App) -> Result<(), SharedString> {
 }
 
 fn initialize(root: &Path) -> Result<(), SharedString> {
-    let sandbox = std::env::var_os("DUCKTAPE_WEB_NO_SANDBOX").is_none_or(|value| value != "1");
-    if sandbox && !sandbox_helper_installed() {
-        return Err("The web sandbox helper is not installed.".into());
-    }
+    let sandbox = sandbox_helper_installed();
     #[cfg(target_os = "macos")]
     if !mac::load() {
         return Err("The web view's framework is not beside the app.".into());
@@ -223,7 +402,7 @@ fn initialize(root: &Path) -> Result<(), SharedString> {
 }
 
 /// Linux: the setuid helper CEF's sandbox runs through, beside the binary,
-/// root's with the setuid bit; without it CEF aborts the whole process.
+/// root's with the setuid bit; without it CEF runs with no sandbox.
 #[cfg(target_os = "linux")]
 fn sandbox_helper_installed() -> bool {
     use std::os::unix::fs::MetadataExt as _;
@@ -233,9 +412,6 @@ fn sandbox_helper_installed() -> bool {
         .is_ok_and(|helper| helper.uid() == 0 && helper.mode() & 0o4000 != 0)
 }
 
-// macOS: each child enters seatbelt itself (`mac::sandbox`), nothing to
-// install. ponytail: Windows' sandbox is its packaging's (a broker),
-// unchecked here until there is one to check
 #[cfg(not(target_os = "linux"))]
 fn sandbox_helper_installed() -> bool {
     true
@@ -293,13 +469,21 @@ fn schedule(delay_ms: i64) {
 
 /// The request context of `profile`: its own cookies and cache, made the
 /// first time a page of it opens.
-fn context(profile: &Path) -> Option<cef::RequestContext> {
+fn context(profile: &Path, fenced: bool) -> Option<cef::RequestContext> {
+    let profile = match fenced {
+        true => {
+            let mut dir = profile.as_os_str().to_owned();
+            dir.push(".artifact");
+            PathBuf::from(dir)
+        }
+        false => profile.to_owned(),
+    };
     ENGINE.with_borrow_mut(|engine| {
-        if let Some(context) = engine.contexts.get(profile) {
+        if let Some(context) = engine.contexts.get(&profile) {
             return Some(context.clone());
         }
-        let context = handlers::context(profile)?;
-        engine.contexts.insert(profile.to_owned(), context.clone());
+        let context = handlers::context(&profile, fenced)?;
+        engine.contexts.insert(profile, context.clone());
         Some(context)
     })
 }
@@ -311,7 +495,95 @@ fn register(page: WeakEntity<Page>, shared: Rc<page::Shared>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{loadable, origin};
+    use super::{color_scheme, dark, loadable, origin, private};
+
+    #[test]
+    fn an_artifact_reaches_no_address_iana_marks_not_globally_reachable() {
+        for address in [
+            "http://127.0.0.1:8765/",
+            "https://127.0.0.2/",
+            "http://2130706433/",
+            "http://localhost/",
+            "http://LOCALHOST./",
+            "http://app.localhost/",
+            "ws://localhost:9222/devtools",
+            "wss://127.0.0.1/",
+            "http://0.0.0.0/",
+            "http://0/",
+            "http://10.1.2.3/",
+            "http://100.64.0.1/",
+            "http://100.100.100.100/",
+            "http://100.127.255.254/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://172.16.0.1/",
+            "http://172.31.255.255/",
+            "http://192.0.0.8/",
+            "http://192.0.0.170/",
+            "http://192.0.2.1/",
+            "http://192.88.99.2/",
+            "http://192.168.1.1/",
+            "http://198.18.0.1/",
+            "http://198.19.255.255/",
+            "http://198.51.100.7/",
+            "http://203.0.113.7/",
+            "http://240.0.0.1/",
+            "http://255.255.255.255/",
+            "http://[::1]:8000/",
+            "http://[::]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:192.168.0.1]/",
+            "http://[64:ff9b::7f00:1]/",
+            "http://[64:ff9b:1::1]/",
+            "http://[100::1]/",
+            "http://[100:0:0:1::1]/",
+            "http://[2001:2::1]/",
+            "https://[2001:db8::1]/",
+            "https://[3fff::1]/",
+            "https://[5f00::1]/",
+            "https://[fc00::1]/",
+            "https://[fd12:3456::1]/",
+            "https://[fe80::1]/",
+        ] {
+            assert!(private(address), "{address}");
+        }
+        for address in [
+            "duck://duckpond-725bcad1/files/shared/plan.html",
+            "duck://duckpond-725bcad1/blobs/00ff",
+            "https://example.com/",
+            "https://localhost.example.com/",
+            "http://8.8.8.8/",
+            "http://100.63.255.255/",
+            "http://100.128.0.0/",
+            "http://172.15.255.255/",
+            "http://172.32.0.1/",
+            "http://192.0.0.9/",
+            "http://192.0.0.10/",
+            "http://192.31.196.1/",
+            "http://192.169.0.1/",
+            "http://198.20.0.1/",
+            "https://[2001:1::1]/",
+            "https://[2001:3::1]/",
+            "https://[2001:4860:4860::8888]/",
+            "https://[64:ff9b::808:808]/",
+            "https://[fec0::1]/",
+            "data:text/html,hi",
+            "about:blank",
+            "",
+        ] {
+            assert!(!private(address), "{address}");
+        }
+    }
+
+    #[test]
+    fn a_page_made_after_a_theme_switch_is_told_the_theme_now() {
+        assert_eq!(dark(), None, "no theme told before the app tells one");
+        color_scheme(true);
+        assert_eq!(dark(), Some(true));
+        color_scheme(false);
+        assert_eq!(dark(), Some(false), "the switch, not the first theme");
+        color_scheme(false);
+        assert_eq!(dark(), Some(false));
+    }
 
     #[test]
     fn an_origin_names_the_site_and_nothing_else() {

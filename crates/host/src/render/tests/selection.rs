@@ -808,3 +808,39 @@ fn only_the_clip_a_drag_began_in_joins_it() {
     assert!(super::text::joins_drag(Some(room), room));
     assert!(!super::text::joins_drag(Some(room), thread));
 }
+
+#[gpui_kit::test]
+fn under_a_tip_layer_a_drag_selects_through_gpui_base_not_the_router(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    struct Phone(Entity<ViewTree>);
+    impl Render for Phone {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(gpui_kit::base::TextSelectionLayer)
+                .child(crate::render::pointer::TipLayer)
+                .child(self.0.clone())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| {
+        Phone(cx.new(|_| ViewTree::new(panes())))
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(crate::render::draw_frame);
+    let (from, to) = (point(px(1.), px(10.)), point(px(140.), px(10.)));
+    native.simulate_mouse_move(from, None, Default::default());
+    native.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
+    native.update(crate::render::draw_frame);
+    native.simulate_mouse_up(to, MouseButton::Left, Default::default());
+    let (router, base) = native.update(|window, cx| {
+        crate::render::draw_frame(window, cx);
+        let router = crate::render::pointer::selected_text(window, cx);
+        let base = gpui_kit::base::TextSelection::selected_text(window, cx).to_string();
+        (router, base)
+    });
+    assert_eq!(router, "", "the router selected under a tip layer");
+    assert!(base.contains("alpha"), "gpui-base selected {base:?}");
+}

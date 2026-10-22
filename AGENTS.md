@@ -18,6 +18,20 @@ Guidance for assistant sessions in this repository; `CLAUDE.md` links here.
 - A design that seems to need a new restriction is a question for the user
   before it is built.
 
+## Files come from the network, never from the device
+
+orthory's ruling (mobile QA 376): "do not assume that the file is available
+locally anywhere on the app. any 'uploaded' file is to be only shown if the
+blob is successfully held. no local."
+
+- Nothing in the host or a view draws a file from a local path or local bytes:
+  no chip, post, preview or thumbnail. A picked, pasted or dropped file's
+  bytes are read only to put its blobs.
+- An uploaded file shows only once the network holds it, and is drawn from
+  there: by the files address its post records, the same read for the
+  sender's own post as for anyone else's. Until then its chip shows progress
+  with no picture.
+
 ## Delivery
 
 - This repository lives on duckpond's forge as `app`, and forge's `dev`
@@ -39,7 +53,13 @@ Guidance for assistant sessions in this repository; `CLAUDE.md` links here.
   that branch into `dev`, and merge the change. The merge's result is ONE
   squash commit on the current `dev`, with a single parent; its subject is the
   change's title followed by `(change N)`, and its body says what changed,
-  why, and the gates run. No merge commits. Forge cannot force-update a
+  why, and the gates run. The body also holds a line of its own that starts
+  `Release note:` and says in one sentence what changed for the people using
+  the app, or `Release note: none` for a change they would not notice (tests,
+  CI, a refactor). watch puts these lines, from the changes merged since a
+  release channel's last entry, into that channel's daily entry in chat
+  `release` (core `ops/README.md`); a change with no such line shows its
+  title there. No merge commits. Forge cannot force-update a
   branch and keeps every branch pushed to it, so when `dev` has moved and the
   branch no longer merges cleanly, rebase it onto `forge/dev`, push it as a
   new branch and open a new change.
@@ -68,3 +88,29 @@ Guidance for assistant sessions in this repository; `CLAUDE.md` links here.
   `DUCKTAPE_HOME=/mnt/data/code/qa/.local/duckpond/operator DUCKTAPE_DEVICE_KEY_STORE=file`
   (`forge-change.sh` sets both itself), the workspace holding account 22's
   "operator git" key.
+
+## Code says it, not comments
+
+Code churns; a comment doesn't age with it, and an incident record in a comment traps the next
+reader. So the code alone must say what happens (orthory, dm-15-17 305/309, #duckpond 271). This
+holds for new and changed lines; don't sweep untouched code for it.
+
+- A name says exactly what it holds or does, however long it gets: `blocks_behind_the_writer`,
+  not `lag`.
+
+### Checked by the lint
+
+tools' `agents-lint.py` reads these on the lines a change adds or changes, and quotes the rule a
+line breaks.
+
+- `comments`: No comments, except `// SAFETY:`, a short doc on a type and on each enum variant
+  (what it is, one line), and a brief header of one to three lines at the top of a file saying
+  what the file is for. No incident history, no job numbers, no "why we once did X" in code.
+  Where rustc's `missing_docs` is on (`#![deny(missing_docs)]`, or `[lints.rust]`), the doc it
+  asks for on a `pub` item or a trait's item is fine too, saying what the item is.
+- `conditions`: No `&&` or `||` chained in an `if` or `else if` condition (let chains included).
+  Name each piece first, then branch on the names (`let is_ducktape_network = …;`, then
+  `if is_ducktape_network`); `&&` inside a closure or a `let` binding is fine.
+- `timers`: Nothing in the UI is timer-based, only event-driven: no timers, sleeps, intervals,
+  timeouts, debounces or throttles in a crate that depends on gpui, gpui-kit or the view SDK. A
+  state changes because an event arrived, never because time passed (orthory, mobile QA 72).

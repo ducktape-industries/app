@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -17,7 +18,10 @@ import android.text.InputType
 import android.text.Selection
 import android.text.TextWatcher
 import android.util.Log
+import android.view.ActionMode
 import android.view.KeyEvent
+import android.view.Menu
+import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -51,6 +55,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     /** gm's id for this instance: a new instance gets a new window, this one keeps its own. */
     private val host = next++
 
+    private lateinit var surface: SurfaceView
+
     override fun onCreate(state: Bundle?) {
         // a walk's `am start -e DUCKTAPE_PERF 1`: an app is launched with no environment, so the extra becomes one,
         // before the library loads and Rust reads it (`perf::start`)
@@ -61,7 +67,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         check(DeviceKeyStore.started)
         Native.create(this, host, filesDir.path, cacheDir.path)
         edgeToEdge()
-        val surface = SurfaceView(this)
+        surface = SurfaceView(this)
         surface.holder.addCallback(this)
         surface.setOnApplyWindowInsetsListener { _, insets -> handOn(insets) }
         setContentView(surface)
@@ -255,7 +261,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
      * and typed as the file at [path] is, and is copied where the person chose. Whether it was kept (a picture: shown);
      * false when they cancelled. Blocks until the viewer closes or the person answers. Rust removes the file once it
      * hears.
-    fun keepFile(path: String): Boolean {
+     */
+    fun keepFile(path: String, ticket: Long): Boolean {
         synchronized(keeping) {
             if (isFinishing || isDestroyed) return false
             val file = File(path)
@@ -263,6 +270,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             kept = answer
             keptFile = file
             runOnUiThread {
+                if (!Native.keepShows(ticket)) {
+                    answer.offer(false)
+                    return@runOnUiThread
+                }
                 val type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase())
                     ?: "application/octet-stream"
                 if (type.startsWith("image/")) {
@@ -478,6 +489,52 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     @Deprecated("the platform's own, below 33")
     override fun onBackPressed() = Native.back()
 
+    private var editMenu: ActionMode? = null
+    private val editMenuAt = Rect()
+    private var editMenuItems = IntArray(0)
+
+    fun showEditMenu(left: Int, top: Int, right: Int, bottom: Int, items: IntArray) = runOnUiThread {
+        editMenuAt.set(left, top, right, bottom)
+        editMenuItems = items
+        val shown = editMenu
+        if (shown == null) {
+            editMenu = surface.startActionMode(editMenuCallback, ActionMode.TYPE_FLOATING)
+        } else {
+            shown.invalidate()
+            shown.invalidateContentRect()
+        }
+    }
+
+    fun hideEditMenu() = runOnUiThread { editMenu?.finish() }
+
+    private val editMenuCallback = object : ActionMode.Callback2() {
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu) = fill(menu)
+
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = fill(menu)
+
+        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+            val picked = EDIT_ITEMS.indexOfFirst { it.first == item.itemId }
+            if (picked < 0) return false
+            Native.editPick(picked)
+            mode.finish()
+            return true
+        }
+
+        override fun onDestroyActionMode(mode: ActionMode) {
+            if (editMenu === mode) editMenu = null
+        }
+
+        override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) = outRect.set(editMenuAt)
+
+        private fun fill(menu: Menu): Boolean {
+            menu.clear()
+            editMenuItems.forEachIndexed { order, item ->
+                EDIT_ITEMS.getOrNull(item)?.let { (id, title) -> menu.add(Menu.NONE, id, order, title) }
+            }
+            return true
+        }
+    }
+
     /** The field the keyboard types into; made the first time gm asks for the keyboard. */
     private var input: InputProxy? = null
 
@@ -687,5 +744,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         var kept: ArrayBlockingQueue<Boolean>? = null
         @Volatile
         var keptFile: File? = null
+
+        val EDIT_ITEMS = arrayOf(
+            android.R.id.cut to android.R.string.cut,
+            android.R.id.copy to android.R.string.copy,
+            android.R.id.paste to android.R.string.paste,
+            android.R.id.selectAll to android.R.string.selectAll,
+        )
     }
 }

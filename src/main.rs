@@ -14,6 +14,7 @@ mod ui;
 mod update;
 
 fn main() {
+    noded_client::wire::name_client(client());
     // a CEF child process (feature `web`) is this binary with `--type=...`
     render::web::subprocess();
     #[cfg(debug_assertions)]
@@ -67,7 +68,7 @@ fn main() {
             println!("usage: ducktape-app [--version | --help]");
             println!("       ducktape-app install  (install this binary; it then updates itself)");
             println!(
-                "       ducktape-app send <network> <program> <hex>  (one transaction, signed with this device's key)"
+                "       ducktape-app send <network> <program> <op>  (one transaction, signed with this device's key; the op as JSON, hex or base64)"
             );
             #[cfg(feature = "ax-door")]
             println!("       ducktape-app ax <command...>  (the AX door's client)");
@@ -114,6 +115,20 @@ fn main() {
     }
     shell::run(os, start);
     render::web::shutdown();
+}
+
+fn client() -> String {
+    let build = option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown");
+    let web = if cfg!(feature = "web") {
+        "cef"
+    } else {
+        "nocef"
+    };
+    let version = env!("CARGO_PKG_VERSION");
+    format!(
+        "ducktape-app/{version}+{build} ({}; {web})",
+        std::env::consts::OS
+    )
 }
 
 /// The desktop's OS services into the host core, before anything reads a

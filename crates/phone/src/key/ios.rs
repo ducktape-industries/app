@@ -35,7 +35,45 @@ unsafe extern "C" {
         sealed: *mut u8,
         level: *mut *mut c_char,
     ) -> *mut c_char;
+    fn ducktape_view_secret_get(
+        name: *const c_char,
+        value: *mut *mut u8,
+        length: *mut usize,
+    ) -> *mut c_char;
+    fn ducktape_view_secret_set(
+        name: *const c_char,
+        value: *const u8,
+        length: usize,
+    ) -> *mut c_char;
     fn free(pointer: *mut c_void);
+}
+
+pub(super) fn secret_get(name: &str) -> KeyResult<Option<Vec<u8>>> {
+    let name = c_string(name)?;
+    let mut value: *mut u8 = std::ptr::null_mut();
+    let mut length = 0usize;
+    // SAFETY: `name` lives for the call; Swift writes `value` and `length` once.
+    said(unsafe { ducktape_view_secret_get(name.as_ptr(), &mut value, &mut length) })?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: non-null, `length` bytes from `malloc`, ours to read and free.
+    let kept = unsafe { std::slice::from_raw_parts(value, length) }.to_vec();
+    // SAFETY: allocated by `malloc`, freed once, here.
+    unsafe { free(value.cast()) };
+    Ok(Some(kept))
+}
+
+pub(super) fn secret_set(name: &str, value: &[u8]) -> KeyResult<()> {
+    let name = c_string(name)?;
+    // SAFETY: `name` and `value` live for the call, and `length` is `value`'s.
+    said(unsafe { ducktape_view_secret_set(name.as_ptr(), value.as_ptr(), value.len()) })
+}
+
+pub(super) fn secret_remove(name: &str) -> KeyResult<()> {
+    let name = c_string(name)?;
+    // SAFETY: `name` is alive for the call; a null value removes.
+    said(unsafe { ducktape_view_secret_set(name.as_ptr(), std::ptr::null(), 0) })
 }
 
 pub(super) fn public_key(alias: &str) -> KeyResult<[u8; 32]> {

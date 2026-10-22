@@ -19,6 +19,7 @@ mod loopback;
 pub(crate) mod openh264;
 pub(crate) mod passkey;
 pub(crate) mod recovery;
+pub(crate) mod secrets;
 pub(crate) mod send;
 
 pub(crate) use app_dirs::{app_log_path, cache_dir, config_dir, config_is_default, data_dir};
