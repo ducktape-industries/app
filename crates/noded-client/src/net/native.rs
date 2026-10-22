@@ -4,7 +4,7 @@
 use crate::{Error, Result, refusal};
 use bytes::Bytes;
 use futures::channel::mpsc;
-use futures::{SinkExt as _, Stream, StreamExt as _};
+use futures::{Stream, StreamExt as _};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -45,17 +45,6 @@ impl Net {
         Ok(Answer(request.send().await?))
     }
 
-    pub(crate) async fn socket(
-        &self,
-        url: &str,
-    ) -> Result<rt::BoxStream<'static, Result<Vec<u8>>>> {
-        let (socket, _) =
-            tokio_tungstenite::connect_async_with_config(url, Some(unbounded()), false)
-                .await
-                .map_err(not_opened)?;
-        Ok(Box::pin(binary(socket)))
-    }
-
     pub(crate) async fn socket_kept(
         &self,
         url: &str,
@@ -63,37 +52,85 @@ impl Net {
         quiet: Duration,
         idle: Duration,
     ) -> Result<rt::BoxStream<'static, Result<Vec<u8>>>> {
-        let (socket, _) =
-            tokio_tungstenite::connect_async_with_config(url, Some(unbounded()), false)
-                .await
-                .map_err(not_opened)?;
-        let kept = futures::stream::unfold(Some(socket.split()), move |socket| async move {
-            let (mut sink, mut read) = socket?;
-            let mut pinged = false;
+        kept(url, futures::stream::pending::<Message>(), quiet, idle).await
+    }
+
+    pub(crate) async fn duplex(
+        &self,
+        url: &str,
+        _probe: &str,
+        quiet: Duration,
+        idle: Duration,
+    ) -> Result<super::Duplex> {
+        let (sender, sending) = mpsc::unbounded::<Vec<u8>>();
+        let socket = kept(url, sending.map(Message::Binary), quiet, idle).await?;
+        Ok((sender, socket))
+    }
+}
+
+async fn kept(
+    url: &str,
+    outgoing: impl Stream<Item = Message> + Send + 'static,
+    quiet: Duration,
+    idle: Duration,
+) -> Result<rt::BoxStream<'static, Result<Vec<u8>>>> {
+    let (socket, _) = tokio_tungstenite::connect_async_with_config(url, Some(unbounded()), false)
+        .await
+        .map_err(not_opened)?;
+    let (sink, read) = socket.split();
+    let (pinger, pings) = mpsc::unbounded::<Message>();
+    let sent = futures::stream::select(outgoing, pings)
+        .map(Ok)
+        .forward(sink);
+    let failed = futures::stream::once(sent).filter_map(|sent| {
+        let failed = sent.err().map(|error| Error::Transport(error.to_string()));
+        futures::future::ready(failed.map(|error| Some(Err(error))))
+    });
+    let heard = pinged(read, pinger, quiet, idle)
+        .map(Some)
+        .chain(futures::stream::once(futures::future::ready(None)));
+    let socket =
+        futures::stream::select(heard, failed).scan((), |_, item| futures::future::ready(item));
+    Ok(Box::pin(socket))
+}
+
+fn pinged(
+    read: impl Stream<Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>>
+    + Send
+    + Unpin
+    + 'static,
+    pinger: mpsc::UnboundedSender<Message>,
+    quiet: Duration,
+    idle: Duration,
+) -> impl Stream<Item = Result<Vec<u8>>> + Send {
+    futures::stream::unfold(Some(read), move |read| {
+        let pinger = pinger.clone();
+        async move {
+            let mut read = read?;
+            let mut waited = false;
             loop {
-                let wait = match pinged {
+                let wait = match waited {
                     true => idle,
                     false => quiet,
                 };
                 let next = match rt::time::timeout(wait, read.next()).await {
                     Ok(next) => next,
-                    Err(_) if pinged => {
+                    Err(_) if waited => {
                         let sentence = format!("the node answered no ping within {idle:?}");
                         return Some((Err(Error::Transport(sentence)), None));
                     }
                     Err(_) => {
-                        if let Err(error) = sink.send(Message::Ping(Vec::new())).await {
-                            return Some((Err(Error::Transport(error.to_string())), None));
+                        if pinger.unbounded_send(Message::Ping(Vec::new())).is_err() {
+                            let sentence = "the socket could not send its ping".to_owned();
+                            return Some((Err(Error::Transport(sentence)), None));
                         }
-                        pinged = true;
+                        waited = true;
                         continue;
                     }
                 };
-                pinged = false;
+                waited = false;
                 match next {
-                    Some(Ok(Message::Binary(bytes))) => {
-                        return Some((Ok(bytes), Some((sink, read))));
-                    }
+                    Some(Ok(Message::Binary(bytes))) => return Some((Ok(bytes), Some(read))),
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {
                         return Some((Err(Error::Transport(error.to_string())), None));
@@ -101,29 +138,8 @@ impl Net {
                     None => return None,
                 }
             }
-        });
-        Ok(Box::pin(kept))
-    }
-
-    pub(crate) async fn duplex(&self, url: &str) -> Result<super::Duplex> {
-        let (socket, _) =
-            tokio_tungstenite::connect_async_with_config(url, Some(unbounded()), false)
-                .await
-                .map_err(not_opened)?;
-        let (sink, read) = socket.split();
-        let (sender, sending) = mpsc::unbounded::<Vec<u8>>();
-        let sent = sending.map(Message::Binary).map(Ok).forward(sink);
-        let failed = futures::stream::once(sent).filter_map(|sent| {
-            let failed = sent.err().map(|error| Error::Transport(error.to_string()));
-            futures::future::ready(failed.map(|error| Some(Err(error))))
-        });
-        let heard = binary(read)
-            .map(Some)
-            .chain(futures::stream::once(futures::future::ready(None)));
-        let socket =
-            futures::stream::select(heard, failed).scan((), |_, item| futures::future::ready(item));
-        Ok((sender, Box::pin(socket)))
-    }
+        }
+    })
 }
 
 pub(crate) struct Answer(reqwest::Response);
@@ -194,18 +210,6 @@ fn unbounded() -> WebSocketConfig {
         max_frame_size: None,
         ..WebSocketConfig::default()
     }
-}
-
-fn binary(
-    socket: impl Stream<Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>>,
-) -> impl Stream<Item = Result<Vec<u8>>> {
-    socket.filter_map(|message| {
-        futures::future::ready(match message {
-            Ok(Message::Binary(bytes)) => Some(Ok(bytes)),
-            Ok(_) => None,
-            Err(error) => Some(Err(Error::Transport(error.to_string()))),
-        })
-    })
 }
 
 fn not_opened(error: tokio_tungstenite::tungstenite::Error) -> Error {

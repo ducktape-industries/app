@@ -59,13 +59,6 @@ impl Net {
         self.send(url, "POST", Some(blob.into()), None, false).await
     }
 
-    pub(crate) async fn socket(
-        &self,
-        url: &str,
-    ) -> Result<rt::BoxStream<'static, Result<Vec<u8>>>> {
-        Ok(Box::pin(Self::open(url).await?))
-    }
-
     pub(crate) async fn socket_kept(
         &self,
         url: &str,
@@ -74,33 +67,17 @@ impl Net {
         idle: Duration,
     ) -> Result<rt::BoxStream<'static, Result<Vec<u8>>>> {
         let socket = Self::open(url).await?;
-        let (net, probe) = (self.clone(), probe.to_owned());
-        let kept = futures::stream::unfold(Some(socket), move |socket| {
-            let (net, probe) = (net.clone(), probe.clone());
-            async move {
-                let mut socket = socket?;
-                loop {
-                    match rt::time::timeout(quiet, socket.next()).await {
-                        Ok(Some(item)) => {
-                            let ends = item.is_err();
-                            return Some((item, (!ends).then_some(socket)));
-                        }
-                        Ok(None) => return None,
-                        Err(_) => {}
-                    }
-                    let probed = rt::time::timeout(idle, net.get(&probe)).await;
-                    let answered = matches!(probed, Ok(Ok(_)));
-                    if !answered {
-                        let sentence = format!("the node answered no status within {idle:?}");
-                        return Some((Err(Error::Transport(sentence)), None));
-                    }
-                }
-            }
-        });
+        let kept = probed(socket, self.clone(), probe.to_owned(), quiet, idle);
         Ok(Box::pin(kept))
     }
 
-    pub(crate) async fn duplex(&self, url: &str) -> Result<super::Duplex> {
+    pub(crate) async fn duplex(
+        &self,
+        url: &str,
+        probe: &str,
+        quiet: Duration,
+        idle: Duration,
+    ) -> Result<super::Duplex> {
         let socket = match Self::open(url).await {
             Ok(socket) => socket,
             Err(error) => return Err(self.unopened(url, error).await),
@@ -111,7 +88,7 @@ impl Net {
             let failed = carrier.send_with_u8_array(&bytes).err().map(unsent);
             futures::future::ready(failed.map(|error| Some(Err(error))))
         });
-        let heard = socket
+        let heard = probed(socket, self.clone(), probe.to_owned(), quiet, idle)
             .map(Some)
             .chain(futures::stream::once(futures::future::ready(None)));
         let socket =
@@ -333,6 +310,37 @@ impl Drop for Socket {
         self.socket.set_onclose(None);
         let _ = self.socket.close();
     }
+}
+
+fn probed(
+    socket: impl Stream<Item = Result<Vec<u8>>> + Unpin + 'static,
+    net: Net,
+    probe: String,
+    quiet: Duration,
+    idle: Duration,
+) -> impl Stream<Item = Result<Vec<u8>>> {
+    futures::stream::unfold(Some(socket), move |socket| {
+        let (net, probe) = (net.clone(), probe.clone());
+        async move {
+            let mut socket = socket?;
+            loop {
+                match rt::time::timeout(quiet, socket.next()).await {
+                    Ok(Some(item)) => {
+                        let ends = item.is_err();
+                        return Some((item, (!ends).then_some(socket)));
+                    }
+                    Ok(None) => return None,
+                    Err(_) => {}
+                }
+                let asked = rt::time::timeout(idle, net.get(&probe)).await;
+                let answered = matches!(asked, Ok(Ok(_)));
+                if !answered {
+                    let sentence = format!("the node answered no status within {idle:?}");
+                    return Some((Err(Error::Transport(sentence)), None));
+                }
+            }
+        }
+    })
 }
 
 async fn folded(body: impl Stream<Item = std::io::Result<Vec<u8>>>) -> Result<web_sys::Blob> {

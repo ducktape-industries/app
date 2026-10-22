@@ -1,9 +1,18 @@
 //! The heads socket kept by pings: a node that answers them keeps it open however quiet the
 //! chain, one that goes silent ends it, block time known or not; a status ends at the reads' bound.
 use super::*;
+use futures::SinkExt as _;
 
 const QUIET: Duration = Duration::from_millis(20);
 const IDLE: Duration = Duration::from_secs(2);
+
+fn reading_within(base: &str, connect: Duration, idle: Duration) -> crate::Client {
+    crate::Client {
+        reads: Net::new(Some((connect, idle))),
+        idle,
+        ..crate::Client::new(base)
+    }
+}
 
 async fn listening() -> (tokio::net::TcpListener, String) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -81,7 +90,7 @@ async fn a_status_the_node_never_answers_ends_at_the_reads_bound() {
         let _ = held.await;
         drop(stream);
     });
-    let client = crate::Client::reading_within(&base, IDLE, IDLE);
+    let client = reading_within(&base, IDLE, IDLE);
     let error = client.status().await.err();
     assert!(
         matches!(error, Some(Error::Transport(_))),
@@ -110,7 +119,7 @@ async fn heads_whose_block_time_is_unknown_are_kept_by_the_reads_bound() {
             .unwrap();
         let _ = held.await;
     });
-    let client = crate::Client::reading_within(&base, IDLE, IDLE);
+    let client = reading_within(&base, IDLE, IDLE);
     let mut heads = client.heads_kept(None).await.unwrap();
     let first = heads.next().await.map(|head| head.map(|head| head.height));
     assert!(matches!(first, Some(Ok(7))), "the first head: {first:?}");
@@ -118,6 +127,51 @@ async fn heads_whose_block_time_is_unknown_are_kept_by_the_reads_bound() {
     assert!(
         matches!(lost, Some(Err(Error::Transport(_)))),
         "a silent node kept a socket whose block time was unknown: {lost:?}"
+    );
+    let _ = hold.send(());
+    served.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_changes_stream_whose_node_goes_silent_ends_as_lost() {
+    let (listener, _) = listening().await;
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (hold, held) = futures::channel::oneshot::channel::<()>();
+    let served = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let _socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let _ = held.await;
+    });
+    let client = reading_within(&base, IDLE, IDLE);
+    let mut changes = client.changes("chat").await.unwrap();
+    let lost = changes
+        .next()
+        .await
+        .map(|change| change.map(|change| change.height));
+    assert!(
+        matches!(lost, Some(Err(Error::Transport(_)))),
+        "a silent node kept a changes stream: {lost:?}"
+    );
+    let _ = hold.send(());
+    served.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_watch_whose_node_goes_silent_ends_as_lost() {
+    let (listener, _) = listening().await;
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (hold, held) = futures::channel::oneshot::channel::<()>();
+    let served = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let _socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let _ = held.await;
+    });
+    let client = reading_within(&base, IDLE, IDLE);
+    let (_watching, mut pushed) = client.watch("chat").await.unwrap();
+    let lost = pushed.next().await.map(|pushed| pushed.map(|_| ()));
+    assert!(
+        matches!(lost, Some(Err(Error::Transport(_)))),
+        "a silent node kept a watch: {lost:?}"
     );
     let _ = hold.send(());
     served.await.unwrap();

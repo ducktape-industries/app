@@ -168,15 +168,6 @@ impl Client {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn reading_within(base: &str, connect: Duration, idle: Duration) -> Client {
-        Client {
-            reads: net::Net::new(Some((connect, idle))),
-            idle,
-            ..Client::new(base)
-        }
-    }
-
     pub fn endpoint(&self) -> &str {
         &self.base
     }
@@ -434,7 +425,8 @@ impl Client {
     ) -> Result<(Watching, impl Stream<Item = Result<Pushed>> + Unpin)> {
         let base = self.base.replacen("http", "ws", 1);
         let url = format!("{base}{}/{program}?keys", route::WATCH);
-        let (sending, socket) = self.http.duplex(&url).await?;
+        let probe = self.url(route::STATUS);
+        let (sending, socket) = self.http.duplex(&url, &probe, self.idle, self.idle).await?;
         let pushed = socket
             .map(|message| message.and_then(|bytes| abi::decode(&bytes).map_err(Error::Decode)));
         Ok((Watching(sending), pushed))
@@ -486,7 +478,11 @@ impl Client {
         path: String,
     ) -> Result<impl Stream<Item = Result<T>> + Unpin> {
         let url = format!("{}{path}", self.base.replacen("http", "ws", 1));
-        let socket = self.http.socket(&url).await?;
+        let probe = self.url(route::STATUS);
+        let socket = self
+            .http
+            .socket_kept(&url, &probe, self.idle, self.idle)
+            .await?;
         Ok(socket
             .map(|message| message.and_then(|bytes| abi::decode(&bytes).map_err(Error::Decode))))
     }
