@@ -59,18 +59,21 @@ pub(crate) fn initialize(sandbox: bool, root: &Path) -> bool {
 
 /// A request context with its own cookies and cache in `profile`, a
 /// directory under the root cache.
-pub(crate) fn context(profile: &Path) -> Option<RequestContext> {
+pub(crate) fn context(profile: &Path, fenced: bool) -> Option<RequestContext> {
     let _ = std::fs::create_dir_all(profile);
     let settings = RequestContextSettings {
         cache_path: profile.to_string_lossy().as_ref().into(),
         ..Default::default()
     };
-    let context = request_context_create_context(Some(&settings), None)?;
-    context.register_scheme_handler_factory(
-        Some(&crate::scheme::SCHEME.into()),
-        None,
-        Some(&mut crate::scheme::factory()),
-    );
+    let mut gate = fenced.then(Gate::new);
+    let context = request_context_create_context(Some(&settings), gate.as_mut())?;
+    if fenced {
+        context.register_scheme_handler_factory(
+            Some(&crate::scheme::SCHEME.into()),
+            None,
+            Some(&mut crate::scheme::factory()),
+        );
+    }
     Some(context)
 }
 
@@ -175,14 +178,26 @@ fn address(request: Option<&mut Request>) -> String {
         .unwrap_or_default()
 }
 
+fn fenced_out(shared: &Shared, url: &str, user_gesture: c_int) -> bool {
+    let away = !crate::scheme::ours(url) && user_gesture == 0;
+    shared.fenced && (crate::private(url) || away)
+}
+
 /// A popup or new tab's address, opened in the page itself when the rule
 /// allows it.
-fn redirect(shared: &Shared, url: Option<&CefString>) {
+fn redirect(shared: &Shared, url: Option<&CefString>, user_gesture: c_int) {
     let url = url.map(CefString::to_string).unwrap_or_default();
-    if crate::loadable(&url) {
-        *shared.redirect.borrow_mut() = Some(url);
-        shared.dirty.set(true);
+    let refused = !crate::loadable(&url) || fenced_out(shared, &url, user_gesture);
+    if refused {
+        return;
     }
+    let crosses = shared.fenced || crate::scheme::ours(&url);
+    let to = match crosses {
+        true => &shared.leave,
+        false => &shared.redirect,
+    };
+    *to.borrow_mut() = Some(url);
+    shared.dirty.set(true);
 }
 
 wrap_app! {
@@ -356,7 +371,7 @@ wrap_life_span_handler! {
             target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
             _target_disposition: WindowOpenDisposition,
-            _user_gesture: c_int,
+            user_gesture: c_int,
             _popup_features: Option<&PopupFeatures>,
             _window_info: Option<&mut WindowInfo>,
             _client: Option<&mut Option<Client>>,
@@ -364,7 +379,7 @@ wrap_life_span_handler! {
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_javascript_access: Option<&mut c_int>,
         ) -> c_int {
-            redirect(&self.shared, target_url);
+            redirect(&self.shared, target_url, user_gesture);
             1
         }
 
@@ -417,6 +432,62 @@ wrap_load_handler! {
     }
 }
 
+wrap_resource_request_handler! {
+    struct Fence;
+
+    impl ResourceRequestHandler {
+        fn on_before_resource_load(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            _callback: Option<&mut Callback>,
+        ) -> ReturnValue {
+            match crate::private(&address(request)) {
+                true => ReturnValue::CANCEL,
+                false => ReturnValue::CONTINUE,
+            }
+        }
+
+        fn on_resource_redirect(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _request: Option<&mut Request>,
+            _response: Option<&mut Response>,
+            new_url: Option<&mut CefString>,
+        ) {
+            let Some(new_url) = new_url else {
+                return;
+            };
+            let private = crate::private(&new_url.to_string());
+            if private {
+                *new_url = "about:blank".into();
+            }
+        }
+    }
+}
+
+wrap_request_context_handler! {
+    struct Gate;
+
+    impl RequestContextHandler {
+        #[allow(clippy::too_many_arguments)]
+        fn resource_request_handler(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _request: Option<&mut Request>,
+            _is_navigation: c_int,
+            _is_download: c_int,
+            _request_initiator: Option<&CefString>,
+            _disable_default_handling: Option<&mut c_int>,
+        ) -> Option<ResourceRequestHandler> {
+            Some(Fence::new())
+        }
+    }
+}
+
 wrap_request_handler! {
     struct PageRequest {
         shared: Rc<Shared>,
@@ -430,22 +501,38 @@ wrap_request_handler! {
             _browser: Option<&mut Browser>,
             frame: Option<&mut Frame>,
             request: Option<&mut Request>,
-            _user_gesture: c_int,
+            user_gesture: c_int,
             _is_redirect: c_int,
         ) -> c_int {
             if frame.is_none_or(|frame| frame.is_main() != 1) {
                 return 0;
             }
+            let kind = request
+                .as_ref()
+                .map_or(0, |request| request.transition_type().get_raw());
+            let direct = kind & TransitionType::DIRECT_LOAD_FLAG.get_raw() != 0;
+            let reload = kind & TransitionType::SOURCE_MASK.get_raw() == TransitionType::RELOAD.get_raw();
             let url = address(request);
-            if crate::scheme::leaves(&url) {
+            let held = fenced_out(&self.shared, &url, user_gesture);
+            let crosses = crate::loadable(&url) && crate::scheme::ours(&url) != self.shared.fenced;
+            let moves = self.shared.fenced && !direct && !reload && crate::scheme::ours(&url);
+            let leaves = !held && (crate::scheme::leaves(&url) || crosses || moves);
+            if leaves {
                 *self.shared.leave.borrow_mut() = Some(url);
                 self.shared.dirty.set(true);
                 return 1;
             }
-            if crate::loadable(&url) {
+            let loads = !held && crate::loadable(&url);
+            if loads {
                 return 0;
             }
-            *self.shared.refused.borrow_mut() = Some(url);
+            let private = self.shared.fenced && crate::private(&url);
+            let refusal = match (private, held) {
+                (true, _) => crate::page::Refusal::Private,
+                (false, true) => crate::page::Refusal::Unclicked,
+                (false, false) => crate::page::Refusal::Unloadable,
+            };
+            *self.shared.refused.borrow_mut() = Some((url, refusal));
             self.shared.dirty.set(true);
             1
         }
@@ -457,9 +544,9 @@ wrap_request_handler! {
             _frame: Option<&mut Frame>,
             target_url: Option<&CefString>,
             _target_disposition: WindowOpenDisposition,
-            _user_gesture: c_int,
+            user_gesture: c_int,
         ) -> c_int {
-            redirect(&self.shared, target_url);
+            redirect(&self.shared, target_url, user_gesture);
             1
         }
     }

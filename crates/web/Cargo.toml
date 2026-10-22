@@ -44,6 +44,11 @@ name = "ducktape-web-helper"
 path = "src/bin/helper.rs"
 required-features = ["cef"]
 
+[[test]]
+name = "live"
+harness = false
+required-features = ["cef"]
+
 [dependencies]
 gpui-kit = { version = "=0.7.3", optional = true }
 futures = { workspace = true, optional = true }

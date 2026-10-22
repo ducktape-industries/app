@@ -1,6 +1,6 @@
 //! The `duck` scheme in every page: each `duck://` address answered from what
-//! the app reads of its network (`serve`), read-only, and the height a page
-//! loaded from one tells its browser.
+//! the app reads of its network (`serve`), read-only, connecting to and nesting
+//! nothing but `duck:`, and the height a page loaded from one tells its browser.
 use cef::*;
 use std::os::raw::c_int;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -10,6 +10,8 @@ pub const SCHEME: &str = "duck";
 pub(crate) const HEIGHT: &str = "ducktape.height";
 
 const TELL: &str = "__ducktapeHeight";
+
+const POLICY: &str = "connect-src duck: data: blob:; frame-src duck: data: blob:; worker-src duck: data: blob:; object-src 'none'";
 
 const WATCH: &str = "(() => { const tell = globalThis.__ducktapeHeight; delete globalThis.__ducktapeHeight; const watch = () => new ResizeObserver(() => tell(Math.ceil(document.documentElement.getBoundingClientRect().height))).observe(document.documentElement); if (document.documentElement) { watch(); } else { document.addEventListener('readystatechange', watch, { once: true }); } })();";
 
@@ -37,6 +39,12 @@ pub(crate) fn leaves(address: &str) -> bool {
         && !NETWORK
             .get()
             .is_some_and(|network| (network.serves)(address))
+}
+
+pub(crate) fn ours(address: &str) -> bool {
+    address
+        .strip_prefix(SCHEME)
+        .is_some_and(|rest| rest.starts_with(':'))
 }
 
 pub(crate) fn register(registrar: &mut SchemeRegistrar) {
@@ -139,6 +147,11 @@ wrap_resource_handler! {
                     response.set_charset(Some(&charset.into()));
                 }
                 response.set_header_by_name(Some(&"Cache-Control".into()), Some(&"no-store".into()), 1);
+                response.set_header_by_name(
+                    Some(&"Content-Security-Policy".into()),
+                    Some(&POLICY.into()),
+                    1,
+                );
             }
             if let Some(length) = response_length {
                 *length = served.body.len() as i64;

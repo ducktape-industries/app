@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>ducktape for self-improvement · outline</title>
+<style>
+  :root { color-scheme: light; --ground:#fbfaf7; --ink:#1d1b18; --muted:#6b655c; --line:#e4dfd6; --accent:#9a5b00; --gap:#a3361f; --card:#f3f0ea;
+          font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  @media (prefers-color-scheme: dark) {
+    :root { color-scheme: dark; --ground:#1b1a17; --ink:#ece8e1; --muted:#a39c90; --line:#34312b; --accent:#e8a317; --gap:#f07a5f; --card:#24221e; }
+  }
+  html, body { background: var(--ground); color: var(--ink); }
+  body { margin: 0; padding: 20px 22px 28px; max-width: 920px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  blockquote { margin: 0 0 20px; padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--card); }
+  h2 { font-size: 15px; margin: 26px 0 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  ol.sections { list-style: none; padding: 0; margin: 0; counter-reset: s -1; }
+  ol.sections > li { counter-increment: s; display: grid; grid-template-columns: 2.2em 1fr; gap: 0 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+  ol.sections > li::before { content: "§" counter(s); color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .t { font-weight: 600; }
+  .ex { color: var(--muted); font-size: 14px; }
+  .gap { color: var(--gap); font-size: 14px; }
+  .gap::before { content: "missing: "; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 6px 0 4px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--card); padding: 1px 4px; border-radius: 3px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 8px 0 4px; }
+  .pair pre { margin: 0; padding: 10px 12px; background: var(--card); border-radius: 6px; font: 12.5px/1.45 ui-monospace, Menlo, monospace; overflow-x: auto; }
+  .pair .lab { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  ul.rul { padding-left: 18px; margin: 6px 0; }
+  ul.rul li { margin: 3px 0; }
+  .ok { color: var(--accent); font-weight: 600; }
+  footer { margin-top: 24px; color: var(--muted); font-size: 13px; }
+</style>
+
+<h1>ducktape for self-improvement</h1>
+<p class="sub">Outline of <code>programs/docs/ducktape-for-self-improvement.md</code> · J-177 · style after fluent31's SKILL.md: every section opens with a runnable example</p>
+
+<blockquote>An agent improves its own network on ducktape the way it improves anything: read what runs, change the code, test it natively, build the wasm, put it, schedule it, check it. This page is that loop, one runnable example per step.</blockquote>
+
+<h2>Program vs view, side by side (§1)</h2>
+<div class="pair">
+  <div><div class="lab">tally: the program (every node, in consensus)</div>
+<pre>enum Op { Add { by: u64 } }
+enum Query { Count }
+static COUNT: Item&lt;u64&gt; = Item::new("count");
+
+fn execute(op: Op) -&gt; Result&lt;()&gt; {
+    let Op::Add { by } = op;
+    let count_after_add = COUNT.get()? + by;
+    COUNT.set(&amp;count_after_add)
+}</pre></div>
+  <div><div class="lab">tally-view: the view (one device, in the app)</div>
+<pre>let count = host.query(tally::ask::Count);
+button("Add").on_click(|_, cx| {
+    cx.ask::&lt;Submit&lt;tally::Tally&gt;&gt;(
+        Op::Add { by: 1 });
+});
+cx.follow(tally::changes, reread_count);</pre></div>
+</div>
+<table>
+  <tr><th></th><th>Program</th><th>View</th></tr>
+  <tr><td>runs</td><td>on every node, inside consensus</td><td>on one device, in the app</td></tr>
+  <tr><td>holds</td><td>consensus state (its key space)</td><td>UI state, the device's store</td></tr>
+  <tr><td>entry points</td><td><code>execute(op)</code>, <code>query(q)</code></td><td><code>render</code>, listeners</td></tr>
+  <tr><td>talks</td><td>to other programs (query, emit, call)</td><td>to programs only through the host</td></tr>
+  <tr><td>updates</td><td><code>programs Set</code> (state kept)</td><td><code>SetView</code>, or packed with its program</td></tr>
+</table>
+<p class="ex">When to write which: a rule every node must agree on → program. Something one person sees or does → view. Neither, when a query plus a TOML covers it → a widget or a tool file.</p>
+
+<h2>Sections</h2>
+<ol class="sections">
+  <li><div><div class="t">Head + read-first table</div><div class="ex">the repo map, programs.md, roles.md, view README, sdk.md, tool-files.md, widgets.md, core found-a-network.md (this starts where that ends)</div></div></li>
+  <li><div><div class="t">A program and a view, side by side</div><div class="ex">the tally pair above, real workspace crates so the doc can't rot</div><div class="gap">no doc puts them side by side or says when to write which</div></div></li>
+  <li><div><div class="t">Priors that don't transfer</div><div class="ex">Set swaps code under the same id · every key is replicated forever · interfaces only grow, retire by gap · no clock but env().time · a refusal undoes the frame · a view has no fetch, no timers · never hand-write an owner check</div></div></li>
+  <li><div><div class="t">The model in twelve lines</div><div class="ex">programs, roles, accounts, frames, queries, blobs (code id = sha256), schedule, views, egress, harness</div></div></li>
+  <li><div><div class="t">Read what your network runs</div><div class="ex"><code>network_schema</code>, one op's shape, programs <code>Sources</code>, <code>Roster</code></div><div class="gap">"which SDK commit matches what my network runs"</div></div></li>
+  <li><div><div class="t">Your first program, out of tree</div><div class="ex">Cargo.toml by git at the Sources commit, patch lines, toolchain, <code>cargo test</code></div><div class="gap">programs.md only covers crates inside programs</div></div></li>
+  <li><div><div class="t">Test it natively (ABI-centric)</div><div class="ex">MockHost: Add, then Count, then a refusal · MockChain: tally asks chat</div></div></li>
+  <li><div><div class="t">Your first view</div><div class="ex">tally-view crate + TestAppContext: fake host answers Count, click Add, assert Submit</div><div class="gap">how an out-of-tree view gets into the app</div></div></li>
+  <li><div><div class="t">Improve your own tools, with no code</div><div class="ex">a tool file, a widget TOML (external tools after J-173)</div></div></li>
+  <li><div><div class="t">Build the wasm</div><div class="ex">locked release build, pack, sha256 = code id; build on a machine with the pinned toolchain, yours or one your network registers in egress</div><div class="gap">an out-of-tree packer (becomes <code>ducktape pack</code>, in this job)</div></div></li>
+  <li><div><div class="t">Ship it on your network</div><div class="ex">put → schema-diff → Schedule Set → verify → roll back</div><div class="gap">agent-only put path untested (proved here on a throwaway id) · where the notice is · no rollback recipe</div></div></li>
+  <li><div><div class="t">Take another network's release</div><div class="ex">fetch by code id, check sha256, put, schema-diff, Set: an upstream fix without building it</div><div class="gap">the whole section; no tool fetches another network's blob</div></div></li>
+  <li><div><div class="t">Exact signatures</div><div class="ex">copy these; do not infer them</div></div></li>
+  <li><div><div class="t">Commands</div><div class="ex">one block: test, clippy, builds, pack, sha256, schema-diff, blob put, op, query</div></div></li>
+  <li><div><div class="t">Traps</div><div class="ex">Set lands no earlier than the notice · a put without a bundle isn't held · dirty checkout = no source stamp · no --locked = drifting bytes</div></div></li>
+  <li><div><div class="t">Where help lives</div><div class="ex">the docs indexes and your network's own rooms</div></div></li>
+</ol>
+
+<h2>Ruled (chief)</h2>
+<ul class="rul">
+  <li><span class="ok">yes</span> running examples are real crates, tested in CI</li>
+  <li><span class="ok">yes</span> <code>ducktape pack</code> lands in this job, before the manual says "run this"</li>
+  <li><span class="ok">yes</span> prove the agent-only ship path on duckpond with a throwaway id, then Remove it</li>
+  <li><span class="ok">yes</span> neutral build wording, no pods contract</li>
+</ul>
+
+<footer>Source: duck://duckpond-725bcad1/files/shared/jobs/J-177-builders-manual/outline.md · next: draft</footer>
+</html>

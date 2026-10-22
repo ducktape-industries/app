@@ -63,9 +63,31 @@ the extracted copy can be deleted after.
 On Linux the web view runs **without Chromium's sandbox**: releases ship no
 `chrome-sandbox`, since its setuid-root helper can't live in a folder you own.
 A page's renderer then runs with your user's rights, so a flaw in Chromium
-that a page exploits can read and write what you can. A page's own requests
-and frames reach any https site and this machine's loopback services; simple
-POSTs get through even where CORS blocks reading the answers. A root-owned setuid
+that a page exploits can read and write what you can. A web page's own
+requests and frames reach any https site, and simple POSTs get through even
+where CORS blocks reading the answers. An artifact (a page from `duck://`) is
+fenced off this machine and private networks: the app cancels every request
+the artifact, a frame in it or a worker it starts makes (fetch, images,
+scripts, frames, redirects) to `localhost`, a name under it, or an
+address IANA's special-purpose registries mark as not globally reachable
+(loopback, the RFC 1918 and RFC 6598 private ranges, link-local, unique-local,
+documentation and reserved blocks). A WebSocket never reaches the app's
+request fence, Chromium's own local network check lets a `wss:` to this machine
+reach its TLS handshake, and a web page nested in an artifact would run under
+its own policy, so an artifact's `Content-Security-Policy` lets it connect
+(fetch, WebSocket, EventSource) only to `duck:`, `data:` and `blob:`
+addresses, nest frames and start workers only from those, and nest no
+`<object>` or `<embed>`: it reads its network and nothing else. Its scripts,
+styles, images and fonts may still load from https. An artifact never navigates in place: a
+link to another `duck://` page, or one you click to a public address, opens in
+the app instead, and a script that sends it elsewhere without a click, or to an
+address the fence names, is refused. Not
+fenced: a domain name whose DNS answers with a private address (CEF has no
+hook at the resolver); WebRTC, whose connections are not requests; a
+`<link rel=preconnect>`, which opens a connection to the address it names and
+sends a TLS hello there but no bytes the page chooses; a link on the page,
+which Chromium may connect to ahead of a click, sending nothing; and a
+`dns-prefetch`, which only sends a name to the system resolver. A root-owned setuid
 `chrome-sandbox` placed beside the installed binary turns the sandbox back
 on. macOS runs every CEF child in its own sandbox.
 
