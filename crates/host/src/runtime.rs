@@ -33,6 +33,8 @@ mod roster;
 mod seat;
 mod secret;
 mod store;
+#[cfg(feature = "web")]
+pub(crate) use store::carried;
 mod view;
 pub mod web;
 

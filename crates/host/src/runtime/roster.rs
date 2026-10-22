@@ -229,6 +229,7 @@ pub struct Roster {
 struct Bound {
     asked_of: Option<u64>,
     roles: Option<abi::Roles>,
+    renames: Vec<(String, String)>,
     due: Due,
 }
 
@@ -258,6 +259,29 @@ impl Roster {
     /// answers them: `None` until read.
     pub fn roles(&self) -> Option<abi::Roles> {
         self.bound().roles.clone()
+    }
+
+    pub(super) fn renamed_from(&self, program: &str) -> Vec<String> {
+        self.bound()
+            .renames
+            .iter()
+            .rev()
+            .filter(|(_, to)| to == program)
+            .map(|(from, _)| from.clone())
+            .collect()
+    }
+
+    pub(super) fn current(&self, program: &str) -> String {
+        self.bound()
+            .renames
+            .iter()
+            .find(|(from, _)| from == program)
+            .map_or_else(|| program.to_owned(), |(_, to)| to.clone())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn renamed(&self, renames: Vec<(String, String)>) {
+        self.bound().renames = renames;
     }
 
     /// The role bindings as if the programs role had answered `roles`.
@@ -584,15 +608,15 @@ pub(super) async fn read_roster(
 ) -> Option<Vec<crate::backend::views::Program>> {
     let client = asked_of.client.as_ref()?;
     let read = crate::perf::time(crate::perf::Key::Shell, "roster");
-    let programs = crate::backend::views::programs(
+    let listed = crate::backend::views::listed(
         client,
         &asked_of.network,
         &*crate::backend::query_signer(&asked_of.network),
     )
     .await;
     drop(read);
-    let programs = match programs {
-        Ok(programs) => programs,
+    let (height, programs) = match listed {
+        Ok(listed) => listed,
         Err(error) => {
             tracing::warn!(
                 target: "ducktape::app",
@@ -647,6 +671,31 @@ pub(super) async fn read_roster(
     } else {
         None
     };
+    let renames = match roles_due {
+        true => {
+            let read = crate::backend::views::renames(
+                client,
+                &asked_of.network,
+                &*crate::backend::query_signer(&asked_of.network),
+                height,
+            )
+            .await;
+            match read {
+                Ok(renames) => Some(renames),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "ducktape::app",
+                        reason = "renames_unreadable",
+                        error = %error,
+                        "the node's program renames were not read"
+                    );
+                    roster.bound().due = Due::Unknown;
+                    return None;
+                }
+            }
+        }
+        false => None,
+    };
     let loads = {
         let node_since_left = asked_of.stale();
         if node_since_left {
@@ -656,6 +705,9 @@ pub(super) async fn read_roster(
         if let Some(roles) = roles {
             bound.asked_of = Some(asked_of.rev);
             bound.roles = Some(roles);
+        }
+        if let Some(renames) = renames {
+            bound.renames = renames;
         }
         bound.due = due;
         drop(bound);

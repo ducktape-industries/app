@@ -446,6 +446,10 @@ struct Held {
     released: bool,
     roles_asked: usize,
     scheduled_asked: usize,
+    renames_asked: usize,
+    renames_failing: usize,
+    renames_unknown: bool,
+    programs_at: Option<String>,
 }
 
 /// What a fake node answers.
@@ -586,8 +590,18 @@ fn answer(
     use super::super::kernel::tests::{read_request, respond};
     let (line, body) = read_request(&mut stream);
     if line.starts_with("GET /v1/status ") {
+        let programs_at = held.lock().unwrap().programs_at.clone();
+        let roles = match programs_at {
+            Some(programs) => abi::Roles::from_iter([
+                (abi::role::PROGRAMS, programs.as_str()),
+                (abi::role::VALIDATORS, "valset"),
+                (abi::role::IDENTITY, "identity"),
+            ]),
+            None => crate::backend::test_roles(),
+        };
         let status = noded_client::wire::Status {
             network: answers.network.clone(),
+            roles,
             ..status(0)
         };
         return respond(&mut stream, "200 OK", &abi::encode(&status));
@@ -598,6 +612,12 @@ fn answer(
             panic!("an unsigned query");
         };
         let frame: noded_client::wire::Frame = abi::decode(&frame).unwrap();
+        let programs_at = held.lock().unwrap().programs_at.clone();
+        let elsewhere = programs_at.is_some_and(|programs| programs != frame.body.target);
+        if elsewhere {
+            let refused = abi::Refusal::new(abi::reason::UNKNOWN_PROGRAM, frame.body.target);
+            return respond(&mut stream, "400 Bad Request", &abi::encode(&refused));
+        }
         let reply = match abi::decode(&frame.body.payload).unwrap() {
             ::programs::Query::Roster => ::programs::Reply::Roster {
                 height: 1,
@@ -617,6 +637,22 @@ fn answer(
                         return respond(&mut stream, "200 OK", &abi::encode(&newer.concat()));
                     }
                 }
+            }
+            ::programs::Query::Renames(_) => {
+                let mut asked = held.lock().unwrap();
+                asked.renames_asked += 1;
+                let unknown = asked.renames_unknown;
+                let failing = asked.renames_failing > 0;
+                asked.renames_failing = asked.renames_failing.saturating_sub(1);
+                drop(asked);
+                if unknown {
+                    let refused = abi::Refusal::new("invalid_input", "Query did not decode");
+                    return respond(&mut stream, "400 Bad Request", &abi::encode(&refused));
+                }
+                if failing {
+                    return respond(&mut stream, "503 Service Unavailable", b"catching up");
+                }
+                renames_of(answers)
             }
             ::programs::Query::Scheduled { .. } => {
                 held.lock().unwrap().scheduled_asked += 1;
@@ -974,6 +1010,102 @@ fn a_roles_answer_refused_or_unreadable_lists_no_program_and_is_asked_again() {
         handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
         assert_eq!(node.held.lock().unwrap().roles_asked, 2, "asked again");
     }
+}
+
+fn renames_of(answers: &Answers) -> ::programs::Reply {
+    ::programs::Reply::Renames(
+        answers
+            .programs
+            .iter()
+            .filter_map(|entry| {
+                let (_, name) = entry.program.split_once('/')?;
+                Some((name.to_owned(), entry.program.clone()))
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn a_failed_renames_read_lands_nothing_and_is_asked_again() {
+    let node = FakeNode::new(
+        vec![listed("owner/renames-retried", "renames-retried")],
+        Vec::new(),
+        Vec::new(),
+    );
+    node.held.lock().unwrap().renames_failing = 1;
+    let (roster, registry) = (Roster::default(), Registry::default());
+    let first = handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert!(first.is_none(), "a read whose renames failed lands nothing");
+    assert!(roster.lock().is_empty(), "the roster keeps what it had");
+    let again = handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert!(again.is_some(), "the next read lands");
+    assert_eq!(node.held.lock().unwrap().renames_asked, 2, "asked again");
+    assert_eq!(roster.current("renames-retried"), "owner/renames-retried");
+}
+
+#[test]
+fn a_program_renamed_twice_names_its_newest_old_id_first() {
+    let roster = Roster::default();
+    roster.renamed(vec![
+        ("first".into(), "owner/third".into()),
+        ("owner/second".into(), "owner/third".into()),
+    ]);
+    assert_eq!(
+        roster.renamed_from("owner/third"),
+        ["owner/second", "first"]
+    );
+}
+
+#[test]
+fn a_renamed_programs_role_still_answers_renames() {
+    let node = FakeNode::new(
+        vec![listed("owner/role-renamed", "role-renamed")],
+        Vec::new(),
+        Vec::new(),
+    );
+    node.held.lock().unwrap().programs_at = Some("owner/programs".into());
+    let (roster, registry) = (Roster::default(), Registry::default());
+    let read = handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert!(read.is_some(), "the roster read did not land");
+    assert_eq!(roster.current("role-renamed"), "owner/role-renamed");
+}
+
+#[test]
+fn a_programs_role_that_knows_no_renames_reads_as_none() {
+    let node = FakeNode::new(
+        vec![listed("renames-unknown", "renames-unknown")],
+        Vec::new(),
+        Vec::new(),
+    );
+    node.held.lock().unwrap().renames_unknown = true;
+    let (roster, registry) = (Roster::default(), Registry::default());
+    let read = handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert!(
+        read.is_some(),
+        "an older programs role's refusal reads as no renames"
+    );
+    assert_eq!(roster.current("renames-unknown"), "renames-unknown");
+}
+
+#[test]
+fn a_roster_read_keeps_the_renames_its_programs_role_answers() {
+    let node = FakeNode::new(
+        vec![
+            listed("renames-kept", "renames-kept"),
+            listed("owner/renames-moved", "renames-moved"),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    handle().block_on(read_roster(node.asked_of.clone(), &roster, &registry));
+    assert_eq!(
+        roster.renamed_from("owner/renames-moved"),
+        ["renames-moved"]
+    );
+    assert!(roster.renamed_from("renames-kept").is_empty());
+    assert_eq!(roster.current("renames-moved"), "owner/renames-moved");
+    assert_eq!(roster.current("renames-kept"), "renames-kept");
 }
 
 #[test]

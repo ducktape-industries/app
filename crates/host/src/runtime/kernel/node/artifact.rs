@@ -26,15 +26,48 @@ enum Source {
 fn source(address: &str) -> Option<(ducklink::ChainId, Source)> {
     let address = address.split(['?', '#']).next().unwrap_or_default();
     let link = ducklink::Link::parse(address).ok()?;
-    let source = match (link.program.as_str(), link.tail.as_slice()) {
-        (files::PROGRAM, tail) if !tail.is_empty() => Source::File(format!("/{}", tail.join("/"))),
-        ("blobs", [hex]) => {
+    let read = reads_as(&roster_on(&link.chain), &link.program);
+    let source = match (read, link.tail.as_slice()) {
+        (Some(ArtifactKind::File), tail) if !tail.is_empty() => {
+            Source::File(format!("/{}", tail.join("/")))
+        }
+        (Some(ArtifactKind::Blob), [hex]) => {
             let digest = noded_client::hex::hex_decode(hex).ok()?;
             Source::Blob(abi::BlobId::Sha256(digest.try_into().ok()?))
         }
         _ => return None,
     };
     Some((link.chain, source))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArtifactKind {
+    File,
+    Blob,
+}
+
+fn roster_on(chain: &ducklink::ChainId) -> crate::runtime::Roster {
+    let chain = chain.to_string();
+    crate::runtime::networks()
+        .into_iter()
+        .find(|network| network.connection.lock().expect("views rpc").chain == chain)
+        .map(|network| network.roster.clone())
+        .unwrap_or_default()
+}
+
+fn reads_as(roster: &crate::runtime::Roster, program: &str) -> Option<ArtifactKind> {
+    let program = roster.current(program);
+    let blobs = roster
+        .roles()
+        .and_then(|roles| roles.bound(abi::role::BLOBS).ok().cloned())
+        .unwrap_or_else(|| "blobs".to_owned());
+    let files = program == roster.current(files::PROGRAM);
+    let blobs = program == roster.current(&blobs);
+    match (files, blobs) {
+        (true, _) => Some(ArtifactKind::File),
+        (_, true) => Some(ArtifactKind::Blob),
+        _ => None,
+    }
 }
 
 pub fn serves(address: &str) -> bool {
@@ -101,7 +134,7 @@ async fn ask(node: &Node, query: files::Query) -> Result<files::Reply, view_wire
         crate::backend::Layer::Confirmed,
         &*node.signer(),
         &node.network,
-        files::PROGRAM,
+        &node.roster().current(files::PROGRAM),
         abi::encode(&query),
     )
     .await?;
@@ -195,9 +228,10 @@ pub fn follow(address: &str) -> Option<(Following, mpsc::UnboundedReceiver<()>)>
     let node = on_network(&chain).ok()?;
     let (changed, heard) = mpsc::unbounded();
     let joined = node.clone();
+    let files = node.roster().current(files::PROGRAM);
     let join = move || {
         Box::pin(futures::stream::unfold(
-            changes_feed(&joined.client, files::PROGRAM),
+            changes_feed(&joined.client, &files),
             |(feed, slot)| async move {
                 let _ = slot.take().await;
                 Some(((), (feed, slot)))
@@ -316,5 +350,34 @@ mod network_tests {
             panic!("an address on a network the app holds was refused");
         };
         assert_eq!(node.network, "artifact-tests");
+    }
+}
+
+#[cfg(test)]
+mod reads_tests {
+    use super::*;
+
+    #[test]
+    fn a_link_written_before_a_rename_reads_as_it_did() {
+        let roster = crate::runtime::Roster::default();
+        assert_eq!(reads_as(&roster, files::PROGRAM), Some(ArtifactKind::File));
+        assert_eq!(reads_as(&roster, "blobs"), Some(ArtifactKind::Blob));
+        roster.renamed(vec![
+            (files::PROGRAM.into(), "owner/files".into()),
+            ("blobs".into(), "owner/blobs".into()),
+        ]);
+        roster.bind(Some(abi::Roles::from_iter([(
+            abi::role::BLOBS,
+            "owner/blobs",
+        )])));
+        for (program, kind) in [
+            (files::PROGRAM, Some(ArtifactKind::File)),
+            ("owner/files", Some(ArtifactKind::File)),
+            ("blobs", Some(ArtifactKind::Blob)),
+            ("owner/blobs", Some(ArtifactKind::Blob)),
+            ("chat", None),
+        ] {
+            assert_eq!(reads_as(&roster, program), kind, "{program}");
+        }
     }
 }

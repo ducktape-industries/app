@@ -71,9 +71,21 @@ pub async fn programs(
     network: &str,
     signer: &dyn noded_client::Signer,
 ) -> Result<Vec<Program>, Fetch> {
+    listed(client, network, signer)
+        .await
+        .map(|(_, programs)| programs)
+}
+
+pub async fn listed(
+    client: &RpcClient,
+    network: &str,
+    signer: &dyn noded_client::Signer,
+) -> Result<(u64, Vec<Program>), Fetch> {
     use ::programs::{Query, Reply};
     let Reply::Roster {
-        programs, views, ..
+        height,
+        programs,
+        views,
     } = ask(client, network, signer, Query::Roster).await?
     else {
         return Err(Fetch::Unreadable(
@@ -97,7 +109,7 @@ pub async fn programs(
         network,
         misspelled.into_iter().map(|program| program.name).collect(),
     );
-    Ok(roster)
+    Ok((height, roster))
 }
 
 fn misspelled_said(network: &str, ids: Vec<String>) {
@@ -130,6 +142,29 @@ pub async fn roles(
         Reply::Roles(roles) => Ok(roles),
         _ => Err(Fetch::Unreadable(
             "the programs role answered the roles question with another reply".into(),
+        )),
+    }
+}
+
+pub async fn renames(
+    client: &RpcClient,
+    network: &str,
+    signer: &dyn noded_client::Signer,
+    height: u64,
+) -> Result<Vec<(String, String)>, Fetch> {
+    use ::programs::{Query, Reply};
+    let answer = match asked(client, network, signer, Query::Renames(height)).await {
+        Err(noded_client::Asked::Node(noded_client::Error::Refused(refusal)))
+            if refusal.reason == abi::reason::INVALID_INPUT =>
+        {
+            return Ok(Vec::new());
+        }
+        answer => answer.map_err(asked_error)?,
+    };
+    match decoded(&answer)? {
+        Reply::Renames(renames) => Ok(renames),
+        _ => Err(Fetch::Unreadable(
+            "the programs role answered the renames question with another reply".into(),
         )),
     }
 }
@@ -168,8 +203,20 @@ async fn ask(
     signer: &dyn noded_client::Signer,
     query: ::programs::Query,
 ) -> Result<::programs::Reply, Fetch> {
+    let answer = asked(client, network, signer, query)
+        .await
+        .map_err(asked_error)?;
+    decoded(&answer)
+}
+
+async fn asked(
+    client: &RpcClient,
+    network: &str,
+    signer: &dyn noded_client::Signer,
+    query: ::programs::Query,
+) -> Result<Vec<u8>, noded_client::Asked> {
     let payload = abi::encode(&query);
-    let answer = client
+    client
         .role_query(
             Layer::Preconfirmed,
             signer,
@@ -178,11 +225,17 @@ async fn ask(
             payload,
         )
         .await
-        .map_err(|asked| match asked {
-            noded_client::Asked::Unsigned(refusal) => Fetch::Refused(refusal.0),
-            noded_client::Asked::Node(error) => fetch_error(error),
-        })?;
-    abi::decode(&answer).map_err(|refusal| Fetch::Unreadable(refusal.sentence))
+}
+
+fn asked_error(asked: noded_client::Asked) -> Fetch {
+    match asked {
+        noded_client::Asked::Unsigned(refusal) => Fetch::Refused(refusal.0),
+        noded_client::Asked::Node(error) => fetch_error(error),
+    }
+}
+
+fn decoded(answer: &[u8]) -> Result<::programs::Reply, Fetch> {
+    abi::decode(answer).map_err(|refusal| Fetch::Unreadable(refusal.sentence))
 }
 
 /// The view inside `code`'s blob, or `None` when the program ships none; a
