@@ -53,7 +53,13 @@ blob is successfully held. no local."
   that branch into `dev`, and merge the change. The merge's result is ONE
   squash commit on the current `dev`, with a single parent; its subject is the
   change's title followed by `(change N)`, and its body says what changed,
-  why, and the gates run. No merge commits. Forge cannot force-update a
+  why, and the gates run. The body also holds a line of its own that starts
+  `Release note:` and says in one sentence what changed for the people using
+  the app, or `Release note: none` for a change they would not notice (tests,
+  CI, a refactor). watch puts these lines, from the changes merged since a
+  release channel's last entry, into that channel's daily entry in chat
+  `release` (core `ops/README.md`); a change with no such line shows its
+  title there. No merge commits. Forge cannot force-update a
   branch and keeps every branch pushed to it, so when `dev` has moved and the
   branch no longer merges cleanly, rebase it onto `forge/dev`, push it as a
   new branch and open a new change.
