@@ -37,4 +37,5 @@ steps = [
 [jobs.env]
 GATES = "check"
 WORKSPACE_FEATURES = "ax-door"
+FEATURE_SETS = "ducktape-web:cef ducktape-host:web"
 AGENTS_LINT = "1"
