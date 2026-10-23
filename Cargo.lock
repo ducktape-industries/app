@@ -2795,6 +2795,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ducktape-artifact-fence"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "ducktape-av"
 version = "0.1.0"
 dependencies = [
@@ -3009,6 +3018,7 @@ dependencies = [
  "design",
  "ducklink",
  "ducktape-a11y-platform",
+ "ducktape-artifact-fence",
  "ducktape-av",
  "ducktape-gpui-ios",
  "ducktape-host",
@@ -3068,6 +3078,7 @@ dependencies = [
  "cef",
  "cef-dll-sys",
  "ducktape-a11y-platform",
+ "ducktape-artifact-fence",
  "ducktape-gpui-linux",
  "futures",
  "gpui-kit",

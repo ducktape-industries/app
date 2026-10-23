@@ -1,0 +1,12 @@
+[package]
+name = "ducktape-artifact-fence"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+url.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+regex.workspace = true

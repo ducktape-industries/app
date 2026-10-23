@@ -11,7 +11,7 @@ pub(crate) const HEIGHT: &str = "ducktape.height";
 
 const TELL: &str = "__ducktapeHeight";
 
-const POLICY: &str = "default-src duck: data: blob: 'unsafe-inline'; script-src duck: data: blob: 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; worker-src duck: data: blob:; object-src 'none'";
+use ducktape_artifact_fence::CONTENT_SECURITY_POLICY as POLICY;
 
 const WATCH: &str = "(() => { const tell = globalThis.__ducktapeHeight; delete globalThis.__ducktapeHeight; const watch = () => new ResizeObserver(() => tell(Math.ceil(document.documentElement.getBoundingClientRect().height))).observe(document.documentElement); if (document.documentElement) { watch(); } else { document.addEventListener('readystatechange', watch, { once: true }); } })();";
 

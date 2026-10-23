@@ -26,3 +26,8 @@ pub mod key;
 pub mod os;
 pub mod push;
 pub mod shell;
+
+pub use ducktape_artifact_fence::{
+    CONTENT_SECURITY_POLICY as artifact_content_security_policy,
+    webkit_content_rules as artifact_content_rules,
+};

@@ -1,0 +1,80 @@
+use super::*;
+
+mod rules;
+
+#[test]
+fn an_artifact_reaches_no_address_iana_marks_not_globally_reachable() {
+    for address in [
+        "http://127.0.0.1:8765/",
+        "https://127.0.0.2/",
+        "http://2130706433/",
+        "http://localhost/",
+        "http://LOCALHOST./",
+        "http://app.localhost/",
+        "ws://localhost:9222/devtools",
+        "wss://127.0.0.1/",
+        "http://0.0.0.0/",
+        "http://0/",
+        "http://10.1.2.3/",
+        "http://100.64.0.1/",
+        "http://100.100.100.100/",
+        "http://100.127.255.254/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://172.16.0.1/",
+        "http://172.31.255.255/",
+        "http://192.0.0.8/",
+        "http://192.0.0.170/",
+        "http://192.0.2.1/",
+        "http://192.88.99.2/",
+        "http://192.168.1.1/",
+        "http://198.18.0.1/",
+        "http://198.19.255.255/",
+        "http://198.51.100.7/",
+        "http://203.0.113.7/",
+        "http://240.0.0.1/",
+        "http://255.255.255.255/",
+        "http://[::1]:8000/",
+        "http://[::]/",
+        "http://[::ffff:127.0.0.1]/",
+        "http://[::ffff:192.168.0.1]/",
+        "http://[64:ff9b::7f00:1]/",
+        "http://[64:ff9b:1::1]/",
+        "http://[100::1]/",
+        "http://[100:0:0:1::1]/",
+        "http://[2001:2::1]/",
+        "https://[2001:db8::1]/",
+        "https://[3fff::1]/",
+        "https://[5f00::1]/",
+        "https://[fc00::1]/",
+        "https://[fd12:3456::1]/",
+        "https://[fe80::1]/",
+    ] {
+        assert!(private(address), "{address}");
+    }
+    for address in [
+        "duck://duckpond-725bcad1/files/shared/plan.html",
+        "duck://duckpond-725bcad1/blobs/00ff",
+        "https://example.com/",
+        "https://localhost.example.com/",
+        "http://8.8.8.8/",
+        "http://100.63.255.255/",
+        "http://100.128.0.0/",
+        "http://172.15.255.255/",
+        "http://172.32.0.1/",
+        "http://192.0.0.9/",
+        "http://192.0.0.10/",
+        "http://192.31.196.1/",
+        "http://192.169.0.1/",
+        "http://198.20.0.1/",
+        "https://[2001:1::1]/",
+        "https://[2001:3::1]/",
+        "https://[2001:4860:4860::8888]/",
+        "https://[64:ff9b::808:808]/",
+        "https://[fec0::1]/",
+        "data:text/html,hi",
+        "about:blank",
+        "",
+    ] {
+        assert!(!private(address), "{address}");
+    }
+}

@@ -32,6 +32,7 @@ cef = [
     "dep:futures",
     "dep:image",
     "dep:url",
+    "dep:ducktape-artifact-fence",
     "dep:serde",
     "dep:serde_json",
     "dep:accesskit",
@@ -55,7 +56,8 @@ futures = { workspace = true, optional = true }
 # gpui's `RenderImage` frames are `image` frames
 image = { version = "0.25", default-features = false, optional = true }
 # the WHATWG parser: an address read the way Chromium reads it
-url = { version = "2", optional = true }
+url = { workspace = true, optional = true }
+ducktape-artifact-fence = { workspace = true, optional = true }
 # Chromium's accessibility tree arrives as a CEF value, read as JSON
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

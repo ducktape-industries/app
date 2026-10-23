@@ -33,6 +33,7 @@ default = ["call"]
 call = ["ducktape-host/call", "ducktape-av/call"]
 
 [dependencies]
+ducktape-artifact-fence.workspace = true
 # the host's runner is the phone's own pick (`os::runner`): wasmtime below,
 # JavaScriptCore on iOS, where no wasmtime is linked
 ducktape-host = { path = "../host", default-features = false, features = ["live-client", "sockets"] }
