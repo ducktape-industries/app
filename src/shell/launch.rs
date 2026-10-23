@@ -34,12 +34,27 @@ pub(crate) fn run_live(live: super::Live, os: Arc<dyn OsServices>, start: Start)
 
 #[cfg(target_os = "linux")]
 pub(super) fn application() -> gpui_kit::Application {
-    gpui_kit::Application::with_platform(ducktape_gpui_linux::current_platform(false))
+    gpui_kit::Application::with_platform(door(ducktape_gpui_linux::current_platform(false)))
 }
 
 #[cfg(target_os = "macos")]
 pub(super) fn application() -> gpui_kit::Application {
-    gpui_kit::Application::with_platform(std::rc::Rc::new(gpui_macos::MacPlatform::new(false)))
+    gpui_kit::Application::with_platform(door(std::rc::Rc::new(gpui_macos::MacPlatform::new(
+        false,
+    ))))
+}
+
+#[cfg(all(feature = "ax-door", any(target_os = "linux", target_os = "macos")))]
+fn door(platform: std::rc::Rc<dyn gpui_kit::Platform>) -> std::rc::Rc<dyn gpui_kit::Platform> {
+    crate::ax::wrap(platform)
+}
+
+#[cfg(all(
+    not(feature = "ax-door"),
+    any(target_os = "linux", target_os = "macos")
+))]
+fn door(platform: std::rc::Rc<dyn gpui_kit::Platform>) -> std::rc::Rc<dyn gpui_kit::Platform> {
+    platform
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -232,7 +247,11 @@ fn booted(
         .detach();
         let door_windows = windows.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let (views_windows, settle_windows) = (door_windows.clone(), door_windows.clone());
+            let (views_windows, stopped_windows, settle_windows) = (
+                door_windows.clone(),
+                door_windows.clone(),
+                door_windows.clone(),
+            );
             let windows = move |cx: &gpui_kit::App| {
                 door_windows
                     .upgrade()
@@ -246,6 +265,15 @@ fn booted(
                 let nets = windows.read(cx).nets();
                 nets.iter()
                     .flat_map(|net| net.seats.read(cx).seated(cx))
+                    .collect()
+            };
+            let stopped = move |cx: &gpui_kit::App| {
+                let Some(windows) = stopped_windows.upgrade() else {
+                    return Vec::new();
+                };
+                let nets = windows.read(cx).nets();
+                nets.iter()
+                    .flat_map(|net| net.seats.read(cx).stopped(cx))
                     .collect()
             };
             let settle = move |cx: &mut gpui_kit::App| {
@@ -266,6 +294,8 @@ fn booted(
                 keep: &keep,
                 chords: &chords,
                 views: &views,
+                reach: &crate::ax::reach,
+                stopped: &stopped,
             };
             crate::ax::serve(calls, door, cx).await;
         })

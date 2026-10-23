@@ -378,14 +378,17 @@ fn snap(window: &mut Window, cx: &mut gpui_kit::App) -> Vec<crate::ax::AxNode> {
     ducktape_host::render::draw_frame(window, cx);
     window.simulate_next_frame(cx);
     ducktape_host::render::draw_frame(window, cx);
-    crate::ax::snapshot("shell", window, true)
+    crate::ax::snapshot("shell", window.a11y_tree(), window, true)
 }
 
 pub(super) fn errors(native: &mut VisualTestContext, screen: &str, launcher: bool) -> Vec<String> {
     native.update(snap);
     let prefs = crate::backend::read_prefs().expect("a test's prefs");
     let report = native.update(|window, cx| {
-        let mut reading = audit::observe(window, cx, "shell", true, |_| true, snap);
+        let mut reading = {
+            let modal = crate::ax::modal_active(window.a11y_tree());
+            audit::observe(window, cx, true, modal, |_| true, snap)
+        };
         reading.chords = crate::shell::chords();
         audit::audit(&reading, launcher)
     });
@@ -451,8 +454,10 @@ fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppC
         let (_, _, build) = matrix.iter().find(|(name, ..)| *name == screen).unwrap();
         let (_view, mut native) = open(build(), cx);
         native.update(snap);
-        let reading =
-            native.update(|window, cx| audit::observe(window, cx, "shell", true, |_| true, snap));
+        let reading = native.update(|window, cx| {
+            let modal = crate::ax::modal_active(window.a11y_tree());
+            audit::observe(window, cx, true, modal, |_| true, snap)
+        });
         let mut probed: Vec<_> = reading
             .arrows
             .iter()
@@ -476,8 +481,10 @@ fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppC
 fn the_walk_closes_the_first_time_the_focus_is_back_on_the_first_stop(cx: &mut TestAppContext) {
     let (_view, mut native) = open(plain(two_programs)(), cx);
     native.update(snap);
-    let reading =
-        native.update(|window, cx| audit::observe(window, cx, "shell", true, |_| true, snap));
+    let reading = native.update(|window, cx| {
+        let modal = crate::ax::modal_active(window.a11y_tree());
+        audit::observe(window, cx, true, modal, |_| true, snap)
+    });
     let walked: Vec<String> = reading.snapshots[1..]
         .iter()
         .map(|nodes| {
@@ -516,8 +523,8 @@ fn every_node_of_every_native_screen_is_named_by_its_own_id(cx: &mut TestAppCont
     assert!(misnamed.is_empty(), "\n{}\n", misnamed.join("\n"));
 }
 
-#[gpui_kit::test]
-async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) {
+#[test]
+fn a_door_walk_leaves_the_prefs_as_it_found_them() {
     let matrix = matrix();
     let (_, _, build) = matrix
         .iter()
@@ -528,9 +535,9 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
     let center = scene.0.center.clone();
     let prefs = crate::backend::read_prefs().unwrap();
     assert_eq!(prefs, serde_json::json!({}));
-    let (_view, native) = open(scene, cx);
-    let window = gpui_kit::VisualContext::window_handle(&native);
-    let report = crate::ax::audit::door_audit(window, None, &crate::shell::kept_restore, cx).await;
+    let harness = harnessed(scene);
+    let window = harness.root.into();
+    let report = crate::ax::audit::door_audit(&harness, window, None, &crate::shell::kept_restore);
     assert!(
         report["applicable"]["AX-107"].as_u64() >= Some(5),
         "{}",
@@ -554,7 +561,10 @@ fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppCo
         );
     }
     let report = native.update(|window, cx| {
-        let mut reading = audit::observe(window, cx, "shell", true, |_| true, snap);
+        let mut reading = {
+            let modal = crate::ax::modal_active(window.a11y_tree());
+            audit::observe(window, cx, true, modal, |_| true, snap)
+        };
         reading.chords = crate::shell::chords();
         audit::audit(&reading, false)
     });
@@ -570,8 +580,10 @@ fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppCo
 fn the_walk_presses_no_escape_under_a_modal(cx: &mut TestAppContext) {
     let (_view, mut native) = open(on_desk(Overlay::Spotlight)(), cx);
     native.update(snap);
-    let reading =
-        native.update(|window, cx| audit::observe(window, cx, "shell", true, |_| true, snap));
+    let reading = native.update(|window, cx| {
+        let modal = crate::ax::modal_active(window.a11y_tree());
+        audit::observe(window, cx, true, modal, |_| true, snap)
+    });
     assert!(reading.modal && reading.snapshots.len() > 2);
     for (n, nodes) in reading.snapshots.iter().enumerate() {
         assert!(

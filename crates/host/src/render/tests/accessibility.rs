@@ -235,7 +235,7 @@ fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
     // neither blank text is a node, whether the view named it or the host
     // numbered it
     let ids: Vec<_> = nodes.iter().map(|node| node["id"].clone()).collect();
-    assert_eq!(ids, ["t:heading", "t:rich-text", "t:kept"]);
+    assert_eq!(ids, ["t:heading", "t:Label", "t:kept"]);
     let of = |role: &str| -> Vec<_> {
         nodes
             .iter()
@@ -310,12 +310,12 @@ fn a_rich_texts_links_are_clean_on_the_door(cx: &mut gpui_kit::TestAppContext) {
         window.activate_a11y();
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        crate::ax::snapshot("t", window, false)
+        crate::ax::snapshot("t", window.a11y_tree(), window, false)
     });
     let held = native.update(|window, cx| {
         window.focus_next(cx);
         crate::render::draw_frame(window, cx);
-        crate::ax::snapshot("t", window, false)
+        crate::ax::snapshot("t", window.a11y_tree(), window, false)
     });
     let seen: Vec<serde_json::Value> = held
         .iter()
@@ -395,7 +395,7 @@ fn a_rich_texts_ranges_are_links_a_press_reaches(cx: &mut gpui_kit::TestAppConte
         window.activate_a11y();
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        crate::ax::snapshot("t", window, false)
+        crate::ax::snapshot("t", window.a11y_tree(), window, false)
             .iter()
             .map(|node| serde_json::to_value(node).unwrap())
             .filter(|node| node["role"] == "Link")

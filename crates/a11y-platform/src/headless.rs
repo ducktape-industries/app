@@ -13,16 +13,16 @@ use anyhow::Result;
 use futures::channel::oneshot;
 use gpui::{
     A11yCallbacks, Action, AnyView, AnyWindowHandle, App, AppContext, Application,
-    ApplicationHandle, AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, BackgroundExecutor,
-    Bounds, Capslock, ClipboardItem, Context, CursorStyle, DevicePixels, DispatchEventResult,
-    DisplayId, DummyKeyboardMapper, Entity, EntityId, ForegroundExecutor, Global, GpuSpecs,
-    GpuiBorrow, InputEvent, Keymap, Keystroke, Menu, MenuItem, Modifiers, NoopTextSystem,
-    PathPromptOptions, Pixels, Platform, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, Point, PromptButton, PromptLevel, Render, RequestFrameOptions, Reservation,
-    Scene, Size, Task, TestDispatcher, ThermalState, TileId, Window, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowHandle, WindowOptions,
-    WindowParams, WindowVisibility, accesskit, px,
+    ApplicationHandle, AsyncApp, AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile,
+    BackgroundExecutor, Bounds, Capslock, ClipboardItem, Context, CursorStyle, DevicePixels,
+    DispatchEventResult, DisplayId, DummyKeyboardMapper, Entity, EntityId, ForegroundExecutor,
+    Global, GpuSpecs, GpuiBorrow, InputEvent, Keymap, Keystroke, Menu, MenuItem, Modifiers,
+    NoopTextSystem, PathPromptOptions, Pixels, Platform, PlatformAtlas, PlatformDisplay,
+    PlatformInput, PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper,
+    PlatformTextSystem, PlatformWindow, Point, PromptButton, PromptLevel, Render,
+    RequestFrameOptions, Reservation, Scene, Size, Task, TestDispatcher, ThermalState, TileId,
+    Window, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowHandle, WindowOptions, WindowParams, WindowVisibility, accesskit, px,
 };
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle as RawWindowHandle,
@@ -58,6 +58,7 @@ type InputCallback = Box<dyn FnMut(PlatformInput) -> DispatchEventResult>;
 
 #[derive(Default)]
 pub struct HeadlessWindow {
+    handle: Option<AnyWindowHandle>,
     bounds: Bounds<Pixels>,
     input_handler: RefCell<Option<PlatformInputHandler>>,
     request_frame: RefCell<Option<FrameRequest>>,
@@ -107,6 +108,7 @@ pub struct Harness<V: 'static> {
     pub inner: Rc<HeadlessWindow>,
     pub a11y: Rc<WindowA11y>,
     pub root: WindowHandle<V>,
+    pub platform: Rc<A11yPlatform>,
 }
 
 impl<V: Render + 'static> Harness<V> {
@@ -131,15 +133,28 @@ impl<V: Render + 'static> Harness<V> {
         options: WindowOptions,
         build: impl FnOnce(&mut Window, &mut Context<V>) -> V,
     ) -> Self {
+        let harness = Self::open_in(init, |cx| {
+            cx.open_window(options, |window, cx| cx.new(|cx| build(window, cx)))
+                .expect("the headless platform opens every window")
+        });
+        harness.settle();
+        harness
+    }
+
+    pub fn open_in(
+        init: impl FnOnce(&mut App) + 'static,
+        open: impl FnOnce(&mut App) -> WindowHandle<V>,
+    ) -> Self {
         let dispatcher = TestDispatcher::new(0);
         let headless = HeadlessPlatform::new(dispatcher.clone());
         let platform = A11yPlatform::new(headless.clone());
         let app = Application::with_platform(platform.clone()).run_embedded(init);
-        let root = app.update(|cx| {
-            cx.open_window(options, |window, cx| cx.new(|cx| build(window, cx)))
-                .expect("the headless platform opens every window")
-        });
-        let inner = headless.windows()[0].clone();
+        let root = app.update(open);
+        let inner = headless
+            .windows()
+            .into_iter()
+            .find(|window| window.handle == Some(root.into()))
+            .expect("the headless platform opened the root window");
         let a11y = platform
             .window(root.into())
             .expect("the wrapper keeps every window it opened");
@@ -149,9 +164,10 @@ impl<V: Render + 'static> Harness<V> {
             inner,
             a11y,
             root,
+            platform,
         };
         harness.frame();
-        harness.settle();
+        harness.dispatcher.run_until_parked();
         harness
     }
 
@@ -234,6 +250,28 @@ impl<V: Render + 'static> Harness<V> {
 }
 
 impl<V: 'static> Harness<V> {
+    pub fn run<R: 'static>(&self, work: impl AsyncFnOnce(&mut AsyncApp) -> R + 'static) -> R {
+        let out = Rc::new(RefCell::new(None));
+        let into = out.clone();
+        self.app.update(|cx| {
+            cx.spawn(async move |cx| {
+                let done = work(cx).await;
+                *into.borrow_mut() = Some(done);
+            })
+            .detach()
+        });
+        loop {
+            self.dispatcher.run_until_parked();
+            if let Some(done) = out.borrow_mut().take() {
+                return done;
+            }
+            assert!(
+                self.dispatcher.advance_clock_to_next_timer(),
+                "the work parked with no timer left to wake it"
+            );
+        }
+    }
+
     fn frame(&self) {
         self.app.update(|cx| {
             cx.update_window(self.root.into(), |_, window, cx| window.draw(cx).clear(cx))
@@ -397,10 +435,11 @@ impl Platform for HeadlessPlatform {
     }
     fn open_window(
         &self,
-        _handle: AnyWindowHandle,
+        handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
         let window = Rc::new(HeadlessWindow {
+            handle: Some(handle),
             bounds: options.bounds,
             ..Default::default()
         });

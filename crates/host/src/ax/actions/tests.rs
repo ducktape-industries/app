@@ -1,12 +1,13 @@
-//! Regression tests for the AX door's field path: `perform_by_id` on a
-//! nested composer field must reach the view as the change it is; an
-//! action a view advertises reaches the view; and a press on a view's
-//! control is that control's click, wherever it is drawn.
+//! Regression tests for the AX door's actions on view controls.
 
+use super::super::tree::look;
 use super::*;
 use crate::render::ViewTree;
+use ducktape_a11y_platform::headless::Harness;
 use gpui_kit::{px, size};
 use view_wire as wire;
+
+mod dispatch;
 
 fn named_id(key: &str) -> wire::ElementIdWire {
     wire::ElementIdWire::Name(key.into())
@@ -58,36 +59,38 @@ fn chat_shaped_field() -> wire::Node {
     )
 }
 
-fn ax_action_reaches_the_views_field(cx: &mut gpui_kit::TestAppContext, action: &str) {
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| {
+fn act<V: 'static>(harness: &Harness<V>, id: &str, action: &str, value: &str) -> Reply {
+    let request = Request::Act(Act {
+        id: id.to_owned(),
+        action: action.to_owned(),
+        value: Some(value.to_owned()),
+        deadline_ms: None,
+    });
+    crate::ax::ask(harness, harness.root.into(), "t", request, &|_, _| None)
+}
+
+fn ax_action_reaches_the_views_field(action: &str) {
+    let harness = Harness::open_with(gpui_kit::init, size(px(400.), px(300.)), |_, _| {
         ViewTree::new(chat_shaped_field())
     });
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let tree = harness.root();
     let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let seen = heard.clone();
-    let _subscription = native.update(|_, cx| {
+    let _subscription = harness.app.update(|cx| {
         cx.subscribe(&tree, move |_, event: &wire::Event, _| {
             if let wire::Event::Text { handler, change } = event {
                 seen.borrow_mut().push((*handler, change.text.clone()));
             }
         })
     });
-    native.update(|window, cx| {
-        window.activate_a11y();
-        crate::render::draw_frame(window, cx);
-        crate::render::draw_frame(window, cx);
-    });
-    let performed = native.update(|window, cx| {
-        perform_by_id("t", window, cx, "t:draft-general/editor", action, "hello")
-    });
-    assert!(performed, "the composer's AX field must be in the tree");
-    native.update(|window, cx| {
-        crate::render::draw_frame(window, cx);
-        crate::render::draw_frame(window, cx);
-    });
-    native.run_until_parked();
+    look(&harness, "t", false);
+    let acted = act(&harness, "t:draft-general/editor", action, "hello");
+    assert_eq!(
+        acted.status, 200,
+        "the composer's AX field must be in the tree: {}",
+        acted.body
+    );
+    harness.run_until_parked();
     assert_eq!(
         heard.borrow().last(),
         Some(&(1, "hello".to_owned())),
@@ -95,20 +98,19 @@ fn ax_action_reaches_the_views_field(cx: &mut gpui_kit::TestAppContext, action: 
     );
 }
 
-#[gpui_kit::test]
-fn ax_type_on_a_nested_editor_reaches_the_views_document(cx: &mut gpui_kit::TestAppContext) {
-    ax_action_reaches_the_views_field(cx, "type");
+#[test]
+fn ax_type_on_a_nested_editor_reaches_the_views_document() {
+    ax_action_reaches_the_views_field("type");
 }
 
-#[gpui_kit::test]
-fn ax_set_value_on_a_nested_editor_reaches_the_views_document(cx: &mut gpui_kit::TestAppContext) {
-    ax_action_reaches_the_views_field(cx, "set_value");
+#[test]
+fn ax_set_value_on_a_nested_editor_reaches_the_views_document() {
+    ax_action_reaches_the_views_field("set_value");
 }
 
-#[gpui_kit::test]
-fn an_action_a_view_advertises_reaches_the_view(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn an_action_a_view_advertises_reaches_the_view() {
     use gpui_kit::accesskit::Action as A;
-    cx.update(gpui_kit::init);
     let mut stepper = container("stepper", Vec::new());
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut stepper {
         let interactivity = interactivity.get_or_insert_default();
@@ -120,40 +122,32 @@ fn an_action_a_view_advertises_reaches_the_view(cx: &mut gpui_kit::TestAppContex
         interactivity.aria.custom_actions = vec![(4, "Reset".into())];
     }
     let root = container("chat-viewport", vec![stepper]);
-    let window = cx.open_window(size(px(200.), px(120.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let harness = Harness::open_with(gpui_kit::init, size(px(200.), px(120.)), |_, _| {
+        ViewTree::new(root)
+    });
+    let tree = harness.root();
     let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let seen = events.clone();
-    let _subscription = native.update(|_, cx| {
+    let _subscription = harness.app.update(|cx| {
         cx.subscribe(&tree, move |_, event: &wire::Event, _| {
             if let wire::Event::A11yAction { handler, data } = event {
                 seen.borrow_mut().push((*handler, data.clone()));
             }
         })
     });
-    native.update(|window, cx| {
-        window.activate_a11y();
-        crate::render::draw_frame(window, cx);
-        crate::render::draw_frame(window, cx);
-        let node = snapshot("t", window, false)
-            .into_iter()
-            .find(|node| node.role == "SpinButton")
-            .expect("the stepper is in the tree");
-        assert_eq!(node.actions, ["increment", "decrement"]);
-        for word in ["increment", "decrement"] {
-            assert!(perform_by_id("t", window, cx, &node.id, word, ""));
-            crate::render::draw_frame(window, cx);
-        }
-        window.dispatch_a11y_action(
-            ActionRequest {
-                action: A::CustomAction,
-                target_tree: TreeId::ROOT,
-                target_node: node.node,
-                data: Some(ActionData::CustomAction(4)),
-            },
-            cx,
-        );
+    let node = look(&harness, "t", false)
+        .into_iter()
+        .find(|node| node.role == "SpinButton")
+        .expect("the stepper is in the tree");
+    assert_eq!(node.actions, ["increment", "decrement"]);
+    for word in ["increment", "decrement"] {
+        assert_eq!(act(&harness, &node.id, word, "").status, 200, "{word}");
+    }
+    harness.act(ActionRequest {
+        action: A::CustomAction,
+        target_tree: TreeId::ROOT,
+        target_node: node.node,
+        data: Some(ActionData::CustomAction(4)),
     });
     assert_eq!(
         *events.borrow(),
@@ -184,12 +178,9 @@ fn pressable(
     })
 }
 
-#[gpui_kit::test]
-fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+#[test]
+fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click() {
     use gpui_kit::Styled as _;
-    cx.update(gpui_kit::init);
     let rows = (0..10).map(|n| {
         pressable(
             &format!("row-{n}"),
@@ -233,34 +224,30 @@ fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
         interactivity: Default::default(),
         children: vec![list, over],
     });
-    let window = cx.open_window(size(px(300.), px(300.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let harness = Harness::open_with(gpui_kit::init, size(px(300.), px(300.)), |_, _| {
+        ViewTree::new(root)
+    });
+    let tree = harness.root();
     let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let seen = events.clone();
-    let _subscription = native.update(|_, cx| {
+    let _subscription = harness.app.update(|cx| {
         cx.subscribe(&tree, move |_, event: &wire::Event, _| {
             seen.borrow_mut().push(event.clone());
         })
     });
-    native.update(|window, cx| {
-        window.activate_a11y();
-        crate::render::draw_frame(window, cx);
-        crate::render::draw_frame(window, cx);
-        let nodes = snapshot("t", window, true);
-        let row = nodes
-            .iter()
-            .find(|node| node.name == "Row 5")
-            .expect("the door shows the row scrolled out of its list");
-        let over = nodes
-            .iter()
-            .find(|node| node.name == "Over")
-            .expect("the button is in the tree");
-        assert!(row.actions.contains(&"press"));
-        assert_eq!(row.bounds, Some([0, 200, 200, 240]));
-        assert_eq!(over.bounds, row.bounds);
-        assert!(perform_by_id("t", window, cx, &row.id, "press", ""));
-    });
+    let nodes = look(&harness, "t", true);
+    let row = nodes
+        .iter()
+        .find(|node| node.name == "Row 5")
+        .expect("the door shows the row scrolled out of its list");
+    let over = nodes
+        .iter()
+        .find(|node| node.name == "Over")
+        .expect("the button is in the tree");
+    assert!(row.actions.contains(&"press"));
+    assert_eq!(row.bounds, Some([0, 200, 200, 240]));
+    assert_eq!(over.bounds, row.bounds);
+    assert_eq!(act(&harness, &row.id, "press", "").status, 200);
     let events = events.borrow();
     let [
         wire::Event::Click {
@@ -276,9 +263,9 @@ fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
         *bounds,
         gpui_kit::Bounds::new(gpui_kit::point(px(0.), px(200.)), size(px(200.), px(40.)))
     );
-    tree.read_with(&native, |tree, _| {
+    harness.app.update(|cx| {
         assert!(
-            tree.take_activation().is_some(),
+            tree.read(cx).take_activation().is_some(),
             "the reader's press is a gesture, as a pointer's is"
         );
     });

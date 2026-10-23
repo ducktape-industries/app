@@ -235,8 +235,11 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
         }
     }));
     platform.on_remote_notification(Box::new(remote_notification));
-    let app = gpui_kit::Application::with_platform(std::rc::Rc::new(platform))
-        .with_assets(crate::assets::PhoneAssets);
+    let platform: std::rc::Rc<dyn gpui_kit::Platform> = std::rc::Rc::new(platform);
+    #[cfg(feature = "ax-door")]
+    let platform = ducktape_host::ax::wrap(platform);
+    let app =
+        gpui_kit::Application::with_platform(platform).with_assets(crate::assets::PhoneAssets);
     app.on_open_urls(|urls| urls.into_iter().for_each(crate::os::link));
     app.run(move |cx| {
         crate::os::start(documents, caches, cx);

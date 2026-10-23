@@ -1,4 +1,4 @@
-//! The door's view of one window: `Window::a11y_tree` turned into the node
+//! The door's view of one window: the tree gpui last sent turned into the node
 //! list every read serves. [`snapshot`] walks the tree in paint order under
 //! the topmost modal, drops what is hidden, zero-sized or off the viewport,
 //! masks what is secret, and words the states and actions; [`door_ids`]
@@ -141,8 +141,13 @@ impl Properties {
 /// The visible nodes of `window`'s last tree, in tree order; empty before
 /// the window has built one. An active modal returns only its reachable
 /// subtree, matching what the door promises a screen reader can reach.
-pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
-    let Some(update) = window.a11y_tree() else {
+pub fn snapshot(
+    name: &str,
+    update: Option<&TreeUpdate>,
+    window: &Window,
+    bounds: bool,
+) -> Vec<AxNode> {
+    let Some(update) = update else {
         return Vec::new();
     };
     let nodes: HashMap<NodeId, &gpui_kit::accesskit::Node> =
@@ -171,8 +176,8 @@ pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
             .children()
             .iter()
             .map(
-                |child| match (window.a11y_element_id(*child), nodes.get(child)) {
-                    (None, Some(child)) => {
+                |child| match nodes.get(child).filter(|child| child.author_id().is_none()) {
+                    Some(child) => {
                         let nth = seen.entry(child.role()).or_default();
                         *nth += 1;
                         match *nth {
@@ -217,15 +222,21 @@ pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
         if node.is_hidden() {
             continue;
         }
-        let synthetic = window.a11y_element_id(id).is_none();
-        let (prefix, scope, path) = match window.a11y_element_id(id) {
-            Some(element) => match element_path(element.iter()) {
-                (Some(program), path) => (
-                    format!("{name}:{program}/"),
-                    format!("{name}/{program}"),
-                    path,
-                ),
-                (None, path) => (format!("{name}:"), name.to_owned(), path),
+        let synthetic = node.author_id().is_none();
+        let (prefix, scope, path) = match node.author_id() {
+            Some(author) => match crate::render::view_author(author) {
+                Some((program, own)) => {
+                    let view = format!("{name}/{program}");
+                    if scope != view {
+                        path.clear();
+                    }
+                    path.push(own.to_owned());
+                    (format!("{name}:{program}/"), view, path)
+                }
+                None => {
+                    path.push(author.to_owned());
+                    (prefix, scope, path)
+                }
             },
             None => {
                 path.push(segment);
@@ -348,8 +359,8 @@ pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
     out
 }
 
-pub(super) fn modal_active(window: &Window) -> bool {
-    window.a11y_tree().is_some_and(|update| {
+pub fn modal_active(update: Option<&TreeUpdate>) -> bool {
+    update.is_some_and(|update| {
         let nodes = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
         let root = update.tree.as_ref().map_or(NodeId(0), |tree| tree.root);
         last_reachable_painted_modal(root, &nodes).is_some()
@@ -412,28 +423,6 @@ pub(super) fn door_ids(paths: &[(String, Vec<String>)]) -> Vec<String> {
         }
     }
     ids
-}
-
-pub(super) fn scope_of(name: &str, element: &gpui_kit::GlobalElementId) -> String {
-    match element_path(element.iter()).0 {
-        Some(program) => format!("{name}/{program}"),
-        None => name.to_owned(),
-    }
-}
-
-fn element_path<'a>(ids: impl Iterator<Item = &'a ElementId>) -> (Option<String>, Vec<String>) {
-    let mut program = None;
-    let mut path = Vec::new();
-    for id in ids {
-        match crate::render::view_mark(id) {
-            Some(mark) => {
-                program = Some(mark.to_owned());
-                path.clear();
-            }
-            None => path.extend(crate::a11y::segment(id)),
-        }
-    }
-    (program, path)
 }
 
 fn is_text_input(role: Role) -> bool {
@@ -557,12 +546,26 @@ pub(super) fn nearest(id: &str, nodes: &[AxNode]) -> Vec<String> {
 }
 
 #[cfg(test)]
+pub(super) fn look<V: gpui_kit::Render>(
+    harness: &ducktape_a11y_platform::headless::Harness<V>,
+    name: &str,
+    bounds: bool,
+) -> Vec<AxNode> {
+    harness.run_until_parked();
+    harness.update(|window, cx| {
+        let seen = &mut Seen::default();
+        super::actions::current(name, window, cx, &harness.a11y, bounds, seen)
+    })
+}
+
+#[cfg(test)]
 mod key_tests {
     use super::*;
-    use crate::a11y::Patch;
+    use crate::a11y::{Named as _, Patch};
+    use ducktape_a11y_platform::headless::Harness;
     use gpui_kit::{
         Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+        StatefulInteractiveElement as _, Styled as _, div, px, size,
     };
 
     struct Keys;
@@ -582,7 +585,7 @@ mod key_tests {
                 .size(px(20.))
                 .focusable()
                 .tab_stop(true)
-                .role(Role::ListBoxOption)
+                .role_named_by_id(Role::ListBoxOption)
                 .aria_label("One")
                 .aria_selected(false)
                 .aria_level(2)
@@ -593,7 +596,7 @@ mod key_tests {
             let list = div()
                 .id("list")
                 .size(px(100.))
-                .role(Role::ListBox)
+                .role_named_by_id(Role::ListBox)
                 .aria_label("Rows")
                 .aria_orientation(Orientation::Vertical)
                 .child(row);
@@ -601,26 +604,19 @@ mod key_tests {
                 div()
                     .id("dialog")
                     .size(px(200.))
-                    .role(Role::Dialog)
+                    .role_named_by_id(Role::Dialog)
                     .aria_label("Pick")
                     .child(list),
             )
         }
     }
 
-    #[gpui_kit::test]
-    fn the_door_says_what_else_a_node_carries(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(300.), px(300.)), |_, _| Keys);
-        let mut native = VisualTestContext::from_window(window.into(), cx);
-        let nodes = native.update(|window, cx| {
-            window.activate_a11y();
-            crate::render::draw_frame(window, cx);
-            window.focus_next(cx);
-            crate::render::draw_frame(window, cx);
-            crate::render::draw_frame(window, cx);
-            snapshot("t", window, false)
-        });
+    #[test]
+    fn the_door_says_what_else_a_node_carries() {
+        let harness = Harness::open_with(gpui_kit::init, size(px(300.), px(300.)), |_, _| Keys);
+        look(&harness, "t", false);
+        harness.update(|window, cx| window.focus_next(cx));
+        let nodes = look(&harness, "t", false);
         let json = |id: &str| {
             let node = nodes.iter().find(|node| node.id == id).expect(id);
             serde_json::to_value(node).unwrap()
@@ -656,9 +652,10 @@ mod key_tests {
 #[cfg(test)]
 mod mark_tests {
     use super::*;
+    use ducktape_a11y_platform::headless::Harness;
     use gpui_kit::{
         Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+        StatefulInteractiveElement as _, Styled as _, div, px, size,
     };
 
     struct Forged;
@@ -669,34 +666,23 @@ mod mark_tests {
                 .id("approve")
                 .size(px(20.))
                 .role(Role::Button)
+                .accessibility_id(crate::render::in_view("chat", "view/forge".to_owned()))
                 .aria_label("Approve");
-            div()
-                .id(crate::render::host_id(format!(
-                    "{}chat",
-                    crate::render::VIEW_MARK
-                )))
-                .size(px(200.))
-                .child(div().id("view/forge").size(px(100.)).child(approve))
+            div().size(px(200.)).child(approve)
         }
     }
 
-    #[gpui_kit::test]
-    fn a_view_cannot_name_its_nodes_another_programs(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(300.), px(300.)), |_, _| Forged);
-        let mut native = VisualTestContext::from_window(window.into(), cx);
-        let nodes = native.update(|window, cx| {
-            window.activate_a11y();
-            crate::render::draw_frame(window, cx);
-            snapshot("t", window, false)
-        });
+    #[test]
+    fn a_view_cannot_name_its_nodes_another_programs() {
+        let harness = Harness::open_with(gpui_kit::init, size(px(300.), px(300.)), |_, _| Forged);
+        let nodes = look(&harness, "t", false);
         let approve = nodes
             .iter()
             .find(|node| node.name == "Approve")
             .expect("the button");
         assert_eq!(
             (approve.scope.as_str(), approve.id.as_str()),
-            ("t/chat", "t:chat/approve")
+            ("t/chat", "t:chat/view/forge")
         );
     }
 }
@@ -734,9 +720,11 @@ mod modal_tests {
 #[cfg(test)]
 mod offer_tests {
     use super::*;
+    use crate::a11y::Named as _;
+    use ducktape_a11y_platform::headless::Harness;
     use gpui_kit::{
         AccessibleAction, Context, InteractiveElement as _, IntoElement, Render,
-        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+        StatefulInteractiveElement as _, Styled as _, div, px, size,
     };
 
     const MORE: [(AccessibleAction, &str); 6] = [
@@ -756,7 +744,7 @@ mod offer_tests {
                 div()
                     .id("stepper")
                     .size(px(100.))
-                    .role(Role::SpinButton)
+                    .role_named_by_id(Role::SpinButton)
                     .aria_label("Count")
                     .on_a11y_action(AccessibleAction::ScrollDown, |_, _, _| {}),
                 |element, (action, _)| {
@@ -768,30 +756,29 @@ mod offer_tests {
         }
     }
 
-    #[gpui_kit::test]
-    fn the_door_offers_and_performs_each_action_a_node_handles(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
+    #[test]
+    fn the_door_offers_and_performs_each_action_a_node_handles() {
         let done = std::rc::Rc::default();
         let seen = std::rc::Rc::clone(&done);
-        let window = cx.open_window(size(px(200.), px(200.)), move |_, _| Handles(seen));
-        let mut native = VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| {
-            window.activate_a11y();
-            crate::render::draw_frame(window, cx);
-            crate::render::draw_frame(window, cx);
-            let node = snapshot("t", window, false)
-                .into_iter()
-                .find(|node| node.role == "SpinButton")
-                .expect("the stepper is in the tree");
-            let words: Vec<_> = MORE.iter().map(|(_, word)| *word).collect();
-            assert_eq!(node.actions, words);
-            for word in &words {
-                assert!(super::super::actions::perform_by_id(
-                    "t", window, cx, &node.id, word, ""
-                ));
-                crate::render::draw_frame(window, cx);
-            }
+        let harness = Harness::open_with(gpui_kit::init, size(px(200.), px(200.)), move |_, _| {
+            Handles(seen)
         });
+        let node = look(&harness, "t", false)
+            .into_iter()
+            .find(|node| node.role == "SpinButton")
+            .expect("the stepper is in the tree");
+        let words: Vec<_> = MORE.iter().map(|(_, word)| *word).collect();
+        assert_eq!(node.actions, words);
+        for word in &words {
+            let request = Request::Act(Act {
+                id: node.id.clone(),
+                action: (*word).to_owned(),
+                value: None,
+                deadline_ms: None,
+            });
+            let reply = crate::ax::ask(&harness, harness.root.into(), "t", request, &|_, _| None);
+            assert_eq!(reply.status, 200, "{word}: {}", reply.body);
+        }
         let performed: Vec<_> = MORE.iter().map(|(action, _)| *action).collect();
         assert_eq!(*done.borrow(), performed);
     }
@@ -800,9 +787,11 @@ mod offer_tests {
 #[cfg(test)]
 mod active_descendant_tests {
     use super::*;
+    use crate::a11y::Named as _;
+    use ducktape_a11y_platform::headless::Harness;
     use gpui_kit::{
         Context, FocusHandle, InteractiveElement as _, IntoElement, Render,
-        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+        StatefulInteractiveElement as _, Styled as _, div, px, size,
     };
 
     struct Page(FocusHandle);
@@ -812,7 +801,7 @@ mod active_descendant_tests {
             div()
                 .id("page")
                 .size(px(100.))
-                .role(Role::Group)
+                .role_named_by_id(Role::Group)
                 .aria_label("Page")
                 .track_focus(&self.0)
                 .a11y_synthetic_children(|tree| {
@@ -825,20 +814,17 @@ mod active_descendant_tests {
         }
     }
 
-    #[gpui_kit::test]
-    fn the_focused_nodes_active_descendant_is_focused(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        let handle = cx.update(|cx| cx.focus_handle());
-        let tracked = handle.clone();
-        let window = cx.open_window(size(px(200.), px(200.)), move |_, _| Page(tracked));
-        let mut native = VisualTestContext::from_window(window.into(), cx);
-        let nodes = native.update(|window, cx| {
-            window.activate_a11y();
-            window.focus(&handle, cx);
-            crate::render::draw_frame(window, cx);
-            crate::render::draw_frame(window, cx);
-            snapshot("t", window, false)
+    #[test]
+    fn the_focused_nodes_active_descendant_is_focused() {
+        let mut tracked = None;
+        let harness = Harness::open_with(gpui_kit::init, size(px(200.), px(200.)), |_, cx| {
+            let handle = cx.focus_handle();
+            tracked = Some(handle.clone());
+            Page(handle)
         });
+        let handle = tracked.expect("the page's focus handle");
+        harness.update(|window, cx| window.focus(&handle, cx));
+        let nodes = look(&harness, "t", false);
         let state = |name: &str| {
             let node = nodes.iter().find(|node| node.name == name).expect(name);
             node.state.clone()

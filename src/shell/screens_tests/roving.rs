@@ -136,7 +136,13 @@ fn a_click_on_the_settings_layout_row_saves_it(cx: &mut TestAppContext) {
     let (view, mut native) = open((gate::desk(), settings), cx);
     let nodes = native.update(|window, cx| {
         draw(window, cx);
-        serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+        serde_json::to_value(crate::ax::snapshot(
+            "shell",
+            window.a11y_tree(),
+            window,
+            true,
+        ))
+        .unwrap()
     });
     let checked = |name| {
         find(&nodes, "RadioButton", name)["state"]

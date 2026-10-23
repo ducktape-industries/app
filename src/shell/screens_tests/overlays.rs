@@ -171,7 +171,13 @@ fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
         show(&view, &mut native, Some(overlay));
         let nodes = native.update(|window, cx| {
             draw(window, cx);
-            serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+            serde_json::to_value(crate::ax::snapshot(
+                "shell",
+                window.a11y_tree(),
+                window,
+                true,
+            ))
+            .unwrap()
         });
         let bar = find(&nodes, "MenuBar", "Ducktape");
         let at = |n: usize| bar["bounds"][n].as_f64().unwrap() as f32;
@@ -271,7 +277,7 @@ fn tab_scrolls_a_settings_row_below_the_fold_into_view(cx: &mut TestAppContext) 
     native.simulate_keystrokes("tab");
     let (keys, nodes) = native.update(|window, cx| {
         draw(window, cx);
-        let nodes = crate::ax::snapshot("shell", window, true);
+        let nodes = crate::ax::snapshot("shell", window.a11y_tree(), window, true);
         (window.focused(cx), serde_json::to_value(nodes).unwrap())
     });
     let words = find(&nodes, "Label", "Burst limit");
@@ -290,7 +296,13 @@ fn tab_scrolls_a_settings_row_below_the_fold_into_view(cx: &mut TestAppContext) 
 fn bar_button(native: &mut VisualTestContext, id: &str) -> gpui_kit::Point<Pixels> {
     let nodes = native.update(|window, cx| {
         draw(window, cx);
-        serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+        serde_json::to_value(crate::ax::snapshot(
+            "shell",
+            window.a11y_tree(),
+            window,
+            true,
+        ))
+        .unwrap()
     });
     let id = format!("shell:{id}");
     let button = nodes
@@ -441,7 +453,13 @@ fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext
             native.simulate_window_scale_factor_change(window, scale);
             let nodes = native.update(|window, cx| {
                 draw(window, cx);
-                serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+                serde_json::to_value(crate::ax::snapshot(
+                    "shell",
+                    window.a11y_tree(),
+                    window,
+                    true,
+                ))
+                .unwrap()
             });
             let card = find(&nodes, &format!("{role:?}"), name);
             assert_eq!(
@@ -490,7 +508,13 @@ fn sync(view: &Entity<WindowRoot>, native: &mut VisualTestContext) {
 fn shows(native: &mut VisualTestContext, said: &str) -> bool {
     let nodes = native.update(|window, cx| {
         draw(window, cx);
-        serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+        serde_json::to_value(crate::ax::snapshot(
+            "shell",
+            window.a11y_tree(),
+            window,
+            true,
+        ))
+        .unwrap()
     });
     nodes
         .as_array()
@@ -770,7 +794,13 @@ fn under_touch_the_card_is_the_phones_confirm_sheet(cx: &mut TestAppContext) {
     }
     let nodes = native.update(|window, cx| {
         draw(window, cx);
-        serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+        serde_json::to_value(crate::ax::snapshot(
+            "shell",
+            window.a11y_tree(),
+            window,
+            true,
+        ))
+        .unwrap()
     });
     find(&nodes, "Label", consent::ACCOUNT);
     assert!(!shows(&mut native, &consent::ACCOUNT.to_uppercase()));

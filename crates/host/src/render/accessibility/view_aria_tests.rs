@@ -1123,7 +1123,13 @@ mod phase_two {
         let wide = |native: &mut gpui_kit::VisualTestContext| {
             native.update(|window, cx| {
                 crate::render::draw_frame(window, cx);
-                let nodes = serde_json::to_value(crate::ax::snapshot("t", window, true)).unwrap();
+                let nodes = serde_json::to_value(crate::ax::snapshot(
+                    "t",
+                    window.a11y_tree(),
+                    window,
+                    true,
+                ))
+                .unwrap();
                 let nodes = nodes.as_array().unwrap();
                 let pane = nodes
                     .iter()

@@ -16,7 +16,13 @@ pub(super) fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::V
     // the next frame, as the platform delivers them
     window.simulate_next_frame(cx);
     ducktape_host::render::draw_frame(window, cx);
-    serde_json::to_value(crate::ax::snapshot("console", window, false)).unwrap()
+    serde_json::to_value(crate::ax::snapshot(
+        "console",
+        window.a11y_tree(),
+        window,
+        false,
+    ))
+    .unwrap()
 }
 
 /// The ids in a snapshot, in the tree's order.
@@ -252,7 +258,13 @@ pub(super) fn drag(native: &mut VisualTestContext, from: (f32, f32), to: (f32, f
 fn bounds(native: &mut VisualTestContext, id: &str) -> [i64; 4] {
     native.update(|window, cx| {
         draw(window, cx);
-        let nodes = serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap();
+        let nodes = serde_json::to_value(crate::ax::snapshot(
+            "console",
+            window.a11y_tree(),
+            window,
+            true,
+        ))
+        .unwrap();
         let node = nodes
             .as_array()
             .unwrap()
@@ -889,7 +901,13 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
     };
     native.update(|window, cx| {
         draw(window, cx);
-        let nodes = serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap();
+        let nodes = serde_json::to_value(crate::ax::snapshot(
+            "console",
+            window.a11y_tree(),
+            window,
+            true,
+        ))
+        .unwrap();
         let (shown, page) = (width(&nodes, "help"), width(&nodes, "help/page"));
         // the page runs past the window: there is something to scroll to
         assert!(page > shown, "squeezed: page {page}, window {shown}");

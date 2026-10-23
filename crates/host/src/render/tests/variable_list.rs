@@ -425,7 +425,7 @@ fn rows_holding_one_id_are_each_their_own_field(cx: &mut gpui_kit::TestAppContex
         window.activate_a11y();
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        crate::ax::snapshot("t", window, false)
+        crate::ax::snapshot("t", window.a11y_tree(), window, false)
     });
     let fields: Vec<(&str, Option<&str>)> = nodes
         .iter()

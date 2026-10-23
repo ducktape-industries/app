@@ -273,4 +273,16 @@ impl Seats {
             })
             .collect()
     }
+
+    #[cfg(any(test, feature = "ax-door"))]
+    pub fn stopped(&self, cx: &App) -> Vec<crate::ax::Stopped> {
+        self.map
+            .values()
+            .filter_map(|routed| {
+                let seat = routed.seat.read(cx);
+                let words = seat.standin()?.words.clone();
+                Some((seat.window()?, seat.program(), words))
+            })
+            .collect()
+    }
 }

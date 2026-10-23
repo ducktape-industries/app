@@ -79,45 +79,8 @@ fn open_with(
     cx: &mut TestAppContext,
     open: impl FnOnce(&mut entities::Windows, &mut gpui_kit::Context<entities::Windows>) -> WindowKey,
 ) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
-    let Seed {
-        roster,
-        center,
-        session,
-        chain,
-        account,
-        screen,
-        phrase,
-        found,
-        prefs,
-        active,
-        layout,
-        toast,
-    } = seed.into();
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
-    let app = cx.update(|cx| {
-        let app = entities::Entities::for_test(roster, center, cx);
-        entities::Windows::forget_closed(&app.windows, cx);
-        app.session.update(cx, |it, cx| it.seed(session, cx));
-        app.chain.update(cx, |it, cx| {
-            it.set(chain, cx);
-        });
-        app.account
-            .update(cx, |it, cx| it.seed(account, phrase, found, cx));
-        app.screen.update(cx, |it, cx| {
-            it.set(screen, cx);
-        });
-        app.prefs.update(cx, |it, cx| {
-            it.set(prefs, cx);
-        });
-        if !toast.is_empty() {
-            app.toast.update(cx, |it, cx| it.show(toast, cx));
-        }
-        app.windows.update(cx, |it, _| it.set_active(active));
-        app
-    });
+    cx.update(begun);
+    let (app, layout) = cx.update(|cx| seeded(seed.into(), cx));
     let key = app.windows.update(cx, open);
     if let Some(layout) = layout {
         let desk = entities::tests::desk_of(&app, key, cx);
@@ -138,6 +101,82 @@ fn open_with(
     })
     .unwrap();
     (app, key, view, VisualTestContext::from_window(handle, cx))
+}
+
+fn begun(cx: &mut gpui_kit::App) {
+    gpui_kit::init(cx);
+    keys::bind(cx);
+}
+
+fn seeded(seed: Seed, cx: &mut gpui_kit::App) -> (Entities, Option<Layout>) {
+    let Seed {
+        roster,
+        center,
+        session,
+        chain,
+        account,
+        screen,
+        phrase,
+        found,
+        prefs,
+        active,
+        layout,
+        toast,
+    } = seed;
+    let app = entities::Entities::for_test(roster, center, cx);
+    entities::Windows::forget_closed(&app.windows, cx);
+    app.session.update(cx, |it, cx| it.seed(session, cx));
+    app.chain.update(cx, |it, cx| {
+        it.set(chain, cx);
+    });
+    app.account
+        .update(cx, |it, cx| it.seed(account, phrase, found, cx));
+    app.screen.update(cx, |it, cx| {
+        it.set(screen, cx);
+    });
+    app.prefs.update(cx, |it, cx| {
+        it.set(prefs, cx);
+    });
+    if !toast.is_empty() {
+        app.toast.update(cx, |it, cx| it.show(toast, cx));
+    }
+    app.windows.update(cx, |it, _| it.set_active(active));
+    (app, layout)
+}
+
+pub(in crate::shell) fn harness_console(
+    seed: impl Into<Seed>,
+) -> (
+    Entity<WindowRoot>,
+    ducktape_host::ax::Harness<gpui_kit::component::Root>,
+) {
+    let seed = seed.into();
+    let at = Bounds::new(point(px(0.), px(0.)), size(px(WINDOW.0), px(WINDOW.1)));
+    let mut view = None;
+    let harness = ducktape_host::ax::Harness::open_in(begun, |cx| {
+        let (app, layout) = seeded(seed, cx);
+        let key = app.windows.update(cx, |windows, cx| {
+            windows.open(WindowKind::Console, Some(at), None, cx)
+        });
+        if let Some(layout) = layout {
+            let desk = app
+                .windows
+                .read(cx)
+                .own(key)
+                .expect("its window")
+                .desk
+                .clone();
+            desk.update(cx, |desk, cx| {
+                desk.set(layout, cx);
+            });
+        }
+        let windows = app.windows.read(cx);
+        view = windows.views()[&key].upgrade();
+        windows.handles()[&key]
+            .downcast::<gpui_kit::component::Root>()
+            .expect("the console's root")
+    });
+    (view.expect("the console's root lives"), harness)
 }
 
 pub(in crate::shell) fn polled(

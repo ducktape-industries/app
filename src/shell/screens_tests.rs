@@ -24,7 +24,13 @@ fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     ducktape_host::render::draw_frame(window, cx);
     window.simulate_next_frame(cx);
     ducktape_host::render::draw_frame(window, cx);
-    serde_json::to_value(crate::ax::snapshot("shell", window, false)).unwrap()
+    serde_json::to_value(crate::ax::snapshot(
+        "shell",
+        window.a11y_tree(),
+        window,
+        false,
+    ))
+    .unwrap()
 }
 
 fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::App) {
@@ -124,6 +130,20 @@ pub(super) fn open(
         super::layers::tests::show(&view, Some(overlay), &mut native);
     }
     (view, native)
+}
+
+pub(super) fn harnessed(
+    scene: impl Into<Scene>,
+) -> ducktape_host::ax::Harness<gpui_kit::component::Root> {
+    let Scene(seed, overlay) = scene.into();
+    let (view, harness) = super::layers::tests::harness_console(seed);
+    if let Some(overlay) = overlay {
+        harness.app.update(|cx| {
+            let overlays = view.read(cx).overlays();
+            overlays.update(cx, |it, cx| it.open(overlay, cx));
+        });
+    }
+    harness
 }
 
 #[gpui_kit::test]
@@ -709,7 +729,13 @@ fn a_click_inside_an_overlay_card_leaves_it_open(cx: &mut TestAppContext) {
         let (view, mut native) = open((gate::desk(), overlay), cx);
         let nodes = native.update(|window, cx| {
             draw(window, cx);
-            serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+            serde_json::to_value(crate::ax::snapshot(
+                "shell",
+                window.a11y_tree(),
+                window,
+                true,
+            ))
+            .unwrap()
         });
         let card = find(&nodes, "Dialog", name);
         let at = |n: usize| card["bounds"][n].as_f64().unwrap() as f32;

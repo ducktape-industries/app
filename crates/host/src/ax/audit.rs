@@ -10,8 +10,7 @@
 //! app's Help lists with a chord (AX-114).
 use super::actions::{press_keys, shortcuts};
 use super::{AxNode, tree};
-use gpui_kit::accesskit::NodeId;
-use gpui_kit::{App, FocusHandle, GlobalElementId, Window};
+use gpui_kit::{App, FocusHandle, Window};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -221,7 +220,7 @@ pub const RULES: [Rule; 43] = [
     rule(
         "AX-124",
         Error,
-        "No element is refused for sharing its accessibility id with an earlier one.",
+        "No view's frame is refused for claiming one element id twice.",
     ),
 ];
 
@@ -292,39 +291,38 @@ pub struct Reading {
     pub outside: Vec<bool>,
 }
 
-/// An element the fork left out of the tree because an earlier one had its
-/// accessibility id (AX-124), as one snapshot's frame refused it: the door
-/// id of the node that kept it (its `GlobalElementId`, else its `NodeId`,
-/// where the snapshot does not show it), the refused element's
-/// `GlobalElementId`, and which of the identical refusals on that frame
-/// this is (two siblings given one element id refuse twice with one path).
 #[derive(Debug)]
 pub struct Refused {
-    pub kept: String,
-    pub element: String,
-    pub nth: usize,
+    pub view: String,
+    pub reason: String,
 }
 
-fn note_refused(
-    into: &mut Vec<Refused>,
-    list: &[(NodeId, GlobalElementId)],
+pub(super) fn refused_in(
     name: &str,
+    window: gpui_kit::AnyWindowHandle,
+    stopped: Vec<super::Stopped>,
     keep: impl Fn(&str) -> bool,
-    kept_name: impl Fn(NodeId) -> String,
-) {
-    for (n, (id, element)) in list.iter().enumerate() {
-        if !keep(&tree::scope_of(name, element)) {
-            continue;
-        }
-        into.push(Refused {
-            kept: kept_name(*id),
-            element: format!("GlobalElementId({:?})", &**element),
-            nth: list[..n]
-                .iter()
-                .filter(|before| **before == list[n])
-                .count(),
-        });
-    }
+) -> Vec<Refused> {
+    let head = duplicate_head();
+    stopped
+        .into_iter()
+        .filter(|(at, _, words)| *at == window && words.contains(&head))
+        .map(|(_, program, reason)| Refused {
+            view: format!("{name}/{}", crate::runtime::slug(program)),
+            reason,
+        })
+        .filter(|refused| keep(&refused.view))
+        .collect()
+}
+
+fn duplicate_head() -> String {
+    let sample = view_wire::identity::DuplicateIdentity {
+        id: view_wire::ElementIdWire::Name("id".into()),
+        scope: Vec::new(),
+    };
+    let words = sample.to_string();
+    let head = words.split_once(':').map(|(head, _)| head.to_owned());
+    head.unwrap_or(words)
 }
 
 /// An arrow probe (AX-107): the composite the focus sat in, the pairs it
@@ -803,17 +801,13 @@ fn node_rules(
 
 fn refused_rules(reading: &Reading, tally: &mut Tally) {
     let mut seen = BTreeSet::new();
-    for Refused { kept, element, nth } in &reading.refused {
-        if !seen.insert((element, nth)) {
+    for Refused { view, reason } in &reading.refused {
+        if !seen.insert(view) {
             continue;
         }
-        let id = match nth {
-            0 => format!("{kept} <- {element}"),
-            nth => format!("{kept} <- {element} #{}", nth + 1),
-        };
-        tally.step("AX-124", &id, "", "", false, || {
+        tally.step("AX-124", view, "", "", false, || {
             format!(
-                "{element} was refused: it has the same element id as {kept}, which the tree kept. Give one of the two its own id, or the refused one is invisible to a screen reader"
+                "{view} stopped: the host refused its frame ({reason}). Give each of the two its own id, or a screen reader meets neither"
             )
         });
     }
@@ -1182,12 +1176,12 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 pub fn observe(
     window: &mut Window,
     cx: &mut App,
-    name: &str,
     walk: bool,
+    modal: bool,
     keep: impl Fn(&str) -> bool,
     snap: impl FnMut(&mut Window, &mut App) -> Vec<AxNode>,
 ) -> Reading {
-    let mut observer = Observer::open(window, cx, name, walk, keep, snap);
+    let mut observer = Observer::open(window, cx, walk, modal, keep, snap);
     while observer.press(window, cx) {
         observer.read(window, cx);
     }
@@ -1199,12 +1193,10 @@ pub fn observe(
 /// until `press` says the walk is done, then [`Observer::finish`], each in
 /// any update the caller likes.
 pub struct Observer<K, S> {
-    name: String,
     walk: bool,
     keep: K,
     snap: S,
     reading: Reading,
-    refused: Vec<Refused>,
     before: Option<FocusHandle>,
     probe: Option<Probe>,
     probed: std::collections::HashSet<String>,
@@ -1222,18 +1214,16 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
     pub fn open(
         window: &mut Window,
         cx: &mut App,
-        name: &str,
         walk: bool,
+        modal: bool,
         keep: K,
         snap: S,
     ) -> Self {
         let mut observer = Self {
-            name: name.to_owned(),
             walk,
             keep,
             snap,
             reading: Reading::default(),
-            refused: Vec::new(),
             before: window.focused(cx),
             probe: None,
             probed: Default::default(),
@@ -1248,7 +1238,7 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         let (nodes, outside, stops) = observer.look(window, cx);
         observer.reading.take(nodes, outside, window, cx);
         observer.most = stops;
-        observer.reading.modal = tree::modal_active(window);
+        observer.reading.modal = modal;
         let first = std::mem::take(&mut observer.reading.snapshots[0]);
         observer.start_probe(&first);
         observer.reading.snapshots[0] = first;
@@ -1350,25 +1340,11 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         self.reading
             .arrows
             .extend(self.probe.map(|probe| probe.arrows));
-        self.reading.refused = self.refused;
         self.reading
     }
 
     fn look(&mut self, window: &mut Window, cx: &mut App) -> (Vec<AxNode>, bool, usize) {
         let mut nodes = (self.snap)(window, cx);
-        let kept_name = |id: NodeId| match nodes.iter().find(|node| node.node == id) {
-            Some(node) => node.id.clone(),
-            None => window
-                .a11y_element_id(id)
-                .map_or_else(|| format!("{id:?}"), |kept| format!("{kept:?}")),
-        };
-        note_refused(
-            &mut self.refused,
-            window.a11y_refused_elements(),
-            &self.name,
-            &self.keep,
-            kept_name,
-        );
         let stops = nodes.iter().filter(|node| offers(node, "focus")).count();
         let dropped = nodes
             .iter()
@@ -1389,35 +1365,22 @@ struct Probe {
 /// What `GET /audit?walk=1` answers over `window`, served as `w`, with
 /// `view=` when given; `keep` is the door's (`Door::keep`), what the walk
 /// puts back once it ends.
-pub async fn door_audit(
+pub fn door_audit<V: 'static>(
+    harness: &ducktape_a11y_platform::headless::Harness<V>,
     window: gpui_kit::AnyWindowHandle,
     view: Option<&str>,
     keep: &'static (dyn Fn(&Window, &App) -> Option<crate::ax::Restore> + Send + Sync),
-    cx: &mut gpui_kit::TestAppContext,
 ) -> serde_json::Value {
-    let key = crate::runtime::WindowKey::unique();
-    let served = move |_: &App| vec![("w".to_owned(), key, window)];
     let filter = crate::ax::Filter {
         window: None,
         view: view.map(str::to_owned),
     };
-    let reply = cx
-        .spawn(async move |mut cx| {
-            let request = crate::ax::Request::Audit {
-                filter,
-                walk: true,
-                launcher: false,
-            };
-            let door = crate::ax::Door {
-                keep,
-                chords: &Vec::new,
-                views: &|_| Vec::new(),
-                windows: &served,
-                settle: &|_| true,
-            };
-            crate::ax::answer(request, &door, &mut Default::default(), &mut cx).await
-        })
-        .await;
+    let request = crate::ax::Request::Audit {
+        filter,
+        walk: true,
+        launcher: false,
+    };
+    let reply = crate::ax::ask(harness, window, "w", request, keep);
     assert_eq!(reply.status, 200, "{}", reply.body);
     serde_json::from_str(&reply.body).unwrap()
 }

@@ -83,9 +83,12 @@ fn a_button_says_what_it_opens_and_its_chord(cx: &mut TestAppContext) {
     let report = native.update(|window, cx| {
         let snap = |window: &mut Window, cx: &mut gpui_kit::App| {
             draw(window, cx);
-            crate::ax::snapshot("shell", window, false)
+            crate::ax::snapshot("shell", window.a11y_tree(), window, false)
         };
-        let mut reading = crate::ax::audit::observe(window, cx, "shell", false, |_| true, snap);
+        let mut reading = {
+            let modal = crate::ax::modal_active(window.a11y_tree());
+            crate::ax::audit::observe(window, cx, false, modal, |_| true, snap)
+        };
         reading.chords = crate::shell::chords();
         crate::ax::audit::audit(&reading, false)
     });

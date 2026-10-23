@@ -2,6 +2,7 @@
 use super::door_audit;
 use super::*;
 use Severity::Warn;
+use ducktape_a11y_platform::headless::Harness;
 use gpui_kit::accesskit::NodeId;
 
 fn node(id: &str, role: &str, name: &str) -> AxNode {
@@ -648,10 +649,19 @@ impl gpui_kit::Render for Stops {
 }
 
 fn stop(id: &'static str, top: f32) -> gpui_kit::AnyElement {
+    stop_as(id, id.to_owned(), top)
+}
+
+fn view_stop(id: &'static str, top: f32) -> gpui_kit::AnyElement {
+    stop_as(id, crate::render::in_view("x", id.to_owned()), top)
+}
+
+fn stop_as(id: &'static str, author: String, top: f32) -> gpui_kit::AnyElement {
     use gpui_kit::*;
     div()
         .id(id)
         .role(Role::Button)
+        .accessibility_id(author)
         .aria_label(id)
         .focusable()
         .tab_stop(true)
@@ -664,34 +674,29 @@ fn stop(id: &'static str, top: f32) -> gpui_kit::AnyElement {
 }
 
 fn stops_window(
-    cx: &mut gpui_kit::TestAppContext,
     stops: fn() -> Vec<gpui_kit::AnyElement>,
     tabs: usize,
-) -> gpui_kit::VisualTestContext {
+) -> Harness<gpui_kit::component::Root> {
     use gpui_kit::AppContext as _;
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(
+    let mut held = None;
+    let harness = Harness::open_with(
+        gpui_kit::init,
         gpui_kit::size(gpui_kit::px(200.), gpui_kit::px(200.)),
         |window, cx| {
-            let held = cx.new(|cx| Stops(cx.focus_handle(), stops));
-            gpui_kit::component::Root::new(held, window, cx)
+            let view = cx.new(|cx| Stops(cx.focus_handle(), stops));
+            held = Some(view.clone());
+            gpui_kit::component::Root::new(view, window, cx)
         },
     );
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| {
-        let root = window
-            .root::<gpui_kit::component::Root>()
-            .flatten()
-            .unwrap();
-        let held = root.read(cx).view().clone().downcast::<Stops>().unwrap();
+    let held = held.expect("the stops");
+    harness.update(|window, cx| {
         held.read(cx).0.clone().focus(window, cx);
-        window.activate_a11y();
         crate::render::draw_frame(window, cx);
         for _ in 0..tabs {
             window.focus_next(cx);
         }
     });
-    native
+    harness
 }
 
 fn door_fails(report: &serde_json::Value, rule: &str) -> Vec<String> {
@@ -715,34 +720,25 @@ fn six() -> Vec<gpui_kit::AnyElement> {
     ]
 }
 
-#[gpui_kit::test]
-fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    let mut native = stops_window(cx, six, 0);
-    let snap = |window: &mut Window, cx: &mut App| {
-        window.activate_a11y();
-        crate::render::draw_frame(window, cx);
-        crate::render::draw_frame(window, cx);
-        crate::ax::snapshot("w", window, true)
-    };
-    let report = native.update(|window, cx| {
-        let reading = observe(window, cx, "w", true, |_| true, snap);
-        audit(&reading, false)
-    });
+fn walked(harness: &Harness<gpui_kit::component::Root>) -> Report {
+    let a11y = harness.a11y.clone();
+    harness.update(|window, cx| {
+        let snap = |window: &mut Window, cx: &mut App| {
+            crate::ax::actions::current("w", window, cx, &a11y, true, &mut Default::default())
+        };
+        audit(&observe(window, cx, true, false, |_| true, snap), false)
+    })
+}
+
+#[test]
+fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows() {
+    let report = walked(&stops_window(six, 0));
     assert!(fails(&report, "AX-021").is_empty(), "{report:?}");
     assert_eq!(report.presses, 7);
 }
 
-fn presses(native: &mut gpui_kit::VisualTestContext) -> usize {
-    let snap = |window: &mut Window, cx: &mut App| {
-        window.activate_a11y();
-        crate::render::draw_frame(window, cx);
-        crate::render::draw_frame(window, cx);
-        crate::ax::snapshot("w", window, true)
-    };
-    native
-        .update(|window, cx| audit(&observe(window, cx, "w", true, |_| true, snap), false).presses)
+fn presses(harness: &Harness<gpui_kit::component::Root>) -> usize {
+    walked(harness).presses
 }
 
 fn offer(id: &'static str, top: f32) -> gpui_kit::AnyElement {
@@ -750,6 +746,7 @@ fn offer(id: &'static str, top: f32) -> gpui_kit::AnyElement {
     div()
         .id(id)
         .role(Role::Button)
+        .accessibility_id(id)
         .aria_label(id)
         .focusable()
         .absolute()
@@ -759,17 +756,17 @@ fn offer(id: &'static str, top: f32) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-#[gpui_kit::test]
-fn the_walk_ends_on_a_first_stop_that_keeps_the_keys(cx: &mut gpui_kit::TestAppContext) {
-    let mut native = stops_window(cx, || vec![stop("only", 0.), offer("row", 50.)], 1);
-    assert_eq!(presses(&mut native), 2);
+#[test]
+fn the_walk_ends_on_a_first_stop_that_keeps_the_keys() {
+    let native = stops_window(|| vec![stop("only", 0.), offer("row", 50.)], 1);
+    assert_eq!(presses(&native), 2);
 }
 
-#[gpui_kit::test]
-fn the_walk_ends_on_a_first_press_that_puts_the_focus_nowhere(cx: &mut gpui_kit::TestAppContext) {
-    let mut native = stops_window(cx, || vec![offer("row", 0.)], 0);
+#[test]
+fn the_walk_ends_on_a_first_press_that_puts_the_focus_nowhere() {
+    let native = stops_window(|| vec![offer("row", 0.)], 0);
     native.update(|window, cx| window.blur(cx));
-    assert_eq!(presses(&mut native), 1);
+    assert_eq!(presses(&native), 1);
 }
 
 fn view_x(inside: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
@@ -789,18 +786,16 @@ fn shell_then_view() -> Vec<gpui_kit::AnyElement> {
     vec![
         stop("shell-1", 0.),
         stop("shell-2", 50.),
-        view_x(vec![stop("in-1", 0.), stop("in-2", 50.)]),
+        view_x(vec![view_stop("in-1", 0.), view_stop("in-2", 50.)]),
     ]
 }
 
-#[gpui_kit::test]
-async fn a_view_audit_does_not_judge_the_steps_tab_spends_outside_the_view(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    let native = stops_window(cx, shell_then_view, 0);
-    let window = gpui_kit::VisualContext::window_handle(&native);
-    let whole = door_audit(window, None, &|_, _| None, cx).await;
-    let view = door_audit(window, Some("x"), &|_, _| None, cx).await;
+#[test]
+fn a_view_audit_does_not_judge_the_steps_tab_spends_outside_the_view() {
+    let native = stops_window(shell_then_view, 0);
+    let window: gpui_kit::AnyWindowHandle = native.root.into();
+    let whole = door_audit(&native, window, None, &|_, _| None);
+    let view = door_audit(&native, window, Some("x"), &|_, _| None);
     for (report, what) in [(&whole, "whole"), (&view, "view=x")] {
         for rule in ["AX-020", "AX-022"] {
             assert!(door_fails(report, rule).is_empty(), "{what}: {report}");
@@ -820,20 +815,21 @@ fn shell_then_dialog() -> Vec<gpui_kit::AnyElement> {
             div()
                 .id("dlg")
                 .role(Role::Dialog)
+                .accessibility_id(crate::render::in_view("x", "dlg".to_owned()))
                 .aria_label("Dlg")
                 .size_full()
-                .child(stop("in-1", 0.))
+                .child(view_stop("in-1", 0.))
                 .into_any_element(),
         ]),
     ]
 }
 
-#[gpui_kit::test]
-async fn a_view_audit_counts_focus_outside_the_view_as_focus(cx: &mut gpui_kit::TestAppContext) {
-    let native = stops_window(cx, shell_then_dialog, 2);
-    let window = gpui_kit::VisualContext::window_handle(&native);
-    let whole = door_audit(window, None, &|_, _| None, cx).await;
-    let view = door_audit(window, Some("x"), &|_, _| None, cx).await;
+#[test]
+fn a_view_audit_counts_focus_outside_the_view_as_focus() {
+    let native = stops_window(shell_then_dialog, 2);
+    let window: gpui_kit::AnyWindowHandle = native.root.into();
+    let whole = door_audit(&native, window, None, &|_, _| None);
+    let view = door_audit(&native, window, Some("x"), &|_, _| None);
     for (report, what) in [(&whole, "whole"), (&view, "view=x")] {
         assert!(door_fails(report, "AX-025").is_empty(), "{what}: {report}");
         assert_eq!(door_fails(report, "AX-104"), ["w:x/dlg"], "{what}");
@@ -890,20 +886,18 @@ fn members(active: usize) -> view_wire::Node {
     list
 }
 
-async fn arrow_probe(
-    cx: &mut gpui_kit::TestAppContext,
-    after: Option<std::time::Duration>,
-) -> (serde_json::Value, Vec<String>) {
+fn arrow_probe(after: Option<std::time::Duration>) -> (serde_json::Value, Vec<String>) {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    let window = cx.open_window(
+    let harness = Harness::open_with(
+        gpui_kit::init,
         gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
         |_, _| crate::render::ViewTree::new(members(1)),
     );
-    let tree = window.root(cx).unwrap();
+    let tree = harness.root();
     let active = Rc::new(Cell::new(1usize));
     let heard = Rc::new(RefCell::new(Vec::<String>::new()));
-    let _view = cx.update(|cx| {
+    let _view = harness.app.update(|cx| {
         let (active, heard) = (active.clone(), heard.clone());
         cx.subscribe(&tree, move |tree, event: &view_wire::Event, cx| {
             let view_wire::Event::KeyDown {
@@ -933,24 +927,16 @@ async fn arrow_probe(
             .detach();
         })
     });
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| {
-        window.activate_a11y();
-        crate::render::draw_frame(window, cx);
-        window.focus_next(cx);
-    });
-    let report = door_audit(window.into(), None, &|_, _| None, cx).await;
+    harness.update(|window, cx| window.focus_next(cx));
+    let report = door_audit(&harness, harness.root.into(), None, &|_, _| None);
     let heard = heard.borrow().clone();
     (report, heard)
 }
 
-#[gpui_kit::test]
-async fn the_arrow_probe_sees_a_views_list_move_its_active_row_at_once_or_late(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    cx.update(gpui_kit::init);
+#[test]
+fn the_arrow_probe_sees_a_views_list_move_its_active_row_at_once_or_late() {
     for after in [None, Some(std::time::Duration::from_millis(120))] {
-        let (report, heard) = arrow_probe(cx, after).await;
+        let (report, heard) = arrow_probe(after);
         assert_eq!(
             report["applicable"]["AX-107"], 1,
             "{after:?}: the probe ran: {report}"
@@ -1090,8 +1076,7 @@ fn messages(active: &[usize]) -> view_wire::Node {
     )
 }
 
-async fn composites_audit(
-    cx: &mut gpui_kit::TestAppContext,
+fn composites_audit(
     screen: fn(&[usize]) -> view_wire::Node,
     active: Vec<usize>,
     steps: Vec<([&'static str; 2], usize)>,
@@ -1100,22 +1085,21 @@ async fn composites_audit(
     use gpui_kit::AppContext as _;
     use std::cell::RefCell;
     use std::rc::Rc;
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(
+    let mut held = None;
+    let first = active.clone();
+    let harness = Harness::open_with(
+        gpui_kit::init,
         gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
         |window, cx| {
             let tree =
-                cx.new(|_| crate::render::ViewTree::new(screen(&active)).with_keys_grant(true));
+                cx.new(|_| crate::render::ViewTree::new(screen(&first)).with_keys_grant(true));
+            held = Some(tree.clone());
             gpui_kit::component::Root::new(tree, window, cx)
         },
     );
-    let tree = window
-        .read_with(cx, |root, _| root.view().clone())
-        .unwrap()
-        .downcast::<crate::render::ViewTree>()
-        .unwrap();
+    let tree = held.expect("the view's tree");
     let heard = Rc::new(RefCell::new(vec![Vec::<String>::new(); steps.len()]));
-    let _view = cx.update(|cx| {
+    let _view = harness.app.update(|cx| {
         let (active, heard) = (RefCell::new(active), heard.clone());
         cx.subscribe(&tree, move |tree, event: &view_wire::Event, cx| {
             let view_wire::Event::KeyDown { handler, event, .. } = event else {
@@ -1138,44 +1122,39 @@ async fn composites_audit(
             tree.update(cx, |tree, cx| tree.replace(screen(&active), &[], cx));
         })
     });
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| {
-        window.activate_a11y();
-        crate::render::draw_frame(window, cx);
+    harness.update(|window, cx| {
         for _ in 0..tabs {
             window.focus_next(cx);
             crate::render::draw_frame(window, cx);
         }
     });
-    let report = door_audit(window.into(), None, &|_, _| None, cx).await;
+    let report = door_audit(&harness, harness.root.into(), None, &|_, _| None);
     let heard = heard.borrow().clone();
     (report, heard)
 }
 
-#[gpui_kit::test]
-async fn the_walk_probes_each_composite_tab_lands_in_by_its_own_arrows(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+#[test]
+fn the_walk_probes_each_composite_tab_lands_in_by_its_own_arrows() {
     let steps = vec![(["right", "left"], 3), (["down", "up"], 4)];
-    let (report, heard) = composites_audit(cx, pages_over_rows, vec![0, 0], steps, 1).await;
+    let (report, heard) = composites_audit(pages_over_rows, vec![0, 0], steps, 1);
     assert_eq!(report["applicable"]["AX-107"], 2, "both probed: {report}");
     assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
     assert_eq!(heard, [["right", "left"], ["down", "up"]]);
 }
 
-#[gpui_kit::test]
-async fn the_probe_comes_back_from_a_row_at_the_end(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn the_probe_comes_back_from_a_row_at_the_end() {
     let steps = vec![(["right", "left"], 3), (["down", "up"], 4)];
-    let (report, heard) = composites_audit(cx, pages_over_rows, vec![0, 3], steps, 1).await;
+    let (report, heard) = composites_audit(pages_over_rows, vec![0, 3], steps, 1);
     assert_eq!(report["applicable"]["AX-107"], 2, "both probed: {report}");
     assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
     assert_eq!(heard[1], ["down", "up", "down"]);
 }
 
-#[gpui_kit::test]
-async fn the_probe_skips_a_link_box_inside_a_grid(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn the_probe_skips_a_link_box_inside_a_grid() {
     let steps = vec![(["down", "up"], 3)];
-    let (report, heard) = composites_audit(cx, messages, vec![0], steps, 2).await;
+    let (report, heard) = composites_audit(messages, vec![0], steps, 2);
     assert_eq!(
         report["applicable"]["AX-107"], 1,
         "the grid probed once: {report}"
@@ -1214,9 +1193,9 @@ fn pick_dialog(_: &[usize]) -> view_wire::Node {
     }
 }
 
-#[gpui_kit::test]
-async fn the_tab_walk_stays_in_a_view_dialog(cx: &mut gpui_kit::TestAppContext) {
-    let (report, _) = composites_audit(cx, pick_dialog, Vec::new(), Vec::new(), 0).await;
+#[test]
+fn the_tab_walk_stays_in_a_view_dialog() {
+    let (report, _) = composites_audit(pick_dialog, Vec::new(), Vec::new(), 0);
     assert!(
         report["applicable"]["AX-023"].as_u64() > Some(2),
         "the walk went round the dialog: {report}"
@@ -1273,37 +1252,35 @@ fn eleven_emoji(active: &[usize]) -> view_wire::Node {
     grid(&[8, 3], false, active[0])
 }
 
-#[gpui_kit::test]
-async fn a_grid_of_one_cell_is_not_probed(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn a_grid_of_one_cell_is_not_probed() {
     let steps = vec![(["down", "up"], 1)];
-    let (report, heard) = composites_audit(cx, one_message, vec![0], steps, 1).await;
+    let (report, heard) = composites_audit(one_message, vec![0], steps, 1);
     assert!(report["applicable"].get("AX-107").is_none(), "{report}");
     assert_eq!(heard, [["escape"]]);
 }
 
-#[gpui_kit::test]
-async fn the_probe_moves_a_grid_of_one_row_along_it(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn the_probe_moves_a_grid_of_one_row_along_it() {
     let steps = vec![(["right", "left"], 8)];
-    let (report, heard) = composites_audit(cx, one_row, vec![0], steps, 1).await;
+    let (report, heard) = composites_audit(one_row, vec![0], steps, 1);
     assert_eq!(report["applicable"]["AX-107"], 1, "{report}");
     assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
     assert_eq!(heard, [["right", "left", "escape"]]);
 }
 
-#[gpui_kit::test]
-async fn a_grid_whose_rows_do_not_move_fails(cx: &mut gpui_kit::TestAppContext) {
+#[test]
+fn a_grid_whose_rows_do_not_move_fails() {
     let steps = vec![(["right", "left"], 3)];
-    let (report, heard) = composites_audit(cx, three_by_three, vec![0], steps, 1).await;
+    let (report, heard) = composites_audit(three_by_three, vec![0], steps, 1);
     assert_eq!(door_fails(&report, "AX-107").len(), 1, "{report}");
     assert_eq!(heard, [["down", "up", "down", "escape"]]);
 }
 
-#[gpui_kit::test]
-async fn the_probe_moves_along_a_row_with_nothing_above_or_below(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+#[test]
+fn the_probe_moves_along_a_row_with_nothing_above_or_below() {
     let steps = vec![(["right", "left"], 8)];
-    let (report, heard) = composites_audit(cx, eleven_emoji, vec![5], steps, 1).await;
+    let (report, heard) = composites_audit(eleven_emoji, vec![5], steps, 1);
     assert_eq!(report["applicable"]["AX-107"], 1, "{report}");
     assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
     assert_eq!(heard, [["down", "up", "right", "left", "escape"]]);
@@ -1312,64 +1289,59 @@ async fn the_probe_moves_along_a_row_with_nothing_above_or_below(
 mod refused_scope {
     use super::*;
     use crate::ax::Filter;
-    use gpui_kit::{ElementId, GlobalElementId};
+    use gpui_kit::VisualContext as _;
 
-    fn path(window: &mut gpui_kit::Window, segments: &[&str]) -> GlobalElementId {
-        let name = |segment: &str| match segment.starts_with("view/") {
-            true => crate::render::host_id(segment.to_owned()),
-            false => ElementId::Name(segment.to_owned().into()),
-        };
-        match segments {
-            [] => GlobalElementId::default(),
-            [last] => window.with_global_id(name(last), |id, _| id.clone()),
-            [first, rest @ ..] => window.with_id(name(first), |window| path(window, rest)),
-        }
+    fn duplicate() -> String {
+        let id = view_wire::ElementIdWire::Name("save".into());
+        let scope = Vec::new();
+        view_wire::identity::DuplicateIdentity { id, scope }.to_string()
     }
 
-    fn kept(view: Option<&str>, paths: &[&[&str]]) -> Vec<String> {
+    fn kept(view: Option<&str>, stopped: &[(bool, &'static str, String)]) -> Vec<String> {
         let mut cx = gpui_kit::TestAppContext::single();
-        let window = cx.add_empty_window();
+        let here = cx.add_empty_window().window_handle();
+        let there = cx.add_empty_window().window_handle();
         let filter = Filter {
             window: None,
             view: view.map(str::to_owned),
         };
-        window.update(|window, _| {
-            let list: Vec<_> = paths.iter().map(|p| (NodeId(1), path(window, p))).collect();
-            let mut into = Vec::new();
-            note_refused(
-                &mut into,
-                &list,
-                "w",
-                |scope| filter.keeps(scope),
-                |id| format!("{id:?}"),
-            );
-            into.into_iter().map(|refused| refused.element).collect()
-        })
+        let stopped = stopped
+            .iter()
+            .map(|(ours, program, words)| {
+                let window = if *ours { here } else { there };
+                (window, *program, words.clone())
+            })
+            .collect();
+        refused_in("w", here, stopped, |scope| filter.keeps(scope))
+            .into_iter()
+            .map(|refused| refused.view)
+            .collect()
     }
-
-    const A: &[&str] = &["view/a", "save"];
-    const B: &[&str] = &["view/b", "save"];
-    const SHELL: &[&str] = &["menu", "save"];
 
     #[test]
     fn a_refusal_in_view_a_is_reported_by_view_a_and_not_by_view_b() {
-        assert_eq!(kept(Some("a"), &[A, B]).len(), 1);
-        assert!(kept(Some("a"), &[A, B])[0].contains("view/a"));
-        assert!(kept(Some("b"), &[A]).is_empty());
+        let stopped = [(true, "a", duplicate()), (true, "b", duplicate())];
+        assert_eq!(kept(Some("a"), &stopped), ["w/a"]);
+        assert_eq!(kept(Some("b"), &stopped[..1]), Vec::<String>::new());
     }
 
     #[test]
-    fn a_refusal_in_the_shell_is_reported_by_the_whole_window_audit_alone() {
-        assert!(kept(Some("a"), &[SHELL]).is_empty());
-        assert_eq!(kept(None, &[A, B, SHELL]).len(), 3);
+    fn the_whole_window_audit_reports_each_view_of_its_own_window() {
+        let stopped = [
+            (true, "a", duplicate()),
+            (false, "b", duplicate()),
+            (true, "owner/c", duplicate()),
+        ];
+        assert_eq!(kept(None, &stopped), ["w/a", "w/owner_2fc"]);
     }
 
     #[test]
-    fn a_refused_element_is_printed_as_its_id_path() {
-        assert_eq!(
-            kept(None, &[SHELL]),
-            [r#"GlobalElementId([Name("menu"), Name("save")])"#]
-        );
+    fn a_view_stopped_for_another_reason_refused_no_id() {
+        let stopped = [
+            (true, "a", "the view trapped".to_owned()),
+            (true, "b", format!("{} (not taken up again)", duplicate())),
+        ];
+        assert_eq!(kept(None, &stopped), ["w/b"]);
     }
 }
 
@@ -1916,58 +1888,40 @@ mod phase_two {
         assert_eq!(report.applicable["AX-119"], 3);
     }
 
-    fn refused(kept: &str, element: &str, nth: usize) -> Refused {
+    fn refused(view: &str, reason: &str) -> Refused {
         Refused {
-            kept: kept.to_owned(),
-            element: element.to_owned(),
-            nth,
+            view: view.to_owned(),
+            reason: reason.to_owned(),
         }
     }
 
     #[test]
-    fn ax_124_an_element_the_fork_refused_is_reported_with_the_node_that_kept_the_id() {
+    fn ax_124_a_view_whose_frame_was_refused_for_one_id_twice_is_reported_once() {
         let mut clean = reading(vec![vec![button("ok", "Save")]]);
         let report = audit(&clean, false);
         assert_eq!(fails(&report, "AX-124"), Vec::<String>::new());
         assert!(!report.applicable.contains_key("AX-124"));
 
+        let words = "duplicate typed element identity among siblings: save twice under the root";
         clean.refused = vec![
-            refused("w:ok", "GlobalElementId([Name(\"save\")])", 0),
-            refused("w:ok", "GlobalElementId([Name(\"save\")])", 1),
+            refused("w/chat", words),
+            refused("w/chat", words),
+            refused("w/forge", words),
         ];
         let report = audit(&clean, false);
-        let ids = fails(&report, "AX-124");
-        assert_eq!(
-            ids,
-            [
-                "w:ok <- GlobalElementId([Name(\"save\")])",
-                "w:ok <- GlobalElementId([Name(\"save\")]) #2"
-            ]
-        );
+        assert_eq!(fails(&report, "AX-124"), ["w/chat", "w/forge"]);
         let violation = &report.violations[0];
         assert_eq!(violation.severity, Error);
-        assert!(violation.message.contains("w:ok"), "{}", violation.message);
         assert!(
-            violation.message.contains("GlobalElementId"),
+            violation.message.contains("w/chat"),
+            "{}",
+            violation.message
+        );
+        assert!(
+            violation.message.contains("save twice"),
             "{}",
             violation.message
         );
         assert_eq!(report.errors().count(), 2);
-    }
-
-    #[test]
-    fn ax_124_a_refusal_every_snapshot_sees_is_one_violation_named_by_the_first() {
-        let mut walk = reading(vec![vec![button("ok", "Save")]]);
-        let element = "GlobalElementId([Name(\"save\")])";
-        walk.refused = vec![
-            refused("w:ok", element, 0),
-            refused("w:form.ok", element, 0),
-            refused(element, element, 0),
-        ];
-        let report = audit(&walk, false);
-        assert_eq!(
-            fails(&report, "AX-124"),
-            ["w:ok <- GlobalElementId([Name(\"save\")])"]
-        );
     }
 }

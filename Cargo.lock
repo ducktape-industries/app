@@ -4510,7 +4510,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit"
 version = "0.7.3"
-source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=eef11e96c9fcf7e0389d31f125013370a1b02d92#eef11e96c9fcf7e0389d31f125013370a1b02d92"
+source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=01774a9f8ea7564b7703fdc4c980673069e1ad9b#01774a9f8ea7564b7703fdc4c980673069e1ad9b"
 dependencies = [
  "gpui-base",
  "gpui-component",
@@ -4541,7 +4541,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.9"
-source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=eef11e96c9fcf7e0389d31f125013370a1b02d92#eef11e96c9fcf7e0389d31f125013370a1b02d92"
+source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=01774a9f8ea7564b7703fdc4c980673069e1ad9b#01774a9f8ea7564b7703fdc4c980673069e1ad9b"
 dependencies = [
  "accesskit 0.25.1",
  "anyhow",
@@ -4695,7 +4695,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.9"
-source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=eef11e96c9fcf7e0389d31f125013370a1b02d92#eef11e96c9fcf7e0389d31f125013370a1b02d92"
+source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=01774a9f8ea7564b7703fdc4c980673069e1ad9b#01774a9f8ea7564b7703fdc4c980673069e1ad9b"
 dependencies = [
  "accesskit 0.25.1",
  "accesskit_unix 0.24.0",
@@ -4790,7 +4790,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-mobile"
 version = "0.1.0"
-source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=eef11e96c9fcf7e0389d31f125013370a1b02d92#eef11e96c9fcf7e0389d31f125013370a1b02d92"
+source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=01774a9f8ea7564b7703fdc4c980673069e1ad9b#01774a9f8ea7564b7703fdc4c980673069e1ad9b"
 dependencies = [
  "accesskit_android",
  "android-activity",
@@ -4899,7 +4899,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.9"
-source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=eef11e96c9fcf7e0389d31f125013370a1b02d92#eef11e96c9fcf7e0389d31f125013370a1b02d92"
+source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=01774a9f8ea7564b7703fdc4c980673069e1ad9b#01774a9f8ea7564b7703fdc4c980673069e1ad9b"
 dependencies = [
  "async-task",
  "backtrace",
@@ -4979,7 +4979,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-wgpu"
 version = "0.3.9"
-source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=eef11e96c9fcf7e0389d31f125013370a1b02d92#eef11e96c9fcf7e0389d31f125013370a1b02d92"
+source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=01774a9f8ea7564b7703fdc4c980673069e1ad9b#01774a9f8ea7564b7703fdc4c980673069e1ad9b"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -13220,7 +13220,7 @@ dependencies = [
 [[package]]
 name = "zed-xim"
 version = "0.4.0-zed"
-source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=eef11e96c9fcf7e0389d31f125013370a1b02d92#eef11e96c9fcf7e0389d31f125013370a1b02d92"
+source = "git+duck://duckpond-725bcad1/forge/gpui-pre?rev=01774a9f8ea7564b7703fdc4c980673069e1ad9b#01774a9f8ea7564b7703fdc4c980673069e1ad9b"
 dependencies = [
  "ahash",
  "hashbrown 0.14.5",

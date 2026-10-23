@@ -5,16 +5,17 @@
 
 use super::*;
 
-pub(super) fn reveal(name: &str, window: &Window, id: &str) -> Reply {
-    let shown = snapshot(name, window, false);
+pub(super) fn reveal(name: &str, window: &Window, a11y: &WindowA11y, id: &str) -> Reply {
+    let tree = a11y.tree();
+    let shown = snapshot(name, tree.as_ref(), window, false);
     let Some(found) = shown.iter().find(|node| node.id == id) else {
         return Reply::new(
             404,
             json!({ "error": "no such node", "nearest": nearest(id, &shown) }),
         );
     };
-    let node = window
-        .a11y_tree()
+    let node = tree
+        .as_ref()
         .and_then(|update| update.nodes.iter().find(|(node, _)| *node == found.node))
         .map(|(_, node)| node);
     match node {
@@ -53,14 +54,21 @@ pub(super) fn press_keys(
     Ok(())
 }
 
-pub(super) fn drag_by_id(name: &str, window: &mut Window, cx: &mut App, drag: &Drag) -> Reply {
+pub(super) fn drag_by_id(
+    name: &str,
+    window: &mut Window,
+    cx: &mut App,
+    a11y: Option<&WindowA11y>,
+    drag: &Drag,
+) -> Reply {
     let steps = match drag.checked() {
         Ok(steps) => steps,
         Err(reply) => return reply,
     };
     let origin = match &drag.id {
         Some(id) => {
-            let bounds = snapshot(name, window, true)
+            let tree = a11y.and_then(WindowA11y::tree);
+            let bounds = snapshot(name, tree.as_ref(), window, true)
                 .into_iter()
                 .find(|node| node.id == *id)
                 .and_then(|node| node.bounds);
@@ -168,7 +176,12 @@ pub(super) async fn read(
         if filter.window.as_deref().is_some_and(|want| want != name) {
             continue;
         }
-        let nodes = handle.update(cx, |_, window, cx| current(name, window, cx, bounds, seen));
+        let Some(a11y) = (door.reach)(*handle) else {
+            continue;
+        };
+        let nodes = handle.update(cx, |_, window, cx| {
+            current(name, window, cx, &a11y, bounds, seen)
+        });
         out.extend(nodes.unwrap_or_default());
     }
     out.retain(|node| filter.keeps(&node.scope));
@@ -179,39 +192,23 @@ pub(super) fn current(
     name: &str,
     window: &mut Window,
     cx: &mut App,
+    a11y: &WindowA11y,
     bounds: bool,
     seen: &mut Seen,
 ) -> Vec<AxNode> {
     if !window.is_a11y_active() {
-        window.activate_a11y();
+        a11y.activate();
     }
     crate::perf::count(crate::perf::Key::Shell, "door_draws", 1);
     window.draw(cx).clear(cx);
-    let Some(tree) = window.a11y_tree() else {
+    let Some(tree) = a11y.tree() else {
         return Vec::new();
     };
-    seen.saw(name, tree);
-    snapshot(name, window, bounds)
+    seen.saw(name, &tree);
+    snapshot(name, Some(&tree), window, bounds)
 }
 
-pub(super) fn perform_by_id(
-    name: &str,
-    window: &mut Window,
-    cx: &mut App,
-    id: &str,
-    action: &str,
-    value: &str,
-) -> bool {
-    let node = snapshot(name, window, false)
-        .into_iter()
-        .find_map(|node| (node.id == id).then_some(node.node));
-    if let Some(node) = node {
-        perform(window, cx, node, action, value);
-    }
-    node.is_some()
-}
-
-fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value: &str) {
+pub(super) fn perform(a11y: &WindowA11y, node: NodeId, action: &str, value: &str) -> bool {
     let request = |action, data| ActionRequest {
         action,
         target_tree: TreeId::ROOT,
@@ -220,25 +217,18 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
     };
     match action {
         "set_value" => {
-            window.dispatch_a11y_action(request(Action::Focus, None), cx);
-            window.dispatch_a11y_action(
-                request(Action::SetValue, Some(ActionData::Value(value.into()))),
-                cx,
-            );
+            let value = Some(ActionData::Value(value.into()));
+            a11y.act(request(Action::Focus, None)) && a11y.act(request(Action::SetValue, value))
         }
-        "type" => {
-            window.dispatch_a11y_action(request(Action::Focus, None), cx);
-            type_text(window, cx, value);
-        }
-        word => {
-            if let Some((action, _)) = super::tree::ACTIONS.iter().find(|(_, w)| *w == word) {
-                window.dispatch_a11y_action(request(*action, None), cx);
-            }
-        }
+        "type" => a11y.act(request(Action::Focus, None)),
+        word => super::tree::ACTIONS
+            .iter()
+            .find(|(_, w)| *w == word)
+            .is_some_and(|(action, _)| a11y.act(request(*action, None))),
     }
 }
 
-fn type_text(window: &mut Window, cx: &mut App, text: &str) {
+pub(super) fn type_text(window: &mut Window, cx: &mut App, text: &str) {
     for ch in text.chars() {
         let (key, text) = match ch {
             '\n' => ("enter".to_owned(), None),

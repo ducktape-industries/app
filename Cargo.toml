@@ -76,7 +76,7 @@ wasmtime = "=46.0.3"
 # longbridge gpui-mobile's Android half with its one line changed, vendored in
 # the gpui-pre fork at the [patch.crates-io] rev below (not on crates.io) ---
 ducktape-gpui-ios = { path = "vendor/gpui-ios" }
-gpui-pre-mobile = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92", default-features = false }
+gpui-pre-mobile = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "01774a9f8ea7564b7703fdc4c980673069e1ad9b", default-features = false }
 libc = "0.2"
 rpassword = "7"
 
@@ -209,17 +209,17 @@ p256 = "0.13"
 programs = { git = "duck://duckpond-725bcad1/forge/programs", rev = "9d0f734233c7988f190f3436ffdc7c6927405aa3", package = "programs" }
 
 [patch.crates-io]
-gpui-pre-wgpu = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
-gpui-pre-scheduler = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
-gpui-pre = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
+gpui-pre-wgpu = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "01774a9f8ea7564b7703fdc4c980673069e1ad9b" }
+gpui-pre-scheduler = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "01774a9f8ea7564b7703fdc4c980673069e1ad9b" }
+gpui-pre = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "01774a9f8ea7564b7703fdc4c980673069e1ad9b" }
 # gpui-kit 0.7.3 vendored in the fork with a `multithreaded` feature (default on), so a
 # wasm build can leave gpui-pre-web single-threaded on stable
-gpui-kit = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
-gpui-pre-linux = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
+gpui-kit = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "01774a9f8ea7564b7703fdc4c980673069e1ad9b" }
+gpui-pre-linux = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "01774a9f8ea7564b7703fdc4c980673069e1ad9b" }
 gpui-pre-macos = { path = "vendor/gpui-macos" }
 # the X11 input-method client gpui-pre-linux uses, vendored in the fork: it decodes
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
-zed-xim = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
+zed-xim = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "01774a9f8ea7564b7703fdc4c980673069e1ad9b" }
 
 [patch."https://github.com/ducktape-industries/ducktape"]
 abi = { git = "duck://duckpond-725bcad1/forge/core", rev = "58b5d91e97d2f0b0e22a5374b6e2a70037b98f14" }
@@ -227,7 +227,7 @@ blob = { git = "duck://duckpond-725bcad1/forge/core", rev = "58b5d91e97d2f0b0e22
 keyscheme = { git = "duck://duckpond-725bcad1/forge/core", rev = "58b5d91e97d2f0b0e22a5374b6e2a70037b98f14" }
 
 [patch."https://github.com/ducktape-industries/gpui-pre"]
-gpui-pre = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "eef11e96c9fcf7e0389d31f125013370a1b02d92" }
+gpui-pre = { git = "duck://duckpond-725bcad1/forge/gpui-pre", rev = "01774a9f8ea7564b7703fdc4c980673069e1ad9b" }
 
 # Symbols are a fifth of the binary and nothing at run time reads them.
 [profile.release]

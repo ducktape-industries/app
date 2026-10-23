@@ -289,7 +289,13 @@ fn a_folded_tab_with_no_icon_to_draw_is_its_initial(cx: &mut TestAppContext) {
         let nodes = native.update(|window, cx| {
             window.activate_a11y();
             ducktape_host::render::draw_frame(window, cx);
-            serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap()
+            serde_json::to_value(crate::ax::snapshot(
+                "console",
+                window.a11y_tree(),
+                window,
+                true,
+            ))
+            .unwrap()
         });
         let nodes = nodes.as_array().unwrap();
         [DECLARED, PLAIN].map(|program| {

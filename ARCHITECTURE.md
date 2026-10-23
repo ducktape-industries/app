@@ -738,8 +738,10 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   is dirty once the dispatcher parks (the window's `frame_waker` and `prepare_frame`),
   keystrokes go through `Window::dispatch_keystroke` and other input through the window's
   input callback, and an AT action runs once the dispatcher parks. The host's and the web crate's a11y tests that read the tree
-  directly open, activate, read and act through it; the door, and the tests that read
-  through the door, still read gpui-pre's own `Window::a11y_tree`.
+  directly open, activate, read and act through it, and so does the door (`ax::Door::reach`:
+  ax-door builds wrap their platform through `ax::wrap`, Android through gpui-pre-mobile's
+  `wrap_platform`), whose tests run on its `headless::Harness`; shell tests that take a
+  snapshot themselves still read gpui-pre's own `Window::a11y_tree` until J-255.
 - **The door** (`crates/host/src/ax.rs`, `crates/host/src/ax/{http,tree,actions}.rs`). Built only
   with the `ax-door` cargo feature (the kit and qa builds); a default build
   has no door and no `ax` client. Off unless
@@ -754,7 +756,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   only with `DUCKTAPE_AX_DOOR_PRIVATE=1`. Every read settles the seats
   (`ax::Door::settle`), draws the window and
   reads the same AccessKit tree GPUI hands the OS (`ax::tree::snapshot`
-  over `Window::a11y_tree`); every act goes through GPUI's own a11y action,
+  over the window's `WindowA11y::tree`); every act goes through GPUI's own a11y action queue (`WindowA11y::act`),
   key or mouse dispatch (`ax::actions`). Ids are `<window>:<element id>`;
   windows are `console` (the console) and `console<key>` (any other:
   `console2`, … as they open), each name kept for the window's life

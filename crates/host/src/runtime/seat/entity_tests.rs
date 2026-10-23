@@ -1620,6 +1620,8 @@ fn the_doors_settle_parks_a_read_until_the_frame_lands(cx: &mut TestAppContext) 
                     keep: &|_, _| None,
                     chords: &Vec::new,
                     views: &|_| Vec::new(),
+                    reach: &|_| None,
+                    stopped: &|_| Vec::new(),
                 };
                 crate::ax::settled(&door, until, &mut cx).await;
                 done.set(done.get() + 1);

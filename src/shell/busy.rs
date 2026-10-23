@@ -181,7 +181,13 @@ mod tests {
                 ducktape_host::render::draw_frame(window, cx);
                 window.simulate_next_frame(cx);
                 ducktape_host::render::draw_frame(window, cx);
-                serde_json::to_value(crate::ax::snapshot("shell", window, false)).unwrap()
+                serde_json::to_value(crate::ax::snapshot(
+                    "shell",
+                    window.a11y_tree(),
+                    window,
+                    false,
+                ))
+                .unwrap()
             })
             .unwrap();
         let quit = nodes

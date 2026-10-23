@@ -88,6 +88,8 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_create<'caller>(
         }
         ducktape_av::asks_through(ask);
         host::on_open_window(|_, cx| crate::shell::open_window(cx));
+        #[cfg(feature = "ax-door")]
+        host::wrap_platform(ducktape_host::ax::wrap);
         host::start_with_assets(crate::assets::PhoneAssets, move |cx| {
             crate::os::start(files, cache, cx);
         });

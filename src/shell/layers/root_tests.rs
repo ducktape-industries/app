@@ -230,7 +230,7 @@ fn placed(window: &gpui_kit::Window, names: &[&str]) -> Vec<(String, Option<Stri
 
 fn door_ids(native: &mut VisualTestContext) -> Vec<String> {
     native.update(|window, _| {
-        crate::ax::snapshot("console", window, false)
+        crate::ax::snapshot("console", window.a11y_tree(), window, false)
             .into_iter()
             .map(|node| node.id)
             .collect()
@@ -324,7 +324,7 @@ fn under_a11y_every_layer_draws_uncached_and_keeps_its_nodes(cx: &mut TestAppCon
     });
     frame(&mut native);
     let focused: Vec<_> = native.update(|window, _| {
-        crate::ax::snapshot("console", window, false)
+        crate::ax::snapshot("console", window.a11y_tree(), window, false)
             .into_iter()
             .filter(|node| node.state.contains(&"focused"))
             .map(|node| node.id)
@@ -412,7 +412,7 @@ fn under_a11y_a_focus_move_re_renders_every_layer(cx: &mut TestAppContext) {
     }
     let focused = |native: &mut VisualTestContext| {
         native.update(|window, _| {
-            crate::ax::snapshot("console", window, false)
+            crate::ax::snapshot("console", window.a11y_tree(), window, false)
                 .into_iter()
                 .find(|node| node.state.contains(&"focused"))
                 .map(|node| node.id)
@@ -928,7 +928,13 @@ fn a_dialog_follows_the_chrome_when_the_layout_switches(cx: &mut TestAppContext)
         .map(|it| it.0 / scale);
         let nodes = native.update(|window, cx| {
             draw(window, cx);
-            serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap()
+            serde_json::to_value(crate::ax::snapshot(
+                "console",
+                window.a11y_tree(),
+                window,
+                true,
+            ))
+            .unwrap()
         });
         let card = nodes
             .as_array()
@@ -1268,7 +1274,13 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     let neighbour = clicks(NEIGHBOUR, &mut native);
     let account = native.update(|window, cx| {
         draw(window, cx);
-        let nodes = serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap();
+        let nodes = serde_json::to_value(crate::ax::snapshot(
+            "shell",
+            window.a11y_tree(),
+            window,
+            true,
+        ))
+        .unwrap();
         let button = nodes
             .as_array()
             .unwrap()
@@ -1583,7 +1595,13 @@ fn settings_opens_over_the_launcher(cx: &mut TestAppContext) {
     );
     let nodes = native.update(|window, cx| {
         draw(window, cx);
-        serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap()
+        serde_json::to_value(crate::ax::snapshot(
+            "console",
+            window.a11y_tree(),
+            window,
+            true,
+        ))
+        .unwrap()
     });
     assert!(
         nodes

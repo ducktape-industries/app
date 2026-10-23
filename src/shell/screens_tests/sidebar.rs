@@ -25,7 +25,13 @@ pub(super) fn sidebar(programs: &[&str], windows: &[(&'static str, Option<&str>)
 
 fn drawn(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     draw(window, cx);
-    serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+    serde_json::to_value(crate::ax::snapshot(
+        "shell",
+        window.a11y_tree(),
+        window,
+        true,
+    ))
+    .unwrap()
 }
 
 fn instances(view: &Entity<WindowRoot>, native: &mut VisualTestContext) -> Vec<u64> {

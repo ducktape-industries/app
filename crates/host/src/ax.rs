@@ -1,60 +1,22 @@
-//! The test door (#114): a loopback HTTP door over the SAME AccessKit tree
-//! GPUI hands the OS, so a QA runner reads and drives the app the way a
-//! screen reader does. There is no second tree: every answer is read off
-//! `Window::a11y_tree`, every act goes through the adapter's own action path.
-//!
-//! Off unless the app is launched with `DUCKTAPE_AX_DOOR=<port|0>` (0 picks a
-//! free port). It binds 127.0.0.1 only — `http::bind` takes a port, never a host
-//! — and writes `{port, token}` to `http::door_file` mode 0600; a request without
-//! that token is refused. `ducktape-app ax …` ([`cli`]) is its client.
-//!
-//! Ids are `<window>:<path>`: a native node's own string ElementId
-//! (`console:network-switcher`), a view node's `<program>/<wire key>`
-//! (`console:chat/send`), widened with its ancestors' ids (`console:row.send`)
-//! only while another node in the window shares it, and `~2`, `~3` … when
-//! even the whole path is shared ([`tree::door_ids`]). A synthetic child with
-//! no element of its own ends in its role, and after the first of its role
-//! under one node in its place among them (`Link2`: a RichText's second
-//! range). Entity, focus-handle and the kit's
-//! type-path segments never count: they change per run or say nothing. Never
-//! an AccessKit NodeId, never a position. A password field's value and a node
-//! marked [`crate::a11y::AX_PRIVATE`] (the recovery-phrase words) are masked
-//! here, before anything leaves the process. Only a rig that also sets
-//! `DUCKTAPE_AX_DOOR_PRIVATE=1` may ask for one private node's text ([`reveal`]).
-//! A keyboard-only walk sends keys through the window's own key dispatch
-//! ([`press_keys`]) and reads the bindings it can reach ([`shortcuts`]); a
-//! pointer drag goes through its mouse dispatch ([`drag_by_id`]).
-//! `GET /audit?window&view&walk=1&launcher=1` runs the rules of
-//! `docs/ax.md` ([`audit`]) over one window — the named one, else the one
-//! holding focus, else the first — with the Tab walk when `walk`, a key per
-//! update as `POST /key` presses it; `launcher` is the caller's word that
-//! the shell screen is not the desk (AX-018), and the shell says which
-//! controls its Help lists with a chord (AX-114).
-//! Every read draws the window it reads, and every answer carries
-//! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
-//! `/inspect/*` ([`inspect`]) reads each view's own tree as the host holds
-//! it instead, and the shell's own controls as they were drawn
-//! ([`natives`]): a view's node is pressed by sending its own handler
-//! event, a native one by a pointer at it; a wheel at either scrolls
-//! what shows it, and a press or typing scrolls its node into view first
-//! ([`shown`]).
-//!
-//! Compiled with the `ax-door` feature (the kit and qa builds) and nowhere
-//! else: a release build has no door to open and no client for one. The
-//! tests compile it without the feature for the trees it reads, so its
-//! server half has no caller there.
+//! The loopback HTTP accessibility door reads trees and queues actions through WindowA11y.
+//! QA clients use it to inspect and drive the app.
 use futures::StreamExt as _;
 use gpui_kit::accesskit::{
     Action, ActionData, ActionRequest, NodeId, Role, Toggled, TreeId, TreeUpdate,
 };
-use gpui_kit::{AnyWindowHandle, App, AsyncApp, ElementId, Window};
+use gpui_kit::{AnyWindowHandle, App, AsyncApp, Window};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{BufReader, Read as _, Write as _};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
+
+pub use ducktape_a11y_platform::WindowA11y;
+#[cfg(any(test, feature = "test-support"))]
+pub use ducktape_a11y_platform::headless::Harness;
 
 mod actions;
 pub mod audit;
@@ -64,10 +26,10 @@ pub mod natives;
 pub mod shown;
 mod tree;
 
-use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
+use actions::{current, drag_by_id, perform, press_keys, read, reveal, shortcuts, type_text};
 #[cfg(feature = "ax-door")]
 pub use http::{cli, open, open_at};
-pub use tree::{AxNode, snapshot};
+pub use tree::{AxNode, modal_active, snapshot};
 use tree::{compact, delta, nearest, offers};
 
 #[derive(Debug, Default, PartialEq)]
@@ -312,6 +274,8 @@ pub type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
 /// What a walk puts back once it ends (`Door::keep`).
 pub type Restore = Box<dyn FnOnce(&mut App)>;
 
+pub type Stopped = (AnyWindowHandle, &'static str, String);
+
 /// What the door serves: the windows, by name, and the seats behind them.
 pub struct Door<'a> {
     /// The windows it serves, by name.
@@ -330,6 +294,26 @@ pub struct Door<'a> {
     /// Every seated view the inspector reads: its window, program and
     /// tree (`Seats::seated`).
     pub views: &'a dyn Fn(&App) -> Vec<inspect::Seated>,
+    pub reach: &'a dyn Fn(AnyWindowHandle) -> Option<Rc<WindowA11y>>,
+    pub stopped: &'a dyn Fn(&App) -> Vec<Stopped>,
+}
+
+#[cfg(feature = "ax-door")]
+thread_local! {
+    static PLATFORM: std::cell::RefCell<Option<Rc<ducktape_a11y_platform::A11yPlatform>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(feature = "ax-door")]
+pub fn wrap(platform: Rc<dyn gpui_kit::Platform>) -> Rc<dyn gpui_kit::Platform> {
+    let wrapped = ducktape_a11y_platform::A11yPlatform::new(platform);
+    PLATFORM.with(|kept| kept.replace(Some(wrapped.clone())));
+    wrapped
+}
+
+#[cfg(feature = "ax-door")]
+pub fn reach(window: AnyWindowHandle) -> Option<Rc<WindowA11y>> {
+    PLATFORM.with(|kept| kept.borrow().as_ref()?.window(window))
 }
 
 const POLL: Duration = Duration::from_millis(50);
@@ -401,11 +385,22 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
                 .update(|cx| (door.windows)(cx))
                 .into_iter()
                 .find_map(|(window, _, handle)| (window == name).then_some(handle));
+            let node = target.node;
+            let reached = handle.and_then(|handle| Some((handle, (door.reach)(handle)?)));
+            let Some((handle, a11y)) = reached else {
+                return Reply::new(404, json!({ "error": "no such window" }));
+            };
             let value = act.value.unwrap_or_default();
-            if let Some(handle) = handle {
-                let _ = handle.update(cx, |_, window, cx| {
-                    perform_by_id(&name, window, cx, &act.id, &act.action, &value)
-                });
+            let queued = perform(&a11y, node, &act.action, &value);
+            if !queued {
+                return Reply::new(
+                    409,
+                    json!({ "error": "the accessibility action was not queued" }),
+                );
+            }
+            if act.action == "type" {
+                settle(&before, (act.deadline_ms, until), door, seen, cx).await;
+                let _ = handle.update(cx, |_, window, cx| type_text(window, cx, &value));
             }
             let after = settle(&before, (act.deadline_ms, until), door, seen, cx).await;
             Reply::ok(json!(delta(&before, &after)))
@@ -459,8 +454,11 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
                 .into_iter()
                 .find_map(|(name, _, other)| (other == handle).then_some(name))
                 .unwrap_or_default();
+            let a11y = (door.reach)(handle);
             let sent = handle
-                .update(cx, |_, window, cx| drag_by_id(&name, window, cx, &drag))
+                .update(cx, |_, window, cx| {
+                    drag_by_id(&name, window, cx, a11y.as_deref(), &drag)
+                })
                 .unwrap_or_else(|_| Reply::new(404, json!({ "error": "no such window" })));
             if sent.status != 200 {
                 return sent;
@@ -492,15 +490,19 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
                 .find_map(|(name, _, other)| (other == handle).then_some(name))
                 .unwrap_or_default();
             let gone = || Reply::new(404, json!({ "error": "no such window" }));
+            let Some(a11y) = (door.reach)(handle) else {
+                return gone();
+            };
+            let modal = modal_active(a11y.tree().as_ref());
             let opened = handle.update(cx, |_, window, cx| {
                 let kept = walk.then(|| (door.keep)(window, cx)).flatten();
                 let observer = audit::Observer::open(
                     window,
                     cx,
-                    &name,
                     walk,
+                    modal,
                     |scope| filter.keeps(scope),
-                    |window, cx| current(&name, window, cx, true, seen),
+                    |window, cx| current(&name, window, cx, &a11y, true, seen),
                 );
                 (kept, observer)
             });
@@ -531,6 +533,10 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
                     .update(cx, |_, window, cx| {
                         let mut reading = observer.finish(window, cx);
                         reading.chords = (door.chords)();
+                        reading.refused =
+                            audit::refused_in(&name, handle, (door.stopped)(cx), |scope| {
+                                filter.keeps(scope)
+                            });
                         Reply::ok(json!(audit::audit(&reading, launcher)))
                     })
                     .unwrap_or_else(|_| gone())
@@ -583,8 +589,9 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
                 .into_iter()
                 .find_map(|(window, _, handle)| (window == name).then_some(handle))
                 .and_then(|handle| {
+                    let a11y = (door.reach)(handle)?;
                     handle
-                        .update(cx, |_, window, _| reveal(&name, window, &id))
+                        .update(cx, |_, window, _| reveal(&name, window, &a11y, &id))
                         .ok()
                 })
                 .unwrap_or_else(|| Reply::new(404, json!({ "error": "no such window" })))
@@ -691,6 +698,33 @@ async fn settle(
     after
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub fn ask<V: 'static>(
+    harness: &ducktape_a11y_platform::headless::Harness<V>,
+    window: AnyWindowHandle,
+    name: &str,
+    request: Request,
+    keep: &'static dyn Fn(&Window, &App) -> Option<Restore>,
+) -> Reply {
+    let platform = harness.platform.clone();
+    let name = name.to_owned();
+    let key = crate::runtime::WindowKey::unique();
+    harness.run(async move |cx| {
+        let windows = move |_: &App| vec![(name.clone(), key, window)];
+        let reach = move |handle: AnyWindowHandle| platform.window(handle);
+        let door = Door {
+            windows: &windows,
+            settle: &|_| true,
+            keep,
+            chords: &Vec::new,
+            views: &|_| Vec::new(),
+            reach: &reach,
+            stopped: &|_| Vec::new(),
+        };
+        answer(request, &door, &mut Seen::default(), cx).await
+    })
+}
+
 fn keyboard_window(
     named: Option<&str>,
     nodes: &[AxNode],
@@ -715,6 +749,7 @@ fn keyboard_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ducktape_a11y_platform::headless::Harness;
 
     #[test]
     fn a_deadline_is_the_clients() {
@@ -794,65 +829,45 @@ mod tests {
         );
     }
 
-    async fn served_answer(
-        request: impl FnOnce() -> Request + 'static,
-        cx: &mut gpui_kit::TestAppContext,
-    ) -> (Reply, Reply, bool) {
-        cx.update(gpui_kit::init);
-        let window = cx.open_window(
+    fn opened() -> Harness<crate::render::ViewTree> {
+        Harness::open_with(
+            gpui_kit::init,
             gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
             |_, _| crate::render::ViewTree::new(view_wire::Node::empty()),
-        );
-        let handle: AnyWindowHandle = window.into();
-        let key = crate::runtime::WindowKey::unique();
-        let served = move |_: &App| vec![("console".to_owned(), key, handle)];
-        let (answered, perf) = cx
-            .spawn(async move |mut cx| {
-                let door = Door {
-                    keep: &|_, _| None,
-                    chords: &Vec::new,
-                    views: &|_| Vec::new(),
-                    windows: &served,
-                    settle: &|_| true,
-                };
-                let mut seen = Seen::default();
-                let answered = answer(request(), &door, &mut seen, &mut cx).await;
-                let perf = answer(
-                    Request::Perf { by_instance: false },
-                    &door,
-                    &mut seen,
-                    &mut cx,
-                )
-                .await;
-                (answered, perf)
-            })
-            .await;
-        let active = window
-            .update(cx, |_, window, _| window.is_a11y_active())
-            .unwrap();
+        )
+    }
+
+    fn served_answer(
+        harness: &Harness<crate::render::ViewTree>,
+        request: Request,
+    ) -> (Reply, Reply, bool) {
+        let window: AnyWindowHandle = harness.root.into();
+        let answered = ask(harness, window, "console", request, &|_, _| None);
+        let perf = Request::Perf { by_instance: false };
+        let perf = ask(harness, window, "console", perf, &|_, _| None);
+        let active = harness.update(|window, _| window.is_a11y_active());
         (answered, perf, active)
     }
 
-    #[gpui_kit::test]
-    async fn a_press_without_a_read_keeps_the_cache_on(cx: &mut gpui_kit::TestAppContext) {
+    #[test]
+    fn a_press_without_a_read_keeps_the_cache_on() {
         let _on = crate::perf::on_for_test();
+        let harness = opened();
         let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let _heard = cx.update(|cx| {
+        let _heard = harness.app.update(|cx| {
             let heard = heard.clone();
             cx.observe_keystrokes(move |event, _, _| {
                 heard.borrow_mut().push(event.keystroke.key.clone())
             })
         });
-        let press = || {
-            Request::Key(Key {
-                keys: "tab".into(),
-                text: String::new(),
-                window: None,
-                deadline_ms: None,
-                delta: false,
-            })
-        };
-        let (answered, perf, active) = served_answer(press, cx).await;
+        let press = Request::Key(Key {
+            keys: "tab".into(),
+            text: String::new(),
+            window: None,
+            deadline_ms: None,
+            delta: false,
+        });
+        let (answered, perf, active) = served_answer(&harness, press);
         assert_eq!((answered.status, answered.body.as_str()), (200, "{}"));
         assert_eq!(*heard.borrow(), ["tab"], "the press reached the window");
         assert!(
@@ -862,24 +877,25 @@ mod tests {
         let perf: serde_json::Value = serde_json::from_str(&perf.body).unwrap();
         assert_eq!(perf["cache_on"], true);
 
-        let read = || Request::Tree {
+        let read = Request::Tree {
             filter: Filter::default(),
             compact: true,
             bounds: false,
         };
-        let (_, perf, active) = served_answer(read, cx).await;
+        let (_, perf, active) = served_answer(&opened(), read);
         assert!(active, "a tree read switches a11y on");
         let perf: serde_json::Value = serde_json::from_str(&perf.body).unwrap();
         assert_eq!(perf["cache_on"], false);
     }
 
-    #[gpui_kit::test]
-    async fn motion_asks_for_less_motion_and_takes_it_back(cx: &mut gpui_kit::TestAppContext) {
+    #[test]
+    fn motion_asks_for_less_motion_and_takes_it_back() {
+        let harness = opened();
         for reduce in [true, false] {
-            let ask = move || Request::Motion(Motion { reduce });
-            let (answered, _, _) = served_answer(ask, cx).await;
+            let ask = Request::Motion(Motion { reduce });
+            let (answered, _, _) = served_answer(&harness, ask);
             assert_eq!((answered.status, answered.body.as_str()), (200, "{}"));
-            assert_eq!(cx.update(|cx| cx.reduce_motion()), reduce);
+            assert_eq!(harness.app.update(|cx| cx.reduce_motion()), reduce);
         }
     }
 
@@ -957,6 +973,8 @@ mod tests {
                     views: &|_| Vec::new(),
                     windows: &served,
                     settle: if settles { &settle } else { &quiet },
+                    reach: &|_| None,
+                    stopped: &|_| Vec::new(),
                 };
                 answer(read(), &door, &mut Seen::default(), &mut cx).await
             })

@@ -182,7 +182,9 @@ pub fn misnamed(window: &Window) -> Vec<String> {
                 .next_back();
             let own = element.iter().next_back().and_then(segment);
             let wanted = match program {
-                Some(program) => own.map(|own| crate::render::in_view(program, own)),
+                Some(program) => {
+                    own.map(|own| format!("{}{program}/{own}", crate::render::VIEW_MARK))
+                }
                 None => own,
             };
             let has = built.author_id().map(str::to_owned);

@@ -118,7 +118,11 @@ pub fn view_mark(id: &ElementId) -> Option<&str> {
 }
 
 pub fn in_view(program: &str, segment: String) -> String {
-    format!("{VIEW_MARK}{program}/{segment}")
+    format!("{VIEW_MARK}{}/{segment}", crate::runtime::slug(program))
+}
+
+pub fn view_author(author: &str) -> Option<(&str, &str)> {
+    author.strip_prefix(VIEW_MARK)?.split_once('/')
 }
 
 /// Whether a node of `role` is a control: what is pressed, toggled, picked

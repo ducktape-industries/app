@@ -49,7 +49,7 @@ live-client = [
 # the host answers neither (a browser).
 sockets = ["dep:tokio-tungstenite"]
 # the AX test door (`src/ax`): kit and qa builds, and every test
-ax-door = ["ui"]
+ax-door = ["ui", "dep:ducktape-a11y-platform"]
 # gpui's own frame and input histograms into `GET /perf` (docs/perf.md §3.5)
 perf-deep = ["ui", "gpui-kit/profiler"]
 # the web piece draws pages through CEF (`render/web.rs`, `crates/web`)
@@ -64,7 +64,7 @@ call = ["av", "ducktape-av/call"]
 # the test helpers the desktop shell's tests reach (`*_for_test`,
 # `test_style`, ...): on for every test build, never for a shipped one;
 # `wat` turns the test views' text into the wasm a runner takes
-test-support = ["ui", "gpui-kit/test-support", "wasmtime", "dep:wat", "dep:libc"]
+test-support = ["ui", "gpui-kit/test-support", "wasmtime", "dep:wat", "dep:libc", "ducktape-a11y-platform?/test-support"]
 
 [[test]]
 name = "artifact_row"
@@ -76,6 +76,7 @@ required-features = ["web", "test-support"]
 # the phone name gpui-kit with it
 gpui-kit = { version = "=0.7.3", optional = true, default-features = false }
 gpui-base = { version = "=0.7.3", optional = true }
+ducktape-a11y-platform = { path = "../a11y-platform", optional = true }
 unicode-segmentation = "1"
 futures.workspace = true
 async-channel = "2"

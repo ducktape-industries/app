@@ -258,7 +258,7 @@ fn draw(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<crate::ax::A
         window.activate_a11y();
         crate::render::draw_frame(window, cx);
         crate::render::draw_frame(window, cx);
-        crate::ax::snapshot("t", window, false)
+        crate::ax::snapshot("t", window.a11y_tree(), window, false)
     })
 }
 
