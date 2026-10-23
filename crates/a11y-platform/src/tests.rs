@@ -431,3 +431,60 @@ fn row_22_a_keyed_view_id_never_meets_a_host_node() {
         keyed_id(&two, "chat", &["send"])
     );
 }
+
+struct Counter {
+    count: usize,
+}
+
+impl Render for Counter {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(
+                div()
+                    .id("count")
+                    .role(Role::Button)
+                    .aria_label(format!("Count {}", self.count))
+                    .w(px(80.))
+                    .h(px(20.)),
+            )
+            .child(
+                div()
+                    .id("help")
+                    .role(Role::Button)
+                    .aria_label("Help")
+                    .w(px(80.))
+                    .h(px(20.)),
+            )
+    }
+}
+
+#[test]
+fn a_later_update_still_holds_the_nodes_it_did_not_change() {
+    let h = active(|_, _| Counter { count: 0 });
+    let first = h.tree();
+    h.with(|counter, _, cx| {
+        counter.count += 1;
+        cx.notify();
+    });
+    h.draw_unforced();
+    let second = h.tree();
+    assert!(
+        has(&second, "Count 1"),
+        "the wrapper keeps the later update"
+    );
+    assert!(
+        second.tree.is_some(),
+        "the update names the tree's root, as a whole tree does"
+    );
+    let ids = |tree: &TreeUpdate| {
+        let mut ids: Vec<u64> = tree.nodes.iter().map(|(id, _)| id.0).collect();
+        ids.sort_unstable();
+        ids
+    };
+    assert_eq!(ids(&second), ids(&first), "every node is in both updates");
+    assert!(
+        find(&second, "Help") == find(&first, "Help"),
+        "the node the change left alone reads as it did"
+    );
+}
