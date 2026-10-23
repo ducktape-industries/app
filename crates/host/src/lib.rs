@@ -62,6 +62,7 @@ pub mod push;
 pub mod render;
 pub mod runner;
 pub mod runtime;
+pub(crate) mod send_trace;
 #[cfg(feature = "ui")]
 pub mod session;
 #[cfg(feature = "ui")]

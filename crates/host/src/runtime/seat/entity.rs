@@ -908,12 +908,16 @@ impl Seat {
                 (Some(tree), None) => tree.update(cx, |tree, cx| {
                     tree.set_pictures(pictures);
                     tree.set_pressed(pressed);
+                    tree.set_trace_frame(rev);
                     tree.replace(root, &asked, cx)
                 }),
                 (_, adopt) => {
                     self.mount(root, pictures, generation, key, adopt, cx);
                     if let Some(tree) = &self.tree {
-                        tree.update(cx, |tree, _| tree.set_pressed(pressed));
+                        tree.update(cx, |tree, _| {
+                            tree.set_pressed(pressed);
+                            tree.set_trace_frame(rev);
+                        });
                     }
                     cx.notify();
                 }
@@ -1051,6 +1055,7 @@ impl Seat {
                 let current =
                     view.seated_generation() == generation && Arc::ptr_eq(&alive, &view.alive);
                 if current {
+                    crate::send_trace::input(view.perf_key(), this.revision, event);
                     view.pending.push(event.clone());
                 }
                 drop(locked);

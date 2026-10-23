@@ -14,6 +14,42 @@ DUCKTAPE_RPC=http://127.0.0.1:8844 cargo run -p ducktape-app   # skip the connec
 DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view developer's override
 ```
 
+## Capture view send timing
+
+Fully quit the app, then launch it with both the capture switch and its debug
+log target:
+
+```sh
+DUCKTAPE_SEND_TRACE=1 RUST_LOG=ducktape::send_trace=debug /Applications/Ducktape.app/Contents/MacOS/ducktape-app
+```
+
+On Linux, use the installed `ducktape-app` executable with the same environment.
+The trace is in `~/Library/Logs/ducktape/app.log` on macOS and
+`${XDG_STATE_HOME:-$HOME/.local/state}/ducktape/app.log` on Linux. An explicit
+`XDG_STATE_HOME` overrides the macOS location too. Quit and relaunch without the
+capture environment after recording the interaction: this opt-in trace writes
+one line for each identified node painted and can produce a large log.
+
+The `ducktape::send_trace` lines carry monotonic `elapsed_us`, the program and
+view instance, and the view revision where available. `input_dispatch` records
+only the input kind and handler route, never typed characters or field text.
+`request` and `reply` link host method requests by `request_id`.
+`preconfirmation` adds the submitted `frame_id` and whether the node predicted
+applied or refused; `submission_in_doubt` is not a preconfirmation. Heads and
+program-change replies carry their confirmed block `height` when decoded.
+Program-query and watch answers stay opaque, with no payload or message text
+in the capture.
+
+`node_painted` records the authored path of a node whose paint ran inside the
+current clip, its view revision, its declared `style_opacity`, and boolean
+accessibility states. It records paint, not hardware presentation or proof of
+block inclusion. `style_opacity=None` means the node declares no opacity; it
+is not a measurement of the final alpha after ancestor or interactive styles.
+For a message view, compare the first painted row's path with the same path
+when its pending appearance changes. The host assigns no message-specific
+meaning to either row and logs no message text. Node paths are identifiers
+provided by views; review the capture before sharing it.
+
 ## Install
 
 Releases are published to `https://dl.ducktape.industries/app/`: one

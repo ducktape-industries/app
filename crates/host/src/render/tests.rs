@@ -329,6 +329,7 @@ mod press_release;
 mod primitives;
 mod rich_tooltip;
 mod selection;
+mod send_trace;
 mod sheet;
 #[cfg(target_os = "linux")]
 mod snap;

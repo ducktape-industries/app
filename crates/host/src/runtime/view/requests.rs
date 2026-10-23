@@ -157,6 +157,7 @@ impl View {
         }
         self.center().lock().flush();
         for id in std::mem::take(&mut self.frame.cancels) {
+            self.replies.trace_cancel(id);
             self.clipboard.cancel(id);
             self.picker.cancel(id);
             self.widget_commands.retain(|(request, _)| *request != id);
@@ -199,6 +200,8 @@ impl View {
     /// only this side has — `host.widget`, `host.session` answered from the
     /// props the app holds, `host.log` — and anything else is refused.
     pub fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
+        self.replies
+            .trace_request(self.perf_key(), self.frame_rev, request.id, &request.kind);
         let wire::Request { id, kind, payload } = request;
         let Some((capability, operation)) = Capability::of_kind(&kind) else {
             self.refuse(
@@ -361,6 +364,7 @@ impl View {
     }
 
     pub fn reply(&mut self, id: u64, result: kernel::Answer) {
+        self.replies.trace_reply(id, &result, true);
         self.pending.push(wire::Event::Response {
             id,
             result,

@@ -6,6 +6,7 @@ use super::*;
 
 pub(in crate::runtime) struct Replies {
     events: Mutex<Vec<wire::Event>>,
+    trace: Option<Mutex<crate::send_trace::Requests>>,
     in_flight: AtomicUsize,
     changed: tokio::sync::watch::Sender<()>,
     drained: tokio::sync::watch::Sender<()>,
@@ -15,6 +16,7 @@ impl Default for Replies {
     fn default() -> Self {
         Self {
             events: Mutex::default(),
+            trace: crate::send_trace::enabled().then(Mutex::default),
             in_flight: AtomicUsize::new(0),
             changed: tokio::sync::watch::channel(()).0,
             drained: tokio::sync::watch::channel(()).0,
@@ -23,6 +25,39 @@ impl Default for Replies {
 }
 
 impl Replies {
+    pub(in crate::runtime) fn trace_request(
+        &self,
+        key: crate::perf::Key,
+        revision: u64,
+        id: u64,
+        kind: &str,
+    ) {
+        if let Some(mut trace) = self.trace() {
+            trace.request(key, revision, id, kind);
+        }
+    }
+
+    pub(in crate::runtime) fn trace_cancel(&self, id: u64) {
+        if let Some(mut trace) = self.trace() {
+            trace.cancel(id);
+        }
+    }
+
+    pub(in crate::runtime) fn trace_reply(&self, id: u64, result: &Answer, done: bool) {
+        if let Some(mut trace) = self.trace() {
+            trace.reply(id, result, done);
+        }
+    }
+
+    fn trace(&self) -> Option<std::sync::MutexGuard<'_, crate::send_trace::Requests>> {
+        let trace = self.trace.as_ref()?;
+        Some(
+            trace
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
     pub(in crate::runtime) fn changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changed.subscribe()
     }
@@ -60,6 +95,7 @@ impl Replies {
             return false;
         }
         hold.taken = done;
+        self.trace_reply(id, &result, done);
         events.push(wire::Event::Response { id, result, done });
         self.changed.send_replace(());
         true
@@ -78,6 +114,7 @@ impl Replies {
                     return false;
                 }
                 hold.taken = done;
+                self.trace_reply(id, &result, done);
                 events.push(wire::Event::Response { id, result, done });
                 true
             })
@@ -110,6 +147,7 @@ impl Replies {
 
     pub(super) fn item(&self, id: u64, result: Answer, done: bool) {
         let mut events = self.events.lock().expect("kernel replies");
+        self.trace_reply(id, &result, done);
         events.push(wire::Event::Response { id, result, done });
         self.changed.send_replace(());
     }
@@ -198,3 +236,7 @@ fn a_subscription_item_waits_for_the_redraw_that_takes_it() {
     assert_eq!(replies.drain_into(&mut pending), 1);
     assert_eq!(item.as_mut().poll(&mut poll), std::task::Poll::Ready(true));
 }
+
+#[cfg(test)]
+#[path = "replies/tests/send_trace.rs"]
+mod send_trace_tests;

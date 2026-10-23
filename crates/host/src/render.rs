@@ -40,6 +40,7 @@ mod page_motion;
 mod picture_resources;
 mod pictures;
 pub mod pointer;
+mod send_trace;
 mod sensors;
 mod sheet;
 mod sideways;
@@ -366,6 +367,8 @@ pub struct ViewTree {
     /// their time and gpui's passes over what they build (`deferred::Layer`)
     /// are counted there (docs/perf.md).
     perf_key: Option<crate::perf::Key>,
+    send_trace: bool,
+    trace_revision: u64,
     portal: Option<deferred::Portal>,
     tip: Option<tips::Tip>,
     #[cfg(test)]
@@ -456,6 +459,8 @@ impl ViewTree {
             unselected: false,
             text_scale: None,
             perf_key: None,
+            send_trace: crate::send_trace::enabled(),
+            trace_revision: 0,
             portal: Some(Default::default()),
             tip: None,
             #[cfg(test)]
@@ -479,6 +484,10 @@ impl ViewTree {
     pub fn with_perf_key(mut self, key: crate::perf::Key) -> Self {
         self.perf_key = Some(key);
         self
+    }
+
+    pub(crate) fn set_trace_frame(&mut self, revision: u64) {
+        self.trace_revision = revision;
     }
 
     fn in_its_view(&self, segment: String) -> String {
@@ -603,6 +612,18 @@ impl ViewTree {
             None => element,
         };
         let element = self.marked(node, entered_scope, place, element, cx);
+        let capture = self.send_trace && entered_scope;
+        let element = match self.perf_key.filter(|_| capture) {
+            Some(key) => send_trace::recorded(
+                element,
+                key,
+                self.trace_revision,
+                &self.authored_path,
+                node,
+                &self.styles,
+            ),
+            None => element,
+        };
         #[cfg(feature = "ax-door")]
         let element = match entered_scope && cx.has_global::<crate::ax::shown::Views>() {
             true => crate::ax::shown::recorded(element, cx.entity_id(), &self.authored_path),
