@@ -487,7 +487,7 @@ mod tests {
         let keyring = "opened-off-the-awaiting-thread";
         let os = crate::os::DesktopOs::new().unwrap();
         let caller = std::thread::current().id();
-        let opened = ducktape_host::runtime::handle().block_on(os.device_key(keyring));
+        let opened = rt::task::handle().block_on(os.device_key(keyring));
         assert!(matches!(opened, Ok(Some(_))), "no key opened");
         let on: Vec<_> = OPENED
             .lock()

@@ -6,10 +6,10 @@
 //! becomes. The app keeps one, reached through [`center`]; a test builds
 //! its own.
 
+use rt::time::Instant;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::Instant;
 
 use super::settings::{Permission, Settings};
 use crate::runtime::WindowKey;
@@ -147,8 +147,8 @@ pub fn center() -> &'static CenterHandle {
 
 /// Unix seconds now.
 pub fn wall() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    rt::time::SystemTime::now()
+        .duration_since(rt::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs() as i64)
 }
 

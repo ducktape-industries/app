@@ -3,8 +3,9 @@
 //! frames only while something asks.
 
 use gpui_kit::{App, EntityId, Global, Window, WindowId};
+use rt::time::Instant;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 type Due = Box<dyn FnOnce(&mut Window, &mut App)>;
 

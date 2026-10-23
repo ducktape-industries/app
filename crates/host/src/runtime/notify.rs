@@ -46,8 +46,8 @@
 //! ([`center::Center::withdraw_host`]) and leave "installed"'s. A click on
 //! the row opens Settings › Updates, as the banner's does.
 
+use rt::time::Instant;
 use std::sync::{Arc, OnceLock};
-use std::time::Instant;
 
 use super::kernel::{in_order, spawn_reply};
 use super::notifier::Recipient;
@@ -252,11 +252,11 @@ pub(super) fn withdraw_at(
     rt::task::spawn(async move {
         // an `until` past any time the clock can name: no timer (adding it
         // would panic, and a phone's panic aborts the app)
-        let Some(at) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(until))
+        let Some(at) = rt::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(until))
         else {
             return;
         };
-        if let Ok(left) = at.duration_since(std::time::SystemTime::now()) {
+        if let Ok(left) = at.duration_since(rt::time::SystemTime::now()) {
             rt::time::sleep(left).await;
         }
         // none holds the chain's log (parked as it left hand): no notifier
@@ -401,7 +401,7 @@ pub fn request_id() -> String {
     static PROCESS: OnceLock<String> = OnceLock::new();
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let process =
-        PROCESS.get_or_init(|| process_token(std::process::id(), std::time::SystemTime::now()));
+        PROCESS.get_or_init(|| process_token(rt::process::id(), rt::time::SystemTime::now()));
     format!(
         "ducktape-{process}-{}",
         NEXT.fetch_add(1, Ordering::Relaxed)
@@ -410,9 +410,9 @@ pub fn request_id() -> String {
 
 /// A process told apart from every other: its pid and when it started (a
 /// pid alone is reused).
-fn process_token(pid: u32, started: std::time::SystemTime) -> String {
+fn process_token(pid: u32, started: rt::time::SystemTime) -> String {
     let nanos = started
-        .duration_since(std::time::UNIX_EPOCH)
+        .duration_since(rt::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());
     format!("{pid:x}-{nanos:x}")
 }

@@ -87,9 +87,9 @@ mod tests {
     use super::*;
 
     fn heard(view: &View, id: u64) -> Vec<Vec<String>> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = rt::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut items = Vec::new();
-        while items.is_empty() && std::time::Instant::now() < deadline {
+        while items.is_empty() && rt::time::Instant::now() < deadline {
             let mut events = Vec::new();
             view.replies.drain_into(&mut events);
             items.extend(events.into_iter().filter_map(|event| match event {

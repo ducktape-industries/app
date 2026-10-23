@@ -266,7 +266,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
     )));
     let client = backend::rpc_client(network.node_url.clone());
     let status = loop {
-        match runtime::handle().block_on(client.status()) {
+        match rt::task::handle().block_on(client.status()) {
             Ok(status) => break status,
             Err(error) => {
                 tracing::warn!(target: "pushd", node = network.node_url, %error, "node not reached");
@@ -311,7 +311,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
                 )),
                 said,
             });
-            runtime::handle().spawn(badges(heard, network.name.clone(), account));
+            rt::task::handle().spawn(badges(heard, network.name.clone(), account));
             carried.insert(account, (signer, handle));
         }
     };
@@ -324,7 +324,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
             carry(&mut carried);
             tracing::info!(target: "pushd", accounts = carried.len(), "devices read again");
         }
-        match runtime::handle().block_on(client.status()) {
+        match rt::task::handle().block_on(client.status()) {
             Ok(status) if status.height != height => {
                 height = status.height;
                 runtime::deployments_checked();

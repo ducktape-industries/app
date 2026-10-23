@@ -5,9 +5,9 @@ use std::future::Future;
 use std::time::Duration;
 
 #[cfg(not(target_family = "wasm"))]
-pub use std::time::Instant;
+pub use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[cfg(target_family = "wasm")]
-pub use web_time::Instant;
+pub use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub async fn sleep(duration: Duration) {
     #[cfg(not(target_family = "wasm"))]

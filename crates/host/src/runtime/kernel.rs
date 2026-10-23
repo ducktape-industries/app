@@ -28,10 +28,12 @@ pub(super) type Answer = Result<Vec<u8>, wire::Error>;
 fn hosted(floats: bool) -> Vec<String> {
     let floating = ["host.float", "host.unfloat", "host.placement"];
     let captures = ["camera.devices", "microphone.devices", "microphone.chime"];
+    let sockets = ["socket.open", "socket.send"];
     methods::ALL
         .iter()
         .filter(|kind| floats || !floating.contains(kind))
         .filter(|kind| cfg!(feature = "av") || !captures.contains(kind))
+        .filter(|kind| cfg!(feature = "sockets") || !sockets.contains(kind))
         .filter(|kind| **kind != methods::NotifyNeeds::KIND)
         .map(|kind| (*kind).to_owned())
         .collect()
@@ -40,6 +42,8 @@ fn hosted(floats: bool) -> Vec<String> {
 mod describe;
 pub(super) mod live;
 mod node;
+mod random;
+#[cfg(feature = "sockets")]
 pub(super) mod socket;
 pub use node::{Answered, artifact};
 #[cfg(feature = "ui")]
@@ -90,6 +94,7 @@ pub(super) fn debug() -> tokio::sync::watch::Receiver<bool> {
     debug_mode().subscribe()
 }
 
+#[cfg(test)]
 pub(super) use rt::task::handle;
 
 /// Jobs under one name run one after another, in the order they were
@@ -469,7 +474,7 @@ pub(super) fn answer(
             Some(period) => view.clocks.push(Clock {
                 id,
                 period,
-                due: std::time::Instant::now() + period,
+                due: rt::time::Instant::now() + period,
             }),
             None => view.refuse(
                 id,
@@ -482,9 +487,11 @@ pub(super) fn answer(
         (Capability::Live, "send") => live::send(view, id, payload),
         (Capability::Live, "subscribe") => live::subscribe(view, id, payload),
         (Capability::Live, "tracks") => live::tracks(view, id, payload),
+        #[cfg(feature = "sockets")]
         (Capability::Socket, "open") => socket::open(view, id, payload),
+        #[cfg(feature = "sockets")]
         (Capability::Socket, "send") => socket::send(view, id, payload),
-        (Capability::Host, "random") => socket::random(view, id, payload),
+        (Capability::Host, "random") => random::random(view, id, payload),
         (Capability::Host, "id") => {
             let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();
@@ -588,7 +595,7 @@ pub(super) fn offset_minutes() -> i32 {
 pub(super) struct Clock {
     pub(super) id: u64,
     period: std::time::Duration,
-    due: std::time::Instant,
+    due: rt::time::Instant,
 }
 
 /// A `clock.ticks` payload: the period in milliseconds, more than none. A
@@ -602,7 +609,7 @@ fn tick_period(payload: &[u8]) -> Option<std::time::Duration> {
 /// Every clock item due at `now`, and the deadline re-armed for each. The
 /// instant is an argument so the rule is decided, not timed: the widget
 /// hands it `Instant::now()`, a test hands it the deadline it chose.
-pub(super) fn ticked(clocks: &mut [Clock], now: std::time::Instant) -> Vec<wire::Event> {
+pub(super) fn ticked(clocks: &mut [Clock], now: rt::time::Instant) -> Vec<wire::Event> {
     let mut items = Vec::new();
     for clock in clocks.iter_mut() {
         if clock.due > now {
@@ -622,7 +629,7 @@ pub(super) fn ticked(clocks: &mut [Clock], now: std::time::Instant) -> Vec<wire:
 
 /// When the nearest clock item comes due, for the redraw the widget asks
 /// the shell to schedule.
-pub(super) fn next_tick(clocks: &[Clock]) -> Option<std::time::Instant> {
+pub(super) fn next_tick(clocks: &[Clock]) -> Option<rt::time::Instant> {
     clocks.iter().map(|clock| clock.due).min()
 }
 

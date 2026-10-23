@@ -16,7 +16,7 @@ publish = false
 [dependencies]
 # the runtime without its window half: no gpui-kit in this graph; the
 # notifiers run on wasmtime, as the desktop's views do
-ducktape-host = { path = "../host", default-features = false, features = ["wasmtime"] }
+ducktape-host = { path = "../host", default-features = false, features = ["wasmtime", "live-client", "sockets"] }
 # the throwaway key queries are signed with, as the desktop's reader, and
 # the identity query a registration is checked by
 noded-client = { path = "../noded-client", features = ["commonware"] }

@@ -119,7 +119,7 @@ impl Http for Client {
         for (name, value) in &request.headers {
             post = post.header(*name, value);
         }
-        ducktape_host::runtime::handle().block_on(async move {
+        rt::task::handle().block_on(async move {
             let answer = post
                 .body(request.body.clone())
                 .send()

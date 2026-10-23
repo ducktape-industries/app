@@ -99,6 +99,14 @@ mod native {
         });
         assert_eq!(block_on(&mut task), Ok(()));
     }
+
+    #[test]
+    fn an_entered_future_is_polled_inside_the_io_loop() {
+        let in_a_runtime = || tokio::runtime::Handle::try_current().is_ok();
+        let outside = block_on(async { in_a_runtime() });
+        let inside = block_on(super::entered(async { in_a_runtime() }));
+        assert_eq!((outside, inside), (false, true));
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -130,5 +138,10 @@ mod web {
     #[wasm_bindgen_test]
     async fn a_worker_runs_its_task_on_the_page() {
         super::a_worker_runs_its_task().await;
+    }
+
+    #[wasm_bindgen_test]
+    async fn an_entered_future_runs_on_the_page() {
+        assert_eq!(super::entered(async { 7 }).await, 7);
     }
 }

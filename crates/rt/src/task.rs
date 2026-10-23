@@ -107,6 +107,17 @@ pub fn blocking<T: MaybeSend + 'static>(
     async move { ran.await.map_err(|_| Lost) }
 }
 
+#[cfg(not(target_family = "wasm"))]
+pub async fn entered<T>(work: impl Future<Output = T>) -> T {
+    let runtime = handle();
+    let mut work = std::pin::pin!(work);
+    std::future::poll_fn(|context| {
+        let _entered = runtime.enter();
+        work.as_mut().poll(context)
+    })
+    .await
+}
+
 #[cfg(target_family = "wasm")]
 pub struct Task {
     stopper: Stopper,
@@ -188,6 +199,11 @@ pub fn blocking<T: MaybeSend + 'static>(
 ) -> impl Future<Output = Result<T, Lost>> {
     let ran = job();
     async move { Ok(ran) }
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn entered<T>(work: impl Future<Output = T>) -> T {
+    work.await
 }
 
 #[cfg(test)]

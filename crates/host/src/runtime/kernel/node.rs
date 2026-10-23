@@ -14,7 +14,7 @@ use view_wire::methods::Method as _;
 pub mod artifact;
 mod standing;
 
-pub type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
+pub type Answered = rt::Fut<'static, Answer>;
 /// One node-backed method: the node to ask and the request's payload in,
 /// the answer out. Not a [`methods::Call`], which is `program.query`'s and
 /// `op.submit`'s envelope.
@@ -187,7 +187,7 @@ fn spawn_method(
     view: &mut View,
     id: u64,
     payload: &[u8],
-    method: impl FnOnce(Node, Vec<u8>, Claim) -> Answered + Send + 'static,
+    method: impl FnOnce(Node, Vec<u8>, Claim) -> Answered + rt::MaybeSend + 'static,
     stage: &'static str,
     asking: Option<Asking>,
 ) {
@@ -202,7 +202,7 @@ fn spawn_method(
     let key = view.perf_key();
     // not a `perf::Timer`: its drop would record a call cancelled by the
     // view, which never got a reply
-    let asked = crate::perf::on().then(std::time::Instant::now);
+    let asked = crate::perf::on().then(rt::time::Instant::now);
     run(view, id, slot, None, claim, async move {
         if let Some(asking) = asking
             && let Err(refused) = asking.yes(&node).await
@@ -226,7 +226,7 @@ fn start(
     id: u64,
     follows: Option<Follow>,
     claim: Claim,
-    task: impl std::future::Future<Output = ()> + Send + 'static,
+    task: impl std::future::Future<Output = ()> + rt::MaybeSend + 'static,
 ) {
     let slot = view.replies.admit();
     run(view, id, slot, follows, claim, task);
@@ -240,7 +240,7 @@ fn run(
     slot: InFlight,
     follows: Option<Follow>,
     claim: Claim,
-    task: impl std::future::Future<Output = ()> + Send + 'static,
+    task: impl std::future::Future<Output = ()> + rt::MaybeSend + 'static,
 ) {
     let task = rt::task::spawn(async move {
         let _slot = slot;
@@ -290,8 +290,8 @@ impl Items {
 
 pub(super) fn spawn_subscription<Body, Fut>(view: &mut View, id: u64, follows: Follow, body: Body)
 where
-    Body: FnOnce(Items) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
+    Body: FnOnce(Items) -> Fut + rt::MaybeSend + 'static,
+    Fut: std::future::Future<Output = ()> + rt::MaybeSend + 'static,
 {
     let replies = view.replies.clone();
     let claim = Claim::default();
@@ -310,7 +310,7 @@ where
 pub(in crate::runtime) fn hold_for_test(
     view: &mut View,
     id: u64,
-    task: impl std::future::Future<Output = ()> + Send + 'static,
+    task: impl std::future::Future<Output = ()> + rt::MaybeSend + 'static,
 ) {
     view.tasks.push((
         id,
@@ -324,8 +324,8 @@ pub(in crate::runtime) fn hold_for_test(
 
 pub(in crate::runtime) fn spawn_host_subscription<Body, Fut>(view: &mut View, id: u64, body: Body)
 where
-    Body: FnOnce(Items) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
+    Body: FnOnce(Items) -> Fut + rt::MaybeSend + 'static,
+    Fut: std::future::Future<Output = ()> + rt::MaybeSend + 'static,
 {
     spawn_subscription(view, id, Follow::Host, body);
 }
@@ -337,7 +337,7 @@ where
 pub(in crate::runtime) fn spawn_reply(
     view: &mut View,
     id: u64,
-    future: impl std::future::Future<Output = Answer> + Send + 'static,
+    future: impl std::future::Future<Output = Answer> + rt::MaybeSend + 'static,
 ) {
     let replies = view.replies.clone();
     let claim = Claim::default();
@@ -1189,7 +1189,7 @@ pub(in crate::runtime) fn spawn_save(
     id: u64,
     save: methods::SaveFile,
     chosen: impl std::future::Future<Output = Result<Option<std::path::PathBuf>, wire::Error>>
-    + Send
+    + rt::MaybeSend
     + 'static,
 ) {
     let save = move |node, _, _| -> Answered { Box::pin(saved(node, save, chosen)) };
@@ -1315,7 +1315,7 @@ fn beside(folder: &std::path::Path) -> std::io::Result<tempfile::NamedTempFile> 
 #[cfg(feature = "ui")]
 pub(in crate::runtime) fn spawn_event(
     view: &View,
-    event: impl std::future::Future<Output = Option<wire::Event>> + Send + 'static,
+    event: impl std::future::Future<Output = Option<wire::Event>> + rt::MaybeSend + 'static,
 ) {
     let slot = view.replies.admit();
     let replies = view.replies.clone();
@@ -1658,8 +1658,8 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
         if ttl == 0 {
             return Err(malformed("ttl_days must be a positive integer"));
         }
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_ms = rt::time::SystemTime::now()
+            .duration_since(rt::time::UNIX_EPOCH)
             .map_err(host_fault)?
             .as_millis() as u64;
         let ask = crate::contract::MintInvite {

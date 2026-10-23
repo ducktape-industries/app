@@ -119,11 +119,11 @@ impl ViewTree {
     /// a native field or editor, assistive technology's press. Nothing a
     /// view sends, no timer, no answer, no hover or scroll comes here.
     pub fn activate(&self) {
-        self.activation.set(Some(std::time::Instant::now()));
+        self.activation.set(Some(rt::time::Instant::now()));
     }
 
     /// The activation, taken: the seat moves it to the view.
-    pub fn take_activation(&self) -> Option<std::time::Instant> {
+    pub fn take_activation(&self) -> Option<rt::time::Instant> {
         self.activation.take()
     }
 

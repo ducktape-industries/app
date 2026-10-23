@@ -76,12 +76,8 @@ use seat::{
 };
 use view::{Redraw, View};
 
-/// Shared HTTP connections need a continuously driven I/O runtime. Loader
-/// threads compile between requests; their own parked runtimes would strand
-/// the pooled sockets another loader reuses.
-pub fn handle() -> tokio::runtime::Handle {
-    kernel::handle()
-}
+#[cfg(test)]
+use kernel::handle;
 
 /// The app's quit hook (`shell::launch`, the one every quit path reaches):
 /// the notification logs handed over (the one in hand, each followed
@@ -109,11 +105,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+use rt::time::Instant;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::contract::{
     Code, CodeSource, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,

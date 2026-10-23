@@ -464,7 +464,7 @@ impl Door {
         listener
             .set_nonblocking(true)
             .map_err(|error| error.to_string())?;
-        let handle = ducktape_host::runtime::handle();
+        let handle = rt::task::handle();
         let door = self.clone();
         handle.spawn(async move {
             loop {
@@ -828,8 +828,7 @@ mod tests {
         let registration = signed(voip(), &key(), crate::push::now_ms());
         let answer = |networks| {
             let door = Door::new(networks, Arc::new(key()));
-            let refused =
-                ducktape_host::runtime::handle().block_on(door.register(registration.clone()));
+            let refused = rt::task::handle().block_on(door.register(registration.clone()));
             refused.unwrap_err().0
         };
         let elsewhere = Some("elsewhere-0a1b2c3d");
@@ -1031,7 +1030,7 @@ mod tests {
             chain: Mutex::new(Some(("testkit-0a1b2c3d".into(), "testkit".into()))),
         };
         let door = Door::new(vec![Arc::new(network)], Arc::new(key()));
-        ducktape_host::runtime::handle().block_on(door.recheck());
+        rt::task::handle().block_on(door.recheck());
         let kept = vec![(17, "cc".repeat(32))];
         assert_eq!(devices.accounts(), kept);
         assert_eq!(Devices::load(&file).unwrap().accounts(), kept);

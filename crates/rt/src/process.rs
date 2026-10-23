@@ -2,6 +2,11 @@
 //! libc's natively; in a browser the page's `Date`, and none of what a page can't see.
 
 #[cfg(not(target_family = "wasm"))]
+pub fn id() -> u32 {
+    std::process::id()
+}
+
+#[cfg(not(target_family = "wasm"))]
 pub fn local_offset(wall: i64) -> i64 {
     let time = wall as libc::time_t;
     // SAFETY: `localtime_r` writes only the `tm` it is handed.
@@ -63,6 +68,12 @@ pub fn resident_pages() -> Option<u64> {
 }
 
 #[cfg(target_family = "wasm")]
+pub fn id() -> u32 {
+    static DRAWN: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *DRAWN.get_or_init(|| (js_sys::Math::random() * f64::from(u32::MAX)) as u32)
+}
+
+#[cfg(target_family = "wasm")]
 pub fn local_offset(wall: i64) -> i64 {
     let at = wasm_bindgen::JsValue::from_f64(wall as f64 * 1000.0);
     (-js_sys::Date::new(&at).get_timezone_offset() * 60.0) as i64
@@ -101,5 +112,10 @@ mod tests {
         assert!(counted >= (size * 4) as u64, "{counted}");
         assert_eq!(resident(touched.as_ptr(), 0), Some(0));
         assert!(max_rss().is_some_and(|peak| peak > 0));
+    }
+
+    #[test]
+    fn the_process_id_is_the_os_pid() {
+        assert_eq!(id(), std::process::id());
     }
 }

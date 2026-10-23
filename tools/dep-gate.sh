@@ -40,7 +40,7 @@ tree() {
 # targets and host must not name itself.
 host_banned='ducktape-app ducktape-phone ducktape-host-jsc ducktape-updater updater tray-icon keyring commonware-cryptography keystore keyscheme ducktape-home cef ducktape-gpui-ios gpui-pre-mobile jni ndk objc2-web-kit'
 host_direct_banned='gpui-pre-linux gpui-pre-macos zbus'
-for target in x86_64-unknown-linux-gnu aarch64-apple-darwin aarch64-apple-ios aarch64-linux-android; do
+for target in x86_64-unknown-linux-gnu aarch64-apple-darwin aarch64-apple-ios aarch64-linux-android wasm32-unknown-unknown; do
     all=$(tree ducktape-host "$target") || { fail "cargo tree -p ducktape-host --target $target failed"; continue; }
     near=$(tree ducktape-host "$target" "--depth 1") || { fail "cargo tree -p ducktape-host --target $target --depth 1 failed"; continue; }
     found=$(grep -xF -f <(tr ' ' '\n' <<<"$host_banned") <<<"$all" | tr '\n' ' ')

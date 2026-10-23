@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use abi::BlobId;
 use futures::FutureExt as _;
-use futures::future::{BoxFuture, Shared, WeakShared};
+use futures::future::{Shared, WeakShared};
 
 use super::RpcClient;
 use crate::contract::Code;
@@ -277,14 +277,13 @@ pub async fn programs_bytes(
         let fetch = joined(&cache_path(&code), || {
             let (tell, heard) = futures::channel::oneshot::channel();
             told = Some(tell);
-            async move {
+            Box::pin(async move {
                 heard.await.unwrap_or_else(|_| {
                     Ok(Err(Fetch::Unreachable(
                         "the read bringing the program's code stopped before it came".into(),
                     )))
                 })
-            }
-            .boxed()
+            }) as Pending
         });
         match told {
             Some(tell) => streamed.push((code, tell, fetch)),
@@ -380,7 +379,7 @@ async fn arrived(blobs: &mut noded_client::BlobsStream, code: &BlobId) -> Result
             Ok(Some(piece)) => piece,
             Ok(None) => break,
             Err(error) => {
-                let _ = tokio::fs::remove_file(&landing).await;
+                let _ = remove_landing(&landing).await;
                 return Err(fetch_error(error));
             }
         };
@@ -410,14 +409,14 @@ async fn arrived(blobs: &mut noded_client::BlobsStream, code: &BlobId) -> Result
             .map(|error| Fetch::Unreadable(format!("the program's code was not kept: {error}")))
     });
     if let Some(failure) = failed {
-        let _ = tokio::fs::remove_file(&landing).await;
+        let _ = remove_landing(&landing).await;
         return Ok(Arrived::Failed(failure));
     }
     if let Some(error) = unkept {
         return Ok(Arrived::Unkept(whole, error));
     }
-    if let Err(error) = tokio::fs::rename(&landing, &path).await {
-        let _ = tokio::fs::remove_file(&landing).await;
+    if let Err(error) = rename_landing(&landing, &path).await {
+        let _ = remove_landing(&landing).await;
         return Ok(Arrived::Failed(Fetch::Unreadable(format!(
             "the program's code was not kept: {error}"
         ))));
@@ -564,38 +563,41 @@ async fn cached(
 }
 
 type Outcome = Result<Result<(), Fetch>, std::sync::Arc<std::io::Error>>;
-type Pending = BoxFuture<'static, Outcome>;
+type Pending = rt::Fut<'static, Outcome>;
 
-static FETCHES: std::sync::Mutex<std::collections::BTreeMap<PathBuf, WeakShared<Pending>>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
+rt::process_wide!(
+    fn fetches() -> std::collections::BTreeMap<PathBuf, WeakShared<Pending>> =
+        std::collections::BTreeMap::new();
+);
 
 fn joined(path: &Path, start: impl FnOnce() -> Pending) -> Shared<Pending> {
-    let mut fetches = FETCHES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    fetches.retain(|_, fetch| fetch.upgrade().is_some());
-    if let Some(fetch) = fetches.get(path).and_then(WeakShared::upgrade) {
-        return fetch;
-    }
-    let fetch = start().shared();
-    fetches.insert(
-        path.to_owned(),
-        fetch.downgrade().expect("an unpolled fetch"),
-    );
-    fetch
+    fetches(|fetches| {
+        fetches.retain(|_, fetch| fetch.upgrade().is_some());
+        if let Some(fetch) = fetches.get(path).and_then(WeakShared::upgrade) {
+            return fetch;
+        }
+        let fetch = start().shared();
+        fetches.insert(
+            path.to_owned(),
+            fetch.downgrade().expect("an unpolled fetch"),
+        );
+        fetch
+    })
 }
 
-async fn cached_at<F: Future<Output = std::io::Result<Result<(), Fetch>>> + Send + 'static>(
+async fn cached_at<
+    F: Future<Output = std::io::Result<Result<(), Fetch>>> + rt::MaybeSend + 'static,
+>(
     code: &BlobId,
     path: PathBuf,
-    fetch: impl FnOnce(PathBuf) -> F + Send + 'static,
+    fetch: impl FnOnce(PathBuf) -> F + rt::MaybeSend + 'static,
 ) -> std::io::Result<Result<(Blob, &'static str), Fetch>> {
     // Join before the disk lookup: a miss that finishes after another
     // caller's fetch must still share that fetch, including its error.
     // Weak entries keep neither completed reads nor failures cached.
     let fetch = joined(&path, || {
         let landing = path.clone();
-        async move { fetch(landing).await.map_err(std::sync::Arc::new) }.boxed()
+        Box::pin(async move { fetch(landing).await.map_err(std::sync::Arc::new) }) as Pending
     });
     match kept(path.clone(), code).await {
         Ok(Some(body)) => return Ok(Ok((body, "disk"))),
@@ -672,13 +674,13 @@ async fn fetched(
     let landed = async {
         let file = opened(path, &landing).await?;
         Ok(match streamed(client, code, file).await? {
-            Ok(()) => Ok(tokio::fs::rename(&landing, path).await?),
+            Ok(()) => Ok(rename_landing(&landing, path).await?),
             Err(error) => Err(error),
         })
     }
     .await;
     if !matches!(landed, Ok(Ok(()))) {
-        let _ = tokio::fs::remove_file(&landing).await;
+        let _ = remove_landing(&landing).await;
     }
     landed
 }
@@ -686,15 +688,33 @@ async fn fetched(
 fn landing_beside(path: &Path) -> PathBuf {
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    path.with_extension(format!("{}-{n}.partial", std::process::id()))
+    path.with_extension(format!("{}-{n}.partial", rt::process::id()))
 }
 
 async fn opened(path: &Path, landing: &Path) -> std::io::Result<std::sync::Arc<std::fs::File>> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let file = tokio::fs::File::create(landing).await?.into_std().await;
-    Ok(std::sync::Arc::new(file))
+    let (path, landing) = (path.to_path_buf(), landing.to_path_buf());
+    rt::task::blocking(move || {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::File::create(landing).map(std::sync::Arc::new)
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+async fn remove_landing(landing: &Path) -> std::io::Result<()> {
+    let landing = landing.to_path_buf();
+    rt::task::blocking(move || std::fs::remove_file(landing))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+async fn rename_landing(landing: &Path, path: &Path) -> std::io::Result<()> {
+    let (landing, path) = (landing.to_path_buf(), path.to_path_buf());
+    rt::task::blocking(move || std::fs::rename(landing, path))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 async fn streamed(

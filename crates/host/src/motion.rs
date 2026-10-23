@@ -42,7 +42,8 @@
 
 #[cfg(feature = "ui")]
 use gpui_kit::{App, Window};
-use std::time::{Duration, Instant};
+use rt::time::Instant;
+use std::time::Duration;
 
 /// How a motion's time maps to its progress: 0 at its start, exactly 1 at
 /// its end.

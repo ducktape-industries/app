@@ -111,7 +111,7 @@ impl Network {
         connection.client = Some(client.clone());
         connection.network = network.to_owned();
         connection.chain = chain.to_owned();
-        connection.live = Some(Arc::new(crate::backend::live::Client::new(client.clone())));
+        connection.live = Some(crate::backend::live::session(client));
         connection.clone()
     }
 

@@ -89,13 +89,7 @@ impl<T: 'static> Observed<T> {
 /// and sockets need the runtime, and the window thread is not one of its
 /// threads.
 pub async fn on_runtime<R>(work: impl Future<Output = R>) -> R {
-    let runtime = crate::runtime::handle();
-    let mut work = std::pin::pin!(work);
-    std::future::poll_fn(|context| {
-        let _runtime = runtime.enter();
-        work.as_mut().poll(context)
-    })
-    .await
+    rt::task::entered(work).await
 }
 
 /// Runs `work` on the window thread inside the kernel's runtime

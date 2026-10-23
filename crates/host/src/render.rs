@@ -353,7 +353,7 @@ pub struct ViewTree {
     /// When the host last received a real press or key aimed at this tree
     /// (`activate`): the view's transient activation, which the seat takes
     /// to its view on the next turn.
-    activation: std::cell::Cell<Option<std::time::Instant>>,
+    activation: std::cell::Cell<Option<rt::time::Instant>>,
     /// Whether the view whose tree this is may move the keys
     /// (`Seat::keys_free`, mirrored here): a dialog that opens in it takes
     /// the keyboard only then.

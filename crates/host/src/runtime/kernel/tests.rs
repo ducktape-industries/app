@@ -233,6 +233,15 @@ fn a_method_is_reached_only_through_its_declared_capability() {
             );
             continue;
         }
+        let unbuilt_socket = family == Capability::Socket && !cfg!(feature = "sockets");
+        if unbuilt_socket {
+            assert_eq!(
+                refused_with(&[family], kind).as_deref(),
+                Some(refusal::UNKNOWN_REQUEST),
+                "{kind} without sockets"
+            );
+            continue;
+        }
         if *kind == methods::NotifyNeeds::KIND {
             assert_eq!(
                 refused_with(&[family], kind).as_deref(),
@@ -284,6 +293,7 @@ fn every_view_asks_what_this_host_answers() {
         assert!(hosted.has("link.window") && hosted.has("host.methods"));
         assert_eq!(hosted.has("host.float"), floats);
         assert_eq!(hosted.has("camera.devices"), cfg!(feature = "av"));
+        assert_eq!(hosted.has("socket.open"), cfg!(feature = "sockets"));
         assert!(
             hosted
                 .kinds

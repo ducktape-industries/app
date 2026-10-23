@@ -17,7 +17,7 @@ version.workspace = true
 publish = false
 
 [features]
-default = ["wasmtime", "ui"]
+default = ["wasmtime", "ui", "live-client", "sockets"]
 # the wasmtime view runner (`runner::WasmtimeRunner`) and `program.describe`
 # on it: the desktop and Android. Off for iOS, where views run in
 # JavaScriptCore (`crates/host-jsc`) and no process of ours may JIT.
@@ -27,7 +27,27 @@ wasmtime = ["dep:wasmtime", "describe/host"]
 # clipboard, the AX door). Without it the crate is the runtime a host with
 # no screen runs (`crates/pushd`): the roster, the kernel contract, the
 # notifiers, the store and the notification centre, the backend.
-ui = ["dep:gpui-kit", "dep:gpui-base", "dep:image", "dep:usvg", "dep:resvg", "dep:gif"]
+ui = [
+    "dep:gpui-kit",
+    "gpui-kit/component",
+    "dep:gpui-base",
+    "dep:image",
+    "dep:usvg",
+    "dep:resvg",
+    "dep:gif",
+]
+# the live lane's client (`backend/live/client.rs`): QUIC to the node's UDP port and its
+# `/v1/live` websocket. Without it every `live.*` request is refused `live_unavailable` (a browser).
+live-client = [
+    "dep:quinn",
+    "dep:rustls",
+    "dep:webpki",
+    "dep:tokio-tungstenite",
+    "tokio/net",
+]
+# `socket.open` and `socket.send`: a view's websocket to a host its manifest lists. Without it
+# the host answers neither (a browser).
+sockets = ["dep:tokio-tungstenite"]
 # the AX test door (`src/ax`): kit and qa builds, and every test
 ax-door = ["ui"]
 # gpui's own frame and input histograms into `GET /perf` (docs/perf.md §3.5)
@@ -52,7 +72,9 @@ harness = false
 required-features = ["web", "test-support"]
 
 [dependencies]
-gpui-kit = { version = "=0.7.3", optional = true }
+# without gpui-kit's `multithreaded`, which a browser build cannot take on stable; the app and
+# the phone name gpui-kit with it
+gpui-kit = { version = "=0.7.3", optional = true, default-features = false }
 gpui-base = { version = "=0.7.3", optional = true }
 unicode-segmentation = "1"
 futures.workspace = true
@@ -74,15 +96,15 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 usvg = { version = "0.46.0", default-features = false, features = ["text", "system-fonts"], optional = true }
 resvg = { version = "0.46.0", default-features = false, features = ["text", "raster-images"], optional = true }
 gif = { version = "0.14", optional = true }
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
-tokio-tungstenite.workspace = true
-# The live lane (`backend/live.rs`): QUIC to the UDP port the node's
+tokio = { version = "1", features = ["io-util", "macros", "rt", "sync", "time"] }
+tokio-tungstenite = { workspace = true, optional = true }
+# The live lane (`backend/live/client.rs`): QUIC to the UDP port the node's
 # `/v1/live/port` names, the node's key pinned by reading it out of its
 # certificate (rustls-webpki, already rustls's own), the websocket beside
 # it, and the wire's types from core's leaf crate.
-quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["alloc", "ring"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["alloc", "ring"], optional = true }
 live-wire.workspace = true
 # the node address's host, which the QUIC dial resolves: reqwest's own parser, already in the graph
 url = "2"
@@ -127,8 +149,8 @@ libc.workspace = true
 # what the media pieces' tests read off a piece (empty without `av`)
 ducktape-av = { path = "../av", features = ["test-support"] }
 # paused time for the live session's keep-alive and idle tests
-tokio = { version = "1", features = ["test-util"] }
-# `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
+tokio = { version = "1", features = ["net", "test-util"] }
+# `backend/live/client.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # the live tests' node: its key's verifier, as the handshake pins it
 keyscheme = { git = "duck://duckpond-725bcad1/forge/core", rev = "58b5d91e97d2f0b0e22a5374b6e2a70037b98f14", package = "keyscheme", features = ["testkit"] }

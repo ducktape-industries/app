@@ -1,11 +1,9 @@
 //! `socket.open` and `socket.send`: a WebSocket from this device to a host the view's
-//! manifest lists, opened once the person said yes to its hosts; `host.random`: bytes
-//! from the system's secure random source.
+//! manifest lists, opened once the person said yes to its hosts.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use futures::{SinkExt as _, StreamExt as _};
-use rand::RngCore as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
@@ -107,22 +105,6 @@ pub(super) fn send(view: &mut View, id: u64, payload: &[u8]) {
         told.await
             .unwrap_or_else(|_| Err(host_fault("the socket closed before it took the message")))
     });
-}
-
-pub(super) fn random(view: &mut View, id: u64, payload: &[u8]) {
-    let count = match methods::decode::<u32>(payload) {
-        Ok(count) => count,
-        Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
-    };
-    if u64::from(count) > crate::backend::memory_bounds().view_bytes {
-        let past = format!("{count} bytes are more than a view's memory holds");
-        return view.refuse(id, refusal::MALFORMED_REQUEST, past);
-    }
-    let mut bytes = vec![0; count as usize];
-    match rand::rngs::OsRng.try_fill_bytes(&mut bytes) {
-        Ok(()) => view.reply(id, Ok(methods::encode(&bytes))),
-        Err(error) => view.reply(id, Err(host_fault(error))),
-    }
 }
 
 fn listed(url: &str, hosts: &[String]) -> Result<(), wire::Error> {

@@ -368,7 +368,7 @@ fn keeping_path(cache: &std::path::Path, name: &str) -> PathBuf {
         .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned());
     let folder = format!(
         "{}-{}",
-        std::process::id(),
+        rt::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     );
     cache.join("kept").join(folder).join(name)

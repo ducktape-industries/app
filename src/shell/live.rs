@@ -42,7 +42,7 @@ impl Live {
 }
 
 pub(crate) fn boot(live: Live, entities: &Entities, cx: &mut gpui_kit::App) {
-    let runtime = crate::runtime::handle();
+    let runtime = rt::task::handle();
     let client = crate::backend::rpc_client(live.endpoint.clone());
     let status = match runtime.block_on(client.status()) {
         Ok(status) => status,

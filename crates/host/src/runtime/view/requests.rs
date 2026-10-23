@@ -104,7 +104,7 @@ impl View {
         let backlog = self.replies.drain_into(&mut self.pending);
         crate::perf::record(self.perf_key(), "backlog", backlog as u64);
         self.pending
-            .extend(kernel::ticked(&mut self.clocks, std::time::Instant::now()));
+            .extend(kernel::ticked(&mut self.clocks, rt::time::Instant::now()));
         self.sync_visibility();
         self.sync_placement();
         self.sync_debug();

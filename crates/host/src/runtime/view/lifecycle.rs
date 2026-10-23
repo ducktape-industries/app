@@ -720,7 +720,8 @@ impl View {
             live_subscriptions: _,
             joints: _,
             tracks: _,
-            sockets: _,
+            #[cfg(feature = "sockets")]
+                sockets: _,
             tasks: _,
             clipboard: _,
             picker: _,
@@ -1079,6 +1080,7 @@ impl View {
             live_subscriptions: Vec::new(),
             joints: Default::default(),
             tracks: Default::default(),
+            #[cfg(feature = "sockets")]
             sockets: Default::default(),
             tasks: Vec::new(),
             clipboard: Default::default(),

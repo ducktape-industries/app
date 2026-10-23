@@ -14,6 +14,7 @@ pub mod app_log;
 mod endpoints;
 pub mod identity;
 pub mod join;
+#[cfg_attr(not(feature = "live-client"), allow(dead_code))]
 pub mod live;
 mod prefs;
 mod session;

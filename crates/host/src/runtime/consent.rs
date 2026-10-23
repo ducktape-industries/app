@@ -596,6 +596,7 @@ pub fn queue(program: &'static str, instance: u64, words: Words) -> Option<Told>
     queue_in(waiting(), program, instance, words)
 }
 
+#[cfg(feature = "sockets")]
 pub(super) fn connect(program: &str, hosts: &[String]) -> Words {
     let lead = "Program ";
     Words {

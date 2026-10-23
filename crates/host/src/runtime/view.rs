@@ -93,7 +93,7 @@ pub(super) struct View {
     /// (`ViewTree::activate`, carried here by the seat's turn). Fresh for
     /// `ACTIVATION_EXPIRY`; a gated call (`link.open`, the clipboard) takes
     /// it, so one input admits one call (`take_activation`).
-    pub activation: Option<std::time::Instant>,
+    pub activation: Option<rt::time::Instant>,
     pub program: &'static str,
     /// The seat entity showing this seat (`Seat.instance`;
     /// 0 for a preloaded seat no tab has claimed): with `program`, the key
@@ -234,6 +234,7 @@ pub(super) struct View {
     pub(in crate::runtime) joints: kernel::Joints,
     /// The tracks this view publishes, where its `live.send`s go.
     pub tracks: kernel::live::Tracks,
+    #[cfg(feature = "sockets")]
     pub sockets: kernel::socket::Sockets,
     pub hosts: Vec<String>,
     /// Pending host requests and subscriptions, each owned by this view

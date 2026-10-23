@@ -7,10 +7,11 @@
 //! event and one debug event per sample, filtered at the callsite, plus
 //! `perf_summary` and `view_perf` at info.
 
+use rt::time::Instant;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::runtime::WindowKey;
 
