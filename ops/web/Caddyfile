@@ -1,0 +1,14 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	root * /srv/web
+	header Cache-Control "no-cache"
+	@page not path /v1/* /config.json
+	try_files @page {path} /index.html
+	file_server {
+		precompressed br gzip
+	}
+}

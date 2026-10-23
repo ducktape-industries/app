@@ -24,8 +24,9 @@ resolver = "2"
 # the phone shell (`crates/phone`) and the iOS view runner (`crates/host-jsc`,
 # a dependency of the phone's iOS build only); the path dependencies under
 # them (the host, the meter pass) are members already. `crates/pushd` is no
-# dependency of the app: the host with no screen, nor yet is `crates/a11y-platform`.
-members = ["crates/phone", "crates/host-jsc", "crates/host-web", "crates/pushd", "crates/a11y-platform", "crates/artifact-fence"]
+# dependency of the app: the host with no screen, nor yet is `crates/a11y-platform`, nor the browser's
+# shell (`crates/web-shell`, built by `ops/web/build.sh`).
+members = ["crates/phone", "crates/host-jsc", "crates/host-web", "crates/pushd", "crates/a11y-platform", "crates/artifact-fence", "crates/web-shell"]
 exclude = ["vendor"]
 
 [workspace.package]
@@ -256,6 +257,13 @@ codegen-units = 1
 [profile.phone]
 inherits = "release"
 panic = "abort"
+
+# What the web page ships (`ops/web/build.sh`): the smallest code, as ruled for the browser.
+[profile.web]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
 
 # dev/test builds compile wasm views through cranelift (program-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator

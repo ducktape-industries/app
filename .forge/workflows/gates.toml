@@ -1,6 +1,7 @@
 # The app CI (orthory, #engineering 912/913): gates.sh (GATES=check) from the forge repo tools at its main head, then
-# clippy for wasm32 and for the host without default features. LANE_TESTS: the test targets the check (and build.sh's
-# lane) runs over every crate a change reaches: all of them, lib, bins and integration tests.
+# clippy for wasm32 (the web shell's too), and the host without default features: its kernel and live tests and its
+# clippy. LANE_TESTS: the test targets the check (and build.sh's lane) runs over every crate a change reaches: all of
+# them, lib, bins and integration tests.
 name = "gates"
 
 [on]
@@ -25,6 +26,7 @@ steps = [
     "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-rt -p noded-client -p view-runner -p ducktape-host-web -- -D warnings",
     "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-host-web --tests -- -D warnings",
     "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-host --no-default-features --features ui -- -D warnings",
+    "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked --target wasm32-unknown-unknown -p ducktape-web-shell -- -D warnings",
     "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo test --locked -p ducktape-host --no-default-features --features wasmtime,ui --lib -- runtime::kernel::tests backend::live::tests",
     "cd /work/app && CARGO_TARGET_DIR=/var/tmp/target cargo clippy --locked -p ducktape-host --no-default-features --lib -- -D warnings",
 ]

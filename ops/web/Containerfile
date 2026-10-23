@@ -1,0 +1,15 @@
+# The web page (crates/web-shell) built from this repository's tree by ops/web/build.sh, served by Caddy on 8080 from
+# /srv/web with each file's precompressed copies; a config.json mounted there names the node (crates/web-shell/README.md).
+# Build it with ops/web/image.sh from a commit; TOOLCHAIN is the agents' toolchain image as the builder reaches it.
+ARG TOOLCHAIN=localhost:5000/toolchain:b240e4516c93@sha256:d80bfd948f37f381542c720e3f67a39c06606e88aec9f66f88aefb295468136b
+FROM ${TOOLCHAIN} AS build
+RUN apt-get update && apt-get install -y --no-install-recommends brotli && rm -rf /var/lib/apt/lists/*
+WORKDIR /work/app
+COPY . .
+RUN cargo install --locked wasm-bindgen-cli --version "$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"$/\1/p;}' Cargo.lock)"
+RUN CARGO_TARGET_DIR=/var/tmp/target sh ops/web/build.sh /srv/web
+
+FROM docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+COPY ops/web/Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /srv/web /srv/web
+EXPOSE 8080

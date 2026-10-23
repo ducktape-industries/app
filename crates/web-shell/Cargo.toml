@@ -1,0 +1,30 @@
+# ducktape-web-shell: ducktape in a browser, the host on gpui's web platform with the page's own view runner
+# (ducktape-host-web), built by `ops/web/build.sh` into the page `ops/web/Containerfile` serves.
+# Everything that names the page is wasm32 only; natively the crate is the page path's reading and its test.
+
+[package]
+name = "ducktape-web-shell"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+ducktape-host = { path = "../host", default-features = false, features = ["ui"] }
+ducktape-host-web = { path = "../host-web" }
+noded-client = { path = "../noded-client", features = ["commonware"] }
+gpui-kit = { version = "=0.7.3", default-features = false, features = ["component"] }
+rt = { package = "ducktape-rt", path = "../rt" }
+abi.workspace = true
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+futures.workspace = true
+rand.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console", "Location", "Navigator", "Response", "UrlSearchParams", "Window"] }
+console_error_panic_hook = "0.1"
