@@ -6,8 +6,11 @@
 :8080 {
 	root * /srv/web
 	header Cache-Control "no-cache"
-	@page not path /v1/* /config.json
-	try_files @page {path} /index.html
+	@page {
+		not path /v1/* /config.json
+		file {path} /index.html
+	}
+	rewrite @page {file_match.relative}
 	file_server {
 		precompressed br gzip
 	}
