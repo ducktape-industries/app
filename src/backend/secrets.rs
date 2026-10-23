@@ -40,6 +40,7 @@ impl Secrets for DesktopSecrets {
 
 fn entry(name: &str) -> Result<keyring::Entry, KeyRefusal> {
     let home = ducktape_home::root().map_err(KeyRefusal::NoStore)?;
+    super::device_key::os_store().map_err(refused)?;
     keyring::Entry::new(SERVICE, &format!("{}:{name}", home.display())).map_err(refused)
 }
 
@@ -48,6 +49,7 @@ fn refused(error: keyring::Error) -> KeyRefusal {
 }
 
 fn refused_on(error: keyring::Error, secret_service: bool) -> KeyRefusal {
+    super::device_key::reset_failed_store(&error);
     let no_store = secret_service && matches!(error, keyring::Error::PlatformFailure(_));
     match no_store {
         true => KeyRefusal::NoStore(super::device_key::refused(error)),
@@ -98,6 +100,8 @@ fn write(folder: &Path, name: &str, value: Option<&[u8]>) -> Result<(), KeyRefus
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod failed_store;
 
     #[test]
     fn only_a_secret_service_that_is_not_there_reads_as_no_key_store() {

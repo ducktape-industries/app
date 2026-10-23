@@ -47,6 +47,34 @@ pub(crate) fn file_only() -> bool {
     cfg!(test) || std::env::var("DUCKTAPE_DEVICE_KEY_STORE").is_ok_and(|store| store == "file")
 }
 
+pub(crate) fn os_store() -> Result<(), keyring::Error> {
+    if keyring::get_default_store().is_none() {
+        keyring::set_default_store(platform_store()?);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn platform_store() -> keyring::Result<std::sync::Arc<keyring::CredentialStore>> {
+    let store: std::sync::Arc<keyring::CredentialStore> =
+        apple_native_keyring_store::keychain::Store::new()?;
+    Ok(store)
+}
+
+#[cfg(windows)]
+fn platform_store() -> keyring::Result<std::sync::Arc<keyring::CredentialStore>> {
+    let store: std::sync::Arc<keyring::CredentialStore> =
+        windows_native_keyring_store::Store::new()?;
+    Ok(store)
+}
+
+#[cfg(target_os = "linux")]
+fn platform_store() -> keyring::Result<std::sync::Arc<keyring::CredentialStore>> {
+    let store: std::sync::Arc<keyring::CredentialStore> =
+        zbus_secret_service_keyring_store::Store::new()?;
+    Ok(store)
+}
+
 trait Keychain {
     fn copy(&self) -> Result<Zeroizing<Vec<u8>>, i32>;
     fn find(&self) -> Result<(), i32>;
@@ -61,6 +89,7 @@ fn stores(keyring: &str) -> Result<Stores, String> {
     }
     let home = ducktape_home::root()?;
     let account = format!("device-key:{}:{keyring}", home.display());
+    os_store().map_err(refused)?;
     let entry = keyring::Entry::new(SERVICE, &account).map_err(refused)?;
     #[cfg(target_os = "macos")]
     let keychain: Option<Box<dyn Keychain>> = Some(Box::new(keychain::Item::new(SERVICE, account)));
@@ -83,7 +112,15 @@ fn kept(entry: &keyring::Entry) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     }
 }
 
+pub(crate) fn reset_failed_store(error: &keyring::Error) {
+    let platform_failed = matches!(error, keyring::Error::PlatformFailure(_));
+    if platform_failed {
+        keyring::unset_default_store();
+    }
+}
+
 pub(crate) fn refused(error: keyring::Error) -> String {
+    reset_failed_store(&error);
     tracing::info!(target: "ducktape::keys", %error, "OS key store refused");
     let no_keyring = match cfg!(target_os = "linux") {
         true => {
@@ -471,6 +508,9 @@ mod keychain {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    mod restart;
+
     static OPENED: std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> =
         std::sync::Mutex::new(Vec::new());
 
@@ -523,16 +563,19 @@ mod tests {
     }
 
     fn store(held: Option<&ed25519::PrivateKey>, error: Option<keyring::Error>) -> keyring::Entry {
-        let mock = keyring::mock::MockCredential::default();
+        let mock = keyring::mock::Cred {
+            specifiers: (SERVICE.into(), "device-key:test".into()),
+            inner: Default::default(),
+        };
         mock.inner.lock().unwrap().get_mut().secret = held.map(|key| key.encode().to_vec());
         if let Some(error) = error {
             mock.set_error(error);
         }
-        keyring::Entry::new_with_credential(Box::new(mock))
+        keyring::Entry::new_with_credential(std::sync::Arc::new(mock))
     }
 
     fn held(entry: &keyring::Entry) -> Option<Vec<u8>> {
-        let mock: &keyring::mock::MockCredential = entry.get_credential().downcast_ref().unwrap();
+        let mock: &keyring::mock::Cred = entry.as_any().downcast_ref().unwrap();
         mock.inner.lock().unwrap().get_mut().secret.clone()
     }
 
@@ -887,6 +930,7 @@ mod tests {
         let item = keychain::Item::new(service, account.clone());
         assert_eq!(item.copy().map(drop), Err(NOT_ENTITLED));
         assert_eq!(item.find(), Err(NOT_ENTITLED));
+        os_store().unwrap();
         let entry = keyring::Entry::new(service, &account).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("device.key");
