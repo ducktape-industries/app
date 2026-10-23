@@ -1,6 +1,6 @@
 # The app CI (orthory, #engineering 912/913): gates.sh (GATES=check) from the forge repo tools at its main head, then
 # clippy for wasm32 and for the host without default features. LANE_TESTS: the test targets the check (and build.sh's
-# lane) runs over every crate a change reaches; --bins too, since pushd has no lib.
+# lane) runs over every crate a change reaches: all of them, lib, bins and integration tests.
 name = "gates"
 
 [on]
@@ -34,4 +34,4 @@ GATES = "check"
 WORKSPACE_FEATURES = "ax-door"
 FEATURE_SETS = "ducktape-web:cef ducktape-host:web"
 AGENTS_LINT = "1"
-LANE_TESTS = "--lib --bins"
+LANE_TESTS = "--tests"
